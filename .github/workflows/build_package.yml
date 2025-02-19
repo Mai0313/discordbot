@@ -11,6 +11,20 @@ jobs:
     runs-on: ubuntu-latest
     container: catthehacker/ubuntu:act-20.04
 
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        os:
+          - ubuntu-latest
+        python-version:
+          # - "3.9"
+          - "3.10"
+          # - "3.11"
+          # - "3.12"
+
+    timeout-minutes: 20
+
     steps:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
@@ -41,9 +55,14 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           pyproject-file: "pyproject.toml"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          uv python pin ${{ matrix.python-version }}
+          uv sync --no-dev
 
       - name: Get the version
         id: metadata
@@ -53,7 +72,7 @@ jobs:
         shell: bash
         run: |
           if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
-            VERSION=$(date +%Y.%m.%d)
+            VERSION=$(date +%Y.%-m.%-d.%-H.%-M)
           else
             VERSION=${GITHUB_REF#refs/tags/}
           fi

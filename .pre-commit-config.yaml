@@ -96,10 +96,11 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
-          - "pydantic>=2.8.2"
+          - "Pydantic"
           - "Types-PyYAML"
           - "Types-requests"
           - "Types-urllib3"
+          - "Types-redis"
           - "Types-attrs"
 
   - repo: https://github.com/astral-sh/uv-pre-commit
