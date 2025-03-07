@@ -1,0 +1,20 @@
+services:
+  bot:
+    image: ghcr.io/mai0313/llm_discord_bot:latest
+    build:
+      context: .
+      target: prod
+      dockerfile: ./docker/Dockerfile
+    environment:
+      PUID: 0
+      PGID: 0
+      UMASK: 022
+    command:
+      - python
+      - ./main.py
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: always
+    pull_policy: always
