@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 
 import logfire
 from pydantic import Field
@@ -40,6 +40,23 @@ class OpenAIConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
+
+    def get_llm_config(self, model: str) -> dict[str, Any]:
+        llm_config = {
+            "timeout": 60,
+            "temperature": 0,
+            "cache_seed": None,
+            "config_list": [
+                {
+                    "model": model,
+                    "api_key": self.api_key,
+                    "base_url": self.api_endpoint,
+                    "api_type": self.api_type,
+                    "api_version": self.api_version,
+                }
+            ],
+        }
+        return llm_config
 
 
 class PerplexityConfig(BaseSettings):
