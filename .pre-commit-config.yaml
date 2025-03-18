@@ -103,6 +103,14 @@ repos:
           - "Types-redis"
           - "Types-attrs"
 
+  # - repo: local
+  #   hooks:
+  #     - id: update-version
+  #       name: Update project version in pyproject.toml
+  #       entry: bash -c 'VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440) && uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION'
+  #       language: system
+  #       pass_filenames: false
+
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.6.6
     hooks:
