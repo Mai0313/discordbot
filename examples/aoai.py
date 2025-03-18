@@ -25,7 +25,7 @@ def get_aoai_response(api_key: str, question: str) -> str:
 
 
 if __name__ == "__main__":
-    api_key = "xxxx"
+    api_key = "..."
     question = "What is the meaning of life?"
     response = get_aoai_response(api_key, question)
     console.print(response)

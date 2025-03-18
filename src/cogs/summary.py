@@ -89,7 +89,6 @@ class SummarizeMenuView(nextcord.ui.View):
 class MessageFetcher(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.llm_services = LLMSDK(system_prompt=SUMMARY_PROMPT)
 
     @nextcord.slash_command(
         name="sum",
@@ -174,7 +173,8 @@ class MessageFetcher(commands.Cog):
         )
 
     async def _call_llm(self, prompt: str, attachments: list[str]) -> str:
-        response = await self.llm_services.get_oai_reply(prompt=prompt, image_urls=attachments)
+        llm_sdk = LLMSDK(system_prompt=SUMMARY_PROMPT)
+        response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
         return response.choices[0].message.content
 
 

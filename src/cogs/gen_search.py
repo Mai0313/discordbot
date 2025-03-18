@@ -12,7 +12,6 @@ os.environ["ANONYMIZED_TELEMETRY"] = "false"
 class WebSearchCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.llm_services = LLMSDK()
 
     @nextcord.slash_command(
         name="search",
@@ -36,8 +35,9 @@ class WebSearchCogs(commands.Cog):
             },
         ),
     ) -> None:
+        llm_sdk = LLMSDK()
         try:
-            response = await self.llm_services.get_search_result(prompt=prompt)
+            response = await llm_sdk.get_search_result(prompt=prompt)
             await interaction.response.send_message(content=response.choices[0].message.content)
         except Exception as e:
             await interaction.response.send_message(content=f"搜尋時發生錯誤: {e!s}")

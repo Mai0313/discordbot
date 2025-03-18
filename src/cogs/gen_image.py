@@ -10,7 +10,6 @@ class ImageGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.config = Config()
-        self.llm_services = LLMSDK()
 
     @nextcord.slash_command(
         name="graph",
@@ -34,10 +33,11 @@ class ImageGeneratorCogs(commands.Cog):
             },
         ),
     ) -> None:
+        llm_sdk = LLMSDK()
         message = await interaction.response.send_message(content="圖片生成中...")
 
         try:
-            response = await self.llm_services.get_dalle_image(prompt=prompt)
+            response = await llm_sdk.get_dalle_image(prompt=prompt)
             await message.edit(content=f"{interaction.user.mention}\n{response.data[0].url}")
         except Exception as e:
             await message.edit(content=f"生成圖片時發生錯誤: {e!s}")
