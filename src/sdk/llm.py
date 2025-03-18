@@ -53,13 +53,15 @@ class LLMSDK(Config):
         default="gpt-4o",
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
-        alias="model",
+        frozen=False,
+        deprecated=False,
     )
     graph_model: str = Field(
-        default="dall-e-3",
+        default="Dalle3",
         title="Graph Model Selection",
         description="This model should be OpenAI Model.",
-        alias="graph_model",
+        frozen=False,
+        deprecated=False,
     )
     system_prompt: str = Field(default=SYSTEM_PROMPT)
 
@@ -177,15 +179,15 @@ if __name__ == "__main__":
     console = Console()
 
     async def main() -> None:
-        llm_services = LLMSDK()
+        llm_sdk = LLMSDK()
         prompt = "既然從地球發射火箭那麼困難, 為何我們不直接在太空中建造火箭呢?"
-        response = await llm_services.get_oai_reply(prompt=prompt)
+        response = await llm_sdk.get_oai_reply(prompt=prompt)
         console.print(response.choices[0].message.content)
 
     async def main_stream() -> None:
-        llm_services = LLMSDK()
+        llm_sdk = LLMSDK()
         prompt = "既然從地球發射火箭那麼困難, 為何我們不直接在太空中建造火箭呢?"
-        async for res in llm_services.get_oai_reply_stream(prompt=prompt):
+        async for res in llm_sdk.get_oai_reply_stream(prompt=prompt):
             console.print(res.choices[0].delta.content)
 
     asyncio.run(main_stream())
