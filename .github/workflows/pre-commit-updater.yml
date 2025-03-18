@@ -34,15 +34,25 @@ jobs:
           git add -A
           git commit -m "Commit any changes before switching branches" || echo "No changes to commit"
 
+      # - name: Create Pull Request
+      #   uses: peter-evans/create-pull-request@v5
+      #   id: pre-commit-autoupdate
+      #   with:
+      #     token: ${{ secrets.GITHUB_TOKEN }}
+      #     branch: chore/pre-commit-hooks
+      #     title: 'chore: Update pre-commit hooks'
+      #     body: Update versions of pre-commit hooks to latest version.
+
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
-        id: pre-commit-autoupdate
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: chore/pre-commit-hooks
-          title: 'chore: Update pre-commit hooks'
+          base: master  # push to this branch
+          branch: chore/pre-commit-hooks  # push from this branch
+          title: "chore: Update pre-commit hooks"
+          body: "Update versions of pre-commit hooks to latest version."
           commit-message: "chore: update pre-commit hooks"
-          body: Update versions of pre-commit hooks to latest version.
+          delete-branch: true
 
       - name: Auto Merge Pull Request
         if: steps.pre-commit-autoupdate.outputs.pull-request-number

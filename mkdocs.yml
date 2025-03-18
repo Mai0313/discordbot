@@ -1,9 +1,9 @@
 site_name: LLM Discord Bot
-site_url: https://mai0313.github.io/llm_discord_bot/
+site_url: https://mai0313.github.io/discordbot/
 site_author: Wei Lee
 
-repo_name: Mai0313/llm_discord_bot
-repo_url: https://github.com/Mai0313/llm_discord_bot
+repo_name: Mai0313/discordbot
+repo_url: https://github.com/Mai0313/discordbot
 edit_uri: edit/master/docs/
 
 docs_dir: docs
@@ -164,7 +164,7 @@ plugins:
 extra:
   social:
   - icon: fontawesome/brands/github-alt
-    link: https://github.com/Mai0313/llm_discord_bot
+    link: https://github.com/Mai0313/discordbot
 
   alternate:
   - link: /

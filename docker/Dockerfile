@@ -3,7 +3,7 @@ FROM python:${PYTHON_VERSION} AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 LABEL maintainer="Wei Lee <mai@mai0313.com>" \
-    org.label-schema.name="llm_discord_bot" \
+    org.label-schema.name="discordbot" \
     org.label-schema.vendor="Wei Lee" \
     org.label-schema.schema-version="1.0" \
     com.centurylinklabs.watchtower.stop-signal="SIGINT"
@@ -28,16 +28,16 @@ WORKDIR /base
 COPY ./pyproject.toml ./pyproject.toml
 # RUN uv sync --frozen --no-dev && uv cache clean
 RUN uv export --no-dev --no-hashes --output-file ./requirements.lock && \
-    pip install -r ./requirements.lock && \
-    pip cache purge
+    uv pip install --system -r requirements.lock && \
+    uv cache clean
 
 FROM builder AS dev
 WORKDIR /base
 COPY ./pyproject.toml ./pyproject.toml
 # RUN uv sync --frozen && uv cache clean
 RUN uv export --no-hashes --group docs --output-file ./requirements-dev.lock && \
-    pip install -r ./requirements-dev.lock && \
-    pip cache purge
+    uv pip install --system -r ./requirements-dev.lock && \
+    uv cache clean
 
 ########################################################################################
 

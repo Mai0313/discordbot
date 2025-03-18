@@ -61,7 +61,7 @@ omit = ["./src/ameba/*"]
 # ================== #
 
 [project]
-name = "llmdcbot"
+name = "discordbot"
 version = "1.0.0"
 description = "LLM Discord Bot"
 authors = [
@@ -88,8 +88,8 @@ requires-python = ">= 3.10"
 license = { text = "MIT" }
 
 [project.urls]
-Homepage = "https://github.com/Mai0313/llm_discord_bot"
-Repository = "https://github.com/Mai0313/llm_discord_bot"
+Homepage = "https://github.com/Mai0313/discordbot"
+Repository = "https://github.com/Mai0313/discordbot"
 
 [build-system]
 requires = ["hatchling", "hatch-fancy-pypi-readme"]
@@ -494,7 +494,7 @@ skip-magic-trailing-comma = true
 [tool.logfire]
 send_to_logfire = false
 token = false
-project_name = "llm_discord_bot"
+project_name = "discordbot"
 trace_sample_rate = 1.0
 console_colors = "auto"
 console_span_style = "show-parents"
