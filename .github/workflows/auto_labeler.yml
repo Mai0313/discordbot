@@ -3,6 +3,8 @@ name: Pull Request Labeler
 on:
   pull_request:
 
+permissions: write-all
+
 jobs:
   labeler:
     runs-on: ubuntu-latest
