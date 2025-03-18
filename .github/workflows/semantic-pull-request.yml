@@ -12,9 +12,7 @@ on:
       - edited
       - synchronize
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: write-all
 
 jobs:
   main:

@@ -1,6 +1,6 @@
 services:
   bot:
-    image: ghcr.io/mai0313/llm_discord_bot:latest
+    image: ghcr.io/mai0313/discordbot:latest
     build:
       context: .
       target: prod
