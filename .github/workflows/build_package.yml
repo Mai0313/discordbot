@@ -5,6 +5,8 @@ on:
     tags:
       - v*
 
+permissions: write-all
+
 jobs:
   build_package:
     name: Build Package by uv
@@ -47,8 +49,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
           submodules: 'recursive'
 
       - name: Setup uv
@@ -64,24 +66,16 @@ jobs:
           uv python pin ${{ matrix.python-version }}
           uv sync --no-dev
 
-      - name: Get the version
-        id: metadata
-        uses: battila7/get-version-action@v2
-
       - name: Update Version
         shell: bash
         run: |
-          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
-            VERSION=$(date +%Y.%-m.%-d.%-H.%-M)
-          else
-            VERSION=${GITHUB_REF#refs/tags/}
-          fi
+          VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
+          uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION
           echo "Version: $VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Build Package
         run: |
-          uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION
           uv build
 
       - name: Generate a changelog
@@ -91,7 +85,7 @@ jobs:
           OUTPUT: CHANGELOG.md
         with:
           config: pyproject.toml
-          args: --unreleased --tag $VERSION
+          args: --unreleased --tag ${{ env.VERSION }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifact

@@ -62,7 +62,7 @@ omit = ["./src/ameba/*"]
 
 [project]
 name = "discordbot"
-version = "1.0.0"
+version = "0.1.0"
 description = "LLM Discord Bot"
 authors = [
     { name = "Wei", email = "mai@mai0313.com" },
