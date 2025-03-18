@@ -57,7 +57,7 @@ class LLMSDK(Config):
         deprecated=False,
     )
     graph_model: str = Field(
-        default="dall-e-3",
+        default="Dalle3",
         title="Graph Model Selection",
         description="This model should be OpenAI Model.",
         frozen=False,
