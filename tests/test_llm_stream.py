@@ -10,6 +10,7 @@ def llm_sdk() -> LLMSDK:
     return LLMSDK()
 
 
+@pytest.mark.skip(reason="This test requires a valid OpenAI API key.")
 @pytest.mark.asyncio
 async def test_get_oai_reply_stream(llm_sdk: LLMSDK) -> None:
     async for response in llm_sdk.get_oai_reply_stream(prompt=prompt):
