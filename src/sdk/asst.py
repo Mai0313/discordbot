@@ -9,7 +9,6 @@ from openai.types.beta.threads import Run, Message, MessageDeleted
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from src.types.config import Config
-from src.types.database import DatabaseConfig
 
 
 class AssistantAPI(Config):
@@ -18,7 +17,6 @@ class AssistantAPI(Config):
     assistant_id: Optional[str] = Field(default=None)
     message_id: Optional[str] = Field(default=None)
     metadata: dict[str, str] = Field(default={"backend_id": "default"})
-    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     @computed_field
     @property

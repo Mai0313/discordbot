@@ -17,6 +17,8 @@ permissions: write-all
 jobs:
   main:
     runs-on: ubuntu-latest
+    # container: catthehacker/ubuntu:act-20.04  # Uncomment it if you use it on Gitea
+
     name: Semantic Pull Request
     steps:
       - name: Validate PR title

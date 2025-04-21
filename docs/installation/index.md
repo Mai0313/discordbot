@@ -6,63 +6,77 @@ This page will guide you through the installation process this project.
 
 === "uv"
 
-    Install [uv](https://docs.astral.sh/uv/)
+    More information about [uv](https://docs.astral.sh/uv/)
 
-    ```bash
-    make uv-install
-    ```
+    === "MacOS / Linux"
 
-=== "Rye"
+        ```bash
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        ```
 
-    Install [Rye](https://rye.astral.sh/guide/installation/)
+    === "Windows"
 
-    ```bash
-    make rye-install
-    ```
-
-=== "Conda"
-
-    - Please visit [miniconda](https://docs.anaconda.com/miniconda/install/) to install miniconda.
-
-    ```bash
-    conda create -n plotly python=3.9 -y
-    conda activate plotly
-    pip install uv
-    ```
-
-=== "PIP"
-
-    - Please visit [Python](https://www.python.org/downloads/) to install Python for using pip.
-
-    ```bash
-    pip install uv
-    ```
-
-## Export Proxy (Optional)
-
-=== "uv"
-
-    ```bash
-    export https_proxy=http://mtkdrone01.mediatek.inc:23984
-    ```
+        ```bash
+        powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+        ```
 
 === "Rye"
 
-    ```bash
-    export https_proxy=http://mtkdrone01.mediatek.inc:23984
-    ```
+    More information about [rye](https://rye.astral.sh/)
+
+    === "MacOS / Linux"
+
+        ```bash
+        curl -sSf https://rye.astral.sh/get | bash
+        ```
+
+    === "Windows"
+
+        ```powershell
+        wget https://github.com/astral-sh/rye/releases/latest/download/rye-x86_64-windows.exe
+        .\rye-x86_64-windows.exe
+        ```
 
 === "Conda"
 
-    ```bash
-    export https_proxy=http://mtkdrone01.mediatek.inc:23984
-    ```
+    More information about [miniconda](https://docs.anaconda.com/miniconda/install/)
 
-=== "PIP"
+    === "Linux"
 
-    ```bash
-    export https_proxy=http://mtkdrone01.mediatek.inc:23984
-    ```
+        ```bash
+        mkdir -p ~/miniconda3
+        wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+        bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+        rm ~/miniconda3/miniconda.sh
+        ```
+
+    === "MacOS"
+
+        === "Apple Silicon"
+
+            ```bash
+            mkdir -p ~/miniconda3
+            curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh -o ~/miniconda3/miniconda.sh
+            bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+            rm ~/miniconda3/miniconda.sh
+            ```
+
+        === "Intel"
+
+            ```bash
+            mkdir -p ~/miniconda3
+            curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -o ~/miniconda3/miniconda.sh
+            bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+            rm ~/miniconda3/miniconda.sh
+            ```
+
+    === "Windows"
+
+        ```powershell
+        wget "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe" -outfile ".\miniconda.exe"
+        Start-Process -FilePath ".\miniconda.exe" -ArgumentList "/S" -Wait
+        del .\miniconda.exe
+        ```
 
 ## Install/Setup Dependencies
 
@@ -81,12 +95,9 @@ This page will guide you through the installation process this project.
 === "Conda"
 
     ```bash
-    uv pip sync pyproject.toml
-    ```
-
-=== "PIP"
-
-    ```bash
+    conda create -n discordbot python=3.10 -y
+    conda activate discordbot
+    conda install uv
     uv pip sync pyproject.toml
     ```
 

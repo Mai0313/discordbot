@@ -18,39 +18,49 @@ on:
 
 permissions: write-all
 
+env:
+  BUILDKIT_NO_CLIENT_TOKEN: 1 # docker buildkit env
+  # gitea action download node.js skip certificate !https
+  NODE_TLS_REJECT_UNAUTHORIZED: 0
+
 jobs:
-  build_base_images:
-    name: Build and Push Base Images
+  build_images:
+    name: Build and Push Images
     runs-on: ubuntu-latest
-    # container: catthehacker/ubuntu:act-20.04  # Uncomment it if you use it on Gitea
+    # container: catthehacker/ubuntu:act-22.04  # Uncomment it if you use it on Gitea
 
     strategy:
       fail-fast: true
-      max-parallel: 3
       matrix:
         target:
-          - name: Build and Push Image (Base)
-            target_step: base
-            tag: ${{ vars.IMAGE }}-base
-            build_args: |
-              --build-arg PYTHON_VERSION=3.10.14
-
           - name: Build and Push Images (Latest / Release)
             target_step: prod
-            tag: ${{ vars.IMAGE }}
-            build_args: |
-              --build-arg PYTHON_VERSION=3.10.14
+            tag: ghcr.io/mai0313/${{ github.event.repository.name }}
 
     steps:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
 
+      # - name: Setup MTK Certification
+      #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
+
+      # - name: Setup SSH Key
+      #   uses: shimataro/ssh-key-action@v2.7.0
+      #   with:
+      #     key: ${{ secrets.SSH_KEY }}
+      #     name: id_rsa
+      #     known_hosts: unnecessary
+      #     config: |
+      #       Host *
+      #         StrictHostKeyChecking no
+      #         UserKnownHostsFile=/dev/null
+      #     if_key_exists: replace
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-          submodules: 'recursive'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
@@ -60,45 +70,61 @@ jobs:
           pyproject-file: "pyproject.toml"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get the version
+      - name: Update Version
         shell: bash
         run: |
           VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
           uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION
-          echo "Version: $VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "GITHUB_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
 
       - name: Login to the Container registry
-        uses: docker/login-action@v3.1.0
+        uses: docker/login-action@v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Latest Image
-        uses: docker/build-push-action@v5.1.0
+      - name: Setup docker context for buildx
+        run: |
+          docker context create builders || docker context use builders
+
+      - name: Set up Docker BuildX
+        uses: docker/setup-buildx-action@v3
+        # with:
+        #   endpoint: builders
+        #   config-inline: |
+        #     debug = true
+        #     insecure-entitlements = [ "network.host", "security.insecure" ]
+        #     [registry."oa-mirror.mediatek.inc:5000"]
+        #       http = true
+        #       insecure = true
+        #     [registry."mtkomcr.mediatek.inc"]
+        #       http = false
+        #       insecure = true
+        #     [registry."mtksms10.mediatek.inc:5000"]
+        #       http = true
+        #       insecure = true
+        #     [registry."gitea.mediatek.inc"]
+        #       http = false
+        #       insecure = true
+        #     [worker.oci]
+        #       [worker.oci.environmentfile]
+        #         GIT_SSL_NO_VERIFY = "true"
+
+      - name: ${{ matrix.target.name }}
+        uses: docker/build-push-action@v6
         with:
           push: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          context: .
           file: ./docker/Dockerfile
-          build-args: ${{ matrix.target.build_args }}
           target: ${{ matrix.target.target_step }}
+          build-args: ${{ matrix.target.build_args }}
+          labels: ${{ env.VERSION }}
           tags: |
             ${{ matrix.target.tag }}:latest
             ${{ matrix.target.tag }}:${{ env.VERSION }}
           sbom: false
           provenance: false
-
-      - name: Build and Push Base Image
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@v5.1.0
-        with:
-          push: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./docker/Dockerfile
-          build-args: ${{ matrix.target.build_args }}
-          target: ${{ matrix.target.target_step }}
-          tags: |
-            ${{ matrix.target.tag }}:${{ env.VERSION }}
-          sbom: false
-          provenance: false
+          cache-from: type=registry,ref=${{ matrix.target.tag }}:buildcache
+          cache-to: type=registry,ref=${{ matrix.target.tag }}:buildcache,image-manifest=true,oci-mediatypes=true,mode=max

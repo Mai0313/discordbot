@@ -18,15 +18,26 @@ jobs:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
 
+      # - name: Setup MTK Certification
+      #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
+
+      # - name: Setup SSH Key
+      #   uses: shimataro/ssh-key-action@v2.7.0
+      #   with:
+      #     key: ${{ secrets.SSH_KEY }}
+      #     name: id_rsa
+      #     known_hosts: unnecessary
+      #     config: |
+      #       Host *
+      #         StrictHostKeyChecking no
+      #         UserKnownHostsFile=/dev/null
+      #     if_key_exists: replace
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-          submodules: 'recursive'
-
-      - name: Update Pre-Commit
-        uses: browniebroke/pre-commit-autoupdate-action@main
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
@@ -36,29 +47,14 @@ jobs:
           pyproject-file: "pyproject.toml"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get the version
-        shell: bash
+      - name: Update Pre-Commit
         run: |
-          VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
-          uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION
-          echo "Version: $VERSION"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      - name: Commit any changes
-        run: |
-          git add -A
-          git commit -m "Commit any changes before switching branches" || echo "No changes to commit"
-
-      # - name: Create Pull Request
-      #   uses: peter-evans/create-pull-request@v5
-      #   id: pre-commit-autoupdate
-      #   with:
-      #     token: ${{ secrets.GITHUB_TOKEN }}
-      #     branch: chore/pre-commit-hooks
-      #     title: 'chore: Update pre-commit hooks'
-      #     body: Update versions of pre-commit hooks to latest version.
+          uv tool install pre-commit
+          uv tool run pre-commit autoupdate
+          uv tool run pre-commit run -a
 
       - name: Create Pull Request
+        id: create-pr
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -70,8 +66,9 @@ jobs:
           delete-branch: true
 
       - name: Auto Merge Pull Request
-        if: steps.pre-commit-autoupdate.outputs.pull-request-number
-        run: |
-          gh pr merge --auto --merge chore/pre-commit-hooks
+        continue-on-error: true
+        if: ${{ steps.create-pr.outputs.pull-request-number }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge --merge chore/pre-commit-hooks
