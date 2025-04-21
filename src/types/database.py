@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 
 from redis import Redis
 from pydantic import Field, BaseModel, AliasChoices, computed_field
@@ -6,41 +6,14 @@ from pydantic_settings import BaseSettings
 
 
 class PostgreSQLConfig(BaseSettings):
-    postgres_host: str = Field(
+    postgres_url: str = Field(
         ...,
-        validation_alias=AliasChoices("POSTGRES_HOST"),
-        title="PostgreSQL Host",
-        description="The hostname or IP address of the PostgreSQL server.",
+        validation_alias=AliasChoices("POSTGRES_URL"),
+        title="PostgreSQL Url",
+        description="The URL to connect to the PostgreSQL database.",
+        frozen=False,
+        deprecated=False,
     )
-    postgres_port: str = Field(
-        ...,
-        validation_alias=AliasChoices("POSTGRES_PORT"),
-        title="PostgreSQL Port",
-        description="The port number on which the PostgreSQL server is listening.",
-    )
-    postgres_db: str = Field(
-        ...,
-        validation_alias=AliasChoices("POSTGRES_DB"),
-        title="PostgreSQL Database Name",
-        description="The name of the PostgreSQL database to connect to.",
-    )
-    postgres_user: str = Field(
-        ...,
-        validation_alias=AliasChoices("POSTGRES_USER"),
-        title="PostgreSQL User",
-        description="The username used to authenticate with the PostgreSQL server.",
-    )
-    postgres_password: str = Field(
-        ...,
-        validation_alias=AliasChoices("POSTGRES_PASSWORD"),
-        title="PostgreSQL Password",
-        description="The password used to authenticate with the PostgreSQL server.",
-    )
-
-    @computed_field
-    @property
-    def postgres_dsn(self) -> str:
-        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
 
 
 class SQLiteConfig(BaseSettings):
@@ -59,40 +32,19 @@ class SQLiteConfig(BaseSettings):
 
 
 class RedisConfig(BaseSettings):
-    redis_host: str = Field(
+    redis_url: str = Field(
         ...,
-        validation_alias=AliasChoices("REDIS_HOST"),
-        title="Redis Host",
-        description="The hostname or IP address of the Redis server.",
-    )
-    redis_port: int = Field(
-        default=6379,
-        validation_alias=AliasChoices("REDIS_PORT"),
-        title="Redis Port",
-        description="The port number on which the Redis server is listening. Defaults to 6379.",
-    )
-    redis_db: int = Field(
-        default=0,
-        validation_alias=AliasChoices("REDIS_DB"),
-        title="Redis Database Index",
-        description="The database index to connect to on the Redis server. Defaults to 0.",
-    )
-    redis_password: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("REDIS_PASSWORD"),
-        title="Redis Password",
-        description="The password used to authenticate with the Redis server, if required.",
+        validation_alias=AliasChoices("REDIS_URL"),
+        title="Redis Url",
+        description="The URL to connect to the Redis server.",
+        frozen=False,
+        deprecated=False,
     )
 
     @computed_field
     @property
     def redis_instance(self) -> Redis:
-        return Redis(
-            host=self.redis_host,
-            port=self.redis_port,
-            db=self.redis_db,
-            password=self.redis_password,
-        )
+        return Redis.from_url(url=self.redis_url)
 
     @computed_field
     @property

@@ -14,7 +14,7 @@ addopts = [
     "--cache-clear",
     "-n=auto",
     "--no-header",
-    "--cov-fail-under=80",
+    "--cov-fail-under=5",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

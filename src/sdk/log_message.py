@@ -20,7 +20,7 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def engine(self) -> sqlalchemy.Engine:
-        engine = create_engine(self.database.postgres.postgres_dsn, echo=True)
+        engine = create_engine(self.database.postgres.postgres_url, echo=True)
         return engine
 
     async def log(self) -> None:
