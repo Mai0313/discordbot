@@ -20,12 +20,26 @@ jobs:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
 
+      # - name: Setup MTK Certification
+      #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
+
+      # - name: Setup SSH Key
+      #   uses: shimataro/ssh-key-action@v2.7.0
+      #   with:
+      #     key: ${{ secrets.SSH_KEY }}
+      #     name: id_rsa
+      #     known_hosts: unnecessary
+      #     config: |
+      #       Host *
+      #         StrictHostKeyChecking no
+      #         UserKnownHostsFile=/dev/null
+      #     if_key_exists: replace
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-          submodules: 'recursive'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5

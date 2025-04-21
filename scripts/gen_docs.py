@@ -1,13 +1,24 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "anyio",
+#     "fire",
+#     "notebook",
+#     "pydantic",
+#     "rich",
+# ]
+# ///
 import ast
 import shutil
 from typing import Literal
 from pathlib import Path
+from functools import cached_property
 import itertools
 
 import anyio
 import nbformat
 from pydantic import Field, BaseModel, ConfigDict, computed_field
-from nbconvert import MarkdownExporter
+from nbconvert import MarkdownExporter, TemplateExporter
 from rich.console import Console
 from rich.progress import Progress
 
@@ -42,63 +53,75 @@ class DocsGenerator(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    source: str = Field(..., frozen=True)
-    output: str = Field(..., frozen=True)
+    source_path: Path = Field(
+        ...,
+        title="The Source File Path or Folder Path",
+        description="This field can be a file path or folder path, if it is a folder path, it will automatically search for python and ipynb files.",
+        examples=["./src"],
+        alias="source",
+        frozen=True,
+    )
+    output_path: Path = Field(
+        ...,
+        title="The Output Path",
+        description="The output path for the generated documentation.",
+        examples=["./docs/Reference"],
+        alias="output",
+        frozen=True,
+    )
     exclude: str = Field(
         default=".venv",
         description="Exclude the folder or file, it should be separated by comma.",
         examples=[".venv,.git,.idea"],
     )
     mode: Literal["file", "class"] = Field(
-        default="class", description="Generate docs by file or class."
+        default="class",
+        title="The Document Style",
+        description="Generate docs by file or class.",
+        examples=["file", "class"],
     )
 
     @computed_field
-    @property
-    def _source_path(self) -> Path:
+    @cached_property
+    def source_files(self) -> list[Path]:
         """Computed property that returns the source path as a Path object.
 
         Returns:
             Path: The source path.
         """
-        return Path(self.source)
+        if self.source_path.is_dir():
+            if self.output_path.exists():
+                shutil.rmtree(self.output_path.absolute())
+                self.output_path.mkdir(parents=True, exist_ok=True)
+            need_to_exclude = [*self.exclude.split(","), ".venv", "__init__.py"]
+            need_to_exclude = list(set(need_to_exclude))
+            python_files = self.source_path.rglob("*.py")
+            ipynb_files = self.source_path.rglob("*.ipynb")
+            files = itertools.chain(python_files, ipynb_files)
+            all_files = [
+                file for file in files if not any(f in file.parts for f in need_to_exclude)
+            ]
+        elif self.source_path.is_file():
+            all_files = [self.source_path]
+        else:
+            raise ValueError("Invalid source path")
+        return all_files
 
-    @computed_field
-    @property
-    def _output_path(self) -> Path:
-        """Computed property that returns the output path as a Path object.
+    async def __prepare_docs_path(self, file: Path) -> Path:
+        # 因為多層結構的資料夾 我們希望他可以依然放在對應的資料夾內
+        try:
+            related_path = file.parent.relative_to(self.source_path)
+        except ValueError:
+            related_path_str = file.parent.as_posix().replace(self.source_path.as_posix(), "")
+            related_path = Path(related_path_str)
+        filename = file.with_suffix(".md").name
+        docs_path = Path(f"{self.output_path}/{related_path}/{filename}")
+        docs_path.parent.mkdir(parents=True, exist_ok=True)
+        docs_path.unlink(missing_ok=True)
+        return docs_path
 
-        Returns:
-            Path: The output path.
-        """
-        return Path(self.output)
-
-    async def __remove_existing_folder(self) -> None:
-        """Asynchronously removes the existing folder at the output path if it exists, and then recreates the folder.
-
-        This method checks if the output path exists. If it does, the folder and its contents are removed. After removal, a new folder is created at the same path.
-        """
-        if self._output_path.exists():
-            shutil.rmtree(self._output_path.absolute())
-            self._output_path.mkdir(parents=True, exist_ok=True)
-
-    async def __gen_content(self, file: Path) -> str:
-        """Generates documentation content based on the specified mode.
-
-        Args:
-            file (Path): The file path for which the documentation content is to be generated.
-
-        Returns:
-            str: The generated documentation content as a string.
-
-        Raises:
-            ValueError: If the mode is not "file" or "class".
-
-        Notes:
-            - If the mode is "file", the function generates a string with the file path formatted for documentation.
-            - If the mode is "class", the function reads the file, parses its AST, and generates a string with class names formatted for documentation, excluding classes with names starting with an underscore.
-            - If no content is generated, a default string with the file path formatted for documentation is returned.
-        """
+    async def __gen_python_docs(self, file: Path) -> str:
+        docs_path = await self.__prepare_docs_path(file=file)
         if self.mode == "file":
             note_content = f"::: {file.as_posix().removesuffix('.py').replace('/', '.')}\n"
         elif self.mode == "class":
@@ -116,107 +139,44 @@ class DocsGenerator(BaseModel):
             raise ValueError("Invalid mode")
         if not note_content:
             note_content = f"::: {file.as_posix().removesuffix('.py').replace('/', '.')}\n"
-        return note_content
+        docs_path.write_text(data=note_content, encoding="utf-8")
+        return docs_path.as_posix()
 
-    async def __gen_single_docs(self, docs_path: Path, file: Path) -> str:
-        """Generates documentation for a single file.
-
-        This asynchronous method generates documentation for a given file and saves it as a markdown file in the specified documentation path.
-        It ensures that the output directory exists and removes any existing file with the same name before writing the new content.
-
-        Args:
-            docs_path (Path): The path where the documentation should be saved.
-            file (Path): The file for which the documentation is to be generated.
-
-        Returns:
-            str: The path to the generated documentation file as a string.
-        """
-        _output_docs_path = Path(docs_path / file.with_suffix(".md").name)
-        _output_docs_path.parent.mkdir(parents=True, exist_ok=True)
-        _output_docs_path.unlink(missing_ok=True)
-        _note_content = await self.__gen_content(file=file)
-        _output_docs_path.write_text(data=_note_content, encoding="utf-8")
-        return _output_docs_path.as_posix()
-
-    async def __gen_notebook_docs(self, docs_path: Path, file: Path) -> str:
-        _output_docs_path = Path(docs_path / file.with_suffix(".md").name)
-        _output_docs_path.parent.mkdir(parents=True, exist_ok=True)
-        _output_docs_path.unlink(missing_ok=True)
+    async def __gen_notebook_docs(self, file: Path) -> str:
+        docs_path = await self.__prepare_docs_path(file=file)
         async with await anyio.open_file(file, encoding="utf-8") as f:
             nb = nbformat.reads(await f.read(), as_version=4)
 
         markdown_exporter = MarkdownExporter(template_name="markdown")
+        if not isinstance(markdown_exporter, TemplateExporter):
+            raise TypeError("TemplateExporter is not a valid type")
         markdown_output, _ = markdown_exporter.from_notebook_node(nb)
 
-        async with await anyio.open_file(_output_docs_path, "w", encoding="utf-8") as f:
+        async with await anyio.open_file(docs_path, "w", encoding="utf-8") as f:
             await f.write(markdown_output)
-        return _output_docs_path.as_posix()
-
-    async def process_file(self, docs_path: Path, file: Path) -> str:
-        if file.suffix == ".ipynb":
-            processed_file = await self.__gen_notebook_docs(docs_path=docs_path, file=file)
-        elif file.suffix == ".py":
-            processed_file = await self.__gen_single_docs(docs_path=docs_path, file=file)
-        else:
-            processed_file = f"Unsupported file type: {file.suffix}"
-            console.log(processed_file)
-        return processed_file
+        return docs_path.as_posix()
 
     async def gen_docs(self) -> None:
-        """This function can generate docs by file or class.
-
-        Raises:
-            ValueError: If the source path is invalid.
-
-        Examples:
-            >>> import asyncio
-            >>> pair_list = {"./src": "./docs/Reference"}
-            >>> for key, value in pair_list.items():
-            ...     docs_generator = DocsGenerator(source=key, output=value, exclude=".venv", mode="class")
-            ...     asyncio.run(docs_generator.gen_docs())
-        """
         with Progress() as progress:
             task = progress.add_task("[green]Generating docs...")
-            if self._source_path.is_dir():
-                await self.__remove_existing_folder()
 
-                need_to_exclude = [*self.exclude.split(","), "__init__.py"]
-                python_files = self._source_path.glob("**/*.py")
-                ipynb_files = self._source_path.glob("**/*.ipynb")
-                files = itertools.chain(python_files, ipynb_files)
-                all_files = [
-                    file for file in files if not any(f in file.parts for f in need_to_exclude)
-                ]
+            progress.update(
+                task_id=task, description="[cyan]Files Found...", total=len(self.source_files)
+            )
 
-                progress.update(
-                    task_id=task, description="[cyan]Files Found...", total=len(all_files)
-                )
-
-                for file in all_files:
-                    docs_path = Path(
-                        f"{self._output_path}/{file.parent.relative_to(self._source_path)}"
-                    )
-                    processed_file = await self.process_file(docs_path=docs_path, file=file)
-                    progress.update(
-                        task_id=task,
-                        advance=1,
-                        description=f"[cyan]Processing {processed_file}...",
-                        refresh=True,
-                    )
-
-            elif self._source_path.is_file():
-                progress.update(task_id=task, description="[cyan]Files Found...", total=1)
-                processed_file = await self.process_file(
-                    docs_path=self._output_path, file=self._source_path
-                )
+            for source_file in self.source_files:
                 progress.update(
                     task_id=task,
                     advance=1,
-                    description=f"[cyan]Processing {processed_file}...",
+                    description=f"[cyan]Processing {source_file.as_posix()}...",
                     refresh=True,
                 )
-            else:
-                raise ValueError("Invalid source path")
+                if source_file.suffix == ".ipynb":
+                    await self.__gen_notebook_docs(file=source_file)
+                elif source_file.suffix == ".py":
+                    await self.__gen_python_docs(file=source_file)
+                else:
+                    console.log(f"Unsupported file type: {source_file.suffix}")
 
     async def __call__(self) -> None:
         """Asynchronously calls the gen_docs method.

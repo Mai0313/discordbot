@@ -62,16 +62,16 @@ omit = ["./src/ameba/*"]
 
 [project]
 name = "discordbot"
-version = "0.1.0"
+version = "0.0.1"
 description = "LLM Discord Bot"
 authors = [
     { name = "Wei", email = "mai@mai0313.com" },
 ]
 dependencies = [
-    "ag2>=0.7.6",
-    "logfire>=3.7.1",
+    "ag2>=0.8.2",
+    "logfire>=3.9.0",
     "nextcord>=2.6.0",
-    "openai>=1.65.3",
+    "openai>=1.66.3",
     "opencv-python>=4.11.0.86",
     "orjson>=3.10.15",
     "pandas>=2.2.3",
@@ -81,7 +81,7 @@ dependencies = [
     "pydantic-settings>=2.8.1",
     "redis>=5.2.1",
     "requests>=2.32.3",
-    "sqlalchemy>=2.0.38",
+    "sqlalchemy>=2.0.39",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"
@@ -116,6 +116,7 @@ docs = [
     "griffe-typingdoc>=0.2.7",
     "markdown-exec[ansi]>=1.10.0",
     "mkdocs-autorefs>=1.3.1",
+    "mkdocs-coverage>=1.1.0",
     "mkdocs-material>=9.6.4",
     "mkdocstrings[python]>=0.28.1",
     "rich>=13.9.4",
@@ -174,11 +175,6 @@ content-type = "text/markdown"
 
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
 path = "README.md"
-
-[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
-# replace relative links with absolute links
-pattern = '\[(.+?)\]\(((?!https?://)\S+?)\)'
-replacement = '[\1](https://github.com/openai/openai-python/tree/main/\g<2>)'
 
 [tool.rye.scripts]
 api = { cmd = "python ./api.py" }

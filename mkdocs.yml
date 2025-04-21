@@ -77,9 +77,9 @@ plugins:
   # - autorefs
   # https://pawamoy.github.io/markdown-exec/usage
   - markdown-exec
-  # - coverage:
-  #     page_path: coverage  # default
-  #     html_report_dir: ./.github/coverage_html_report  # default
+  - coverage:
+      page_path: Development/coverage  # default
+      html_report_dir: ./.github/coverage_html_report  # default
   - mkdocstrings:
       handlers:
         python:
