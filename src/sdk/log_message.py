@@ -50,7 +50,7 @@ class MessageLogger(BaseModel):
         )
 
         # 寫入 CSV（或改成寫入資料庫）
-        await self._save_message_data(self.message, attachment_paths, sticker_paths)
+        await self._save_messages(self.message, attachment_paths, sticker_paths)
 
     async def _get_channel_name(self, message: nextcord.Message) -> str:
         """Determine if the message is from a direct message (DM) or a server channel, and return the corresponding name.
@@ -107,7 +107,7 @@ class MessageLogger(BaseModel):
                 logfire.warn("Sticker is not found", sticker_id=sticker.id)
         return saved_paths
 
-    async def _save_message_data(
+    async def _save_messages(
         self, message: nextcord.Message, attachment_paths: list[str], sticker_paths: list[str]
     ) -> None:
         """Saves message data to a CSV file.
