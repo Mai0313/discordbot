@@ -1,10 +1,7 @@
 from typing import Any, Optional
 
-import logfire
 from pydantic import Field
 from pydantic_settings import BaseSettings
-
-logfire.configure(send_to_logfire=False, scrubbing=False)
 
 
 class OpenAIConfig(BaseSettings):

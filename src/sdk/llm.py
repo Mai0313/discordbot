@@ -1,11 +1,8 @@
 from typing import TYPE_CHECKING, Any, Optional
 from collections.abc import AsyncGenerator
 
-import logfire
-
-logfire.configure()
-
 from openai import AsyncOpenAI, AsyncAzureOpenAI
+import logfire
 from pydantic import Field, ConfigDict, computed_field
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.images_response import ImagesResponse

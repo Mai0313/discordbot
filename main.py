@@ -5,9 +5,6 @@ import secrets
 import platform
 
 import logfire
-
-logfire.configure(send_to_logfire=False, scrubbing=False)
-
 from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord.ext import tasks, commands

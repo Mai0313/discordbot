@@ -40,15 +40,6 @@ class MessageLogger(BaseModel):
         attachment_paths = await self._save_attachments(self.message.attachments, base_dir)
         sticker_paths = await self._save_stickers(self.message.stickers, base_dir)
 
-        # 紀錄到 logfire
-        logfire.info(
-            f"{self.message.author.name}: {self.message.content}",
-            author=self.message.author.name,
-            created_time=self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            channel_name=channel_name,
-            channel_id=getattr(self.message.channel, "id", None),
-        )
-
         # 寫入 CSV（或改成寫入資料庫）
         await self._save_messages(self.message, attachment_paths, sticker_paths)
 
@@ -120,17 +111,18 @@ class MessageLogger(BaseModel):
         Returns:
             None
         """
-        message_data = {
-            "author": [message.author.name],
-            "author_id": [str(message.author.id)],
-            "content": [message.content],
-            "created_at": [message.created_at.isoformat()],
-            "channel_name": [getattr(message.channel, "name", "DM")],
-            "channel_id": [str(getattr(message.channel, "id", None))],
-            "attachments": [";".join(attachment_paths)],
-            "stickers": [";".join(sticker_paths)],
+        data_dict = {
+            "author": message.author.name,
+            "author_id": message.author.id,
+            "content": message.content,
+            "created_at": message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "channel_name": getattr(message.channel, "name", "DM"),
+            "channel_id": str(getattr(message.channel, "id", None)),
+            "attachments": ";".join(attachment_paths),
+            "stickers": ";".join(sticker_paths),
         }
-        message_df = pd.DataFrame(message_data)
+        logfire.info("Message data", **data_dict)
+        message_df = pd.DataFrame([data_dict])
         message_df = message_df.astype(str)
 
         # 寫入 CSV (append 模式，不覆蓋既有資料)
