@@ -34,13 +34,15 @@ class ImageGeneratorCogs(commands.Cog):
         ),
     ) -> None:
         llm_sdk = LLMSDK()
-        message = await interaction.response.send_message(content="圖片生成中...")
+        await interaction.response.send_message(content="圖片生成中...")
 
         try:
             response = await llm_sdk.get_dalle_image(prompt=prompt)
-            await message.edit(content=f"{interaction.user.mention}\n{response.data[0].url}")
+            await interaction.edit_original_message(
+                content=f"{interaction.user.mention}\n{response.data[0].url}"
+            )
         except Exception as e:
-            await message.edit(content=f"生成圖片時發生錯誤: {e!s}")
+            await interaction.edit_original_message(content=f"生成圖片時發生錯誤: {e!s}")
 
 
 # 註冊 Cog
