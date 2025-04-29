@@ -32,7 +32,7 @@ class TemplateCogs(commands.Cog):
         },
         dm_permission=True,
         nsfw=False,
-        guild_ids=[1143289646042853487],
+        guild_ids=[981592566745149522, 1143289646042853487],
     )
     async def ping(self, interaction: Interaction) -> None:
         start_time = time.time()  # 紀錄開始時間

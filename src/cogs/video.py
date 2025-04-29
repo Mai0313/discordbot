@@ -1,10 +1,8 @@
 from pathlib import Path
-import subprocess
 
 from yt_dlp import YoutubeDL
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
-import requests
 from nextcord.ext import commands
 
 
@@ -25,33 +23,6 @@ class VideoCogs(commands.Cog):
             "low": "bestvideo[height<=480]+bestaudio/best[height<=480]",
             "audio": "bestaudio/best",
         }
-
-    # 將檔案上傳到 transfer.sh 並獲取下載連結
-    async def upload_to_transfer(self, file_path):
-        try:
-            with open(file_path, "rb") as file:
-                response = requests.put(f"https://transfer.sh/{file_path.name}", data=file)
-            if response.status_code == 200:
-                return response.text.strip()
-            return None
-        except Exception:
-            return None
-
-    # 另一種上傳方式，使用 curl 命令
-    async def upload_with_curl(self, file_path):
-        try:
-            cmd = [
-                "curl",
-                "--upload-file",
-                str(file_path),
-                f"https://transfer.sh/{file_path.name}",
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                return result.stdout.strip()
-            return None
-        except Exception:
-            return None
 
     @nextcord.slash_command(
         name="download_video",
@@ -144,7 +115,7 @@ class VideoCogs(commands.Cog):
                 filename.unlink()  # 刪除檔案
                 return
             await interaction.edit_original_message(
-                content=f"✅ 下載成功！檔案大小: {file_size_mb:.1f}MB\n{title}",
+                content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
                 file=nextcord.File(str(filename), filename=filename.name),
             )
             filename.unlink()  # 刪除檔案
