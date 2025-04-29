@@ -61,6 +61,10 @@ class VideoCogs(commands.Cog):
     ) -> None:
         # 避免互動超時
         await interaction.response.defer()
+
+        # 發送初始狀態訊息並保存引用
+        await interaction.followup.send(f"🔄 正在下載影片，請稍候... (已選擇{quality}畫質)")
+
         try:
             # 獲取所選畫質的格式設定
             format_option = self.quality_formats.get(quality, "best")
@@ -69,7 +73,7 @@ class VideoCogs(commands.Cog):
             # 設定 yt_dlp 選項
             ydl_opts = {
                 "format": format_option,
-                "outtmpl": str(self.download_folder / "%(title)s.%(ext)s"),
+                "outtmpl": str(self.download_folder / "%(title).40s-%(id)s.%(ext)s"),
                 "continuedl": True,
                 "restrictfilenames": True,
             }
@@ -88,8 +92,9 @@ class VideoCogs(commands.Cog):
 
             # 下載並取得檔案資訊
             with YoutubeDL(ydl_opts) as ydl:
-                await interaction.followup.send(
-                    f"🔄 正在下載影片，請稍候... (已選擇{quality}畫質)"
+                # 更新訊息顯示正在下載
+                await interaction.edit_original_message(
+                    content=f"⏳ 正在下載 {url}... (已選擇{quality}畫質)"
                 )
                 info = ydl.extract_info(url, download=True)
                 filename = Path(ydl.prepare_filename(info))
@@ -100,22 +105,24 @@ class VideoCogs(commands.Cog):
 
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             if filename.stat().st_size > self.max_file_size:
-                await interaction.followup.send(
-                    f"❌ 檔案大小超過 25MB ({filename.stat().st_size / 1024 / 1024:.1f}MB)，無法上傳至 Discord。\n"
+                file_size_mb = filename.stat().st_size / 1024 / 1024
+                await interaction.edit_original_message(
+                    content=f"❌ 檔案大小超過 25MB ({file_size_mb:.1f}MB)，無法上傳至 Discord。\n"
                     f"請選擇較低的畫質選項或較短的影片。"
                 )
                 filename.unlink()  # 刪除檔案
                 return
 
-            # 傳送檔案並刪除
+            # 更新訊息並傳送檔案
             file_size_mb = filename.stat().st_size / 1024 / 1024
-            await interaction.followup.send(
-                f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
+            await interaction.edit_original_message(
+                content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
                 file=nextcord.File(str(filename), filename=filename.name),
             )
             filename.unlink()  # 刪除檔案
         except Exception as e:
-            await interaction.followup.send(f"❌ 下載失敗: {e}")
+            # 發生錯誤時更新原始訊息
+            await interaction.edit_original_message(content=f"❌ 下載失敗: {e}")
 
 
 # 註冊 Cog
