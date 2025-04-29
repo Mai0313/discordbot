@@ -97,6 +97,7 @@ class VideoCogs(commands.Cog):
                     content=f"⏳ 正在下載 {url}... (已選擇{quality}畫質)"
                 )
                 info = ydl.extract_info(url, download=True)
+                title = info.get("title", "")
                 filename = Path(ydl.prepare_filename(info))
 
                 # 修正音訊模式下的副檔名
@@ -116,7 +117,7 @@ class VideoCogs(commands.Cog):
             # 更新訊息並傳送檔案
             file_size_mb = filename.stat().st_size / 1024 / 1024
             await interaction.edit_original_message(
-                content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
+                content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
                 file=nextcord.File(str(filename), filename=filename.name),
             )
             filename.unlink()  # 刪除檔案

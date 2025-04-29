@@ -12,18 +12,18 @@ class VideoDownloader(BaseModel):
         if not output_path.exists():
             output_path.mkdir(parents=True, exist_ok=True)
 
-        outtmpl = str(output_path / "%(title)s.%(ext)s")
-
         ydl_opts = {
             "format": "best",
-            "outtmpl": outtmpl,
+            "outtmpl": str(output_path / "%(title).40s-%(id)s.%(ext)s"),
             "continuedl": True,
             "restrictfilenames": True,
         }
 
         with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        return outtmpl
+            info_dict = ydl.extract_info(url, download=True)
+            title = info_dict.get("title", "unknown_title")
+            # ydl.download([url])
+        return title
 
 
 if __name__ == "__main__":
