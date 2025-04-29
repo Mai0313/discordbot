@@ -17,11 +17,12 @@ class VideoDownloader(BaseModel):
             "outtmpl": str(output_path / "%(title).40s-%(id)s.%(ext)s"),
             "continuedl": True,
             "restrictfilenames": True,
+            "writeinfojson": True,
         }
 
         with YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=True)
-            title = info_dict.get("title", "unknown_title")
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "unknown_title")
             # ydl.download([url])
         return title
 

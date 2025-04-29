@@ -76,6 +76,7 @@ class VideoCogs(commands.Cog):
                 "outtmpl": str(self.download_folder / "%(title).40s-%(id)s.%(ext)s"),
                 "continuedl": True,
                 "restrictfilenames": True,
+                # "writeinfojson": True,
             }
 
             # 如果是音訊模式，轉換成 mp3
