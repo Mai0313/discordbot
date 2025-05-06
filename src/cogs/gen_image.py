@@ -29,8 +29,8 @@ class ImageGeneratorCogs(commands.Cog):
             },
         ),
     ) -> None:
-        # llm_sdk = LLMSDK()
-        await interaction.response.send_message(content="圖片生成中...")
+        await interaction.response.defer()
+        await interaction.followup.send(content="圖片生成中...")
 
         try:
             await interaction.edit_original_message(content="騙你的 這個功能根本沒寫好 :P")

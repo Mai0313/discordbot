@@ -2,7 +2,6 @@ from typing import TYPE_CHECKING, Any, Optional
 from collections.abc import AsyncGenerator
 
 from openai import AsyncOpenAI, AsyncAzureOpenAI
-import logfire
 from pydantic import Field, ConfigDict, computed_field
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
@@ -65,7 +64,6 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
             )
         else:
             client = AsyncOpenAI(api_key=self.api_key)
-        logfire.instrument_openai(client)
         return client
 
     async def get_search_result(self, prompt: str) -> ChatCompletion:

@@ -35,12 +35,14 @@ class WebSearchCogs(commands.Cog):
             },
         ),
     ) -> None:
-        llm_sdk = LLMSDK()
+        await interaction.response.defer()
+        await interaction.followup.send(content="搜尋中...")
         try:
+            llm_sdk = LLMSDK()
             response = await llm_sdk.get_search_result(prompt=prompt)
-            await interaction.response.send_message(content=response.choices[0].message.content)
+            await interaction.edit_original_message(content=response.choices[0].message.content)
         except Exception as e:
-            await interaction.response.send_message(content=f"搜尋時發生錯誤: {e!s}")
+            await interaction.edit_original_message(content=f"搜尋時發生錯誤: {e!s}")
 
 
 # 註冊 Cog
