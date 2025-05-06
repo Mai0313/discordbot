@@ -1,31 +1,15 @@
 from typing import Any, Optional
 
-from pydantic import Field
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
 
 
 class OpenAIConfig(BaseSettings):
-    api_key: str = Field(
-        ...,
-        description="The api key from openai for calling models.",
-        examples=["sk-proj-...", "141698ac..."],
-        alias="OPENAI_API_KEY",
-        frozen=False,
-        deprecated=False,
-    )
     api_type: str = Field(
         ...,
         description="The api type from openai for calling models.",
         examples=["openai", "azure"],
-        alias="OPENAI_API_TYPE",
-        frozen=False,
-        deprecated=False,
-    )
-    api_version: str = Field(
-        default="2024-12-01-preview",
-        description="The api version from openai for calling models.",
-        examples=["2024-12-01-preview"],
-        alias="OPENAI_API_VERSION",
+        validation_alias=AliasChoices("OPENAI_API_TYPE"),
         frozen=False,
         deprecated=False,
     )
@@ -33,7 +17,23 @@ class OpenAIConfig(BaseSettings):
         default="https://api.openai.com/v1",
         description="The base url from openai for calling models.",
         examples=["https://api.openai.com/v1", "https://xxxx.openai.azure.com"],
-        alias="OPENAI_API_ENDPOINT",
+        validation_alias=AliasChoices("OPENAI_BASE_URL", "AZURE_OPENAI_ENDPOINT"),
+        frozen=False,
+        deprecated=False,
+    )
+    api_key: str = Field(
+        ...,
+        description="The api key from openai for calling models.",
+        examples=["sk-proj-...", "141698ac..."],
+        validation_alias=AliasChoices("OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"),
+        frozen=False,
+        deprecated=False,
+    )
+    api_version: str = Field(
+        default="2025-03-01-preview",
+        description="The api version from openai for calling models.",
+        examples=["2025-03-01-preview"],
+        validation_alias=AliasChoices("OPENAI_API_VERSION"),
         frozen=False,
         deprecated=False,
     )
@@ -61,7 +61,7 @@ class PerplexityConfig(BaseSettings):
         ...,
         description="The api key from perplexity for calling models.",
         examples=["pplx-..."],
-        alias="PERPLEXITY_API_KEY",
+        validation_alias=AliasChoices("PERPLEXITY_API_KEY"),
         frozen=False,
         deprecated=False,
     )
@@ -72,7 +72,7 @@ class DiscordConfig(BaseSettings):
         ...,
         description="The token from discord for calling models.",
         examples=["MTEz-..."],
-        alias="DISCORD_BOT_TOKEN",
+        validation_alias=AliasChoices("DISCORD_BOT_TOKEN"),
         frozen=False,
         deprecated=False,
     )
@@ -80,14 +80,10 @@ class DiscordConfig(BaseSettings):
         default=None,
         description="The id of the test server for testing the bot.",
         examples=["1143289646042853487", "981592566745149522"],
-        alias="DISCORD_TEST_SERVER_ID",
+        validation_alias=AliasChoices("DISCORD_TEST_SERVER_ID"),
         frozen=False,
         deprecated=False,
     )
 
 
-class Config(OpenAIConfig, PerplexityConfig, DiscordConfig):
-    pass
-
-
-__all__ = ["Config"]
+__all__ = ["DiscordConfig", "OpenAIConfig", "PerplexityConfig"]

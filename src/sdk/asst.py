@@ -8,10 +8,10 @@ from openai.types.beta import Thread, Assistant, ThreadDeleted, AssistantDeleted
 from openai.types.beta.threads import Run, Message, MessageDeleted
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from src.types.config import Config
+from src.types.config import OpenAIConfig
 
 
-class AssistantAPI(Config):
+class AssistantAPI(OpenAIConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     thread_id: Optional[str] = Field(default=None)
     assistant_id: Optional[str] = Field(default=None)

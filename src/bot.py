@@ -9,7 +9,7 @@ from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord.ext import tasks, commands
 
-from src.types.config import Config
+from src.types.config import DiscordConfig
 from src.sdk.log_message import MessageLogger
 
 logging.getLogger("sqlalchemy.engine.Engine").disabled = True
@@ -23,7 +23,7 @@ class DiscordBot(commands.Bot):
             help_command=None,
             description="A Discord bot made with Nextcord.",
         )
-        self.config = Config()
+        self.discord_config = DiscordConfig()
         self.logger = logging.getLogger("nextcord.state")
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(LogfireLoggingHandler())
@@ -79,8 +79,8 @@ class DiscordBot(commands.Bot):
         )
         await self.load_cogs()
         guild_id = None
-        if self.config.discord_test_server_id:
-            guild_id = self.get_guild(self.config.discord_test_server_id)
+        if self.discord_config.discord_test_server_id:
+            guild_id = self.get_guild(self.discord_config.discord_test_server_id)
         # await self.tree.sync(guild=guild)
         await self.sync_application_commands(guild_id=guild_id)
         self.status_task.start()

@@ -8,7 +8,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.images_response import ImagesResponse
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from src.types.config import Config
+from src.types.config import OpenAIConfig, PerplexityConfig
 
 if TYPE_CHECKING:
     from openai._streaming import AsyncStream
@@ -44,7 +44,7 @@ SYSTEM_PROMPT = """
 # """
 
 
-class LLMSDK(Config):
+class LLMSDK(PerplexityConfig, OpenAIConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     llm_model: str = Field(
         default="gpt-4o",

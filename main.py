@@ -1,7 +1,7 @@
 from src.bot import DiscordBot
-from src.types.config import Config
+from src.types.config import DiscordConfig
 
 if __name__ == "__main__":
-    config = Config()
+    discord_config = DiscordConfig()
     bot = DiscordBot()
-    bot.run(token=config.discord_bot_token)
+    bot.run(token=discord_config.discord_bot_token)

@@ -2,14 +2,10 @@ import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from src.sdk.llm import LLMSDK
-from src.types.config import Config
-
 
 class ImageGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.config = Config()
 
     @nextcord.slash_command(
         name="graph",
@@ -33,14 +29,11 @@ class ImageGeneratorCogs(commands.Cog):
             },
         ),
     ) -> None:
-        llm_sdk = LLMSDK()
+        # llm_sdk = LLMSDK()
         await interaction.response.send_message(content="圖片生成中...")
 
         try:
-            response = await llm_sdk.get_dalle_image(prompt=prompt)
-            await interaction.edit_original_message(
-                content=f"{interaction.user.mention}\n{response.data[0].url}"
-            )
+            await interaction.edit_original_message(content="騙你的 這個功能根本沒寫好 :P")
         except Exception as e:
             await interaction.edit_original_message(content=f"生成圖片時發生錯誤: {e!s}")
 
