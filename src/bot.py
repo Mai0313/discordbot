@@ -12,8 +12,6 @@ from nextcord.ext import tasks, commands
 from src.types.config import DiscordConfig
 from src.sdk.log_message import MessageLogger
 
-logging.getLogger("sqlalchemy.engine.Engine").disabled = True
-
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
