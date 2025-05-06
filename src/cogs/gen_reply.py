@@ -44,17 +44,17 @@ class ReplyGeneratorCogs(commands.Cog):
         attachments: list[str] = []
         for message in messages:
             if message.attachments:
-                attachments.extend([
-                    attachment.url for attachment in message.attachments if attachment.url
-                ])
+                _attach = [attachment.url for attachment in message.attachments if attachment.url]
+                if _attach:
+                    attachments.extend(_attach)
             if message.embeds:
-                attachments.extend([
-                    embed.description for embed in message.embeds if embed.description
-                ])
+                _attach = [embed.description for embed in message.embeds if embed.description]
+                if _attach:
+                    attachments.extend(_attach)
             if message.stickers:
-                attachments.extend([
-                    f"data:image/png;base64,{sticker.url}" for sticker in message.stickers
-                ])
+                _attach = [f"data:image/png;base64,{sticker.url}" for sticker in message.stickers]
+                if _attach:
+                    attachments.extend(_attach)
         return attachments
 
     async def _get_message_history(self, channel: nextcord.TextChannel) -> list[nextcord.Message]:
@@ -127,31 +127,18 @@ class ReplyGeneratorCogs(commands.Cog):
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
         await interaction.response.defer()
-        all_messages = await self._get_message_history(interaction.channel)
-
         attachments = []
-        if model in ["o1", "o1-mini"]:
-            all_messages.append(interaction.message)
-            attachments = await self._get_attachment_list(all_messages)
-            if image:
-                attachments.append(image.url)
-            attachments = list(set(attachments))
+        if model not in ["o1", "o1-mini"] and image:
+            attachments.append(image.url)
 
         init_message = (
             "⚠️ 你選擇的 o1 模型速度較慢，請稍候..." if model == "o1" else "Generating..."
         )
         await interaction.followup.send(content=init_message)
 
-        history_content = ""
-        for all_message in all_messages:
-            history_content += f"{all_message.author.name}: {all_message.content}\n"
-
         try:
             llm_sdk = LLMSDK(llm_model=model)
-            response = await llm_sdk.get_oai_reply(
-                prompt=f"Message History:\n{history_content}Current Message:\n{prompt}",
-                image_urls=attachments,
-            )
+            response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
             final_content = f"{interaction.user.mention} {response.choices[0].message.content}"
             await interaction.edit_original_message(content=final_content)
         except Exception as e:
@@ -217,32 +204,19 @@ class ReplyGeneratorCogs(commands.Cog):
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
         await interaction.response.defer()
-        all_messages = await self._get_message_history(interaction.channel)
-
         attachments = []
-        if model in ["o1", "o1-mini"]:
-            all_messages.append(interaction.message)
-            attachments = await self._get_attachment_list(all_messages)
-            if image:
-                attachments.append(image.url)
-            attachments = list(set(attachments))
+        if model not in ["o1", "o1-mini"] and image:
+            attachments.append(image.url)
 
         init_message = (
             "⚠️ 你選擇的 o1 模型速度較慢，請稍候..." if model == "o1" else "Generating..."
         )
         await interaction.followup.send(content=init_message)
 
-        history_content = ""
-        for all_message in all_messages:
-            history_content += f"{all_message.author.name}: {all_message.content}\n"
-
         try:
             llm_sdk = LLMSDK(llm_model=model)
             accumulated_text = f"{interaction.user.mention}\n"
-            async for res in llm_sdk.get_oai_reply_stream(
-                prompt=f"Message History:\n{history_content}Current Message:\n{prompt}",
-                image_urls=attachments,
-            ):
+            async for res in llm_sdk.get_oai_reply_stream(prompt=prompt, image_urls=attachments):
                 if (
                     hasattr(res, "choices")
                     and len(res.choices) > 0

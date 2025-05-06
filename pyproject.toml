@@ -72,7 +72,6 @@ dependencies = [
     "logfire>=3.9.0",
     "nextcord>=2.6.0",
     "openai>=1.66.3",
-    "opencv-python>=4.11.0.86",
     "orjson>=3.10.15",
     "pandas>=2.2.3",
     "pillow>=11.1.0",
