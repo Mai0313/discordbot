@@ -31,8 +31,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_attachment_list(self, message: Optional[nextcord.Message]) -> list[str]:
         """Retrieve all attachments from a message.
 
-        This function extracts image attachment URLs, embed descriptions, and converts sticker images
-        to base64 encoded strings. If the message is None, an empty list is returned.
+        This function extracts image attachment URLs, embed descriptions, and converts sticker images to base64 encoded strings. If the message is None, an empty list is returned.
 
         Args:
             message (Optional[nextcord.Message]): The message from which to extract attachments.
@@ -110,18 +109,14 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Generate a reply based on the user's prompt.
 
-        If the model 'o1' is selected along with an image, an error message is returned since
-        'o1' does not support image input. Otherwise, the function retrieves attachments from the message,
-        calls the LLM SDK to generate a reply, and updates the original message with the generated content.
+        If the model 'o1' is selected along with an image, an error message is returned since 'o1' does not support image input.
+        Otherwise, the function retrieves attachments from the message, calls the LLM SDK to generate a reply, and updates the original message with the generated content.
 
         Args:
             interaction (Interaction): The interaction object for the command.
             prompt (str): The prompt text provided by the user.
             model (str): The selected model, defaults to "gpt-4o" if not specified.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
-
-        Returns:
-            None
         """
         if model == "o1" and image:
             await interaction.response.send_message("❌ o1 模型不支援圖片輸入。")
@@ -202,9 +197,6 @@ class ReplyGeneratorCogs(commands.Cog):
             prompt (str): The prompt text provided by the user.
             model (str): The selected model, defaults to "gpt-4o" if not specified.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
-
-        Returns:
-            None
         """
         if model in ["o1", "o1-mini"]:
             await interaction.response.send_message(
@@ -241,8 +233,5 @@ async def setup(bot: commands.Bot) -> None:
 
     Args:
         bot (commands.Bot): The bot instance to which the cog will be added.
-
-    Returns:
-        None
     """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)

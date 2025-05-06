@@ -107,7 +107,10 @@ class MessageFetcher(commands.Cog):
         - 是否僅總結某個使用者的訊息（可選）
         """
         view = SummarizeMenuView(self.bot, interaction)
-        await interaction.response.send_message("請選擇總結選項：", view=view, ephemeral=True)
+        await interaction.response.defer(ephemeral=bool(interaction.guild))
+        await interaction.followup.send(
+            "請選擇總結選項：", view=view, ephemeral=bool(interaction.guild)
+        )
 
     async def do_summarize(
         self, channel: nextcord.TextChannel, history_count: int, target_user: Member | None
