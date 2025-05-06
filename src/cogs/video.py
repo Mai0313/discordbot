@@ -94,9 +94,7 @@ class VideoCogs(commands.Cog):
             # 下載並取得檔案資訊
             with YoutubeDL(ydl_opts) as ydl:
                 # 更新訊息顯示正在下載
-                await interaction.edit_original_message(
-                    content=f"⏳ 正在下載 {url}... (已選擇{quality}畫質)"
-                )
+                await interaction.edit_original_message(content="⏳ 正在下載...")
                 info = ydl.extract_info(url, download=True)
                 title = info.get("title", "")
                 filename = Path(ydl.prepare_filename(info))
