@@ -31,10 +31,17 @@ class MessageLogger(BaseModel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
+    async def _get_filepath(self, filepath: Path, base_dir: Path) -> Path:
+        if filepath.exists():
+            file_no = len(list(base_dir.glob(f"{filepath.stem}_*{filepath.suffix}")))
+            filepath = filepath.with_stem(f"{filepath.stem}_{file_no}")
+        return filepath
+
     async def _save_attachments(self, base_dir: Path) -> list[str]:
         saved_paths = []
         for attachment in self.message.attachments:
             filepath = base_dir / attachment.filename
+            filepath = await self._get_filepath(filepath=filepath, base_dir=base_dir)
             base_dir.mkdir(parents=True, exist_ok=True)
             await attachment.save(filepath)
             saved_paths.append(str(filepath))
@@ -44,6 +51,7 @@ class MessageLogger(BaseModel):
         saved_paths = []
         for sticker in self.message.stickers:
             filepath = base_dir / f"sticker_{sticker.id}.png"
+            filepath = await self._get_filepath(filepath=filepath, base_dir=base_dir)
             try:
                 base_dir.mkdir(parents=True, exist_ok=True)
                 await sticker.save(filepath)

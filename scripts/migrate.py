@@ -8,9 +8,7 @@ class DatabaseMigration(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     def migrate(self, path_or_data: pd.DataFrame | str) -> None:
-        data = path_or_data
-        if isinstance(path_or_data, str):
-            data = pd.read_csv(path_or_data)
+        data = pd.read_csv(path_or_data) if isinstance(path_or_data, str) else path_or_data
         engine = create_engine(f"sqlite:///{self.database.sqlite.sqlite_file_path}")
         groups = data.groupby("channel_name")
         for name, group in groups:
