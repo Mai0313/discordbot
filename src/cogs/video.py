@@ -60,17 +60,18 @@ class VideoCogs(commands.Cog):
             file_size_mb = filename.stat().st_size / 1024 / 1024
             if filename.stat().st_size > 25 * 1024 * 1024:
                 link = f"https://mai0313.com/drive/d/share/{filename.name}"
+                embed = nextcord.Embed(title=title, description=f"{file_size_mb:.1f}MB", url=link)
+                await interaction.edit_original_message(content="✅ 下載成功!", embed=embed)
+            else:
                 await interaction.edit_original_message(
-                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}\n{link}"
+                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
+                    file=nextcord.File(str(filename), filename=filename.name),
                 )
-                return
-            await interaction.edit_original_message(
-                content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
-                file=nextcord.File(str(filename), filename=filename.name),
+        except Exception:
+            embed = nextcord.Embed(
+                title="操", description="自己點開來看啦白癡 你媽沒給你生手喔", url=url
             )
-        except Exception as e:
-            # 發生錯誤時更新原始訊息
-            await interaction.edit_original_message(content=f"❌ 下載失敗: {e}")
+            await interaction.edit_original_message(content=f"❌ 下載失敗\n{url}", embed=embed)
 
 
 # 註冊 Cog
