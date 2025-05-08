@@ -8,7 +8,7 @@ import httpx
 import orjson
 from pydantic import Field, ConfigDict
 
-from src.notifications.base_notify import BaseNotify
+from .base_notify import BaseNotify
 
 
 class DiscordNotify(BaseNotify):
