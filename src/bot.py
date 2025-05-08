@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from pathlib import Path
 import secrets
@@ -98,7 +99,7 @@ class DiscordBot(commands.Bot):
 
         :param context: The context of the command that has been executed.
         """
-        await MessageLogger(message=context.message).log()
+        asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
