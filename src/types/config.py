@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 
 class OpenAIConfig(BaseSettings):
     api_type: str = Field(
-        ...,
+        default="openai",
         description="The api type from openai for calling models.",
         examples=["openai", "azure"],
         validation_alias=AliasChoices("OPENAI_API_TYPE"),

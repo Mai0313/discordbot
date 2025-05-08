@@ -74,7 +74,9 @@ class MessageLogger(BaseModel):
         engine = create_engine(f"sqlite:///{self.database.sqlite.sqlite_file_path}")
 
         # 使用 pandas to_sql 寫入 SQLite 資料庫
-        message_df.to_sql(name="messages", con=engine, if_exists="append", index=False)
+        message_df.to_sql(
+            name=f"{self.channel_name_or_author_name}", con=engine, if_exists="append", index=False
+        )
 
     async def log(self) -> None:
         if self.message.author.bot:
