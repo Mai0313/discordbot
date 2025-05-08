@@ -4,6 +4,7 @@ from yt_dlp import YoutubeDL
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
+from src.utils.downloader import VideoDownloader
 
 
 class VideoCogs(commands.Cog):
@@ -63,45 +64,11 @@ class VideoCogs(commands.Cog):
         await interaction.response.defer()
 
         # 發送初始狀態訊息並保存引用
-        await interaction.followup.send(f"🔄 正在下載影片，請稍候... (已選擇{quality}畫質)")
+        await interaction.followup.send(f"🔄 正在下載影片，請稍候...")
 
         try:
-            # 獲取所選畫質的格式設定
-            format_option = self.quality_formats.get(quality, "best")
-            is_audio_only = quality == "audio"
-
-            # 設定 yt_dlp 選項
-            ydl_opts = {
-                "format": format_option,
-                "outtmpl": str(self.download_folder / "%(title).40s-%(id)s.%(ext)s"),
-                "continuedl": True,
-                "restrictfilenames": True,
-                # "writeinfojson": True,
-            }
-
-            # 如果是音訊模式，轉換成 mp3
-            if is_audio_only:
-                ydl_opts.update({
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegExtractAudio",
-                            "preferredcodec": "mp3",
-                            "preferredquality": "192",
-                        }
-                    ]
-                })
-
-            # 下載並取得檔案資訊
-            with YoutubeDL(ydl_opts) as ydl:
-                # 更新訊息顯示正在下載
-                await interaction.edit_original_message(content="⏳ 正在下載...")
-                info = ydl.extract_info(url, download=True)
-                title = info.get("title", "")
-                filename = Path(ydl.prepare_filename(info))
-
-                # 修正音訊模式下的副檔名
-                if is_audio_only and filename.suffix != ".mp3":
-                    filename = filename.with_suffix(".mp3")
+            await interaction.edit_original_message(content="⏳ 正在下載...")
+            title, filename = VideoDownloader().download(url=url, quality=quality)
 
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
