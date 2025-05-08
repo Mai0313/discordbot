@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 import datetime
 from functools import cached_property
@@ -32,34 +31,41 @@ class MessageLogger(BaseModel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
-    async def _get_filepath(self, filepath: Path, base_dir: Path) -> Path:
+    @computed_field
+    @property
+    def attachment_path(self) -> Path:
+        now = datetime.date.today().isoformat()
+        attachment_path = Path("./data/attachments") / now / self.channel_name_or_author_name
+        attachment_path.mkdir(parents=True, exist_ok=True)
+        return attachment_path
+
+    async def _get_filepath(self, filepath: Path) -> Path:
+        # 如果檔名重複，則在檔名後加上數字
+        # 例如：file_1.txt -> file_2.txt
         if filepath.exists():
-            file_no = len(list(base_dir.glob(f"{filepath.stem}_*{filepath.suffix}")))
+            file_no = len(list(self.attachment_path.glob(f"{filepath.stem}_*{filepath.suffix}")))
             filepath = filepath.with_stem(f"{filepath.stem}_{file_no}")
         return filepath
 
-    async def _save_attachments(self, base_dir: Path) -> list[str]:
+    async def _save_attachments(self) -> list[str]:
         saved_paths = []
         for attachment in self.message.attachments:
-            filepath = base_dir / attachment.filename
-            filepath = await self._get_filepath(filepath=filepath, base_dir=base_dir)
-            base_dir.mkdir(parents=True, exist_ok=True)
+            filepath = self.attachment_path / attachment.filename
+            filepath = await self._get_filepath(filepath=filepath)
             await attachment.save(filepath)
-            saved_paths.append(str(filepath))
+            saved_paths.append(filepath.as_posix())
         return saved_paths
 
-    async def _save_stickers(self, base_dir: Path) -> list[str]:
+    async def _save_stickers(self) -> list[str]:
         saved_paths = []
         for sticker in self.message.stickers:
-            filepath = base_dir / f"sticker_{sticker.id}.png"
-            filepath = await self._get_filepath(filepath=filepath, base_dir=base_dir)
+            filepath = self.attachment_path / sticker.name
+            filepath = await self._get_filepath(filepath=filepath)
             try:
-                base_dir.mkdir(parents=True, exist_ok=True)
                 await sticker.save(filepath)
-                saved_paths.append(str(filepath))
+                saved_paths.append(filepath.as_posix())
             except nextcord.NotFound:
                 logfire.warn("Sticker is not found", sticker_id=sticker.id)
-                shutil.rmtree(base_dir, ignore_errors=True)
         return saved_paths
 
     async def _save_messages(self, attachment_paths: list[str], sticker_paths: list[str]) -> None:
@@ -91,8 +97,6 @@ class MessageLogger(BaseModel):
     async def log(self) -> None:
         if self.message.author.bot:
             return
-        today = datetime.date.today().isoformat()
-        base_dir = Path("data") / today / self.channel_name_or_author_name
-        attachment_paths = await self._save_attachments(base_dir=base_dir)
-        sticker_paths = await self._save_stickers(base_dir=base_dir)
+        attachment_paths = await self._save_attachments()
+        sticker_paths = await self._save_stickers()
         await self._save_messages(attachment_paths=attachment_paths, sticker_paths=sticker_paths)
