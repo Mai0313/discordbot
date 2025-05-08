@@ -59,9 +59,9 @@ class VideoCogs(commands.Cog):
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
             if filename.stat().st_size > 25 * 1024 * 1024:
-                link = f"https://mai0313.com/drive/d/share/{filename.name}"
-                embed = nextcord.Embed(title=title, description=f"{file_size_mb:.1f}MB", url=link)
-                await interaction.edit_original_message(content="✅ 下載成功!", embed=embed)
+                await interaction.edit_original_message(
+                    content=f"❌ 下載失敗 \n影片大小超過 {file_size_mb:.1f}MB"
+                )
             else:
                 await interaction.edit_original_message(
                     content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
