@@ -11,7 +11,7 @@ class VideoCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # 準備下載資料夾
-        self.download_folder = Path("downloads")
+        self.download_folder = Path("./data/downloads")
         self.download_folder.mkdir(exist_ok=True)
         # Discord 檔案上傳大小限制 (25MB in bytes)
         self.max_file_size = 25 * 1024 * 1024
@@ -34,9 +34,9 @@ class VideoCogs(commands.Cog):
             Locale.ja: "動画ダウンロード",
         },
         description_localizations={
-            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube、Facebook、Instagram、X 等)。",
-            Locale.zh_CN: "从多种平台下载视频并发送 (支持 YouTube、Facebook、Instagram、X 等)。",
-            Locale.ja: "YouTube、Facebook、Instagram、X などから動画をダウンロードして送信します。",
+            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)。",
+            Locale.zh_CN: "从多种平台下载视频并发送 (支持 YouTube, Facebook, Instagram, X, Tiktok 等)。",
+            Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
         },
         dm_permission=True,
         nsfw=False,
