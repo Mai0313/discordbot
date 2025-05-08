@@ -107,7 +107,7 @@ repos:
   #   hooks:
   #     - id: update-version
   #       name: Update project version in pyproject.toml
-  #       entry: bash -c 'VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440) && uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION'
+  #       entry: bash -c 'VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440) && uv version $VERSION'
   #       language: system
   #       pass_filenames: false
 

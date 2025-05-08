@@ -51,7 +51,7 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $env:PYTHONUTF8 = "1"
           $VERSION = (uvx dunamai from git --bump --no-metadata --style pep440)
-          uvx --from=toml-cli toml set --toml-path=pyproject.toml project.version $VERSION
+          uv version $VERSION
           echo "Version: $VERSION"
           echo "VERSION=$VERSION" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
 
