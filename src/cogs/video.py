@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from yt_dlp import YoutubeDL
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
+
 from src.utils.downloader import VideoDownloader
 
 
@@ -64,7 +64,7 @@ class VideoCogs(commands.Cog):
         await interaction.response.defer()
 
         # 發送初始狀態訊息並保存引用
-        await interaction.followup.send(f"🔄 正在下載影片，請稍候...")
+        await interaction.followup.send("🔄 正在下載影片，請稍候...")
 
         try:
             await interaction.edit_original_message(content="⏳ 正在下載...")
