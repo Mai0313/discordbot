@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 import datetime
 from functools import cached_property
@@ -58,6 +59,7 @@ class MessageLogger(BaseModel):
                 saved_paths.append(str(filepath))
             except nextcord.NotFound:
                 logfire.warn("Sticker is not found", sticker_id=sticker.id)
+                shutil.rmtree(base_dir, ignore_errors=True)
         return saved_paths
 
     async def _save_messages(self, attachment_paths: list[str], sticker_paths: list[str]) -> None:
