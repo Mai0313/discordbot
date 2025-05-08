@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
@@ -49,15 +47,12 @@ class VideoCogs(commands.Cog):
         # 避免互動超時
         await interaction.response.defer()
 
-        output_folder = Path("./data/downloads")
-        output_folder.mkdir(exist_ok=True)
-
         # 發送初始狀態訊息並保存引用
         await interaction.followup.send("🔄 正在下載影片，請稍候...")
 
         try:
             await interaction.edit_original_message(content="⏳ 正在下載...")
-            title, filename = VideoDownloader(output_folder=output_folder.as_posix()).download(
+            title, filename = VideoDownloader(output_folder="./data/downloads").download(
                 url=url, quality=quality
             )
 

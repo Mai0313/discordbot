@@ -10,7 +10,7 @@ tiktok_pattern = re.compile(r"https?://((?:vm|vt|www)\.)?tiktok\.com/.*")
 
 
 class VideoDownloader(BaseModel):
-    output_folder: str = Field(default="downloads", description="Download folder")
+    output_folder: str = Field(default="./data/downloads", description="Download folder")
 
     @computed_field
     @property
