@@ -176,17 +176,6 @@ content-type = "text/markdown"
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
 path = "README.md"
 
-[tool.rye.scripts]
-api = { cmd = "python ./api.py" }
-main = { cmd = "python ./main.py" }
-
-# Documentation
-"docs:gen" = "make gen-docs"
-"docs:deploy" = "mkdocs gh-deploy --force --clean"
-"docs:run" = "mkdocs serve"
-gen = { chain = ["docs:gen", "docs:deploy"] }
-docs = { chain = ["docs:gen", "docs:run"] }
-
 [tool.poe.tasks]
 api = "python ./api.py"
 main = "python ./main.py"
@@ -510,7 +499,7 @@ fast_shutdown=true
 # ================== #
 
 [tool.codespell]
-skip = "pyproject.toml,poetry.lock,notebook/.*"
+skip = "pyproject.toml,poetry.lock,notebook/.*,uv.lock"
 count = false
 quiet-level = 3
 # the correct one is Amoeba, but we use pronunciation in Chinese to name it.
