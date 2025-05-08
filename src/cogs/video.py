@@ -10,20 +10,6 @@ from src.utils.downloader import VideoDownloader
 class VideoCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 準備下載資料夾
-        self.download_folder = Path("./data/downloads")
-        self.download_folder.mkdir(exist_ok=True)
-        # Discord 檔案上傳大小限制 (25MB in bytes)
-        self.max_file_size = 25 * 1024 * 1024
-
-        # 影片畫質對應的 yt_dlp 格式設定
-        self.quality_formats = {
-            "best": "best",
-            "high": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "medium": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-            "low": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-            "audio": "bestaudio/best",
-        }
 
     @nextcord.slash_command(
         name="download_video",
@@ -63,27 +49,30 @@ class VideoCogs(commands.Cog):
         # 避免互動超時
         await interaction.response.defer()
 
+        output_folder = Path("./data/downloads")
+        output_folder.mkdir(exist_ok=True)
+
         # 發送初始狀態訊息並保存引用
         await interaction.followup.send("🔄 正在下載影片，請稍候...")
 
         try:
             await interaction.edit_original_message(content="⏳ 正在下載...")
-            title, filename = VideoDownloader().download(url=url, quality=quality)
+            title, filename = VideoDownloader(output_folder=output_folder.as_posix()).download(
+                url=url, quality=quality
+            )
 
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
-            if filename.stat().st_size > self.max_file_size:
+            if filename.stat().st_size > 25 * 1024 * 1024:
                 await interaction.edit_original_message(
                     content=f"❌ 檔案大小超過 25MB ({file_size_mb:.1f}MB)，無法上傳至 Discord。\n"
                     f"請選擇較低的畫質選項或較短的影片。"
                 )
-                filename.unlink()  # 刪除檔案
                 return
             await interaction.edit_original_message(
                 content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
                 file=nextcord.File(str(filename), filename=filename.name),
             )
-            filename.unlink()  # 刪除檔案
         except Exception as e:
             # 發生錯誤時更新原始訊息
             await interaction.edit_original_message(content=f"❌ 下載失敗: {e}")

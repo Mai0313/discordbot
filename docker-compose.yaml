@@ -12,6 +12,7 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+      - /mnt/share/downloads:/app/data/downloads
     restart: always
     pull_policy: always
 
