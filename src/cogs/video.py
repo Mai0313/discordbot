@@ -64,9 +64,9 @@ class VideoCogs(commands.Cog):
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
             if filename.stat().st_size > 25 * 1024 * 1024:
+                link = f"https://mai0313.com/drive/d/share/{filename.name}"
                 await interaction.edit_original_message(
-                    content=f"❌ 檔案大小超過 25MB ({file_size_mb:.1f}MB)，無法上傳至 Discord。\n"
-                    f"請選擇較低的畫質選項或較短的影片。"
+                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}\n{link}"
                 )
                 return
             await interaction.edit_original_message(
