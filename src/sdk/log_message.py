@@ -21,8 +21,8 @@ class MessageLogger(BaseModel):
     def channel_name_or_author_name(self) -> str:
         if isinstance(self.message.channel, nextcord.DMChannel):
             author_name = self.message.author.nick or self.message.author.name
-            return author_name
-        return self.message.channel.name or f"{self.message.channel.id}"
+            return f"DM_{author_name}"
+        return f"channel_{self.message.channel.name}" or f"channel_{self.message.channel.id}"
 
     @computed_field
     @cached_property
