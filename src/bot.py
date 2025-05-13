@@ -91,7 +91,7 @@ class DiscordBot(commands.Bot):
         """
         if message.author == self.user or message.author.bot:
             return
-        await MessageLogger(message=message).log()
+        asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:
