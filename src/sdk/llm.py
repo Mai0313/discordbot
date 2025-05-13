@@ -58,9 +58,9 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
             azure_deployment = self.model_mapping.get(self.llm_model, self.llm_model)
             client = AsyncAzureOpenAI(
                 api_key=self.api_key,
+                azure_endpoint=self.base_url,
                 api_version=self.api_version,
                 azure_deployment=azure_deployment,
-                azure_endpoint=self.api_endpoint,
             )
         else:
             client = AsyncOpenAI(api_key=self.api_key)

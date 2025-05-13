@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
@@ -13,8 +13,8 @@ class OpenAIConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-    api_endpoint: str = Field(
-        default="https://api.openai.com/v1",
+    base_url: str = Field(
+        ...,
         description="The base url from openai for calling models.",
         examples=["https://api.openai.com/v1", "https://xxxx.openai.azure.com"],
         validation_alias=AliasChoices("OPENAI_BASE_URL", "AZURE_OPENAI_ENDPOINT"),
@@ -30,30 +30,13 @@ class OpenAIConfig(BaseSettings):
         deprecated=False,
     )
     api_version: str = Field(
-        default="2025-03-01-preview",
+        default="2025-04-01-preview",
         description="The api version from openai for calling models.",
-        examples=["2025-03-01-preview"],
+        examples=["2025-04-01-preview"],
         validation_alias=AliasChoices("OPENAI_API_VERSION"),
         frozen=False,
         deprecated=False,
     )
-
-    def get_llm_config(self, model: str) -> dict[str, Any]:
-        llm_config = {
-            "timeout": 60,
-            "temperature": 0,
-            "cache_seed": None,
-            "config_list": [
-                {
-                    "model": model,
-                    "api_key": self.api_key,
-                    "base_url": self.api_endpoint,
-                    "api_type": self.api_type,
-                    "api_version": self.api_version,
-                }
-            ],
-        }
-        return llm_config
 
 
 class PerplexityConfig(BaseSettings):

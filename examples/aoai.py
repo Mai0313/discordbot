@@ -7,7 +7,7 @@ console = Console()
 def get_aoai_response(api_key: str, question: str) -> str:
     client = AzureOpenAI(
         api_key=api_key,
-        api_version="2025-03-01-preview",
+        api_version="2025-04-01-preview",
         azure_deployment="aide-o3-mini",
         azure_endpoint="https://xxx.openai.azure.com",
     )
