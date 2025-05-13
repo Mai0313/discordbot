@@ -57,16 +57,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     attachments.extend(_attach)
         return attachments
 
-    async def _get_message_history(self, channel: nextcord.TextChannel) -> list[nextcord.Message]:
-        history_messages: list[nextcord.Message] = []
-        async for msg in channel.history(limit=None):
-            if isinstance(msg, nextcord.Message):
-                history_messages.append(msg)
-            if len(history_messages) == 30:
-                break
-        history_messages.reverse()
-        return history_messages
-
     @nextcord.slash_command(
         name="oai",
         description="Generate a reply based on the given prompt.",
