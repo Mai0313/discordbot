@@ -35,32 +35,13 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
 
     @computed_field
     @property
-    def model_mapping(self) -> dict[str, str]:
-        model_mapping = {
-            "gpt-4.1": "aide-gpt-4.1",
-            "gpt-4.1-mini": "aide-gpt-4.1-mini",
-            "gpt-4.1-nano": "aide-gpt-4.1-nano",
-            "gpt-4o": "aide-gpt-4o",
-            "gpt-4o-mini": "aide-gpt-4o-mini",
-            "gpt-4-turbo": "aide-gpt-4-turbo",
-            "o1": "aide-o1",
-            "o1-mini": "aide-o1-mini",
-            "o3": "aide-o3",
-            "o3-mini": "aide-o3-mini",
-            "o4-mini": "aide-o4-mini",
-        }
-        return model_mapping
-
-    @computed_field
-    @property
     def client(self) -> AsyncOpenAI | AsyncAzureOpenAI:
         if self.api_type == "azure":
-            azure_deployment = self.model_mapping.get(self.llm_model, self.llm_model)
             client = AsyncAzureOpenAI(
                 api_key=self.api_key,
                 azure_endpoint=self.base_url,
                 api_version=self.api_version,
-                azure_deployment=azure_deployment,
+                azure_deployment=self.llm_model,
             )
         else:
             client = AsyncOpenAI(api_key=self.api_key)

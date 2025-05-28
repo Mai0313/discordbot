@@ -1,6 +1,9 @@
+import logfire
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
+
+from src.sdk.llm import LLMSDK
 
 
 class ImageGeneratorCogs(commands.Cog):
@@ -31,11 +34,20 @@ class ImageGeneratorCogs(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         await interaction.followup.send(content="圖片生成中...")
-
         try:
-            await interaction.edit_original_message(content="騙你的 這個功能根本沒寫好 :P")
+            llm_sdk = LLMSDK(llm_model="dall-e-3")
+            image = await llm_sdk.client.images.generate(
+                model=llm_sdk.llm_model, prompt=prompt, n=1, size="1024x1024"
+            )
+            embed = nextcord.Embed(
+                title="生成的圖片", description=f"提示詞: {prompt}", color=nextcord.Color.blue()
+            )
+            embed.set_image(url=image.data[0].url)
+            embed.set_footer(text="圖片由 OpenAI 生成")
+            await interaction.edit_original_message(embed=embed)
         except Exception as e:
             await interaction.edit_original_message(content=f"生成圖片時發生錯誤: {e!s}")
+            logfire.error("Error generating image", _exc_info=True)
 
 
 # 註冊 Cog
