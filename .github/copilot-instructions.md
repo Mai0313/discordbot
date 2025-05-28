@@ -219,18 +219,41 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Architecture**: Ready for integration with image generation APIs
 - **Response Pattern**: Placeholder response with proper interaction handling
 
-#### 6. System Utilities (`src/cogs/template.py`)
+#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
 
 **Commands:**
 
-- `/ping` - Bot latency and performance testing
+- `/maple_monster` - Search for monster drop information
+- `/maple_item` - Search for item drop sources
+- `/maple_stats` - Display database statistics
 
 **Implementation Details:**
 
-- **Latency Measurement**: Message latency and API latency calculation
-- **Localized Responses**: Language-specific response formatting
-- **Performance Metrics**: Real-time latency calculation and display
-- **Event Handling**: Debug message reaction system for development
+- **Data Source**: Comprehensive JSON database (`data/monsters.json`) with 192+ monsters
+- **Search Engine**: Fuzzy string matching with case-insensitive search
+- **Interactive UI**: `MapleDropSearchView` with dropdown selection for multiple results
+- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
+- **Performance Optimization**: LRU cache for frequent queries and item popularity tracking
+- **Rich Information Display**:
+    - Monster attributes (level, HP, MP, EXP, defense stats)
+    - Drop item categorization (equipment vs consumables/materials)
+    - Location mapping with up to 5 display locations
+    - Item source tracking with visual thumbnails and external links
+
+**Advanced Features:**
+
+- **Caching System**: `@lru_cache` decorators for optimized repeated searches
+- **Statistics Generation**: Popular item tracking based on drop frequency
+- **Visual Enhancement**: Embedded images from external Artale database
+- **Error Handling**: Graceful handling of missing data files and malformed JSON
+- **Result Pagination**: Discord's 25-option limit handling with "and X more" indicators
+
+**Technical Architecture:**
+
+- **Data Models**: JSON-based monster/item relationships with comprehensive attribute mapping
+- **Search Algorithms**: String containment matching with result ranking
+- **UI Components**: Custom View classes with Select menus for user interaction
+- **External Integration**: Links to MapleStory library for detailed item information
 
 ### Critical Core Functionality
 
@@ -302,10 +325,19 @@ This is a **critical and unique feature** that automatically logs ALL user messa
 #### Project Structure:
 
 - **Cogs**: Modular command implementations in `src/cogs/`
+    - `gen_reply.py` - AI text generation with OpenAI models
+    - `gen_search.py` - Web search via Perplexity API
+    - `summary.py` - Message summarization with interactive UI
+    - `video.py` - Multi-platform video downloading
+    - `maplestory.py` - MapleStory database queries and drop searches
+    - `gen_image.py` - Image generation placeholder
+    - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/sdk/`
 - **Types**: Configuration and data models in `src/types/`
 - **Utils**: Utility functions in `src/utils/`
 - **Tests**: Comprehensive test suite in `tests/`
+- **Data**: Game databases and user data in `data/`
+    - `monsters.json` - MapleStory monster and drop database (192+ monsters)
 
 #### Key Dependencies:
 

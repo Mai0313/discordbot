@@ -34,6 +34,7 @@ _Suggestions and contributions are always welcome!_
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **Message Archival**: Automatic logging of all conversations to SQLite database
+- **MapleStory Database**: Search monsters and items with drop information
 
 ### 🌍 Multi-Language Support
 
@@ -59,6 +60,9 @@ _Suggestions and contributions are always welcome!_
 | `/search`         | Web search with AI summary        | Perplexity API integration         |
 | `/sum`            | Interactive message summarization | User filtering, configurable count |
 | `/download_video` | Multi-platform video downloader   | Quality options, size validation   |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information       |
+| `/maple_item`     | Search MapleStory item sources    | Drop source tracking               |
+| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items    |
 | `/ping`           | Bot performance testing           | Latency measurement                |
 
 ## 🚀 Quick Start
@@ -148,6 +152,7 @@ src/
 │   ├── gen_search.py   # Web search integration
 │   ├── summary.py      # Message summarization
 │   ├── video.py        # Video downloading
+│   ├── maplestory.py   # MapleStory database queries
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # System utilities
 ├── sdk/                # Core business logic
@@ -182,6 +187,15 @@ The bot automatically logs all user messages across channels and DMs:
 - Quality selection (4K to audio-only)
 - File size validation for Discord limits
 - Progress tracking and error handling
+
+### MapleStory Database System
+
+- Comprehensive monster and item database (192+ monsters)
+- Interactive search with fuzzy matching
+- Multi-language support (Traditional Chinese, Simplified Chinese, Japanese, English)
+- Detailed monster statistics and drop information
+- Item source tracking with visual displays
+- Cached search results for optimal performance
 
 ## Contributors
 
