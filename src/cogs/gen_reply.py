@@ -127,7 +127,7 @@ class ReplyGeneratorCogs(commands.Cog):
         await interaction.followup.send(content=init_message)
 
         try:
-            llm_sdk = LLMSDK(llm_model=model)
+            llm_sdk = LLMSDK(model=model)
             response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
             final_content = f"{interaction.user.mention} {response.choices[0].message.content}"
             await interaction.edit_original_message(content=final_content)
@@ -204,7 +204,7 @@ class ReplyGeneratorCogs(commands.Cog):
         await interaction.followup.send(content=init_message)
 
         try:
-            llm_sdk = LLMSDK(llm_model=model)
+            llm_sdk = LLMSDK(model=model)
             accumulated_text = f"{interaction.user.mention}\n"
             async for res in llm_sdk.get_oai_reply_stream(prompt=prompt, image_urls=attachments):
                 if (

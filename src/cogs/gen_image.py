@@ -35,9 +35,9 @@ class ImageGeneratorCogs(commands.Cog):
         await interaction.response.defer()
         await interaction.followup.send(content="圖片生成中...")
         try:
-            llm_sdk = LLMSDK(llm_model="dall-e-3")
+            llm_sdk = LLMSDK(model="dall-e-3")
             image = await llm_sdk.client.images.generate(
-                model=llm_sdk.llm_model, prompt=prompt, n=1, size="1024x1024"
+                model=llm_sdk.model, prompt=prompt, n=1, size="1024x1024"
             )
             embed = nextcord.Embed(
                 title="生成的圖片", description=f"提示詞: {prompt}", color=nextcord.Color.blue()

@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from collections.abc import AsyncGenerator
 
 from openai import AsyncOpenAI, AsyncAzureOpenAI
-from pydantic import Field, ConfigDict, computed_field
+from pydantic import Field, ConfigDict, computed_field, model_validator
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 class LLMSDK(PerplexityConfig, OpenAIConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    llm_model: str = Field(
+    model: str = Field(
         default="gpt-4o",
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
@@ -33,6 +33,12 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
         deprecated=False,
     )
 
+    @model_validator(mode="after")
+    def _set_model_name(self) -> "LLMSDK":
+        if self.api_type == "azure":
+            self.model = f"aide-{self.model}"
+        return self
+
     @computed_field
     @property
     def client(self) -> AsyncOpenAI | AsyncAzureOpenAI:
@@ -41,7 +47,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
                 api_key=self.api_key,
                 azure_endpoint=self.base_url,
                 api_version=self.api_version,
-                azure_deployment=self.llm_model,
+                azure_deployment=self.model,
             )
         else:
             client = AsyncOpenAI(api_key=self.api_key)
@@ -78,7 +84,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
     ) -> ChatCompletion:
         content = await self._prepare_content(prompt, image_urls)
         completion = self.client.chat.completions.create(
-            model=self.llm_model,
+            model=self.model,
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": content},
@@ -91,7 +97,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         content = await self._prepare_content(prompt, image_urls)
         completion: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
-            model=self.llm_model,
+            model=self.model,
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": content},
