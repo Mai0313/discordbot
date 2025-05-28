@@ -7,14 +7,21 @@ from nextcord.ext import commands
 
 from src.sdk.llm import LLMSDK
 
-MODEL_CHOICES = {
-    "GPT-4o": "gpt-4o",
-    "GPT-4o-mini": "gpt-4o-mini",
-    "GPT-4-Turbo": "gpt-4-turbo",
-    "o3-mini": "o3-mini",
-    "o1": "o1",
-    "o1-mini": "o1-mini",
-}
+available_models = [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "o4-mini",
+    "o3",
+    "o3-mini",
+    "o1",
+    "o1-preview",
+    "o1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "chatgpt-4o-latest",
+]
+MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -93,7 +100,7 @@ class ReplyGeneratorCogs(commands.Cog):
             },
             choices=MODEL_CHOICES,
             required=False,
-            default="gpt-4o",
+            default="gpt-4.1",
         ),
         image: Optional[nextcord.Attachment] = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
@@ -170,7 +177,7 @@ class ReplyGeneratorCogs(commands.Cog):
             },
             choices=MODEL_CHOICES,
             required=False,
-            default="gpt-4o",
+            default="gpt-4.1",
         ),
         image: Optional[nextcord.Attachment] = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",

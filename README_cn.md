@@ -240,7 +240,7 @@ uv run mkdocs serve
 
 ```python
 # AI 文字生成
-await get_oai_reply(messages, model="gpt-4o")
+await get_oai_reply(messages, model="gpt-4.1")
 
 # 串流回應
 async for chunk in get_oai_reply_stream(messages):

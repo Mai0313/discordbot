@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from pydantic import Field, ConfigDict, computed_field, model_validator
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.shared import ChatModel
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from src.types.config import OpenAIConfig, PerplexityConfig
@@ -14,8 +15,8 @@ if TYPE_CHECKING:
 
 class LLMSDK(PerplexityConfig, OpenAIConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    model: str = Field(
-        default="gpt-4o",
+    model: ChatModel = Field(
+        default="gpt-4.1",
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
         frozen=False,
