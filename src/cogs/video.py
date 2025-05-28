@@ -59,9 +59,35 @@ class VideoCogs(commands.Cog):
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
             if filename.stat().st_size > 25 * 1024 * 1024:
-                await interaction.edit_original_message(
-                    content=f"❌ 下載失敗 \n影片大小超過 {file_size_mb:.1f}MB"
-                )
+                # 如果檔案過大且不是已經是低畫質，則重新下載低畫質版本
+                if quality != "low":
+                    await interaction.edit_original_message(
+                        content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
+                    )
+                    # 刪除原始檔案
+                    filename.unlink(missing_ok=True)
+
+                    # 重新下載低畫質版本
+                    title, filename = VideoDownloader(output_folder="./data/downloads").download(
+                        url=url, quality="low"
+                    )
+
+                    # 再次檢查檔案大小
+                    file_size_mb = filename.stat().st_size / 1024 / 1024
+                    if filename.stat().st_size > 25 * 1024 * 1024:
+                        await interaction.edit_original_message(
+                            content=f"❌ 下載失敗 \n即使是低畫質版本，檔案大小仍超過 {file_size_mb:.1f}MB"
+                        )
+                    else:
+                        await interaction.edit_original_message(
+                            content=f"✅ 下載成功! (低畫質版本) 檔案大小: {file_size_mb:.1f}MB\n{title}",
+                            file=nextcord.File(str(filename), filename=filename.name),
+                        )
+                else:
+                    # 已經是低畫質但仍然過大
+                    await interaction.edit_original_message(
+                        content=f"❌ 下載失敗 \n即使是低畫質版本，檔案大小仍超過 {file_size_mb:.1f}MB"
+                    )
             else:
                 await interaction.edit_original_message(
                     content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
