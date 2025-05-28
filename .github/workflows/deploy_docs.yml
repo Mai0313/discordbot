@@ -42,11 +42,21 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           version: "latest"
-          pyproject-file: "pyproject.toml"
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy docs
         run: |
           uv sync --group docs
           uv run make gen-docs
-          uv run mkdocs gh-deploy --force --clean
+          uv run mkdocs build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Publish to GitHub Pages
+        uses: actions/deploy-pages@v4
