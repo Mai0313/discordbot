@@ -194,6 +194,7 @@ This bot requests the following permissions solely for functionality purposes:
 ### Contact and Compliance
 
 If you have privacy concerns or questions about data handling:
+
 - Report issues via [GitHub Issues](https://github.com/Mai0313/discordbot/issues)
 - Contact the development team through the repository
 

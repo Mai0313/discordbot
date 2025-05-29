@@ -331,6 +331,7 @@ grep ERROR logs/bot.log
 ### 聯絡與合規
 
 如果您對隱私有疑慮或對資料處理有疑問：
+
 - 透過 [GitHub Issues](https://github.com/Mai0313/discordbot/issues) 回報問題
 - 透過專案儲存庫聯絡開發團隊
 

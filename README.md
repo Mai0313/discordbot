@@ -183,39 +183,44 @@ src/
 - Item source tracking with visual displays
 - Cached search results for optimal performance
 
-## 🔒 Privacy Policy
+# 🔒 Privacy Policy
 
-This Discord bot is committed to protecting user privacy and complies with Discord's Terms of Service and Developer Policy.
+This Discord bot is committed to protecting user privacy and complies with Discord’s Terms of Service and Developer Policy.
 
-### Data Collection and Usage
+## 📦 Data Collection and Usage
 
-- **No Message Storage**: This bot does NOT store, log, or retain any user messages, conversation content, or chat history
-- **No Personal Data Collection**: We do not collect, store, or process any personal information from users
-- **Temporary Processing Only**: User inputs are processed temporarily to generate responses and are immediately discarded
-- **No Third-Party Sharing**: No user data is shared with third parties beyond the necessary API calls to provide bot functionality
+- **No Message Storage**: This bot does **NOT** store, log, or retain any user messages, message content, or chat history beyond the immediate processing needed for a response.
+- **No Personal Data Collection**: We do not collect, store, or process any personal identifying information (PII) from users.
+- **Temporary Processing Only**: All inputs are processed in memory only and discarded immediately after the response is generated.
+- **No Third-Party Sharing**: No user data is shared with any third parties, other than trusted APIs (e.g., OpenAI) for processing the specific user request.
 
-### Bot Permissions and Intents
+## ⚙️ Bot Permissions and Intents
 
-This bot requests the following permissions solely for functionality purposes:
+This bot uses certain Discord intents solely to provide its core features:
 
-- **Message Content Intent**: Required to read and respond to user commands and mentions
-- **Slash Commands**: For interactive command processing
-- **File Attachments**: For processing images in AI vision features and downloading requested content
-- **Embed Links**: For formatting rich responses and search results
+- **Message Content Intent**: Required to read and respond to natural-language commands without slash syntax (e.g., keyword detection like "查怪", "掉落", etc.).
+- **Slash Commands**: Used for interactive and explicit command triggers.
+- **Embed Links / File Attachments**: Used to display structured output and allow interaction with visual content.
+- **Presence Intent (if applicable)**: May be used to improve responsiveness based on online status; not stored.
 
-### Data Security
+Users may opt out of interactions via commands like `!optout` (planned) or by muting the bot.
 
-- All API communications use encrypted HTTPS connections
-- Temporary data processing occurs in secure, ephemeral environments
-- No user data persists beyond the immediate request-response cycle
+## 🔐 Data Security
 
-### Contact and Compliance
+- All API requests are made via secure HTTPS connections.
+- Data is processed only temporarily in memory and never stored on disk or external databases.
+- No long-term logs or analytics based on message or user content are maintained.
 
-If you have privacy concerns or questions about data handling:
-- Report issues via [GitHub Issues](https://github.com/Mai0313/discordbot/issues)
-- Contact the development team through the repository
+## 📬 Contact and Compliance
 
-This bot is designed with privacy-by-design principles and minimal data processing to ensure user privacy protection.
+If you have privacy concerns or questions about this policy, feel free to:
+
+- Submit an issue via GitHub
+- Contact the developer through the repository's listed channels
+
+This bot is designed using **privacy-by-design principles** with a strict minimal-data-handling approach to protect all users.
+
+_Last updated: 2025/05/29_
 
 ## Contributors
 
