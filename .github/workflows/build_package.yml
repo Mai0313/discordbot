@@ -9,22 +9,16 @@ permissions: write-all
 
 jobs:
   build_package:
-    name: Build Package by uv
+    name: Build Package
     runs-on: ubuntu-latest
     # container: catthehacker/ubuntu:act-20.04  # Uncomment it if you use it on Gitea
 
     strategy:
-      fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
         python-version:
-          # - "3.9"
           - "3.10"
           - "3.11"
           - "3.12"
-
-    timeout-minutes: 20
 
     steps:
       - name: Disable SSL Verify
@@ -84,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@v4.6.2
         with:
           path: ./dist/*
-          name: ${{ github.event.repository.name }}-packages
+          name: ${{ github.event.repository.name }}-py${{ matrix.python-version }}
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 6

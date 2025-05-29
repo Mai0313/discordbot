@@ -68,22 +68,22 @@ authors = [
     { name = "Wei", email = "mai@mai0313.com" },
 ]
 dependencies = [
-    "ag2>=0.8.2",
-    "logfire>=3.9.0",
+    "ag2>=0.9.1.post0",
+    "logfire>=3.16.0",
     "nextcord>=2.6.0",
-    "openai>=1.66.3",
-    "orjson>=3.10.15",
+    "openai>=1.81.0",
+    "orjson>=3.10.18",
     "pandas>=2.2.3",
-    "pillow>=11.1.0",
+    "pillow>=11.2.1",
     "playwright>=1.52.0",
     "psycopg2-binary>=2.9.10",
-    "pydantic>=2.10.6",
-    "pydantic-settings>=2.8.1",
-    "redis>=5.2.1",
+    "pydantic>=2.11.4",
+    "pydantic-settings>=2.9.1",
+    "redis>=6.1.0",
     "requests>=2.32.3",
     "setuptools>=80.8.0",
-    "sqlalchemy>=2.0.39",
-    "yt-dlp>=2025.3.31",
+    "sqlalchemy>=2.0.41",
+    "yt-dlp>=2025.5.22",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"

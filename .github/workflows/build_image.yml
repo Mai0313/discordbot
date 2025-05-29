@@ -30,12 +30,16 @@ jobs:
     # container: catthehacker/ubuntu:act-22.04  # Uncomment it if you use it on Gitea
 
     strategy:
-      fail-fast: true
       matrix:
         target:
           - name: Build and Push Images (Latest / Release)
             target_step: prod
             tag: ghcr.io/mai0313/${{ github.event.repository.name }}
+
+    env:
+      BUILDKIT_NO_CLIENT_TOKEN: 1 # docker buildkit env
+      # gitea action download node.js skip certificate !https
+      NODE_TLS_REJECT_UNAUTHORIZED: 0
 
     steps:
       - name: Disable SSL Verify

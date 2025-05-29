@@ -1,5 +1,3 @@
-<center>
-
 # AI-Powered Discord Bot 🤖
 
 **English** | [**繁體中文**](./README_cn.md)
@@ -14,8 +12,6 @@
 [![license](https://img.shields.io/badge/License-MIT-green.svg?labelColor=gray)](https://github.com/Mai0313/discordbot/tree/master?tab=License-1-ov-file)
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Mai0313/discordbot/pulls)
 [![contributors](https://img.shields.io/github/contributors/Mai0313/discordbot.svg)](https://github.com/Mai0313/discordbot/graphs/contributors)
-
-</center>
 
 A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support, real-time streaming responses, and automatic message archival. 🚀⚡🔥
 

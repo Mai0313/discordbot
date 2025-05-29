@@ -698,22 +698,22 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ag2", specifier = ">=0.8.2" },
-    { name = "logfire", specifier = ">=3.9.0" },
+    { name = "ag2", specifier = ">=0.9.1.post0" },
+    { name = "logfire", specifier = ">=3.16.0" },
     { name = "nextcord", specifier = ">=2.6.0" },
-    { name = "openai", specifier = ">=1.66.3" },
-    { name = "orjson", specifier = ">=3.10.15" },
+    { name = "openai", specifier = ">=1.81.0" },
+    { name = "orjson", specifier = ">=3.10.18" },
     { name = "pandas", specifier = ">=2.2.3" },
-    { name = "pillow", specifier = ">=11.1.0" },
+    { name = "pillow", specifier = ">=11.2.1" },
     { name = "playwright", specifier = ">=1.52.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.10" },
-    { name = "pydantic", specifier = ">=2.10.6" },
-    { name = "pydantic-settings", specifier = ">=2.8.1" },
-    { name = "redis", specifier = ">=5.2.1" },
+    { name = "pydantic", specifier = ">=2.11.4" },
+    { name = "pydantic-settings", specifier = ">=2.9.1" },
+    { name = "redis", specifier = ">=6.1.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "setuptools", specifier = ">=80.8.0" },
-    { name = "sqlalchemy", specifier = ">=2.0.39" },
-    { name = "yt-dlp", specifier = ">=2025.3.31" },
+    { name = "sqlalchemy", specifier = ">=2.0.41" },
+    { name = "yt-dlp", specifier = ">=2025.5.22" },
 ]
 
 [package.metadata.requires-dev]

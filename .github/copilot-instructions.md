@@ -2,17 +2,19 @@
 
 # Python Best Practices
 
-## Code Style
+## Coding Style
 
-- Follow ruff for linting
+- Follow `ruff-check` and `ruff-format` for code style and formatting using `pre-commit` hooks.
 - Follow PEP 8 naming conventions:
     - snake_case for functions and variables
     - PascalCase for classes
     - UPPER_CASE for constants
+- Follow the Python version specified in the `pyproject.toml` or `.python-version` file.
 - Use pydantic model, and all pydantic models should include `Field`, and `description` should be included.
 - Maximum line length of 99 characters
 - Use absolute imports over relative imports
-    Example:
+
+### Example
 
 ```python
 from pydantic import BaseModel, Field

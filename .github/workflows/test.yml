@@ -22,7 +22,6 @@ jobs:
         os:
           - ubuntu-latest
         python-version:
-          # - "3.9"
           - "3.10"
           - "3.11"
           - "3.12"
@@ -65,10 +64,6 @@ jobs:
         run: |
           uv python pin ${{ matrix.python-version }}
           uv sync --group test
-
-      - name: List dependencies
-        run: |
-          uv pip list
 
       - name: Check for tests
         id: check_tests

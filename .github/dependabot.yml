@@ -6,12 +6,6 @@
 
 version: 2
 updates:
-  # npm
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: daily
-
   # pip (Python)
   - package-ecosystem: pip
     directory: /
@@ -24,18 +18,6 @@ updates:
     schedule:
       interval: daily
 
-  # Dockerfile
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
-
-  # Docker Compose
-  - package-ecosystem: docker-compose
-    directory: /
-    schedule:
-      interval: weekly
-
   # Devcontainers
   - package-ecosystem: devcontainers
     directory: /
@@ -44,12 +26,6 @@ updates:
 
   # GitHub Actions
   - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-
-  # git submodules
-  - package-ecosystem: gitsubmodule
     directory: /
     schedule:
       interval: weekly

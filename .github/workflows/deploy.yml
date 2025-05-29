@@ -1,15 +1,17 @@
-name: Publish docs via GitHub Pages
+name: Publish GitHub Pages
 
 on:
   push:
     branches:
       - master
+    tags:
+      - v*
 
 permissions: write-all
 
 jobs:
-  build:
-    name: Deploy docs
+  deploy:
+    name: Deploy
     runs-on: ubuntu-latest
     # container: catthehacker/ubuntu:act-20.04  # Uncomment it if you use it on Gitea
 
@@ -48,4 +50,15 @@ jobs:
         run: |
           uv sync --group docs
           uv run make gen-docs
-          uv run mkdocs gh-deploy --force --clean
+          uv run mkdocs build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Publish to GitHub Pages
+        uses: actions/deploy-pages@v4
