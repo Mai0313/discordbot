@@ -57,7 +57,6 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Framework**: Nextcord (Discord.py fork) with async/await patterns
 - **Structure**: Modular Cog system under `src/cogs/` with implementation details in `src/sdk/`
 - **Configuration**: Pydantic-based config management with environment variable support
-- **Database**: SQLite for message logging with optional Redis/PostgreSQL support
 - **Logging**: Comprehensive logging with Logfire integration
 
 ### Main Features
@@ -197,34 +196,6 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 ### Critical Core Functionality
 
-#### Message Logging System (`src/sdk/log_message.py`)
-
-This is a **critical and unique feature** that automatically logs ALL user messages across ALL channels and DMs into an SQLite database.
-
-**Implementation Details:**
-
-- **Automatic Triggering**: Registered in `src/bot.py` via `on_message` event handler
-- **Data Storage**: SQLite database at `data/messages.db` with table per channel/DM
-- **Comprehensive Logging**:
-    - User information (name, ID)
-    - Message content and timestamps
-    - Channel information (name, ID)
-    - File attachments (saved to `data/attachments/YYYY-MM-DD/channel_name/`)
-    - Discord stickers and embeds
-- **File Management**:
-    - Automatic directory structure creation by date
-    - Duplicate filename handling with incremental numbering
-    - Async file downloading and storage
-- **Database Schema**: Pandas DataFrame to SQLite with proper data type conversion
-- **Privacy Considerations**: Bot messages are excluded from logging
-
-**Technical Architecture:**
-
-- **Pydantic Models**: `MessageLogger` class with computed fields and caching
-- **Async Processing**: Non-blocking message processing with `asyncio.create_task()`
-- **Path Management**: Dynamic path generation based on message type (DM vs channel)
-- **Error Handling**: Comprehensive exception handling for missing resources
-
 #### LLM Integration SDK (`src/sdk/llm.py`)
 
 **Core Features:**
@@ -251,14 +222,12 @@ This is a **critical and unique feature** that automatically logs ALL user messa
 - `AZURE_OPENAI_API_KEY` - Azure OpenAI API key (if using Azure)
 - `OPENAI_BASE_URL` - API base URL
 - `PERPLEXITY_API_KEY` - Perplexity API key for search
-- `SQLITE_FILE_PATH` - SQLite database file path (defaults to `data/messages.db`)
 
 #### Key Configuration Classes:
 
 - `DiscordConfig` - Bot token and server configuration
 - `OpenAIConfig` - OpenAI/Azure API configuration with type detection
 - `PerplexityConfig` - Perplexity API configuration
-- `DatabaseConfig` - Multi-database support (SQLite, PostgreSQL, Redis)
 
 ### Development and Deployment
 
@@ -285,8 +254,6 @@ This is a **critical and unique feature** that automatically logs ALL user messa
 - `openai` - OpenAI API client
 - `pydantic` - Data validation and configuration
 - `yt-dlp` - Video downloading
-- `pandas` - Data processing for logging
-- `sqlalchemy` - Database operations
 - `logfire` - Advanced logging and monitoring
 
 #### Deployment Features:
@@ -296,4 +263,4 @@ This is a **critical and unique feature** that automatically logs ALL user messa
 - Comprehensive CI/CD pipeline with testing and code quality checks
 - Documentation generation with MkDocs
 
-This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and automated archival capabilities with enterprise-grade logging and monitoring.
+This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and utility capabilities with enterprise-grade logging and monitoring.

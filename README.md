@@ -17,7 +17,7 @@
 
 </center>
 
-A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support, real-time streaming responses, and automatic message archival. 🚀⚡🔥
+A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support and real-time streaming responses. 🚀⚡🔥
 
 _Suggestions and contributions are always welcome!_
 
@@ -33,7 +33,6 @@ _Suggestions and contributions are always welcome!_
 
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
-- **Message Archival**: Automatic logging of all conversations to SQLite database
 - **MapleStory Database**: Search monsters and items with drop information
 
 ### 🌍 Multi-Language Support
@@ -137,9 +136,6 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 
 # Perplexity API (for search)
 PERPLEXITY_API_KEY=your_perplexity_api_key
-
-# Database
-SQLITE_FILE_PATH=data/messages.db
 ```
 
 ## 📁 Project Structure
@@ -157,22 +153,12 @@ src/
 │   └── template.py     # System utilities
 ├── sdk/                # Core business logic
 │   ├── llm.py          # LLM integration
-│   ├── log_message.py  # Message logging system
 │   └── asst.py         # Assistant API wrapper
 ├── types/              # Configuration models
 └── utils/              # Utility functions
 ```
 
 ## 🔍 Key Features Deep Dive
-
-### Message Logging System
-
-The bot automatically logs all user messages across channels and DMs:
-
-- SQLite database storage (`data/messages.db`)
-- Attachment and sticker preservation
-- Organized file structure by date
-- Privacy-conscious (excludes bot messages)
 
 ### Multi-Modal AI Support
 
@@ -196,6 +182,40 @@ The bot automatically logs all user messages across channels and DMs:
 - Detailed monster statistics and drop information
 - Item source tracking with visual displays
 - Cached search results for optimal performance
+
+## 🔒 Privacy Policy
+
+This Discord bot is committed to protecting user privacy and complies with Discord's Terms of Service and Developer Policy.
+
+### Data Collection and Usage
+
+- **No Message Storage**: This bot does NOT store, log, or retain any user messages, conversation content, or chat history
+- **No Personal Data Collection**: We do not collect, store, or process any personal information from users
+- **Temporary Processing Only**: User inputs are processed temporarily to generate responses and are immediately discarded
+- **No Third-Party Sharing**: No user data is shared with third parties beyond the necessary API calls to provide bot functionality
+
+### Bot Permissions and Intents
+
+This bot requests the following permissions solely for functionality purposes:
+
+- **Message Content Intent**: Required to read and respond to user commands and mentions
+- **Slash Commands**: For interactive command processing
+- **File Attachments**: For processing images in AI vision features and downloading requested content
+- **Embed Links**: For formatting rich responses and search results
+
+### Data Security
+
+- All API communications use encrypted HTTPS connections
+- Temporary data processing occurs in secure, ephemeral environments
+- No user data persists beyond the immediate request-response cycle
+
+### Contact and Compliance
+
+If you have privacy concerns or questions about data handling:
+- Report issues via [GitHub Issues](https://github.com/Mai0313/discordbot/issues)
+- Contact the development team through the repository
+
+This bot is designed with privacy-by-design principles and minimal data processing to ensure user privacy protection.
 
 ## Contributors
 
