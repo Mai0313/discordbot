@@ -11,15 +11,15 @@ available_models = [
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4.1-nano",
-    "o4-mini",
-    "o3",
-    "o3-mini",
-    "o1",
-    "o1-preview",
-    "o1-mini",
+    # "o4-mini",
+    # "o3",
+    # "o3-mini",
+    # "o1",
+    # "o1-preview",
+    # "o1-mini",
     "gpt-4o",
     "gpt-4o-mini",
-    "chatgpt-4o-latest",
+    # "chatgpt-4o-latest",
 ]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
