@@ -21,7 +21,7 @@ class PostgreSQLConfig(BaseSettings):
 
 class SQLiteConfig(BaseSettings):
     sqlite_file_path: str = Field(
-        default="./data/sqlite.db",
+        default="sqlite:///data/sqlite.db",
         validation_alias=AliasChoices("SQLITE_FILE_PATH"),
         title="SQLite File Path",
         description="The file path to the SQLite database file.",

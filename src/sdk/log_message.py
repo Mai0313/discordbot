@@ -1,7 +1,3 @@
-from pathlib import Path
-import datetime
-from functools import cached_property
-
 import pandas as pd
 import logfire
 import nextcord
@@ -17,7 +13,7 @@ class MessageLogger(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     @computed_field
-    @cached_property
+    @property
     def channel_name_or_author_name(self) -> str:
         if isinstance(self.message.channel, nextcord.DMChannel):
             author_name = self.message.author.nick or self.message.author.name
@@ -25,50 +21,27 @@ class MessageLogger(BaseModel):
         return f"channel_{self.message.channel.name}" or f"channel_{self.message.channel.id}"
 
     @computed_field
-    @cached_property
+    @property
     def channel_id_or_author_id(self) -> str:
         if isinstance(self.message.channel, nextcord.DMChannel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
-    @computed_field
-    @property
-    def attachment_path(self) -> Path:
-        now = datetime.date.today().isoformat()
-        attachment_path = Path("./data/attachments") / now / self.channel_name_or_author_name
-        attachment_path.mkdir(parents=True, exist_ok=True)
-        return attachment_path
-
-    async def _get_filepath(self, filepath: Path) -> Path:
-        # 如果檔名重複，則在檔名後加上數字
-        # 例如：file_1.txt -> file_2.txt
-        if filepath.exists():
-            file_no = len(list(self.attachment_path.glob(f"{filepath.stem}_*{filepath.suffix}")))
-            filepath = filepath.with_stem(f"{filepath.stem}_{file_no}")
-        return filepath
-
     async def _save_attachments(self) -> list[str]:
-        saved_paths = []
+        attachment_urls = []
         for attachment in self.message.attachments:
-            filepath = self.attachment_path / attachment.filename
-            filepath = await self._get_filepath(filepath=filepath)
-            await attachment.save(filepath)
-            saved_paths.append(filepath.as_posix())
-        return saved_paths
+            attachment_urls.append(attachment.url)
+        return attachment_urls
 
     async def _save_stickers(self) -> list[str]:
-        saved_paths = []
+        sticker_urls = []
         for sticker in self.message.stickers:
-            filepath = self.attachment_path / sticker.name
-            filepath = await self._get_filepath(filepath=filepath)
-            try:
-                await sticker.save(filepath)
-                saved_paths.append(filepath.as_posix())
-            except nextcord.NotFound:
-                logfire.warn("Sticker is not found", sticker_id=sticker.id)
-        return saved_paths
+            sticker_urls.append(sticker.url)
+        return sticker_urls
 
-    async def _save_messages(self, attachment_paths: list[str], sticker_paths: list[str]) -> None:
+    async def _save_messages(self) -> None:
+        attachment_paths = await self._save_attachments()
+        sticker_paths = await self._save_stickers()
         data_dict = {
             "author": self.message.author.name,
             "author_id": self.message.author.id,
@@ -83,11 +56,8 @@ class MessageLogger(BaseModel):
         message_df = pd.DataFrame([data_dict])
         message_df = message_df.astype(str)
 
-        # 確保資料庫目錄存在
-        Path(self.database.sqlite.sqlite_file_path).parent.mkdir(parents=True, exist_ok=True)
-
         # 連接到 SQLite 資料庫
-        engine = create_engine(f"sqlite:///{self.database.sqlite.sqlite_file_path}")
+        engine = create_engine(self.database.sqlite.sqlite_file_path)
 
         # 使用 pandas to_sql 寫入 SQLite 資料庫
         message_df.to_sql(
@@ -95,8 +65,9 @@ class MessageLogger(BaseModel):
         )
 
     async def log(self) -> None:
-        if self.message.author.bot:
-            return
-        attachment_paths = await self._save_attachments()
-        sticker_paths = await self._save_stickers()
-        await self._save_messages(attachment_paths=attachment_paths, sticker_paths=sticker_paths)
+        try:
+            if self.message.author.bot:
+                return
+            await self._save_messages()
+        except Exception:
+            logfire.error("Failed to log message", _exc_info=True)

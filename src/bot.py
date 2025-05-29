@@ -26,6 +26,7 @@ class DiscordBot(commands.Bot):
         self.logger = logging.getLogger("nextcord.state")
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(LogfireLoggingHandler())
+        Path("./data").mkdir(parents=True, exist_ok=True)
 
     async def on_connect(self) -> None:
         logfire.info("Bot Connected", bot_name=self.user.name, bot_id=self.user.id)
