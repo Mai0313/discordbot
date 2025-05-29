@@ -94,9 +94,7 @@ class MapleDropSearchView(View):
         # 出現地圖
         maps = monster.get("maps", [])
         if maps:
-            maps_text = "\n".join([f"• {map_name}" for map_name in maps[:5]])
-            if len(maps) > 5:
-                maps_text += f"\n... 還有 {len(maps) - 5} 個地圖"
+            maps_text = "\n".join([f"• {map_name}" for map_name in maps])
             embed.add_field(name="🗺️ 出現地圖", value=maps_text, inline=True)
 
         # 掉落物品
@@ -107,15 +105,11 @@ class MapleDropSearchView(View):
             consumables = [drop for drop in drops if drop.get("type") == "消耗品/素材"]
 
             if equipment:
-                equip_text = "\n".join([f"• {item['name']}" for item in equipment[:5]])
-                if len(equipment) > 5:
-                    equip_text += f"\n... 還有 {len(equipment) - 5} 件裝備"
+                equip_text = "\n".join([f"• {item['name']}" for item in equipment])
                 embed.add_field(name="⚔️ 裝備掉落", value=equip_text, inline=False)
 
             if consumables:
-                cons_text = "\n".join([f"• {item['name']}" for item in consumables[:5]])
-                if len(consumables) > 5:
-                    cons_text += f"\n... 還有 {len(consumables) - 5} 個物品"
+                cons_text = "\n".join([f"• {item['name']}" for item in consumables])
                 embed.add_field(name="🧪 消耗品/素材", value=cons_text, inline=False)
 
         embed.set_footer(text="資料來源：Artale")
