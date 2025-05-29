@@ -84,6 +84,7 @@ jobs:
       - name: Run pytest
         if: steps.check_tests.outputs.has_tests == 'true'
         env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_TYPE: ${{ secrets.OPENAI_API_TYPE }}
           OPENAI_API_ENDPOINT: ${{ secrets.OPENAI_API_ENDPOINT }}

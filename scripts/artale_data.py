@@ -9,7 +9,7 @@ from playwright.sync_api import sync_playwright
 
 console = Console()
 
-BASE_URL = "https://a2983456456.github.io/artale-drop/"
+BASE_URL = "https://mai0313.github.io/artale-drop/"
 
 
 def parse_monster_card(card: Tag) -> dict:
@@ -95,15 +95,12 @@ def fetch_monster_cards() -> list[dict[str, Any]]:
         for monster_card in monster_cards:
             parsed_card = parse_monster_card(monster_card)
             results.append(parsed_card)
+        with open("./data/monsters.json", "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=4)
+        console.print("✅ JSON 已儲存至 monsters.json")
         return results
 
 
 # 主程式
 if __name__ == "__main__":
-    data = fetch_monster_cards()
-
-    # 儲存為 JSON
-    with open("./data/monsters.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-    console.print("✅ JSON 已儲存至 monsters.json")
+    fetch_monster_cards()
