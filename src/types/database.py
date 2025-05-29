@@ -1,8 +1,11 @@
 from typing import Any
 
 from redis import Redis
+import dotenv
 from pydantic import Field, BaseModel, AliasChoices, computed_field
 from pydantic_settings import BaseSettings
+
+dotenv.load_dotenv()
 
 
 class PostgreSQLConfig(BaseSettings):

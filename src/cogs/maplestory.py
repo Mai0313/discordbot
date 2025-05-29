@@ -8,6 +8,25 @@ from nextcord import Embed, Locale, Interaction, SelectOption
 from nextcord.ui import View, Select
 from nextcord.ext import commands
 
+# 怪物屬性格式模板
+MONSTER_ATTR_TEMPLATE = """
+**等級**: {level}
+**HP**: {hp}
+**MP**: {mp}
+**經驗值**: {exp}
+**迴避**: {evasion}
+**物理防禦**: {pdef}
+**魔法防禦**: {mdef}
+**命中需求**: {accuracy_required}
+"""
+
+# 基本統計格式模板
+BASIC_STATS_TEMPLATE = """
+**怪物總數**: {total_monsters}
+**物品總數**: {total_items}
+**地圖總數**: {total_maps}
+"""
+
 
 class MapleDropSearchView(View):
     """楓之谷掉落物品搜尋的互動式介面"""
@@ -59,18 +78,18 @@ class MapleDropSearchView(View):
             embed.set_thumbnail(url=monster["image"])
 
         # 怪物屬性
-        attrs = monster.get("attributes", {})
-        attr_text = f"""
-        **等級**: {attrs.get("level", "N/A")}
-        **HP**: {attrs.get("hp", "N/A")}
-        **MP**: {attrs.get("mp", "N/A")}
-        **經驗值**: {attrs.get("exp", "N/A")}
-        **迴避**: {attrs.get("evasion", "N/A")}
-        **物理防禦**: {attrs.get("pdef", "N/A")}
-        **魔法防禦**: {attrs.get("mdef", "N/A")}
-        **命中需求**: {attrs.get("accuracy_required", "N/A")}
-        """
-        embed.add_field(name="📊 屬性", value=attr_text.strip(), inline=True)
+        attrs: dict[str, str] = monster.get("attributes", {})
+        attr_text = MONSTER_ATTR_TEMPLATE.format(
+            level=attrs.get("level", "N/A"),
+            hp=attrs.get("hp", "N/A"),
+            mp=attrs.get("mp", "N/A"),
+            exp=attrs.get("exp", "N/A"),
+            evasion=attrs.get("evasion", "N/A"),
+            pdef=attrs.get("pdef", "N/A"),
+            mdef=attrs.get("mdef", "N/A"),
+            accuracy_required=attrs.get("accuracy_required", "N/A"),
+        )
+        embed.add_field(name="📊 屬性", value=attr_text, inline=True)
 
         # 出現地圖
         maps = monster.get("maps", [])
@@ -459,11 +478,9 @@ class MapleStoryCogs(commands.Cog):
         # 基本統計
         embed.add_field(
             name="📈 基本統計",
-            value=f"""
-            **怪物總數**: {total_monsters}
-            **物品總數**: {total_items}
-            **地圖總數**: {total_maps}
-            """.strip(),
+            value=BASIC_STATS_TEMPLATE.format(
+                total_monsters=total_monsters, total_items=total_items, total_maps=total_maps
+            ),
             inline=True,
         )
 

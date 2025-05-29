@@ -1,7 +1,10 @@
 from typing import Optional
 
+import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
+
+dotenv.load_dotenv()
 
 
 class OpenAIConfig(BaseSettings):
