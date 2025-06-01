@@ -13,6 +13,8 @@
 - Use pydantic model, and all pydantic models should include `Field`, and `description` should be included.
 - Maximum line length of 99 characters
 - Use absolute imports over relative imports
+- For tests, it should be placed in the `tests/` directory, and the test file should start with `test_`.
+    - Use `assert` statements for testing conditions
 
 ### Example
 
@@ -159,15 +161,24 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Architecture**: Ready for integration with image generation APIs
 - **Response Pattern**: Placeholder response with proper interaction handling
 
-#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
+#### 6. MapleStory Database Query & Auction System (`src/cogs/maplestory.py`)
 
-**Commands:**
+**Database Query Commands:**
 
 - `/maple_monster` - Search for monster drop information
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
 
+**Auction System Commands:**
+
+- `/auction_create` - Create a new item auction with starting price and bid increment
+- `/auction_list` - Browse all active auctions with interactive selection
+- `/auction_info` - View detailed information about a specific auction
+- `/auction_my` - View your created auctions and their current status
+
 **Implementation Details:**
+
+**Database Query System:**
 
 - **Data Source**: Comprehensive JSON database (`data/monsters.json`) with 192+ monsters
 - **Search Engine**: Fuzzy string matching with case-insensitive search
@@ -180,19 +191,40 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - Location mapping with up to 5 display locations
     - Item source tracking with visual thumbnails and external links
 
+**Auction System:**
+
+- **Data Storage**: SQLite database (`data/auctions.db`) with ACID compliance
+- **Data Models**: Pydantic models (`Auction`, `Bid`) with comprehensive field validation
+- **Interactive UI**: Modal dialogs for auction creation and bidding with form validation
+- **Real-time Updates**: Dynamic auction displays with refresh, bid, and history buttons
+- **Security Features**:
+    - Prevent self-bidding on own auctions
+    - Duplicate bid validation and proper increment enforcement
+    - Automatic auction expiration handling (24-hour duration)
+- **Bid Management**: Complete bid history tracking with timestamps and user information
+
 **Advanced Features:**
 
 - **Statistics Generation**: Popular item tracking based on drop frequency
 - **Visual Enhancement**: Embedded images from external Artale database
 - **Error Handling**: Graceful handling of missing data files and malformed JSON
 - **Result Pagination**: Discord's 25-option limit handling with "and X more" indicators
+- **Auction Persistence**: Reliable SQLite storage with proper database schema management
+- **Multi-language Auction Support**: All auction interfaces localized for 4 languages
 
 **Technical Architecture:**
 
-- **Data Models**: JSON-based monster/item relationships with comprehensive attribute mapping
+- **Data Models**:
+    - JSON-based monster/item relationships with comprehensive attribute mapping
+    - Pydantic-based auction and bid models with field validation and descriptions
+- **Database Operations**: `AuctionDatabase` class with full CRUD operations
 - **Search Algorithms**: String containment matching with result ranking
-- **UI Components**: Custom View classes with Select menus for user interaction
+- **UI Components**:
+    - Custom View classes with Select menus for user interaction
+    - Modal classes for form-based data input (`AuctionCreateModal`, `AuctionBidModal`)
+    - Interactive button views for auction participation (`AuctionView`, `AuctionListView`)
 - **External Integration**: Links to MapleStory library for detailed item information
+- **Auction Logic**: Comprehensive bid validation, auction state management, and automatic expiration
 
 ### Critical Core Functionality
 
@@ -238,7 +270,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - `gen_search.py` - Web search via Perplexity API
     - `summary.py` - Message summarization with interactive UI
     - `video.py` - Multi-platform video downloading
-    - `maplestory.py` - MapleStory database queries and drop searches
+    - `maplestory.py` - MapleStory database queries, drop searches, and auction system
     - `gen_image.py` - Image generation placeholder
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/sdk/`
@@ -247,6 +279,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Tests**: Comprehensive test suite in `tests/`
 - **Data**: Game databases and user data in `data/`
     - `monsters.json` - MapleStory monster and drop database (192+ monsters)
+    - `auctions.db` - SQLite database for auction system with bid tracking
 
 #### Key Dependencies:
 
