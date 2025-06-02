@@ -1264,12 +1264,12 @@ class MapleStoryCogs(commands.Cog):
             name_localizations={
                 Locale.zh_TW: "拍賣編號",
                 Locale.zh_CN: "拍卖编号",
-                Locale.ja: "オークションID",
+                Locale.ja: "オークション番号",
             },
             description_localizations={
                 Locale.zh_TW: "要查看的拍賣編號",
                 Locale.zh_CN: "要查看的拍卖编号",
-                Locale.ja: "表示するオークションID",
+                Locale.ja: "表示するオークション番号",
             },
             required=True,
         ),
@@ -1392,3 +1392,7 @@ class MapleStoryCogs(commands.Cog):
 
         embed.set_footer(text="點擊下方按鈕參與競標!")
         return embed
+
+
+def setup(bot: commands.Bot) -> None:
+    bot.add_cog(MapleStoryCogs(bot))
