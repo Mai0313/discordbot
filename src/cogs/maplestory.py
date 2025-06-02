@@ -555,7 +555,7 @@ class AuctionView(View):
         )
 
         bid_list = []
-        for i, bid in enumerate(bids[:10], 1):
+        for i, bid in enumerate(bids, 1):
             time_str = bid.timestamp.strftime("%m/%d %H:%M")
             bid_list.append(f"{i}. **{bid.bidder_name}** - {bid.amount:,} 楓幣 ({time_str})")
 
@@ -627,7 +627,7 @@ class AuctionListView(View):
 
         if auctions:
             options = []
-            for auction in auctions[:25]:  # Discord 限制最多25個選項
+            for auction in auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
 
@@ -801,13 +801,10 @@ class MapleDropSearchView(View):
 
         # 掉落來源怪物
         monster_list = []
-        for monster in monsters[:10]:  # 最多顯示10個怪物
+        for monster in monsters:
             attrs = monster.get("attributes", {})
             level = attrs.get("level", "?")
             monster_list.append(f"• **{monster['name']}** (Lv.{level})")
-
-        if len(monsters) > 10:
-            monster_list.append(f"... 還有 {len(monsters) - 10} 個怪物")
 
         embed.add_field(name="🐲 掉落來源怪物", value="\n".join(monster_list), inline=False)
 
@@ -893,7 +890,7 @@ class MapleStoryCogs(commands.Cog):
         exp = attrs.get("exp", "?")
         return f"Lv.{level} | HP:{hp} | EXP:{exp}"
 
-    def _get_popular_items(self, limit: int = 10) -> list[str]:
+    def _get_popular_items(self) -> list[str]:
         """獲取熱門物品（出現次數最多的物品）"""
         item_count: dict[str, int] = {}
         for monster in self.monsters_data:
@@ -903,7 +900,7 @@ class MapleStoryCogs(commands.Cog):
 
         # 按出現次數排序
         sorted_items = sorted(item_count.items(), key=lambda x: x[1], reverse=True)
-        return [item[0] for item in sorted_items[:limit]]
+        return [item[0] for item in sorted_items]
 
     @nextcord.slash_command(
         name="maple_monster",
@@ -980,7 +977,7 @@ class MapleStoryCogs(commands.Cog):
 
             # 更新選擇器選項
             options = []
-            for _i, monster in enumerate(monsters_found[:25]):  # Discord 限制最多25個選項
+            for _i, monster in enumerate(monsters_found):  # Discord 限制最多25個選項
                 level = monster.get("attributes", {}).get("level", "?")
                 options.append(
                     SelectOption(
@@ -1067,7 +1064,7 @@ class MapleStoryCogs(commands.Cog):
 
             # 更新選擇器選項
             options = []
-            for item in items_found[:25]:  # Discord 限制最多25個選項
+            for item in items_found:
                 # 取得物品類型
                 item_type = "未知"
                 for monster in self.monsters_data:
@@ -1127,7 +1124,7 @@ class MapleStoryCogs(commands.Cog):
             level_counts[level_range] = level_counts.get(level_range, 0) + 1
 
         # 獲取熱門物品
-        popular_items = self._get_popular_items(5)
+        popular_items = self._get_popular_items()
 
         embed = Embed(
             title="📊 楓之谷資料庫統計", description="Artale 楓之谷資料庫概覽", color=0x00FF88
@@ -1145,7 +1142,7 @@ class MapleStoryCogs(commands.Cog):
         # 等級分布（顯示前5個）
         level_dist = "\n".join([
             f"**{level_range}級**: {count}隻"
-            for level_range, count in sorted(level_counts.items())[:5]
+            for level_range, count in sorted(level_counts.items())
         ])
         embed.add_field(name="🎯 等級分布", value=level_dist, inline=True)
 
@@ -1217,7 +1214,7 @@ class MapleStoryCogs(commands.Cog):
 
         # 顯示前5個拍賣的摘要
         auction_summary = []
-        for i, auction in enumerate(auctions[:5], 1):
+        for i, auction in enumerate(auctions, 1):
             remaining_time = auction.end_time - datetime.now()
             hours = int(remaining_time.total_seconds() // 3600)
 
@@ -1230,11 +1227,7 @@ class MapleStoryCogs(commands.Cog):
         embed.add_field(name="🏺 拍賣預覽", value="\n\n".join(auction_summary), inline=False)
 
         if len(auctions) > 5:
-            embed.add_field(
-                name="📝 說明",
-                value=f"還有 {len(auctions) - 5} 個拍賣，請使用下方選單查看詳細資訊。",
-                inline=False,
-            )
+            embed.add_field(name="📝 說明", value="請使用下方選單查看詳細資訊。", inline=False)
 
         view = AuctionListView(auctions)
         await interaction.followup.send(embed=embed, view=view)
@@ -1329,7 +1322,7 @@ class MapleStoryCogs(commands.Cog):
 
         if user_auctions:
             auction_list = []
-            for auction in user_auctions[:5]:
+            for auction in user_auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
 
@@ -1341,7 +1334,7 @@ class MapleStoryCogs(commands.Cog):
 
         if leading_auctions:
             leading_list = []
-            for auction in leading_auctions[:5]:
+            for auction in leading_auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
 
