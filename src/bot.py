@@ -16,11 +16,14 @@ from src.sdk.log_message import MessageLogger
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
+        intents = nextcord.Intents.default()
+        intents.message_content = True
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
             # intents=nextcord.Intents.default(),
             # 啟用所有 Intents
-            intents=nextcord.Intents.all(),
+            # intents=nextcord.Intents.all(),
+            intents=intents,
             help_command=None,
             description="A Discord bot made with Nextcord.",
         )
