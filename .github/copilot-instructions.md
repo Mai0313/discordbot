@@ -183,10 +183,11 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Core Features:**
 
-- **Auction Creation**: Interactive modal form for creating auctions with item name (max 100 chars), starting price, bid increment, and duration (1-168 hours, default 24)
+- **Auction Creation**: Interactive modal form for creating auctions with item name (max 100 chars), starting price, bid increment, currency type selection (楓幣/雪花), and duration (1-168 hours, default 24)
+- **Currency Type Support**: Users can choose between "楓幣" (Mesos) and "雪花" (Snowflake) as auction currency with "楓幣" as default
 - **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing
-- **Real-time Updates**: Live remaining time and current price displays
-- **Personal Auction Management**: View created auctions and current leading bids
+- **Real-time Updates**: Live remaining time and current price displays with proper currency formatting
+- **Personal Auction Management**: View created auctions and current leading bids with currency type indication
 
 **Interactive Components:**
 
@@ -196,9 +197,10 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Database Architecture:**
 
-- **auctions table**: id, item_name, starting_price, increment, duration_hours, creator_id/name, created_at, end_time, current_price, current_bidder_id/name, is_active
+- **auctions table**: id, item_name, starting_price, increment, duration_hours, creator_id/name, created_at, end_time, current_price, current_bidder_id/name, is_active, currency_type
 - **bids table**: id, auction_id, bidder_id/name, amount, timestamp
 - **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance and automatic schema management
+- **Currency Support**: Flexible currency type system supporting "楓幣" (Mesos) and "雪花" (Snowflake) with backward compatibility
 
 **Implementation Details:**
 
@@ -218,37 +220,50 @@ The comprehensive auction system allows users to create item auctions and partic
 **Auction System:**
 
 - **Data Storage**: SQLite database (`data/auctions.db`) with ACID compliance
+
 - **Data Models**: Pydantic models (`Auction`, `Bid`) with comprehensive field validation
+
 - **Interactive UI**: Modal dialogs for auction creation and bidding with form validation
+
 - **Real-time Updates**: Dynamic auction displays with refresh, bid, and history buttons
+
 - **Security Features**:
+
     - Prevent self-bidding on own auctions
     - Duplicate bid validation and proper increment enforcement
     - Automatic auction expiration handling (24-hour duration)
+
 - **Bid Management**: Complete bid history tracking with timestamps and user information
 
-**Advanced Features:**
+- **Advanced Features:**
 
 - **Statistics Generation**: Popular item tracking based on drop frequency
+
 - **Visual Enhancement**: Embedded images from external Artale database
+
 - **Error Handling**: Graceful handling of missing data files and malformed JSON
+
 - **Result Pagination**: Discord's 25-option limit handling with "and X more" indicators
+
 - **Auction Persistence**: Reliable SQLite storage with proper database schema management
+
 - **Multi-language Auction Support**: All auction interfaces localized for 4 languages
+
+- **Multi-currency Display**: Dynamic currency formatting in all auction displays and interactions
 
 **Technical Architecture:**
 
 - **Data Models**:
     - JSON-based monster/item relationships with comprehensive attribute mapping
-    - Pydantic-based auction and bid models with field validation and descriptions
-- **Database Operations**: `AuctionDatabase` class with full CRUD operations
+    - Pydantic-based auction and bid models with field validation, descriptions, and currency type support
+- **Database Operations**: `AuctionDatabase` class with full CRUD operations and currency type handling
 - **Search Algorithms**: String containment matching with result ranking
 - **UI Components**:
     - Custom View classes with Select menus for user interaction
-    - Modal classes for form-based data input (`AuctionCreateModal`, `AuctionBidModal`)
+    - Modal classes for form-based data input with currency selection (`AuctionCreateModal`, `AuctionBidModal`)
     - Interactive button views for auction participation (`AuctionView`, `AuctionListView`)
 - **External Integration**: Links to MapleStory library for detailed item information
-- **Auction Logic**: Comprehensive bid validation, auction state management, and automatic expiration
+- **Auction Logic**: Comprehensive bid validation, auction state management, currency type handling, and automatic expiration
 
 ### Critical Core Functionality
 

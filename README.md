@@ -34,7 +34,7 @@ _Suggestions and contributions are always welcome!_
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **MapleStory Database**: Search monsters and items with drop information
-- **MapleStory Auction System**: Complete auction platform with bidding functionality
+- **MapleStory Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花)
 
 ### 🌍 Multi-Language Support
 
@@ -54,21 +54,21 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                           |
-| ----------------- | --------------------------------- | ---------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model support, image input   |
-| `/oais`           | Real-time streaming AI response   | Live response updates              |
-| `/search`         | Web search with AI summary        | Perplexity API integration         |
-| `/sum`            | Interactive message summarization | User filtering, configurable count |
-| `/download_video` | Multi-platform video downloader   | Quality options, size validation   |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information       |
-| `/maple_item`     | Search MapleStory item sources    | Drop source tracking               |
-| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items    |
-| `/auction_create` | Create new item auction           | Interactive form, time validation  |
-| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu   |
-| `/auction_info`   | View auction details              | Current bid info, bid history      |
-| `/auction_my`     | View personal auctions            | Created & leading auctions         |
-| `/ping`           | Bot performance testing           | Latency measurement                |
+| Command           | Description                       | Features                             |
+| ----------------- | --------------------------------- | ------------------------------------ |
+| `/oai`            | Generate AI text response         | Multi-model support, image input     |
+| `/oais`           | Real-time streaming AI response   | Live response updates                |
+| `/search`         | Web search with AI summary        | Perplexity API integration           |
+| `/sum`            | Interactive message summarization | User filtering, configurable count   |
+| `/download_video` | Multi-platform video downloader   | Quality options, size validation     |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information         |
+| `/maple_item`     | Search MapleStory item sources    | Drop source tracking                 |
+| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items      |
+| `/auction_create` | Create new item auction           | Interactive form, currency selection |
+| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu     |
+| `/auction_info`   | View auction details              | Current bid info, bid history        |
+| `/auction_my`     | View personal auctions            | Created & leading auctions           |
+| `/ping`           | Bot performance testing           | Latency measurement                  |
 
 ## 🚀 Quick Start
 
@@ -193,11 +193,12 @@ data/
 - Item source tracking with visual displays
 - Cached search results for optimal performance
 - **Complete Auction System**:
-    - Create item auctions with customizable duration and bidding increments
+    - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花)
+    - Multi-currency support with "楓幣" (Mesos) as default and "雪花" (Snowflake) as alternative
     - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
-    - Personal auction management and bid tracking
+    - Personal auction management and bid tracking with currency type display
     - Security features preventing self-bidding and duplicate bids
-    - SQLite database storage with ACID compliance
+    - SQLite database storage with ACID compliance and backward compatibility
 
 # 🔒 Privacy Policy
 

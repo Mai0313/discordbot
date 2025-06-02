@@ -31,6 +31,12 @@ BASIC_STATS_TEMPLATE = """
 """
 
 
+def get_currency_display(currency_type: str) -> str:
+    """取得貨幣顯示文字"""
+    currency_map = {"楓幣": "楓幣", "雪花": "雪花"}
+    return currency_map.get(currency_type, "楓幣")
+
+
 # Pydantic 模型
 class Auction(BaseModel):
     """競標資料模型"""
@@ -48,6 +54,7 @@ class Auction(BaseModel):
     current_bidder_id: Optional[int] = Field(None, description="當前最高出價者ID")
     current_bidder_name: Optional[str] = Field(None, description="當前最高出價者名稱")
     is_active: bool = Field(default=True, description="是否活躍中")
+    currency_type: str = Field(default="楓幣", description="貨幣類型（楓幣或雪花）")
 
 
 class Bid(BaseModel):
@@ -90,7 +97,8 @@ class AuctionDatabase:
                     current_price INTEGER NOT NULL,
                     current_bidder_id INTEGER,
                     current_bidder_name TEXT,
-                    is_active BOOLEAN DEFAULT TRUE
+                    is_active BOOLEAN DEFAULT TRUE,
+                    currency_type TEXT DEFAULT '楓幣'
                 )
             """)
 
@@ -117,8 +125,8 @@ class AuctionDatabase:
                 """
                 INSERT INTO auctions (
                     item_name, starting_price, increment, duration_hours,
-                    creator_id, creator_name, end_time, current_price
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    creator_id, creator_name, end_time, current_price, currency_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     auction.item_name,
@@ -129,6 +137,7 @@ class AuctionDatabase:
                     auction.creator_name,
                     auction.end_time,
                     auction.current_price,
+                    auction.currency_type,
                 ),
             )
             conn.commit()
@@ -144,6 +153,11 @@ class AuctionDatabase:
             row = cursor.fetchone()
 
             if row:
+                try:
+                    currency_type = row["currency_type"]
+                except (KeyError, IndexError):
+                    currency_type = "楓幣"  # Default for backward compatibility
+
                 return Auction(
                     id=row["id"],
                     item_name=row["item_name"],
@@ -158,6 +172,7 @@ class AuctionDatabase:
                     current_bidder_id=row["current_bidder_id"],
                     current_bidder_name=row["current_bidder_name"],
                     is_active=bool(row["is_active"]),
+                    currency_type=currency_type,
                 )
             return None
 
@@ -174,6 +189,11 @@ class AuctionDatabase:
 
             auctions = []
             for row in cursor.fetchall():
+                try:
+                    currency_type = row["currency_type"]
+                except (KeyError, IndexError):
+                    currency_type = "楓幣"  # Default for backward compatibility
+
                 auctions.append(
                     Auction(
                         id=row["id"],
@@ -189,6 +209,7 @@ class AuctionDatabase:
                         current_bidder_id=row["current_bidder_id"],
                         current_bidder_name=row["current_bidder_name"],
                         is_active=bool(row["is_active"]),
+                        currency_type=currency_type,
                     )
                 )
 
@@ -316,16 +337,26 @@ class AuctionCreateModal(Modal):
             default_value="24",
         )
 
+        self.currency_type = TextInput(
+            label="貨幣類型",
+            placeholder="請輸入「楓幣」或「雪花」...",
+            required=True,
+            max_length=10,
+            default_value="楓幣",
+        )
+
         self.add_item(self.item_name)
         self.add_item(self.starting_price)
         self.add_item(self.increment)
         self.add_item(self.duration)
+        self.add_item(self.currency_type)
 
     async def callback(self, interaction: Interaction) -> None:
         try:
             starting_price = int(self.starting_price.value)
             increment = int(self.increment.value)
             duration_hours = int(self.duration.value)
+            currency_type = self.currency_type.value.strip()
 
             if starting_price <= 0:
                 await interaction.response.send_message("❌ 起標價格必須大於 0!", ephemeral=True)
@@ -341,6 +372,12 @@ class AuctionCreateModal(Modal):
                 )
                 return
 
+            if currency_type not in ["楓幣", "雪花"]:
+                await interaction.response.send_message(
+                    "❌ 貨幣類型必須是「楓幣」或「雪花」!", ephemeral=True
+                )
+                return
+
             # 創建競標
             auction = Auction(
                 item_name=self.item_name.value,
@@ -351,6 +388,7 @@ class AuctionCreateModal(Modal):
                 creator_name=interaction.user.display_name,
                 end_time=datetime.now() + timedelta(hours=duration_hours),
                 current_price=starting_price,
+                currency_type=currency_type,
             )
 
             db = AuctionDatabase()
@@ -379,9 +417,12 @@ class AuctionCreateModal(Modal):
             title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
         )
 
-        embed.add_field(name="💰 當前價格", value=f"{auction.current_price:,} 楓幣", inline=True)
+        currency = get_currency_display(auction.currency_type)
+        embed.add_field(
+            name="💰 當前價格", value=f"{auction.current_price:,} {currency}", inline=True
+        )
 
-        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} 楓幣", inline=True)
+        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} {currency}", inline=True)
 
         embed.add_field(
             name="👤 當前領先", value=auction.current_bidder_name or "暫無出價", inline=True
@@ -411,10 +452,11 @@ class AuctionBidModal(Modal):
         self.auction = auction
 
         min_bid = auction.current_price + auction.increment
+        currency = get_currency_display(auction.currency_type)
 
         self.bid_amount = TextInput(
             label="出價金額",
-            placeholder=f"最低出價：{min_bid:,} 楓幣",
+            placeholder=f"最低出價：{min_bid:,} {currency}",
             required=True,
             max_length=20,
         )
@@ -425,10 +467,11 @@ class AuctionBidModal(Modal):
         try:
             bid_amount = int(self.bid_amount.value)
             min_bid = self.auction.current_price + self.auction.increment
+            currency = get_currency_display(self.auction.currency_type)
 
             if bid_amount < min_bid:
                 await interaction.response.send_message(
-                    f"❌ 出價金額必須至少為 {min_bid:,} 楓幣!", ephemeral=True
+                    f"❌ 出價金額必須至少為 {min_bid:,} {currency}!", ephemeral=True
                 )
                 return
 
@@ -464,7 +507,7 @@ class AuctionBidModal(Modal):
                     view = AuctionView(updated_auction)
 
                     await interaction.response.edit_message(
-                        content=f"🎉 出價成功!{interaction.user.display_name} 出價 {bid_amount:,} 楓幣",
+                        content=f"🎉 出價成功!{interaction.user.display_name} 出價 {bid_amount:,} {currency}",
                         embed=embed,
                         view=view,
                     )
@@ -491,9 +534,12 @@ class AuctionBidModal(Modal):
             title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
         )
 
-        embed.add_field(name="💰 當前價格", value=f"{auction.current_price:,} 楓幣", inline=True)
+        currency = get_currency_display(auction.currency_type)
+        embed.add_field(
+            name="💰 當前價格", value=f"{auction.current_price:,} {currency}", inline=True
+        )
 
-        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} 楓幣", inline=True)
+        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} {currency}", inline=True)
 
         embed.add_field(
             name="👤 當前領先", value=auction.current_bidder_name or "暫無出價", inline=True
@@ -554,10 +600,11 @@ class AuctionView(View):
             color=0x00AAFF,
         )
 
+        currency = get_currency_display(self.auction.currency_type)
         bid_list = []
         for i, bid in enumerate(bids, 1):
             time_str = bid.timestamp.strftime("%m/%d %H:%M")
-            bid_list.append(f"{i}. **{bid.bidder_name}** - {bid.amount:,} 楓幣 ({time_str})")
+            bid_list.append(f"{i}. **{bid.bidder_name}** - {bid.amount:,} {currency} ({time_str})")
 
         embed.add_field(
             name="💰 出價記錄（前10筆）",
@@ -591,9 +638,12 @@ class AuctionView(View):
             title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
         )
 
-        embed.add_field(name="💰 當前價格", value=f"{auction.current_price:,} 楓幣", inline=True)
+        currency = get_currency_display(auction.currency_type)
+        embed.add_field(
+            name="💰 當前價格", value=f"{auction.current_price:,} {currency}", inline=True
+        )
 
-        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} 楓幣", inline=True)
+        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} {currency}", inline=True)
 
         embed.add_field(
             name="👤 當前領先", value=auction.current_bidder_name or "暫無出價", inline=True
@@ -630,8 +680,9 @@ class AuctionListView(View):
             for auction in auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
+                currency = get_currency_display(auction.currency_type)
 
-                description = f"當前價格: {auction.current_price:,} 楓幣 | 剩餘: {hours}h"
+                description = f"當前價格: {auction.current_price:,} {currency} | 剩餘: {hours}h"
                 options.append(
                     SelectOption(
                         label=auction.item_name, description=description, value=str(auction.id)
@@ -663,9 +714,12 @@ class AuctionListView(View):
             title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
         )
 
-        embed.add_field(name="💰 當前價格", value=f"{auction.current_price:,} 楓幣", inline=True)
+        currency = get_currency_display(auction.currency_type)
+        embed.add_field(
+            name="💰 當前價格", value=f"{auction.current_price:,} {currency}", inline=True
+        )
 
-        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} 楓幣", inline=True)
+        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} {currency}", inline=True)
 
         embed.add_field(
             name="👤 當前領先", value=auction.current_bidder_name or "暫無出價", inline=True
@@ -1217,10 +1271,11 @@ class MapleStoryCogs(commands.Cog):
         for i, auction in enumerate(auctions, 1):
             remaining_time = auction.end_time - datetime.now()
             hours = int(remaining_time.total_seconds() // 3600)
+            currency = get_currency_display(auction.currency_type)
 
             summary = (
                 f"{i}. **{auction.item_name}** (#{auction.id})\n"
-                f"   💰 {auction.current_price:,} 楓幣 | ⏰ {hours}h 剩餘"
+                f"   💰 {auction.current_price:,} {currency} | ⏰ {hours}h 剩餘"
             )
             auction_summary.append(summary)
 
@@ -1325,9 +1380,10 @@ class MapleStoryCogs(commands.Cog):
             for auction in user_auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
+                currency = get_currency_display(auction.currency_type)
 
                 auction_list.append(
-                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,} 楓幣 ({hours}h)"
+                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,} {currency} ({hours}h)"
                 )
 
             embed.add_field(name="🏺 我創建的拍賣", value="\n".join(auction_list), inline=False)
@@ -1337,9 +1393,10 @@ class MapleStoryCogs(commands.Cog):
             for auction in leading_auctions:
                 remaining_time = auction.end_time - datetime.now()
                 hours = int(remaining_time.total_seconds() // 3600)
+                currency = get_currency_display(auction.currency_type)
 
                 leading_list.append(
-                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,} 楓幣 ({hours}h)"
+                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,} {currency} ({hours}h)"
                 )
 
             embed.add_field(name="👑 我領先的拍賣", value="\n".join(leading_list), inline=False)
@@ -1360,9 +1417,12 @@ class MapleStoryCogs(commands.Cog):
             title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
         )
 
-        embed.add_field(name="💰 當前價格", value=f"{auction.current_price:,} 楓幣", inline=True)
+        currency = get_currency_display(auction.currency_type)
+        embed.add_field(
+            name="💰 當前價格", value=f"{auction.current_price:,} {currency}", inline=True
+        )
 
-        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} 楓幣", inline=True)
+        embed.add_field(name="📈 加價金額", value=f"{auction.increment:,} {currency}", inline=True)
 
         embed.add_field(
             name="👤 當前領先", value=auction.current_bidder_name or "暫無出價", inline=True
