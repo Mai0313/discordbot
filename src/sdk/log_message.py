@@ -17,8 +17,11 @@ class MessageLogger(BaseModel):
     def channel_name_or_author_name(self) -> str:
         if isinstance(self.message.channel, nextcord.DMChannel):
             author_name = self.message.author.nick or self.message.author.name
-            return f"DM_{author_name}"
-        return f"channel_{self.message.channel.name}" or f"channel_{self.message.channel.id}"
+            return f"DM_{author_name}_{self.message.author.id}"
+        channel_name = self.message.channel.name
+        if channel_name:
+            return f"channel_{channel_name}_{self.message.channel.id}"
+        return f"channel_{self.message.channel.id}"
 
     @computed_field
     @property
@@ -44,7 +47,7 @@ class MessageLogger(BaseModel):
         sticker_paths = await self._save_stickers()
         data_dict = {
             "author": self.message.author.name,
-            "author_id": self.message.author.id,
+            "author_id": self.channel_id_or_author_id,
             "content": self.message.content,
             "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "channel_name": self.channel_name_or_author_name,
