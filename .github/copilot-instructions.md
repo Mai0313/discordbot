@@ -183,8 +183,8 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Core Features:**
 
-- **Auction Creation**: Two-step interactive process with currency selection dropdown (楓幣/雪花) followed by modal form for item details (name max 100 chars), starting price (float), bid increment (float), and duration (1-168 hours, default 24)
-- **Currency Type Support**: Users can choose between "楓幣" (Mesos) and "雪花" (Snowflake) via dropdown selection with emoji indicators, with "楓幣" as default
+- **Auction Creation**: Two-step interactive process with currency selection dropdown (楓幣/雪花/台幣) followed by modal form for item details (name max 100 chars), starting price (float), bid increment (float), and duration (1-168 hours, default 24)
+- **Currency Type Support**: Users can choose between "楓幣" (Mesos), "雪花" (Snowflake), and "台幣" (Taiwan Dollar) via dropdown selection with emoji indicators, with "楓幣" as default
 - **Float Price Support**: All price fields (starting price, increment, bid amounts) support decimal values with proper `.2f` formatting throughout the UI
 - **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing
 - **Real-time Updates**: Live remaining time and current price displays with proper float currency formatting
@@ -201,7 +201,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - **auctions table**: id, item_name, starting_price (REAL), increment (REAL), duration_hours, creator_id/name, created_at, end_time, current_price (REAL), current_bidder_id/name, is_active, currency_type
 - **bids table**: id, auction_id, bidder_id/name, amount (REAL), timestamp
 - **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance, automatic schema migration from INTEGER to REAL for price fields, and backward compatibility
-- **Currency Support**: Flexible currency type system supporting "楓幣" (Mesos) and "雪花" (Snowflake) with backward compatibility
+- **Currency Support**: Flexible currency type system supporting "楓幣" (Mesos), "雪花" (Snowflake), and "台幣" (Taiwan Dollar) with backward compatibility
 - **Migration Support**: Robust database migration logic that handles different schema versions and missing columns with proper default values
 
 **Implementation Details:**

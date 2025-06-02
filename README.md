@@ -34,7 +34,7 @@ _Suggestions and contributions are always welcome!_
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **MapleStory Database**: Search monsters and items with drop information
-- **MapleStory Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花)
+- **MapleStory Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
 
 ### 🌍 Multi-Language Support
 
@@ -193,8 +193,8 @@ data/
 - Item source tracking with visual displays
 - Cached search results for optimal performance
 - **Complete Auction System**:
-    - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花)
-    - Multi-currency support with "楓幣" (Mesos) as default and "雪花" (Snowflake) as alternative
+    - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
+    - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
     - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
     - Personal auction management and bid tracking with currency type display
     - Security features preventing self-bidding and duplicate bids
