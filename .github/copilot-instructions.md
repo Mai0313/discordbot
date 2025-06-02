@@ -56,6 +56,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 ### Core Architecture
 
+- **Main Bot Implementation**: The primary bot class `DiscordBot` is implemented in `src/bot.py`, which extends `nextcord.ext.commands.Bot` and handles bot initialization, cog loading, logging configuration, and event management
 - **Framework**: Nextcord (Discord.py fork) with async/await patterns
 - **Structure**: Modular Cog system under `src/cogs/` with implementation details in `src/sdk/`
 - **Configuration**: Pydantic-based config management with environment variable support

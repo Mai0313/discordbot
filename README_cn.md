@@ -44,6 +44,7 @@ _歡迎提供建議和貢獻!_
 
 ### 🔧 技術特色
 
+- **主要機器人實現**：核心機器人類別 `DiscordBot` 在 `src/bot.py` 中實現，繼承 `nextcord.ext.commands.Bot` 並包含完整的初始化、Cog 載入和事件處理
 - 模組化 Cog 架構設計
 - 非同步處理配合 nextcord
 - Pydantic 基礎配置管理

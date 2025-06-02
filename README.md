@@ -44,6 +44,7 @@ _Suggestions and contributions are always welcome!_
 
 ### 🔧 Technical Features
 
+- **Main Bot Implementation**: The core bot class `DiscordBot` is implemented in `src/bot.py`, extending `nextcord.ext.commands.Bot` with comprehensive initialization, cog loading, and event handling
 - Modular Cog-based architecture
 - Async/await patterns with nextcord
 - Pydantic-based configuration management
