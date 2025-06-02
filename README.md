@@ -34,7 +34,7 @@ _Suggestions and contributions are always welcome!_
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **MapleStory Database**: Search monsters and items with drop information
-- **MapleStory Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
+- **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
 
 ### 🌍 Multi-Language Support
 
@@ -154,7 +154,8 @@ src/
 │   ├── gen_search.py   # Web search integration
 │   ├── summary.py      # Message summarization
 │   ├── video.py        # Video downloading
-│   ├── maplestory.py   # MapleStory database queries & auction system
+│   ├── maplestory.py   # MapleStory database queries
+│   ├── auction.py      # Auction system with bidding
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # System utilities
 ├── sdk/                # Core business logic
@@ -192,7 +193,7 @@ data/
 - Detailed monster statistics and drop information
 - Item source tracking with visual displays
 - Cached search results for optimal performance
-- **Complete Auction System**:
+- **Separate Auction System Module**:
     - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
     - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
     - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)

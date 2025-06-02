@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timedelta
 import tempfile
 
-from src.cogs.maplestory import Bid, Auction, AuctionDatabase
+from src.cogs.auction import Bid, Auction, AuctionDatabase
 
 
 def test_auction_model_creation():

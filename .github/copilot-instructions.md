@@ -162,13 +162,15 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Architecture**: Ready for integration with image generation APIs
 - **Response Pattern**: Placeholder response with proper interaction handling
 
-#### 6. MapleStory Database Query & Auction System (`src/cogs/maplestory.py`)
+#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
 
 **Database Query Commands:**
 
 - `/maple_monster` - Search for monster drop information
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
+
+#### 7. Auction System (`src/cogs/auction.py`)
 
 **Auction System Commands:**
 
@@ -206,7 +208,7 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Implementation Details:**
 
-**Database Query System:**
+**MapleStory Database Query System:**
 
 - **Data Source**: Comprehensive JSON database (`data/monsters.json`) with 192+ monsters
 - **Search Engine**: Fuzzy string matching with case-insensitive search
@@ -219,7 +221,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - Location mapping with up to 5 display locations
     - Item source tracking with visual thumbnails and external links
 
-**Auction System:**
+**Auction System Implementation:**
 
 - **Data Storage**: SQLite database (`data/auctions.db`) with ACID compliance and automatic migration from INTEGER to REAL for float price support
 
@@ -255,13 +257,13 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Technical Architecture:**
 
-- **Data Models**:
+- **MapleStory Data Models**:
     - JSON-based monster/item relationships with comprehensive attribute mapping
-    - Pydantic-based auction and bid models with field validation, descriptions, currency type support, and float price fields
-- **Database Operations**: `AuctionDatabase` class with full CRUD operations, currency type handling, and robust migration support for float conversion
-- **Search Algorithms**: String containment matching with result ranking
-- **UI Components**:
-    - Custom View classes with Select menus for user interaction
+- **MapleStory Database Operations**: Search algorithms with string containment matching and result ranking
+- **MapleStory UI Components**: Custom View classes with Select menus for user interaction
+- **Auction Data Models**: Pydantic-based auction and bid models with field validation, descriptions, currency type support, and float price fields
+- **Auction Database Operations**: `AuctionDatabase` class with full CRUD operations, currency type handling, and robust migration support for float conversion
+- **Auction UI Components**:
     - Currency selection dropdown (`AuctionCurrencySelectionView`) for two-step auction creation
     - Modal classes for form-based data input with currency pre-selection (`AuctionCreateModal`, `AuctionBidModal`)
     - Interactive button views for auction participation (`AuctionView`, `AuctionListView`)
@@ -312,7 +314,8 @@ The comprehensive auction system allows users to create item auctions and partic
     - `gen_search.py` - Web search via Perplexity API
     - `summary.py` - Message summarization with interactive UI
     - `video.py` - Multi-platform video downloading
-    - `maplestory.py` - MapleStory database queries, drop searches, and auction system
+    - `maplestory.py` - MapleStory database queries and drop searches
+    - `auction.py` - Auction system with bidding functionality
     - `gen_image.py` - Image generation placeholder
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/sdk/`
