@@ -45,7 +45,7 @@ class Auction(BaseModel):
     item_name: str = Field(..., description="拍賣物品名稱")
     starting_price: float = Field(..., description="起標價格")
     increment: float = Field(..., description="每次加價金額")
-    duration_hours: int = Field(default=24, description="競標持續時間（小時）")
+    duration_hours: int = Field(default=24, description="競標持續時間 (小時)")
     creator_id: int = Field(..., description="創建者Discord ID")
     creator_name: str = Field(..., description="創建者Discord名稱")
     created_at: datetime = Field(default_factory=datetime.now, description="創建時間")
@@ -54,7 +54,7 @@ class Auction(BaseModel):
     current_bidder_id: Optional[int] = Field(None, description="當前最高出價者ID")
     current_bidder_name: Optional[str] = Field(None, description="當前最高出價者名稱")
     is_active: bool = Field(default=True, description="是否活躍中")
-    currency_type: str = Field(default="楓幣", description="貨幣類型（楓幣或雪花）")
+    currency_type: str = Field(default="楓幣", description="貨幣類型 (楓幣或雪花)")
 
 
 class Bid(BaseModel):
@@ -115,7 +115,7 @@ class AuctionDatabase:
                 )
             """)
 
-            # 檢查並更新現有資料庫結構為 REAL 類型（遷移支援）
+            # 檢查並更新現有資料庫結構為 REAL 類型 (遷移支援)
             cursor.execute("PRAGMA table_info(auctions)")
             columns = {col[1]: col[2] for col in cursor.fetchall()}
 
@@ -429,21 +429,21 @@ class AuctionCreateModal(Modal):
         currency_display = get_currency_display(currency_type)
         self.starting_price = TextInput(
             label="起標價格",
-            placeholder=f"請輸入起標價格（{currency_display}），支援小數點...",
+            placeholder=f"請輸入起標價格 ({currency_display})，支援小數點...",
             required=True,
             max_length=20,
         )
 
         self.increment = TextInput(
             label="加價金額",
-            placeholder=f"請輸入每次最少加價金額（{currency_display}），支援小數點...",
+            placeholder=f"請輸入每次最少加價金額 ({currency_display})，支援小數點...",
             required=True,
             max_length=20,
         )
 
         self.duration = TextInput(
-            label="拍賣時長（小時）",
-            placeholder="請輸入拍賣持續時間（1-168小時）...",
+            label="拍賣時長 (小時)",
+            placeholder="請輸入拍賣持續時間 (1-168小時)...",
             required=True,
             max_length=3,
             default_value="24",
@@ -555,7 +555,7 @@ class AuctionBidModal(Modal):
 
         self.bid_amount = TextInput(
             label="出價金額",
-            placeholder=f"最低出價：{min_bid:,.2f} {currency}（支援小數點）",
+            placeholder=f"最低出價：{min_bid:,.2f} {currency} (支援小數點)",
             required=True,
             max_length=20,
         )
@@ -672,7 +672,7 @@ class AuctionView(View):
         super().__init__(timeout=None)  # 不設置超時
         self.auction = auction
 
-    @nextcord.ui.button(label="💰 出價", style=nextcord.ButtonStyle.green, emoji="💰")
+    @nextcord.ui.button(label="出價", style=nextcord.ButtonStyle.green, emoji="💰")
     async def bid_button(self, button: Button, interaction: Interaction) -> None:
         # 檢查競標是否已結束
         if datetime.now() >= self.auction.end_time:
@@ -682,7 +682,7 @@ class AuctionView(View):
         modal = AuctionBidModal(self.auction)
         await interaction.response.send_modal(modal)
 
-    @nextcord.ui.button(label="📊 查看記錄", style=nextcord.ButtonStyle.gray, emoji="📊")
+    @nextcord.ui.button(label="查看記錄", style=nextcord.ButtonStyle.gray, emoji="📊")
     async def history_button(self, button: Button, interaction: Interaction) -> None:
         if self.auction.id is None:
             await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
@@ -710,14 +710,14 @@ class AuctionView(View):
             )
 
         embed.add_field(
-            name="💰 出價記錄（前10筆）",
+            name="💰 出價記錄 (前10筆)",
             value="\n".join(bid_list) if bid_list else "暫無記錄",
             inline=False,
         )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @nextcord.ui.button(label="🔄 刷新", style=nextcord.ButtonStyle.gray, emoji="🔄")
+    @nextcord.ui.button(label="刷新", style=nextcord.ButtonStyle.gray, emoji="🔄")
     async def refresh_button(self, button: Button, interaction: Interaction) -> None:
         if self.auction.id is None:
             await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
@@ -999,12 +999,12 @@ class MapleStoryCogs(commands.Cog):
             return []
 
     def _search_monsters_by_name_cached(self, query: str) -> tuple:
-        """帶快取的怪物搜尋（返回 tuple 以支持快取）"""
+        """帶快取的怪物搜尋 (返回 tuple 以支持快取)"""
         results = self.search_monsters_by_name(query)
         return tuple(results)
 
     def _search_items_by_name_cached(self, query: str) -> tuple:
-        """帶快取的物品搜尋（返回 tuple 以支持快取）"""
+        """帶快取的物品搜尋 (返回 tuple 以支持快取)"""
         results = self.search_items_by_name(query)
         return tuple(results)
 
@@ -1052,7 +1052,7 @@ class MapleStoryCogs(commands.Cog):
         return f"Lv.{level} | HP:{hp} | EXP:{exp}"
 
     def _get_popular_items(self) -> list[str]:
-        """獲取熱門物品（出現次數最多的物品）"""
+        """獲取熱門物品 (出現次數最多的物品)"""
         item_count: dict[str, int] = {}
         for monster in self.monsters_data:
             for drop in monster.get("drops", []):
@@ -1300,7 +1300,7 @@ class MapleStoryCogs(commands.Cog):
             inline=True,
         )
 
-        # 等級分布（顯示前5個）
+        # 等級分布 (顯示前5個)
         level_dist = "\n".join([
             f"**{level_range}級**: {count}隻"
             for level_range, count in sorted(level_counts.items())
@@ -1477,7 +1477,7 @@ class MapleStoryCogs(commands.Cog):
             if auction.creator_id == interaction.user.id:
                 user_auctions.append(auction)
 
-        # 取得用戶參與的拍賣（當前最高出價者）
+        # 取得用戶參與的拍賣 (當前最高出價者)
         leading_auctions = []
         for auction in active_auctions:
             if auction.current_bidder_id == interaction.user.id:
