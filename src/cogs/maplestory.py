@@ -33,7 +33,7 @@ BASIC_STATS_TEMPLATE = """
 
 def get_currency_display(currency_type: str) -> str:
     """取得貨幣顯示文字"""
-    currency_map = {"楓幣": "楓幣", "雪花": "雪花"}
+    currency_map = {"楓幣": "楓幣", "雪花": "雪花", "台幣": "台幣"}
     return currency_map.get(currency_type, "楓幣")
 
 
@@ -54,7 +54,7 @@ class Auction(BaseModel):
     current_bidder_id: Optional[int] = Field(None, description="當前最高出價者ID")
     current_bidder_name: Optional[str] = Field(None, description="當前最高出價者名稱")
     is_active: bool = Field(default=True, description="是否活躍中")
-    currency_type: str = Field(default="楓幣", description="貨幣類型 (楓幣或雪花)")
+    currency_type: str = Field(default="楓幣", description="貨幣類型 (楓幣、雪花或台幣)")
 
 
 class Bid(BaseModel):
@@ -402,6 +402,7 @@ class AuctionCurrencySelectionView(View):
         options=[
             SelectOption(label="楓幣", value="楓幣", emoji="🍁", description="遊戲內楓幣"),
             SelectOption(label="雪花", value="雪花", emoji="❄️", description="雪花貨幣"),
+            SelectOption(label="台幣", value="台幣", emoji="💰", description="台灣新台幣"),
         ],
         min_values=1,
         max_values=1,
