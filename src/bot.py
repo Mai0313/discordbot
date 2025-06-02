@@ -18,8 +18,9 @@ class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
-            intents=nextcord.Intents.default(),
-            # intents=nextcord.Intents.all(),  # 啟用所有 Intents
+            # intents=nextcord.Intents.default(),
+            # 啟用所有 Intents
+            intents=nextcord.Intents.all(),
             help_command=None,
             description="A Discord bot made with Nextcord.",
         )
