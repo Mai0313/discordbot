@@ -17,7 +17,10 @@ from src.sdk.log_message import MessageLogger
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
         intents = nextcord.Intents.default()
+        intents.messages = True
         intents.message_content = True
+        intents.dm_messages = True
+        intents.guild_messages = True
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
             # intents=nextcord.Intents.default(),
