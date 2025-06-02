@@ -34,6 +34,7 @@ _Suggestions and contributions are always welcome!_
 - **Message Summarization**: Smart channel conversation summaries with user filtering
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **MapleStory Database**: Search monsters and items with drop information
+- **MapleStory Auction System**: Complete auction platform with bidding functionality
 
 ### 🌍 Multi-Language Support
 
@@ -63,6 +64,10 @@ _Suggestions and contributions are always welcome!_
 | `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information       |
 | `/maple_item`     | Search MapleStory item sources    | Drop source tracking               |
 | `/maple_stats`    | MapleStory database statistics    | Data overview and popular items    |
+| `/auction_create` | Create new item auction           | Interactive form, time validation  |
+| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu   |
+| `/auction_info`   | View auction details              | Current bid info, bid history      |
+| `/auction_my`     | View personal auctions            | Created & leading auctions         |
 | `/ping`           | Bot performance testing           | Latency measurement                |
 
 ## 🚀 Quick Start
@@ -149,7 +154,7 @@ src/
 │   ├── gen_search.py   # Web search integration
 │   ├── summary.py      # Message summarization
 │   ├── video.py        # Video downloading
-│   ├── maplestory.py   # MapleStory database queries
+│   ├── maplestory.py   # MapleStory database queries & auction system
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # System utilities
 ├── sdk/                # Core business logic
@@ -157,6 +162,10 @@ src/
 │   └── asst.py         # Assistant API wrapper
 ├── types/              # Configuration models
 └── utils/              # Utility functions
+data/
+├── monsters.json       # MapleStory monster and drop database
+├── auctions.db         # SQLite database for auction system
+└── downloads/          # Video download storage
 ```
 
 ## 🔍 Key Features Deep Dive
@@ -175,7 +184,7 @@ src/
 - File size validation for Discord limits
 - Progress tracking and error handling
 
-### MapleStory Database System
+### MapleStory Database & Auction System
 
 - Comprehensive monster and item database (192+ monsters)
 - Interactive search with fuzzy matching
@@ -183,6 +192,12 @@ src/
 - Detailed monster statistics and drop information
 - Item source tracking with visual displays
 - Cached search results for optimal performance
+- **Complete Auction System**:
+    - Create item auctions with customizable duration and bidding increments
+    - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
+    - Personal auction management and bid tracking
+    - Security features preventing self-bidding and duplicate bids
+    - SQLite database storage with ACID compliance
 
 # 🔒 Privacy Policy
 

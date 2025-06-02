@@ -177,6 +177,29 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/auction_info` - View detailed information about a specific auction
 - `/auction_my` - View your created auctions and their current status
 
+**Auction System Usage Guide:**
+
+The comprehensive auction system allows users to create item auctions and participate in bidding with complete interactive features:
+
+**Core Features:**
+
+- **Auction Creation**: Interactive modal form for creating auctions with item name (max 100 chars), starting price, bid increment, and duration (1-168 hours, default 24)
+- **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing
+- **Real-time Updates**: Live remaining time and current price displays
+- **Personal Auction Management**: View created auctions and current leading bids
+
+**Interactive Components:**
+
+- **Auction Panel Buttons**: 💰 Bid (opens bid form), 📊 View Records (shows top 10 bid history), 🔄 Refresh (updates auction info)
+- **Bidding Rules**: Minimum bid = current price + increment, creators cannot bid on own auctions, current leaders cannot rebid, expired auctions reject bids
+- **Security Features**: Self-bidding prevention, duplicate bid validation, price range validation, expiration time checks
+
+**Database Architecture:**
+
+- **auctions table**: id, item_name, starting_price, increment, duration_hours, creator_id/name, created_at, end_time, current_price, current_bidder_id/name, is_active
+- **bids table**: id, auction_id, bidder_id/name, amount, timestamp
+- **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance and automatic schema management
+
 **Implementation Details:**
 
 **Database Query System:**
