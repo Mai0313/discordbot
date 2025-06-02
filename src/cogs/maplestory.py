@@ -606,7 +606,7 @@ class AuctionBidModal(Modal):
                     view = AuctionView(updated_auction)
 
                     await interaction.response.edit_message(
-                        content=f"🎉 出價成功!{interaction.user.display_name} 出價 {bid_amount:,.2f} {currency}",
+                        content=f"🎉 出價成功! {interaction.user.mention} 出價 {bid_amount:,.2f} {currency}",
                         embed=embed,
                         view=view,
                     )
@@ -1483,7 +1483,7 @@ class MapleStoryCogs(commands.Cog):
             if auction.current_bidder_id == interaction.user.id:
                 leading_auctions.append(auction)
 
-        embed = Embed(title=f"📋 {interaction.user.display_name} 的拍賣記錄", color=0x9966FF)
+        embed = Embed(title=f"📋 {interaction.user.mention} 的拍賣記錄", color=0x9966FF)
 
         if user_auctions:
             auction_list = []

@@ -183,11 +183,12 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Core Features:**
 
-- **Auction Creation**: Interactive modal form for creating auctions with item name (max 100 chars), starting price, bid increment, currency type selection (楓幣/雪花), and duration (1-168 hours, default 24)
-- **Currency Type Support**: Users can choose between "楓幣" (Mesos) and "雪花" (Snowflake) as auction currency with "楓幣" as default
+- **Auction Creation**: Two-step interactive process with currency selection dropdown (楓幣/雪花) followed by modal form for item details (name max 100 chars), starting price (float), bid increment (float), and duration (1-168 hours, default 24)
+- **Currency Type Support**: Users can choose between "楓幣" (Mesos) and "雪花" (Snowflake) via dropdown selection with emoji indicators, with "楓幣" as default
+- **Float Price Support**: All price fields (starting price, increment, bid amounts) support decimal values with proper `.2f` formatting throughout the UI
 - **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing
-- **Real-time Updates**: Live remaining time and current price displays with proper currency formatting
-- **Personal Auction Management**: View created auctions and current leading bids with currency type indication
+- **Real-time Updates**: Live remaining time and current price displays with proper float currency formatting
+- **Personal Auction Management**: View created auctions and current leading bids with currency type indication and float formatting
 
 **Interactive Components:**
 
@@ -197,10 +198,11 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Database Architecture:**
 
-- **auctions table**: id, item_name, starting_price, increment, duration_hours, creator_id/name, created_at, end_time, current_price, current_bidder_id/name, is_active, currency_type
-- **bids table**: id, auction_id, bidder_id/name, amount, timestamp
-- **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance and automatic schema management
+- **auctions table**: id, item_name, starting_price (REAL), increment (REAL), duration_hours, creator_id/name, created_at, end_time, current_price (REAL), current_bidder_id/name, is_active, currency_type
+- **bids table**: id, auction_id, bidder_id/name, amount (REAL), timestamp
+- **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance, automatic schema migration from INTEGER to REAL for price fields, and backward compatibility
 - **Currency Support**: Flexible currency type system supporting "楓幣" (Mesos) and "雪花" (Snowflake) with backward compatibility
+- **Migration Support**: Robust database migration logic that handles different schema versions and missing columns with proper default values
 
 **Implementation Details:**
 
@@ -219,21 +221,21 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Auction System:**
 
-- **Data Storage**: SQLite database (`data/auctions.db`) with ACID compliance
+- **Data Storage**: SQLite database (`data/auctions.db`) with ACID compliance and automatic migration from INTEGER to REAL for float price support
 
-- **Data Models**: Pydantic models (`Auction`, `Bid`) with comprehensive field validation
+- **Data Models**: Pydantic models (`Auction`, `Bid`) with comprehensive field validation and float-type price fields
 
-- **Interactive UI**: Modal dialogs for auction creation and bidding with form validation
+- **Interactive UI**: Two-step auction creation with currency selection dropdown followed by modal form, and bidding modals with float price validation
 
-- **Real-time Updates**: Dynamic auction displays with refresh, bid, and history buttons
+- **Real-time Updates**: Dynamic auction displays with refresh, bid, and history buttons showing proper float formatting
 
 - **Security Features**:
 
     - Prevent self-bidding on own auctions
-    - Duplicate bid validation and proper increment enforcement
-    - Automatic auction expiration handling (24-hour duration)
+    - Duplicate bid validation and proper increment enforcement with float precision
+    - Automatic auction expiration handling (customizable 1-168 hour duration)
 
-- **Bid Management**: Complete bid history tracking with timestamps and user information
+- **Bid Management**: Complete bid history tracking with timestamps, user information, and float amount formatting
 
 - **Advanced Features:**
 
@@ -249,21 +251,22 @@ The comprehensive auction system allows users to create item auctions and partic
 
 - **Multi-language Auction Support**: All auction interfaces localized for 4 languages
 
-- **Multi-currency Display**: Dynamic currency formatting in all auction displays and interactions
+- **Multi-currency Display**: Dynamic currency formatting in all auction displays and interactions with float precision
 
 **Technical Architecture:**
 
 - **Data Models**:
     - JSON-based monster/item relationships with comprehensive attribute mapping
-    - Pydantic-based auction and bid models with field validation, descriptions, and currency type support
-- **Database Operations**: `AuctionDatabase` class with full CRUD operations and currency type handling
+    - Pydantic-based auction and bid models with field validation, descriptions, currency type support, and float price fields
+- **Database Operations**: `AuctionDatabase` class with full CRUD operations, currency type handling, and robust migration support for float conversion
 - **Search Algorithms**: String containment matching with result ranking
 - **UI Components**:
     - Custom View classes with Select menus for user interaction
-    - Modal classes for form-based data input with currency selection (`AuctionCreateModal`, `AuctionBidModal`)
+    - Currency selection dropdown (`AuctionCurrencySelectionView`) for two-step auction creation
+    - Modal classes for form-based data input with currency pre-selection (`AuctionCreateModal`, `AuctionBidModal`)
     - Interactive button views for auction participation (`AuctionView`, `AuctionListView`)
 - **External Integration**: Links to MapleStory library for detailed item information
-- **Auction Logic**: Comprehensive bid validation, auction state management, currency type handling, and automatic expiration
+- **Auction Logic**: Comprehensive bid validation, auction state management, currency type handling, float price support, and automatic expiration
 
 ### Critical Core Functionality
 
