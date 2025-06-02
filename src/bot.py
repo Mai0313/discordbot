@@ -50,15 +50,20 @@ class DiscordBot(commands.Bot):
     async def on_guild_available(self, guild: nextcord.Guild) -> None:
         return await super().on_guild_available(guild)
 
-    async def load_cogs(self) -> None:
+    async def get_cogs_names(self) -> list[str]:
         cog_path = Path("./src/cogs")
-        cog_files = [
-            f"src.cogs.{f.stem}" for f in cog_path.glob("*.py") if not f.stem.startswith("__")
-        ]
+        cog_files = []
+        for f in cog_path.rglob("*.py"):
+            if f.stem.startswith("_"):
+                continue
+            relative_path = f.relative_to(cog_path).with_suffix("")
+            parts = ["src", "cogs", *list(relative_path.parts)]
+            cog_files.append(".".join(parts))
+        return cog_files
+
+    async def load_cogs(self) -> None:
+        cog_files = await self.get_cogs_names()
         self.load_extensions(cog_files, stop_at_error=True)
-        # for cog_file in cog_files:
-        #     filename = f"src.cogs.{cog_file}"
-        #     self.load_extension(filename)
         logfire.info("Cogs Loaded", cog_files=", ".join(cog_files))
 
     @tasks.loop(minutes=1.0)
