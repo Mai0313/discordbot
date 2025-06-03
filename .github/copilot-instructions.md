@@ -185,26 +185,31 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **Core Features:**
 
+- **Server Isolation**: Each Discord server has completely independent auction data with guild-specific filtering
 - **Auction Creation**: Two-step interactive process with currency selection dropdown (楓幣/雪花/台幣) followed by modal form for item details (name max 100 chars), starting price (float), bid increment (float), and duration (1-168 hours, default 24)
 - **Currency Type Support**: Users can choose between "楓幣" (Mesos), "雪花" (Snowflake), and "台幣" (Taiwan Dollar) via dropdown selection with emoji indicators, with "楓幣" as default
 - **Float Price Support**: All price fields (starting price, increment, bid amounts) support decimal values with proper `.2f` formatting throughout the UI
-- **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing
+- **Auction Browsing**: Display of top 5 active auctions with dropdown selection for detailed viewing (server-specific)
 - **Real-time Updates**: Live remaining time and current price displays with proper float currency formatting
-- **Personal Auction Management**: View created auctions and current leading bids with currency type indication and float formatting
+- **Personal Auction Management**: View created auctions and current leading bids with currency type indication and float formatting (server-specific)
 
 **Interactive Components:**
 
 - **Auction Panel Buttons**: 💰 Bid (opens bid form), 📊 View Records (shows top 10 bid history), 🔄 Refresh (updates auction info)
+- **Auto-Claim System**: Any button interaction on unclaimed auctions (guild_id=0) automatically assigns them to the current server
 - **Bidding Rules**: Minimum bid = current price + increment, creators cannot bid on own auctions, current leaders cannot rebid, expired auctions reject bids
-- **Security Features**: Self-bidding prevention, duplicate bid validation, price range validation, expiration time checks
+- **Security Features**: Self-bidding prevention, duplicate bid validation, price range validation, expiration time checks, server-specific validation
+- **Guild Validation**: All commands restricted to server use only (dm_permission=False), automatic guild_id validation
 
 **Database Architecture:**
 
-- **auctions table**: id, item_name, starting_price (REAL), increment (REAL), duration_hours, creator_id/name, created_at, end_time, current_price (REAL), current_bidder_id/name, is_active, currency_type
-- **bids table**: id, auction_id, bidder_id/name, amount (REAL), timestamp
-- **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance, automatic schema migration from INTEGER to REAL for price fields, and backward compatibility
+- **auctions table**: id, guild_id (INTEGER NOT NULL), item_name, starting_price (REAL), increment (REAL), duration_hours, creator_id/name, created_at, end_time, current_price (REAL), current_bidder_id/name, is_active, currency_type
+- **bids table**: id, auction_id, guild_id (INTEGER NOT NULL), bidder_id/name, amount (REAL), timestamp
+- **Data Storage**: SQLite database at `data/auctions.db` with ACID compliance, automatic schema migration from INTEGER to REAL for price fields, and guild_id isolation
+- **Server Isolation**: All database queries filtered by guild_id to ensure complete separation between servers
+- **Auto-Claim Feature**: Unclaimed auctions (guild_id=0) are automatically assigned to the server where users interact with them
 - **Currency Support**: Flexible currency type system supporting "楓幣" (Mesos), "雪花" (Snowflake), and "台幣" (Taiwan Dollar) with backward compatibility
-- **Migration Support**: Robust database migration logic that handles different schema versions and missing columns with proper default values
+- **Migration Support**: Robust database migration logic that handles different schema versions, missing columns with proper default values, and automatic guild_id column addition
 
 **Implementation Details:**
 
@@ -261,14 +266,15 @@ The comprehensive auction system allows users to create item auctions and partic
     - JSON-based monster/item relationships with comprehensive attribute mapping
 - **MapleStory Database Operations**: Search algorithms with string containment matching and result ranking
 - **MapleStory UI Components**: Custom View classes with Select menus for user interaction
-- **Auction Data Models**: Pydantic-based auction and bid models with field validation, descriptions, currency type support, and float price fields
-- **Auction Database Operations**: `AuctionDatabase` class with full CRUD operations, currency type handling, and robust migration support for float conversion
+- **Auction Data Models**: Pydantic-based auction and bid models with field validation, descriptions, currency type support, guild_id isolation, and float price fields
+- **Auction Database Operations**: `AuctionDatabase` class with full CRUD operations, guild_id filtering, currency type handling, auto-claim functionality for unclaimed auctions, and robust migration support for float conversion and server isolation
 - **Auction UI Components**:
     - Currency selection dropdown (`AuctionCurrencySelectionView`) for two-step auction creation
-    - Modal classes for form-based data input with currency pre-selection (`AuctionCreateModal`, `AuctionBidModal`)
+    - Modal classes for form-based data input with currency pre-selection and guild validation (`AuctionCreateModal`, `AuctionBidModal`)
+    - Interactive button views for auction participation with server-specific data (`AuctionView`, `AuctionListView`)
     - Interactive button views for auction participation (`AuctionView`, `AuctionListView`)
 - **External Integration**: Links to MapleStory library for detailed item information
-- **Auction Logic**: Comprehensive bid validation, auction state management, currency type handling, float price support, and automatic expiration
+- **Auction Logic**: Comprehensive bid validation, auction state management, currency type handling, float price support, auto-claim system for server assignment, and automatic expiration
 
 ### Critical Core Functionality
 

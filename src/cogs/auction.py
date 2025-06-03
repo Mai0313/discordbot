@@ -22,6 +22,7 @@ class Auction(BaseModel):
     """競標資料模型"""
 
     id: Optional[int] = Field(None, description="競標ID")
+    guild_id: int = Field(..., description="伺服器ID")
     item_name: str = Field(..., description="拍賣物品名稱")
     starting_price: float = Field(..., description="起標價格")
     increment: float = Field(..., description="每次加價金額")
@@ -42,6 +43,7 @@ class Bid(BaseModel):
 
     id: Optional[int] = Field(None, description="出價ID")
     auction_id: int = Field(..., description="競標ID")
+    guild_id: int = Field(..., description="伺服器ID")
     bidder_id: int = Field(..., description="出價者Discord ID")
     bidder_name: str = Field(..., description="出價者Discord名稱")
     amount: float = Field(..., description="出價金額")
@@ -66,6 +68,7 @@ class AuctionDatabase:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS auctions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
                     item_name TEXT NOT NULL,
                     starting_price REAL NOT NULL,
                     increment REAL NOT NULL,
@@ -87,6 +90,7 @@ class AuctionDatabase:
                 CREATE TABLE IF NOT EXISTS bids (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     auction_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
                     bidder_id INTEGER NOT NULL,
                     bidder_name TEXT NOT NULL,
                     amount REAL NOT NULL,
@@ -99,14 +103,29 @@ class AuctionDatabase:
             cursor.execute("PRAGMA table_info(auctions)")
             columns = {col[1]: col[2] for col in cursor.fetchall()}
 
+            # 檢查是否需要添加 guild_id 欄位
+            if "guild_id" not in columns:
+                cursor.execute("ALTER TABLE auctions ADD COLUMN guild_id INTEGER DEFAULT 0")
+                conn.commit()
+
+            # 檢查是否需要添加 currency_type 欄位
+            if "currency_type" not in columns:
+                cursor.execute("ALTER TABLE auctions ADD COLUMN currency_type TEXT DEFAULT '楓幣'")
+                conn.commit()
+
             # 如果價格欄位還是 INTEGER，進行遷移
             if columns.get("starting_price") == "INTEGER":
                 cursor.execute("BEGIN TRANSACTION")
                 try:
+                    # 重新獲取更新後的欄位信息
+                    cursor.execute("PRAGMA table_info(auctions)")
+                    updated_columns = {col[1]: col[2] for col in cursor.fetchall()}
+
                     # 創建新的臨時表
                     cursor.execute("""
                         CREATE TABLE auctions_new (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            guild_id INTEGER NOT NULL DEFAULT 0,
                             item_name TEXT NOT NULL,
                             starting_price REAL NOT NULL,
                             increment REAL NOT NULL,
@@ -123,16 +142,29 @@ class AuctionDatabase:
                         )
                     """)
 
-                    # 複製數據
-                    cursor.execute("""
-                        INSERT INTO auctions_new
-                        SELECT id, item_name, CAST(starting_price AS REAL), CAST(increment AS REAL),
-                               duration_hours, creator_id, creator_name, created_at, end_time,
-                               CAST(current_price AS REAL), current_bidder_id, current_bidder_name,
-                               is_active,
-                               CASE WHEN currency_type IS NULL THEN '楓幣' ELSE currency_type END
-                        FROM auctions
-                    """)
+                    # 複製數據，考慮到 currency_type 可能不存在的情況
+                    if "currency_type" in updated_columns:
+                        cursor.execute("""
+                            INSERT INTO auctions_new
+                            SELECT id, COALESCE(guild_id, 0), item_name, CAST(starting_price AS REAL), CAST(increment AS REAL),
+                                   duration_hours, creator_id, creator_name, created_at, end_time,
+                                   CAST(current_price AS REAL), current_bidder_id, current_bidder_name,
+                                   is_active,
+                                   COALESCE(currency_type, '楓幣')
+                            FROM auctions
+                        """)
+                    else:
+                        cursor.execute("""
+                            INSERT INTO auctions_new (id, guild_id, item_name, starting_price, increment,
+                                                     duration_hours, creator_id, creator_name, created_at, end_time,
+                                                     current_price, current_bidder_id, current_bidder_name,
+                                                     is_active, currency_type)
+                            SELECT id, COALESCE(guild_id, 0), item_name, CAST(starting_price AS REAL), CAST(increment AS REAL),
+                                   duration_hours, creator_id, creator_name, created_at, end_time,
+                                   CAST(current_price AS REAL), current_bidder_id, current_bidder_name,
+                                   is_active, '楓幣'
+                            FROM auctions
+                        """)
 
                     # 刪除舊表並重命名新表
                     cursor.execute("DROP TABLE auctions")
@@ -146,6 +178,11 @@ class AuctionDatabase:
             cursor.execute("PRAGMA table_info(bids)")
             bid_columns = {col[1]: col[2] for col in cursor.fetchall()}
 
+            # 檢查是否需要添加 guild_id 欄位
+            if "guild_id" not in bid_columns:
+                cursor.execute("ALTER TABLE bids ADD COLUMN guild_id INTEGER DEFAULT 0")
+                conn.commit()
+
             if bid_columns.get("amount") == "INTEGER":
                 cursor.execute("BEGIN TRANSACTION")
                 try:
@@ -154,6 +191,7 @@ class AuctionDatabase:
                         CREATE TABLE bids_new (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             auction_id INTEGER NOT NULL,
+                            guild_id INTEGER NOT NULL DEFAULT 0,
                             bidder_id INTEGER NOT NULL,
                             bidder_name TEXT NOT NULL,
                             amount REAL NOT NULL,
@@ -165,7 +203,7 @@ class AuctionDatabase:
                     # 複製數據
                     cursor.execute("""
                         INSERT INTO bids_new
-                        SELECT id, auction_id, bidder_id, bidder_name,
+                        SELECT id, auction_id, COALESCE(guild_id, 0), bidder_id, bidder_name,
                                CAST(amount AS REAL), timestamp
                         FROM bids
                     """)
@@ -187,11 +225,12 @@ class AuctionDatabase:
             cursor.execute(
                 """
                 INSERT INTO auctions (
-                    item_name, starting_price, increment, duration_hours,
+                    guild_id, item_name, starting_price, increment, duration_hours,
                     creator_id, creator_name, end_time, current_price, currency_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
+                    auction.guild_id,
                     auction.item_name,
                     auction.starting_price,
                     auction.increment,
@@ -207,12 +246,15 @@ class AuctionDatabase:
             result = cursor.lastrowid
             return result if result is not None else 0
 
-    def get_auction(self, auction_id: int) -> Optional[Auction]:
+    def get_auction(self, auction_id: int, guild_id: int) -> Optional[Auction]:
         """取得特定競標"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM auctions WHERE id = ?", (auction_id,))
+            cursor.execute(
+                "SELECT * FROM auctions WHERE id = ? AND guild_id = ?", (auction_id, guild_id)
+            )
+
             row = cursor.fetchone()
 
             if row:
@@ -221,8 +263,14 @@ class AuctionDatabase:
                 except (KeyError, IndexError):
                     currency_type = "楓幣"  # Default for backward compatibility
 
+                try:
+                    guild_id_from_row = row["guild_id"]
+                except (KeyError, IndexError):
+                    guild_id_from_row = 0  # Default for backward compatibility
+
                 return Auction(
                     id=row["id"],
+                    guild_id=guild_id_from_row,
                     item_name=row["item_name"],
                     starting_price=row["starting_price"],
                     increment=row["increment"],
@@ -239,16 +287,19 @@ class AuctionDatabase:
                 )
             return None
 
-    def get_active_auctions(self) -> list[Auction]:
-        """取得所有活躍競標"""
+    def get_active_auctions(self, guild_id: int) -> list[Auction]:
+        """取得特定伺服器的所有活躍競標"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT * FROM auctions
-                WHERE is_active = TRUE AND end_time > datetime('now')
+                WHERE guild_id = ? AND is_active = TRUE AND end_time > datetime('now')
                 ORDER BY end_time ASC
-            """)
+            """,
+                (guild_id,),
+            )
 
             auctions = []
             for row in cursor.fetchall():
@@ -257,9 +308,15 @@ class AuctionDatabase:
                 except (KeyError, IndexError):
                     currency_type = "楓幣"  # Default for backward compatibility
 
+                try:
+                    guild_id_from_row = row["guild_id"]
+                except (KeyError, IndexError):
+                    guild_id_from_row = guild_id  # Use provided guild_id as fallback
+
                 auctions.append(
                     Auction(
                         id=row["id"],
+                        guild_id=guild_id_from_row,
                         item_name=row["item_name"],
                         starting_price=row["starting_price"],
                         increment=row["increment"],
@@ -278,7 +335,9 @@ class AuctionDatabase:
 
             return auctions
 
-    def place_bid(self, auction_id: int, bidder_id: int, bidder_name: str, amount: float) -> bool:
+    def place_bid(
+        self, auction_id: int, bidder_id: int, bidder_name: str, amount: float, guild_id: int
+    ) -> bool:
         """出價"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -286,33 +345,44 @@ class AuctionDatabase:
             # 檢查競標是否存在且活躍
             cursor.execute(
                 """
-                SELECT current_price, end_time, is_active
-                FROM auctions WHERE id = ?
+                SELECT current_price, increment, end_time, is_active, current_bidder_id, creator_id
+                FROM auctions WHERE id = ? AND guild_id = ?
             """,
-                (auction_id,),
+                (auction_id, guild_id),
             )
 
             auction_data = cursor.fetchone()
             if not auction_data:
                 return False
 
-            current_price, end_time, is_active = auction_data
+            current_price, increment, end_time, is_active, current_bidder_id, creator_id = (
+                auction_data
+            )
 
             # 檢查競標是否已結束
             if not is_active or datetime.fromisoformat(end_time) <= datetime.now():
                 return False
 
-            # 檢查出價是否足夠
-            if amount <= current_price:
+            # 檢查用戶是否為拍賣創建者
+            if bidder_id == creator_id:
+                return False
+
+            # 檢查用戶是否為當前最高出價者
+            if current_bidder_id is not None and bidder_id == current_bidder_id:
+                return False
+
+            # 檢查出價是否足夠（必須至少為當前價格 + 加價金額）
+            min_bid = current_price + increment
+            if amount < min_bid:
                 return False
 
             # 記錄出價
             cursor.execute(
                 """
-                INSERT INTO bids (auction_id, bidder_id, bidder_name, amount)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO bids (auction_id, guild_id, bidder_id, bidder_name, amount)
+                VALUES (?, ?, ?, ?, ?)
             """,
-                (auction_id, bidder_id, bidder_name, amount),
+                (auction_id, guild_id, bidder_id, bidder_name, amount),
             )
 
             # 更新競標當前價格
@@ -320,34 +390,40 @@ class AuctionDatabase:
                 """
                 UPDATE auctions
                 SET current_price = ?, current_bidder_id = ?, current_bidder_name = ?
-                WHERE id = ?
+                WHERE id = ? AND guild_id = ?
             """,
-                (amount, bidder_id, bidder_name, auction_id),
+                (amount, bidder_id, bidder_name, auction_id, guild_id),
             )
 
             conn.commit()
             return True
 
-    def get_auction_bids(self, auction_id: int) -> list[Bid]:
+    def get_auction_bids(self, auction_id: int, guild_id: int) -> list[Bid]:
         """取得競標的所有出價記錄"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT * FROM bids WHERE auction_id = ?
+                SELECT * FROM bids WHERE auction_id = ? AND guild_id = ?
                 ORDER BY amount DESC, timestamp DESC
                 LIMIT 10
             """,
-                (auction_id,),
+                (auction_id, guild_id),
             )
 
             bids = []
             for row in cursor.fetchall():
+                try:
+                    guild_id_from_row = row["guild_id"]
+                except (KeyError, IndexError):
+                    guild_id_from_row = guild_id  # Use provided guild_id as fallback
+
                 bids.append(
                     Bid(
                         id=row["id"],
                         auction_id=row["auction_id"],
+                        guild_id=guild_id_from_row,
                         bidder_id=row["bidder_id"],
                         bidder_name=row["bidder_name"],
                         amount=row["amount"],
@@ -357,18 +433,46 @@ class AuctionDatabase:
 
             return bids
 
-    def end_auction(self, auction_id: int) -> bool:
+    def end_auction(self, auction_id: int, guild_id: int) -> bool:
         """結束競標"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                UPDATE auctions SET is_active = FALSE WHERE id = ?
+                UPDATE auctions SET is_active = FALSE WHERE id = ? AND guild_id = ?
             """,
-                (auction_id,),
+                (auction_id, guild_id),
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def claim_auction_to_guild(self, auction_id: int, guild_id: int) -> bool:
+        """將未歸屬的拍賣 (guild_id=0) 歸屬到指定伺服器"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            # 只更新 guild_id=0 的拍賣
+            cursor.execute(
+                """
+                UPDATE auctions SET guild_id = ? WHERE id = ? AND guild_id = 0
+            """,
+                (guild_id, auction_id),
+            )
+
+            # 捕獲拍賣更新的行數
+            auction_updated = cursor.rowcount > 0
+
+            # 同時更新相關的出價記錄
+            if auction_updated:
+                cursor.execute(
+                    """
+                    UPDATE bids SET guild_id = ? WHERE auction_id = ? AND guild_id = 0
+                """,
+                    (guild_id, auction_id),
+                )
+
+            conn.commit()
+            return auction_updated
 
 
 class AuctionCurrencySelectionView(View):
@@ -456,8 +560,16 @@ class AuctionCreateModal(Modal):
                 )
                 return
 
+            # 檢查是否在伺服器中執行命令
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ 拍賣功能只能在伺服器中使用，不支援私人訊息!", ephemeral=True
+                )
+                return
+
             # 創建競標
             auction = Auction(
+                guild_id=interaction.guild.id,
                 item_name=self.item_name.value,
                 starting_price=starting_price,
                 increment=increment,
@@ -491,8 +603,12 @@ class AuctionCreateModal(Modal):
 
     def _create_auction_embed(self, auction: Auction) -> Embed:
         """創建競標 Embed"""
+        # 為未認領的拍賣添加特殊標記
+        title_prefix = "🔒 " if auction.guild_id == 0 else "🏺 "
         embed = Embed(
-            title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
+            title=f"{title_prefix}{auction.item_name}",
+            description=f"拍賣編號：#{auction.id}",
+            color=0xFFD700 if auction.guild_id != 0 else 0xFF8C00,
         )
 
         currency = get_currency_display(auction.currency_type)
@@ -520,7 +636,12 @@ class AuctionCreateModal(Modal):
             name="📅 結束時間", value=auction.end_time.strftime("%m/%d %H:%M"), inline=True
         )
 
-        embed.set_footer(text="點擊下方按鈕參與競標!")
+        # 為未認領的拍賣添加特殊說明
+        footer_text = "點擊下方按鈕參與競標!"
+        if auction.guild_id == 0:
+            footer_text += " | 此拍賣將在您互動時自動歸屬於本伺服器"
+
+        embed.set_footer(text=footer_text)
         return embed
 
 
@@ -575,13 +696,24 @@ class AuctionBidModal(Modal):
                 await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
                 return
 
+            # 檢查是否在伺服器中執行命令
+            if interaction.guild is None:
+                await interaction.response.send_message(
+                    "❌ 拍賣功能只能在伺服器中使用!", ephemeral=True
+                )
+                return
+
             success = db.place_bid(
-                self.auction.id, interaction.user.id, interaction.user.display_name, bid_amount
+                self.auction.id,
+                interaction.user.id,
+                interaction.user.display_name,
+                bid_amount,
+                interaction.guild.id,
             )
 
             if success:
                 # 更新競標資訊
-                updated_auction = db.get_auction(self.auction.id)
+                updated_auction = db.get_auction(self.auction.id, interaction.guild.id)
                 if updated_auction:
                     embed = self._create_auction_embed(updated_auction)
                     view = AuctionView(updated_auction)
@@ -655,6 +787,23 @@ class AuctionView(View):
 
     @nextcord.ui.button(label="出價", style=nextcord.ButtonStyle.green, emoji="💰")
     async def bid_button(self, button: Button, interaction: Interaction) -> None:
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ 拍賣功能只能在伺服器中使用!", ephemeral=True
+            )
+            return
+
+        # 自動歸屬未歸屬的拍賣
+        if self.auction.guild_id == 0 and self.auction.id is not None:
+            db = AuctionDatabase()
+            if db.claim_auction_to_guild(self.auction.id, interaction.guild.id):
+                self.auction.guild_id = interaction.guild.id
+                # 重新載入拍賣資訊以獲取最新數據
+                updated_auction = db.get_auction(self.auction.id, interaction.guild.id)
+                if updated_auction:
+                    self.auction = updated_auction
+
         # 檢查競標是否已結束
         if datetime.now() >= self.auction.end_time:
             await interaction.response.send_message("❌ 此拍賣已結束!", ephemeral=True)
@@ -669,8 +818,29 @@ class AuctionView(View):
             await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
             return
 
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ 拍賣功能只能在伺服器中使用!", ephemeral=True
+            )
+            return
+
+        # 自動歸屬未歸屬的拍賣
+        if self.auction.guild_id == 0 and self.auction.id is not None:
+            db = AuctionDatabase()
+            if db.claim_auction_to_guild(self.auction.id, interaction.guild.id):
+                self.auction.guild_id = interaction.guild.id
+                # 重新載入拍賣資訊以獲取最新數據
+                updated_auction = db.get_auction(self.auction.id, interaction.guild.id)
+                if updated_auction:
+                    self.auction = updated_auction
+
+        if self.auction.id is None:
+            await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
+            return
+
         db = AuctionDatabase()
-        bids = db.get_auction_bids(self.auction.id)
+        bids = db.get_auction_bids(self.auction.id, interaction.guild.id)
 
         if not bids:
             await interaction.response.send_message("📭 此拍賣還沒有出價記錄。", ephemeral=True)
@@ -704,8 +874,22 @@ class AuctionView(View):
             await interaction.response.send_message("❌ 拍賣ID無效!", ephemeral=True)
             return
 
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ 拍賣功能只能在伺服器中使用!", ephemeral=True
+            )
+            return
+
         db = AuctionDatabase()
-        updated_auction = db.get_auction(self.auction.id)
+
+        # 自動歸屬未歸屬的拍賣
+        if self.auction.guild_id == 0 and db.claim_auction_to_guild(
+            self.auction.id, interaction.guild.id
+        ):
+            self.auction.guild_id = interaction.guild.id
+
+        updated_auction = db.get_auction(self.auction.id, interaction.guild.id)
 
         if updated_auction:
             self.auction = updated_auction
@@ -783,8 +967,15 @@ class AuctionListView(View):
     async def auction_select(self, select: Select, interaction: Interaction) -> None:
         auction_id = int(select.values[0])
 
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ 拍賣功能只能在伺服器中使用!", ephemeral=True
+            )
+            return
+
         db = AuctionDatabase()
-        auction = db.get_auction(auction_id)
+        auction = db.get_auction(auction_id, interaction.guild.id)
 
         if auction:
             embed = self._create_auction_embed(auction)
@@ -796,8 +987,12 @@ class AuctionListView(View):
 
     def _create_auction_embed(self, auction: Auction) -> Embed:
         """創建競標 Embed"""
+        # 為未認領的拍賣添加特殊標記
+        title_prefix = "🔒 " if auction.guild_id == 0 else "🏺 "
         embed = Embed(
-            title=f"🏺 {auction.item_name}", description=f"拍賣編號：#{auction.id}", color=0xFFD700
+            title=f"{title_prefix}{auction.item_name}",
+            description=f"拍賣編號：#{auction.id}",
+            color=0xFFD700 if auction.guild_id != 0 else 0xFF8C00,
         )
 
         currency = get_currency_display(auction.currency_type)
@@ -828,7 +1023,12 @@ class AuctionListView(View):
             name="📅 結束時間", value=auction.end_time.strftime("%m/%d %H:%M"), inline=True
         )
 
-        embed.set_footer(text="點擊下方按鈕參與競標!")
+        # 為未認領的拍賣添加特殊說明
+        footer_text = "點擊下方按鈕參與競標!"
+        if auction.guild_id == 0:
+            footer_text += " | 此拍賣將在您互動時自動歸屬於本伺服器"
+
+        embed.set_footer(text=footer_text)
         return embed
 
 
@@ -853,11 +1053,21 @@ class AuctionCogs(commands.Cog):
             Locale.zh_CN: "创建新的物品拍卖",
             Locale.ja: "新しいアイテムオークションを作成",
         },
-        dm_permission=True,
+        dm_permission=False,
         nsfw=False,
     )
     async def auction_create(self, interaction: Interaction) -> None:
         """創建新拍賣"""
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            embed = Embed(
+                title="❌ 錯誤",
+                description="拍賣功能只能在伺服器中使用，不支援私人訊息!",
+                color=0xFF0000,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
         embed = Embed(
             title="🏺 創建拍賣", description="請先選擇拍賣使用的貨幣類型：", color=0xFFD700
         )
@@ -877,14 +1087,24 @@ class AuctionCogs(commands.Cog):
             Locale.zh_CN: "查看进行中的拍卖列表",
             Locale.ja: "進行中のオークション一覧を表示",
         },
-        dm_permission=True,
+        dm_permission=False,
         nsfw=False,
     )
     async def auction_list(self, interaction: Interaction) -> None:
         """查看拍賣列表"""
         await interaction.response.defer()
 
-        auctions = self.auction_db.get_active_auctions()
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            embed = Embed(
+                title="❌ 錯誤",
+                description="拍賣功能只能在伺服器中使用，不支援私人訊息!",
+                color=0xFF0000,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        auctions = self.auction_db.get_active_auctions(interaction.guild.id)
 
         if not auctions:
             embed = Embed(
@@ -936,7 +1156,7 @@ class AuctionCogs(commands.Cog):
             Locale.zh_CN: "查看特定拍卖的详细资讯",
             Locale.ja: "特定のオークションの詳細情報を表示",
         },
-        dm_permission=True,
+        dm_permission=False,
         nsfw=False,
     )
     async def auction_info(
@@ -961,7 +1181,17 @@ class AuctionCogs(commands.Cog):
         """查看特定拍賣資訊"""
         await interaction.response.defer()
 
-        auction = self.auction_db.get_auction(auction_id)
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            embed = Embed(
+                title="❌ 錯誤",
+                description="拍賣功能只能在伺服器中使用，不支援私人訊息!",
+                color=0xFF0000,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        auction = self.auction_db.get_auction(auction_id, interaction.guild.id)
 
         if not auction:
             embed = Embed(
@@ -988,53 +1218,50 @@ class AuctionCogs(commands.Cog):
             Locale.zh_CN: "查看你的拍卖和出价记录",
             Locale.ja: "あなたのオークションと入札記録を表示",
         },
-        dm_permission=True,
+        dm_permission=False,
         nsfw=False,
     )
     async def auction_my(self, interaction: Interaction) -> None:
         """查看個人拍賣記錄"""
         await interaction.response.defer()
 
-        # 取得用戶創建的拍賣
-        user_auctions = []
-        active_auctions = self.auction_db.get_active_auctions()
+        # 檢查是否在伺服器中執行命令
+        if interaction.guild is None:
+            embed = Embed(
+                title="❌ 錯誤",
+                description="拍賣功能只能在伺服器中使用，不支援私人訊息!",
+                color=0xFF0000,
+            )
+            await interaction.followup.send(embed=embed)
+            return
 
-        for auction in active_auctions:
-            if auction.creator_id == interaction.user.id:
-                user_auctions.append(auction)
-
-        # 取得用戶參與的拍賣 (當前最高出價者)
-        leading_auctions = []
-        for auction in active_auctions:
-            if auction.current_bidder_id == interaction.user.id:
-                leading_auctions.append(auction)
+        active_auctions = self.auction_db.get_active_auctions(interaction.guild.id)
+        user_auctions = self._get_user_created_auctions(active_auctions, interaction.user.id)
+        leading_auctions = self._get_user_leading_auctions(active_auctions, interaction.user.id)
 
         embed = Embed(title=f"📋 {interaction.user.mention} 的拍賣記錄", color=0x9966FF)
 
+        self._add_auction_fields_to_embed(embed, user_auctions, leading_auctions)
+        await interaction.followup.send(embed=embed)
+
+    def _get_user_created_auctions(self, auctions: list[Auction], user_id: int) -> list[Auction]:
+        """取得用戶創建的拍賣"""
+        return [auction for auction in auctions if auction.creator_id == user_id]
+
+    def _get_user_leading_auctions(self, auctions: list[Auction], user_id: int) -> list[Auction]:
+        """取得用戶領先的拍賣"""
+        return [auction for auction in auctions if auction.current_bidder_id == user_id]
+
+    def _add_auction_fields_to_embed(
+        self, embed: Embed, user_auctions: list[Auction], leading_auctions: list[Auction]
+    ) -> None:
+        """將拍賣資訊添加到 embed"""
         if user_auctions:
-            auction_list = []
-            for auction in user_auctions:
-                remaining_time = auction.end_time - datetime.now()
-                hours = int(remaining_time.total_seconds() // 3600)
-                currency = get_currency_display(auction.currency_type)
-
-                auction_list.append(
-                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,.2f} {currency} ({hours}h)"
-                )
-
+            auction_list = self._format_auction_list(user_auctions)
             embed.add_field(name="🏺 我創建的拍賣", value="\n".join(auction_list), inline=False)
 
         if leading_auctions:
-            leading_list = []
-            for auction in leading_auctions:
-                remaining_time = auction.end_time - datetime.now()
-                hours = int(remaining_time.total_seconds() // 3600)
-                currency = get_currency_display(auction.currency_type)
-
-                leading_list.append(
-                    f"#{auction.id} **{auction.item_name}** - {auction.current_price:,.2f} {currency} ({hours}h)"
-                )
-
+            leading_list = self._format_auction_list(leading_auctions)
             embed.add_field(name="👑 我領先的拍賣", value="\n".join(leading_list), inline=False)
 
         if not user_auctions and not leading_auctions:
@@ -1045,7 +1272,17 @@ class AuctionCogs(commands.Cog):
                 inline=False,
             )
 
-        await interaction.followup.send(embed=embed)
+    def _format_auction_list(self, auctions: list[Auction]) -> list[str]:
+        """格式化拍賣清單"""
+        auction_list = []
+        for auction in auctions:
+            remaining_time = auction.end_time - datetime.now()
+            hours = int(remaining_time.total_seconds() // 3600)
+            currency = get_currency_display(auction.currency_type)
+            auction_list.append(
+                f"#{auction.id} **{auction.item_name}** - {auction.current_price:,.2f} {currency} ({hours}h)"
+            )
+        return auction_list
 
     def _create_auction_embed(self, auction: Auction) -> Embed:
         """創建競標 Embed"""
