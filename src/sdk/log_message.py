@@ -18,10 +18,7 @@ class MessageLogger(BaseModel):
         if isinstance(self.message.channel, nextcord.DMChannel):
             author_name = self.message.author.nick or self.message.author.name
             return f"DM_{author_name}_{self.message.author.id}"
-        channel_name = self.message.channel.name
-        if channel_name:
-            return f"channel_{channel_name}_{self.message.channel.id}"
-        return f"channel_{self.message.channel.id}"
+        return f"channel_{self.message.channel.name}_{self.message.channel.id}"
 
     @computed_field
     @property
