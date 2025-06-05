@@ -14,6 +14,13 @@ class MessageLogger(BaseModel):
 
     @computed_field
     @property
+    def table_name(self) -> str:
+        if isinstance(self.message.channel, nextcord.DMChannel):
+            return f"DM_{self.message.author.id}"
+        return f"channel_{self.message.channel.id}"
+
+    @computed_field
+    @property
     def channel_name_or_author_name(self) -> str:
         if isinstance(self.message.channel, nextcord.DMChannel):
             author_name = self.message.author.nick or self.message.author.name
@@ -60,6 +67,10 @@ class MessageLogger(BaseModel):
         message_df.to_sql(
             name=f"{self.channel_name_or_author_name}", con=engine, if_exists="append", index=False
         )
+        # postgresql_engine = create_engine(self.database.postgres.postgres_url)
+        # message_df.to_sql(
+        #     name=f"{self.table_name}", con=postgresql_engine, if_exists="append", index=False
+        # )
 
     async def log(self) -> None:
         try:
