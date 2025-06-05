@@ -64,13 +64,9 @@ class MessageLogger(BaseModel):
         message_df = message_df.astype(str)
 
         engine = create_engine(self.database.sqlite.sqlite_file_path)
-        message_df.to_sql(
-            name=f"{self.channel_name_or_author_name}", con=engine, if_exists="append", index=False
-        )
-        # postgresql_engine = create_engine(self.database.postgres.postgres_url)
-        # message_df.to_sql(
-        #     name=f"{self.table_name}", con=postgresql_engine, if_exists="append", index=False
-        # )
+        message_df.to_sql(name=f"{self.table_name}", con=engine, if_exists="append", index=False)
+        pengine = create_engine(self.database.postgres.postgres_url)
+        message_df.to_sql(name=f"{self.table_name}", con=pengine, if_exists="append", index=False)
 
     async def log(self) -> None:
         try:

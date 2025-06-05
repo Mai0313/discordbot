@@ -36,11 +36,12 @@ class DatabaseMigration(BaseModel):
         pg_engine = create_engine(self.database.postgres.postgres_url)
         cursor = sqlite_conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cursor.fetchall()]
+        tables: list[str] = [row[0] for row in cursor.fetchall()]
 
         for table_name in tables:
+            *_, channel_id = table_name.split("_")
             data = pd.read_sql_query(f"SELECT * FROM `{table_name}`", sqlite_conn)  # noqa: S608
-            data.to_sql(table_name, pg_engine, if_exists="replace", index=False)
+            data.to_sql(f"channel_{channel_id}", pg_engine, if_exists="append", index=False)
         sqlite_conn.commit()
         sqlite_conn.close()
 
