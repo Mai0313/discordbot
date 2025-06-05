@@ -59,10 +59,7 @@ class MessageLogger(BaseModel):
         message_df = pd.DataFrame([data_dict])
         message_df = message_df.astype(str)
 
-        # 連接到 SQLite 資料庫
         engine = create_engine(self.database.sqlite.sqlite_file_path)
-
-        # 使用 pandas to_sql 寫入 SQLite 資料庫
         message_df.to_sql(
             name=f"{self.channel_name_or_author_name}", con=engine, if_exists="append", index=False
         )

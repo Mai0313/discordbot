@@ -2,7 +2,10 @@ from typing import Any
 
 from redis import Redis
 import dotenv
+import logfire
 from pydantic import Field, BaseModel, AliasChoices, computed_field
+from sqlalchemy import text, create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from pydantic_settings import BaseSettings
 
 dotenv.load_dotenv()
@@ -17,6 +20,37 @@ class PostgreSQLConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
+
+    def init_db(self) -> None:
+        try:
+            engine = create_engine(self.postgres_url)
+
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+                logfire.info("PostgreSQL database connection successful")
+
+        except SQLAlchemyError:
+            try:
+                postgres_url = self.postgres_url
+                if "/" in postgres_url:
+                    base_url = postgres_url.rsplit("/", 1)[0]
+                    database_name = postgres_url.rsplit("/", 1)[1]
+                    admin_engine = create_engine(f"{base_url}/postgres")
+
+                    with admin_engine.connect() as admin_conn:
+                        admin_conn.execute(text("COMMIT"))
+                        admin_conn.execute(text(f"CREATE DATABASE {database_name}"))
+                        logfire.info(f"Successfully created database: {database_name}")
+
+                        test_engine = create_engine(postgres_url)
+                        with test_engine.connect() as test_conn:
+                            test_conn.execute(text("SELECT 1"))
+                            logfire.info("New database connection verified")
+
+            except SQLAlchemyError as create_error:
+                logfire.error(f"Failed to create database: {create_error}", _exc_info=True)
+        except Exception as e:
+            logfire.error(f"Unexpected error ensuring database: {e}", _exc_info=True)
 
 
 class SQLiteConfig(BaseSettings):

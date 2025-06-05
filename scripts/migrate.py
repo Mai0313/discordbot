@@ -1,6 +1,9 @@
+import sqlite3
+
 import pandas as pd
 from pydantic import Field, BaseModel
 from sqlalchemy import create_engine
+import autorootcwd  # noqa: F401
 from src.types.database import DatabaseConfig
 
 
@@ -28,8 +31,22 @@ class DatabaseMigration(BaseModel):
         with engine.connect() as conn:
             conn.execute(f"DROP TABLE {name}")
 
+    def migrate_to_postgresql(self, path: str) -> None:
+        sqlite_conn = sqlite3.connect(path)
+        pg_engine = create_engine(self.database.postgres.postgres_url)
+        cursor = sqlite_conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+
+        for table_name in tables:
+            data = pd.read_sql_query(f"SELECT * FROM `{table_name}`", sqlite_conn)  # noqa: S608
+            data.to_sql(table_name, pg_engine, if_exists="replace", index=False)
+        sqlite_conn.commit()
+        sqlite_conn.close()
+
 
 if __name__ == "__main__":
     db_migration = DatabaseMigration()
-    db_migration.migrate(path_or_data="./data/messages.csv")
+    # db_migration.migrate(path_or_data="./data/messages.csv")
+    db_migration.migrate_to_postgresql(path="./data/messages.db")
     # db_migration.split(name="messages")

@@ -322,6 +322,19 @@ wheels = [
 ]
 
 [[package]]
+name = "autorootcwd"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyrootutils" },
+    { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/81/e1d437b397a3198f973a9875a5dfd37e35fdf90d3ffd5273fd1ca896d00c/autorootcwd-1.0.1.tar.gz", hash = "sha256:65ebae35478592ef453b29c6317fb8b6757f5dc6351877c85bf74d85491590bf", size = 1552, upload-time = "2024-08-09T15:41:47.044Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/cf/ced2cef6152c4c14afa1ead49a4d2805fdfbfa3eb6496d3bb0a4931ab1b2/autorootcwd-1.0.1-py3-none-any.whl", hash = "sha256:418600077572488f5c16f729835852e3a5e0f76f2fbd5d599fb6be0128e131f5", size = 1764, upload-time = "2024-08-09T15:41:46.171Z" },
+]
+
+[[package]]
 name = "babel"
 version = "2.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -779,6 +792,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "autorootcwd" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "notebook" },
@@ -827,6 +841,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "autorootcwd", specifier = ">=1.0.1" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "ipywidgets", specifier = ">=8.1.7" },
     { name = "notebook", specifier = ">=7.4.3" },
@@ -3219,6 +3234,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9d/57/2f5e6226a674b2bcb6db531e8b383079b678df5b10cdaa610d6cf20d77ba/PyNaCl-1.4.0-cp35-abi3-manylinux1_x86_64.whl", hash = "sha256:30f9b96db44e09b3304f9ea95079b1b7316b2b4f3744fe3aaecccd95d547063d", size = 961075, upload-time = "2020-05-25T19:44:56.647Z" },
     { url = "https://files.pythonhosted.org/packages/50/b8/0918da3835e72a81dfe5da23e7f00b0bf6bafa44ff8e61d68d3789b72050/PyNaCl-1.4.0-cp35-abi3-win32.whl", hash = "sha256:4e10569f8cbed81cb7526ae137049759d2a8d57726d52c1a000a3ce366779634", size = 193669, upload-time = "2020-09-13T16:45:35.91Z" },
     { url = "https://files.pythonhosted.org/packages/8c/a6/1e94dd44f8b4a1be93a7cf5f61e5998475acd44b30cb49aee0beb5b62cc7/PyNaCl-1.4.0-cp35-abi3-win_amd64.whl", hash = "sha256:c914f78da4953b33d4685e3cdc7ce63401247a21425c16a39760e282075ac4a6", size = 206169, upload-time = "2020-09-13T16:45:37.645Z" },
+]
+
+[[package]]
+name = "pyrootutils"
+version = "1.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/7d/c5f3fb44dc98a72249a17a49e28bce4aaa6758ce9e37e77648cdc1857baf/pyrootutils-1.0.4.tar.gz", hash = "sha256:f58aac67147bbab20938b7b783cb2f4670d6329a33c6640233854976538fc5f2", size = 5133, upload-time = "2022-06-09T18:58:04.964Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/6f/ed601aec632d908b86adbad0e1cc712f7073faf697134fb0465a3fbcc512/pyrootutils-1.0.4-py3-none-any.whl", hash = "sha256:8bbf25425278693168ae03b167aa6509422dc21853a6ee01d5d5e40601a89f90", size = 5831, upload-time = "2022-06-09T18:58:03.184Z" },
 ]
 
 [[package]]
