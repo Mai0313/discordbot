@@ -51,14 +51,18 @@ class DiscordBot(commands.Bot):
         return await super().on_guild_available(guild)
 
     async def get_cogs_names(self) -> list[str]:
+        # cog_path = Path("./src/cogs")
+        # cog_files = []
+        # for f in cog_path.rglob("*.py"):
+        #     if f.stem.startswith("_"):
+        #         continue
+        #     relative_path = f.relative_to(cog_path).with_suffix("")
+        #     parts = ["src", "cogs", *list(relative_path.parts)]
+        #     cog_files.append(".".join(parts))
         cog_path = Path("./src/cogs")
-        cog_files = []
-        for f in cog_path.rglob("*.py"):
-            if f.stem.startswith("_"):
-                continue
-            relative_path = f.relative_to(cog_path).with_suffix("")
-            parts = ["src", "cogs", *list(relative_path.parts)]
-            cog_files.append(".".join(parts))
+        cog_files = [
+            f"src.cogs.{f.stem}" for f in cog_path.glob("*.py") if not f.stem.startswith("__")
+        ]
         return cog_files
 
     async def load_cogs(self) -> None:
