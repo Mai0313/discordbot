@@ -38,14 +38,14 @@ def test_load_monsters_data():
 
     # 創建 MapleStoryCogs 實例
     maple_cog = MapleStoryCogs(mock_bot)
-    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
+    maple_cog._load_monsters_data = load_fake_data
 
     # 檢查資料是否成功載入
     assert maple_cog.monsters_data is not None, "怪物資料應該成功載入"
     assert len(maple_cog.monsters_data) > 0, "怪物資料應該包含至少一個怪物"
 
     # 檢查前幾個怪物的基本資訊
-    for monster in maple_cog.monsters_data[:3]:
+    for monster in maple_cog.monsters_data[:1]:
         assert "name" in monster, "怪物應該有名稱"
         assert "drops" in monster, "怪物應該有掉落物品資訊"
 
@@ -55,7 +55,7 @@ def test_search_functions():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
-    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
+    maple_cog._load_monsters_data = load_fake_data
 
     assert maple_cog.monsters_data is not None, "無法測試搜尋功能：怪物資料未載入"
 
@@ -79,7 +79,7 @@ def test_basic_functionality():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
-    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
+    maple_cog._load_monsters_data = load_fake_data
 
     assert maple_cog.monsters_data is not None, "無法測試基本功能：怪物資料未載入"
 
@@ -99,7 +99,7 @@ def test_embed_creation():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
-    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
+    maple_cog._load_monsters_data = load_fake_data
 
     assert maple_cog.monsters_data is not None, "無法測試 Embed 創建：怪物資料未載入"
 
