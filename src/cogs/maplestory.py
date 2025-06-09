@@ -1,4 +1,3 @@
-import os
 import json
 from typing import Any
 
@@ -163,7 +162,7 @@ class MapleStoryCogs(commands.Cog):
     def _load_monsters_data(self) -> list[dict[str, Any]]:
         """載入怪物資料"""
         try:
-            monsters_file = os.path.join("data", "monsters.json")
+            monsters_file = "./data/monsters.json"
             with open(monsters_file, encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError:
