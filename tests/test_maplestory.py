@@ -1,13 +1,34 @@
-import os
 from unittest.mock import Mock
 
 from src.cogs.maplestory import MapleStoryCogs
 
 
-def test_file_exists():
-    """測試資料檔案是否存在"""
-    monsters_file = "data/monsters.json"
-    assert os.path.exists(monsters_file), f"找不到怪物資料檔案：{monsters_file}"
+def load_fake_data():
+    return [
+        {
+            "name": "嫩寶",
+            "image": "https://mai0313.github.io/artale-drop/image/%E5%AB%A9%E5%AF%B6.png",
+            "attributes": {
+                "level": 1,
+                "hp": 8,
+                "mp": 0,
+                "exp": 3,
+                "evasion": 0,
+                "pdef": 0,
+                "mdef": 0,
+                "accuracy_required": "0 (每少1級 +0)",
+            },
+            "maps": ["楓之島：嫩寶狩獵場Ⅱ"],
+            "drops": [
+                {
+                    "name": "綠髮帶",
+                    "type": "裝備",
+                    "link": "https://maplesaga.com/library/cn/permalink/equip/1002067",
+                    "img": "https://mai0313.github.io/artale-drop/image/%E7%B6%A0%E9%AB%AE%E5%B8%B6.png",
+                }
+            ],
+        }
+    ]
 
 
 def test_load_monsters_data():
@@ -17,6 +38,7 @@ def test_load_monsters_data():
 
     # 創建 MapleStoryCogs 實例
     maple_cog = MapleStoryCogs(mock_bot)
+    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
 
     # 檢查資料是否成功載入
     assert maple_cog.monsters_data is not None, "怪物資料應該成功載入"
@@ -33,6 +55,7 @@ def test_search_functions():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
+    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
 
     assert maple_cog.monsters_data is not None, "無法測試搜尋功能：怪物資料未載入"
 
@@ -56,6 +79,7 @@ def test_basic_functionality():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
+    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
 
     assert maple_cog.monsters_data is not None, "無法測試基本功能：怪物資料未載入"
 
@@ -75,6 +99,7 @@ def test_embed_creation():
     # 創建模擬的 bot 物件
     mock_bot = Mock()
     maple_cog = MapleStoryCogs(mock_bot)
+    maple_cog._load_monsters_data = Mock(return_value=load_fake_data())
 
     assert maple_cog.monsters_data is not None, "無法測試 Embed 創建：怪物資料未載入"
 

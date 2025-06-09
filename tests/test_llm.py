@@ -1,6 +1,5 @@
 import pytest
 from src.sdk.llm import LLMSDK
-from openai.types import ImagesResponse
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 prompt = "Hi"
