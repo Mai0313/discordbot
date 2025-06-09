@@ -8,9 +8,9 @@ addopts = [
     "--quiet",
     "--cov=src",
     "--cov-report=term-missing:skip-covered",
-    "--junitxml=.github/reports/pytest.xml",
-    "--cov-report=xml:.github/reports/coverage.xml",
-    "--cov-report=html:.github/coverage_html_report",
+    "--junitxml=./.github/reports/pytest.xml",
+    "--cov-report=xml:./.github/reports/coverage.xml",
+    "--cov-report=html:./.github/coverage_html_report",
     "--cache-clear",
     "-n=auto",
     "--no-header",
@@ -23,7 +23,7 @@ filterwarnings = [
 ]
 log_cli = true
 log_cli_level = "INFO"
-log_file = ".github/reports/pytest_logs.log"
+log_file = "./.github/reports/pytest_logs.log"
 log_file_level = "INFO"
 markers = [
     "slow: slow tests",
