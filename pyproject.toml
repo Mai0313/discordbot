@@ -70,7 +70,7 @@ authors = [
 dependencies = [
     "ag2>=0.9.1.post0",
     "logfire>=3.16.0",
-    "nextcord[speed,voice]>=2.6.0",
+    "nextcord[speed,voice]==2.6.0",
     "openai>=1.81.0",
     "orjson>=3.10.18",
     "pandas>=2.2.3",
