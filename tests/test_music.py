@@ -39,11 +39,11 @@ class TestMusicCogs:
         assert cog.bot == bot
 
     @pytest.mark.asyncio
-    async def test_join_command_no_channel(self, music_cog, mock_interaction):
-        """測試加入指令 - 沒有指定頻道且使用者不在語音頻道"""
+    async def test_join_command_no_voice_channel(self, music_cog, mock_interaction):
+        """測試加入指令 - 使用者不在語音頻道"""
         mock_interaction.user.voice = None
 
-        await music_cog.join(mock_interaction, None)
+        await music_cog.join(mock_interaction)
 
         # 驗證有發送錯誤訊息
         mock_interaction.response.defer.assert_called_once()
@@ -56,13 +56,16 @@ class TestMusicCogs:
         assert embed.color.value == 0xFF0000
 
     @pytest.mark.asyncio
-    async def test_join_command_with_channel(self, music_cog, mock_interaction):
-        """測試加入指令 - 指定頻道"""
+    async def test_join_command_with_user_in_voice(self, music_cog, mock_interaction):
+        """測試加入指令 - 使用者在語音頻道中"""
         mock_channel = MagicMock()
         mock_channel.mention = "#test-channel"
         mock_channel.connect = AsyncMock()
 
-        await music_cog.join(mock_interaction, mock_channel)
+        mock_interaction.user.voice = MagicMock()
+        mock_interaction.user.voice.channel = mock_channel
+
+        await music_cog.join(mock_interaction)
 
         # 驗證有連接到頻道
         mock_channel.connect.assert_called_once()
@@ -74,6 +77,31 @@ class TestMusicCogs:
         embed = call_args[1]["embed"]
         assert "已加入" in embed.title
         assert embed.color.value == 0x00FF00
+
+    @pytest.mark.asyncio
+    async def test_join_command_already_in_same_channel(self, music_cog, mock_interaction):
+        """測試加入指令 - 機器人已經在相同頻道中"""
+        mock_channel = MagicMock()
+        mock_channel.mention = "#test-channel"
+
+        mock_interaction.user.voice = MagicMock()
+        mock_interaction.user.voice.channel = mock_channel
+
+        mock_voice_client = MagicMock()
+        mock_voice_client.channel = mock_channel
+        mock_interaction.guild.voice_client = mock_voice_client
+
+        await music_cog.join(mock_interaction)
+
+        # 驗證沒有重新連接
+        mock_interaction.response.defer.assert_called_once()
+        mock_interaction.followup.send.assert_called_once()
+
+        # 檢查提示訊息
+        call_args = mock_interaction.followup.send.call_args
+        embed = call_args[1]["embed"]
+        assert "提示" in embed.title
+        assert embed.color.value == 0x0099FF
 
     @pytest.mark.asyncio
     async def test_stop_command_no_voice_client(self, music_cog, mock_interaction):

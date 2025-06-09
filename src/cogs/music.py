@@ -35,23 +35,6 @@ FFMPEG_OPTIONS = {"options": "-vn"}
 ytdl = yt_dlp.YoutubeDL(YTDL_FORMAT_OPTIONS)
 
 # SlashOption definitions
-CHANNEL_OPTION = SlashOption(
-    name="channel",
-    description="Voice channel to join (optional, defaults to your current channel)",
-    name_localizations={
-        Locale.zh_TW: "頻道",
-        Locale.zh_CN: "频道",
-        Locale.ja: "チャンネル",
-    },
-    description_localizations={
-        Locale.zh_TW: "要加入的語音頻道（可選，預設為你目前的頻道）",
-        Locale.zh_CN: "要加入的语音频道（可选，默认为你当前的频道）",
-        Locale.ja: "参加するボイスチャンネル（オプション、デフォルトは現在のチャンネル）",
-    },
-    required=False,
-    default=None,
-)
-
 URL_OPTION = SlashOption(
     name="url",
     description="YouTube URL or search query",
@@ -67,11 +50,7 @@ URL_OPTION = SlashOption(
 VOLUME_OPTION = SlashOption(
     name="volume",
     description="Volume level (0-100)",
-    name_localizations={
-        Locale.zh_TW: "音量",
-        Locale.zh_CN: "音量",
-        Locale.ja: "ボリューム",
-    },
+    name_localizations={Locale.zh_TW: "音量", Locale.zh_CN: "音量", Locale.ja: "ボリューム"},
     description_localizations={
         Locale.zh_TW: "音量等級 (0-100)",
         Locale.zh_CN: "音量等级 (0-100)",
@@ -140,42 +119,47 @@ class MusicCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="join",
-        description="Join a voice channel",
+        description="Join your current voice channel",
         name_localizations={Locale.zh_TW: "加入", Locale.zh_CN: "加入", Locale.ja: "参加"},
         description_localizations={
-            Locale.zh_TW: "加入語音頻道",
-            Locale.zh_CN: "加入语音频道",
-            Locale.ja: "ボイスチャンネルに参加",
+            Locale.zh_TW: "加入你目前的語音頻道",
+            Locale.zh_CN: "加入你当前的语音频道",
+            Locale.ja: "現在のボイスチャンネルに参加",
         },
         dm_permission=False,
         nsfw=False,
     )
-    async def join(
-        self,
-        interaction: Interaction,
-        channel: nextcord.VoiceChannel = CHANNEL_OPTION,
-    ) -> None:
+    async def join(self, interaction: Interaction) -> None:
         """加入語音頻道"""
         await interaction.response.defer()
 
-        # 確定要加入的頻道
-        target_channel = channel or (
-            interaction.user.voice.channel if interaction.user.voice else None
-        )
-
-        if not target_channel:
+        # 檢查用戶是否在語音頻道中
+        if not interaction.user.voice or not interaction.user.voice.channel:
             embed = nextcord.Embed(
-                title="❌ 錯誤", description="請指定語音頻道或加入一個語音頻道", color=0xFF0000
+                title="❌ 錯誤",
+                description="你必須先加入一個語音頻道才能使用此指令",
+                color=0xFF0000,
             )
             await interaction.followup.send(embed=embed)
             return
 
+        target_channel = interaction.user.voice.channel
+
         # 如果已經連接到語音頻道，移動到新頻道
         if interaction.guild.voice_client is not None:
-            await interaction.guild.voice_client.move_to(target_channel)
-            embed = nextcord.Embed(
-                title="🎵 已移動", description=f"已移動到 {target_channel.mention}", color=0x00FF00
-            )
+            if interaction.guild.voice_client.channel == target_channel:
+                embed = nextcord.Embed(
+                    title="❗ 提示",
+                    description=f"我已經在 {target_channel.mention} 中了",
+                    color=0x0099FF,
+                )
+            else:
+                await interaction.guild.voice_client.move_to(target_channel)
+                embed = nextcord.Embed(
+                    title="🎵 已移動",
+                    description=f"已移動到 {target_channel.mention}",
+                    color=0x00FF00,
+                )
         else:
             await target_channel.connect()
             embed = nextcord.Embed(
@@ -196,11 +180,7 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def play(
-        self,
-        interaction: Interaction,
-        url: str = URL_OPTION,
-    ) -> None:
+    async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
         """播放 YouTube 音樂"""
         await interaction.response.defer()
 
@@ -251,11 +231,7 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def stream(
-        self,
-        interaction: Interaction,
-        url: str = URL_OPTION,
-    ) -> None:
+    async def stream(self, interaction: Interaction, url: str = URL_OPTION) -> None:
         """串流播放 YouTube 音樂"""
         await interaction.response.defer()
 
@@ -277,7 +253,7 @@ class MusicCogs(commands.Cog):
             )
 
             embed = nextcord.Embed(
-                title="🎵 正在串流", description=f"**{player.title}**", color=0x00FF00
+                title="🎵正在串流", description=f"**{player.title}**", color=0x00FF00
             )
             if player.uploader:
                 embed.add_field(name="頻道", value=player.uploader, inline=True)
@@ -306,11 +282,7 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def volume(
-        self,
-        interaction: Interaction,
-        volume: int = VOLUME_OPTION,
-    ) -> None:
+    async def volume(self, interaction: Interaction, volume: int = VOLUME_OPTION) -> None:
         """調整音量"""
         await interaction.response.defer()
 
