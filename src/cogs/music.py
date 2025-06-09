@@ -34,46 +34,6 @@ FFMPEG_OPTIONS = {"options": "-vn"}
 
 ytdl = yt_dlp.YoutubeDL(YTDL_FORMAT_OPTIONS)
 
-# SlashOption 定義
-URL_OPTION = SlashOption(
-    name="url",
-    description="YouTube URL or search query",
-    name_localizations={Locale.zh_TW: "網址", Locale.zh_CN: "网址", Locale.ja: "URL"},
-    description_localizations={
-        Locale.zh_TW: "YouTube 網址或搜尋關鍵字",
-        Locale.zh_CN: "YouTube 网址或搜索关键字",
-        Locale.ja: "YouTube または検索キーワード",
-    },
-    required=True,
-)
-
-VOLUME_OPTION = SlashOption(
-    name="volume",
-    description="Volume level (0-100)",
-    name_localizations={Locale.zh_TW: "音量", Locale.zh_CN: "音量", Locale.ja: "ボリューム"},
-    description_localizations={
-        Locale.zh_TW: "音量等級 (0-100)",
-        Locale.zh_CN: "音量等级 (0-100)",
-        Locale.ja: "ボリュームレベル (0-100)",
-    },
-    required=True,
-    min_value=0,
-    max_value=100,
-)
-
-CHANNEL_OPTION = SlashOption(
-    name="channel",
-    description="Voice channel to join (optional, defaults to your current channel)",
-    name_localizations={Locale.zh_TW: "頻道", Locale.zh_CN: "频道", Locale.ja: "チャンネル"},
-    description_localizations={
-        Locale.zh_TW: "要加入的語音頻道（可選，預設為你目前的頻道）",
-        Locale.zh_CN: "要加入的语音频道（可选，默认为你当前的频道）",
-        Locale.ja: "参加するボイスチャンネル（オプション、デフォルトは現在のチャンネル）",
-    },
-    required=False,
-    default=None,
-)
-
 
 class YTDLSource(nextcord.PCMVolumeTransformer):
     """YouTube 音源處理器"""
@@ -143,7 +103,24 @@ class MusicCogs(commands.Cog):
         nsfw=False,
     )
     async def join(
-        self, interaction: Interaction, channel: nextcord.VoiceChannel = CHANNEL_OPTION
+        self,
+        interaction: Interaction,
+        channel: nextcord.VoiceChannel = SlashOption(
+            name="channel",
+            description="Voice channel to join (optional, defaults to your current channel)",
+            name_localizations={
+                Locale.zh_TW: "頻道",
+                Locale.zh_CN: "频道",
+                Locale.ja: "チャンネル",
+            },
+            description_localizations={
+                Locale.zh_TW: "要加入的語音頻道（可選，預設為你目前的頻道）",
+                Locale.zh_CN: "要加入的语音频道（可选，默认为你当前的频道）",
+                Locale.ja: "参加するボイスチャンネル（オプション、デフォルトは現在のチャンネル）",
+            },
+            required=False,
+            default=None,
+        ),
     ) -> None:
         """加入語音頻道"""
         await interaction.response.defer()
@@ -186,7 +163,21 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
+    async def play(
+        self,
+        interaction: Interaction,
+        url: str = SlashOption(
+            name="url",
+            description="YouTube URL or search query",
+            name_localizations={Locale.zh_TW: "網址", Locale.zh_CN: "网址", Locale.ja: "URL"},
+            description_localizations={
+                Locale.zh_TW: "YouTube 網址或搜尋關鍵字",
+                Locale.zh_CN: "YouTube 网址或搜索关键字",
+                Locale.ja: "YouTube または検索キーワード",
+            },
+            required=True,
+        ),
+    ) -> None:
         """播放 YouTube 音樂"""
         await interaction.response.defer()
 
@@ -237,7 +228,21 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def stream(self, interaction: Interaction, url: str = URL_OPTION) -> None:
+    async def stream(
+        self,
+        interaction: Interaction,
+        url: str = SlashOption(
+            name="url",
+            description="YouTube URL or search query",
+            name_localizations={Locale.zh_TW: "網址", Locale.zh_CN: "网址", Locale.ja: "URL"},
+            description_localizations={
+                Locale.zh_TW: "YouTube 網址或搜尋關鍵字",
+                Locale.zh_CN: "YouTube 网址或搜索关键字",
+                Locale.ja: "YouTube または検索キーワード",
+            },
+            required=True,
+        ),
+    ) -> None:
         """串流播放 YouTube 音樂"""
         await interaction.response.defer()
 
@@ -288,7 +293,27 @@ class MusicCogs(commands.Cog):
         dm_permission=False,
         nsfw=False,
     )
-    async def volume(self, interaction: Interaction, volume: int = VOLUME_OPTION) -> None:
+    async def volume(
+        self,
+        interaction: Interaction,
+        volume: int = SlashOption(
+            name="volume",
+            description="Volume level (0-100)",
+            name_localizations={
+                Locale.zh_TW: "音量",
+                Locale.zh_CN: "音量",
+                Locale.ja: "ボリューム",
+            },
+            description_localizations={
+                Locale.zh_TW: "音量等級 (0-100)",
+                Locale.zh_CN: "音量等级 (0-100)",
+                Locale.ja: "ボリュームレベル (0-100)",
+            },
+            required=True,
+            min_value=0,
+            max_value=100,
+        ),
+    ) -> None:
         """調整音量"""
         await interaction.response.defer()
 
