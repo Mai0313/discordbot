@@ -464,5 +464,5 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     bot.add_cog(MapleStoryCogs(bot))

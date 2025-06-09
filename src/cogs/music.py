@@ -417,6 +417,6 @@ class MusicCogs(commands.Cog):
         return True
 
 
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     """設定 Cog"""
     bot.add_cog(MusicCogs(bot))

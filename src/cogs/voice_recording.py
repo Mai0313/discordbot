@@ -298,5 +298,5 @@ class VoiceRecordingCogs(commands.Cog):
 
 
 # 註冊 Cog
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     bot.add_cog(VoiceRecordingCogs(bot), override=True)

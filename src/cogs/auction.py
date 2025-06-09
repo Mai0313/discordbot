@@ -1297,5 +1297,5 @@ class AuctionCogs(commands.Cog):
         return embed
 
 
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     bot.add_cog(AuctionCogs(bot))

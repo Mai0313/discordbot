@@ -136,7 +136,7 @@ class ReplyGeneratorCogs(commands.Cog):
     @nextcord.slash_command(
         name="oais",
         description="Generate a reply based on the prompt and show progress in real-time.",
-        name_localizations={Locale.zh_TW: "實時生成文字", Locale.ja: "テキストを生成"},
+        name_localizations={Locale.zh_TW: "實時生成文字", Locale.ja: "リアルタイム生成"},
         description_localizations={
             Locale.zh_TW: "根據提示詞即時生成回覆，並在生成過程中顯示進度。",
             Locale.ja: "指定されたプロンプトに基づいてリアルタイムで応答を生成し、進捗を表示します。",
