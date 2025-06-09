@@ -12,14 +12,9 @@ class VideoCogs(commands.Cog):
     @nextcord.slash_command(
         name="download_video",
         description="Download a video from various platforms and send it back.",
-        name_localizations={
-            Locale.zh_TW: "下載影片",
-            Locale.zh_CN: "下载视频",
-            Locale.ja: "動画ダウンロード",
-        },
+        name_localizations={Locale.zh_TW: "下載影片", Locale.ja: "動画ダウンロード"},
         description_localizations={
             Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)。",
-            Locale.zh_CN: "从多种平台下载视频并发送 (支持 YouTube, Facebook, Instagram, X, Tiktok 等)。",
             Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
         },
         dm_permission=True,

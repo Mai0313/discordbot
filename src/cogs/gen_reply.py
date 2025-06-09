@@ -67,14 +67,9 @@ class ReplyGeneratorCogs(commands.Cog):
     @nextcord.slash_command(
         name="oai",
         description="Generate a reply based on the given prompt.",
-        name_localizations={
-            Locale.zh_TW: "生成文字",
-            Locale.zh_CN: "生成文字",
-            Locale.ja: "テキストを生成",
-        },
+        name_localizations={Locale.zh_TW: "生成文字", Locale.ja: "テキストを生成"},
         description_localizations={
             Locale.zh_TW: "根據提供的提示生成回覆。",
-            Locale.zh_CN: "根据提供的提示生成回复。",
             Locale.ja: "指定されたプロンプトに基づいて応答を生成します。",
         },
         dm_permission=True,
@@ -87,7 +82,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="Enter your prompt.",
             description_localizations={
                 Locale.zh_TW: "請輸入提示詞。",
-                Locale.zh_CN: "请输入提示词。",
                 Locale.ja: "プロンプトを入力してください。",
             },
         ),
@@ -95,7 +89,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="Choose a model (default: GPT-4o).",
             description_localizations={
                 Locale.zh_TW: "選擇模型 (預設為 GPT-4o)",
-                Locale.zh_CN: "选择模型（默认: GPT-4o）",
                 Locale.ja: "モデルを選択してください（デフォルトは GPT-4o）",
             },
             choices=MODEL_CHOICES,
@@ -106,7 +99,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="(Optional) Upload an image.",
             description_localizations={
                 Locale.zh_TW: "（可選）上傳一張圖片。",
-                Locale.zh_CN: "（可选）上传一张图片。",
                 Locale.ja: "（オプション）画像をアップロードしてください。",
             },
             required=False,
@@ -144,14 +136,9 @@ class ReplyGeneratorCogs(commands.Cog):
     @nextcord.slash_command(
         name="oais",
         description="Generate a reply based on the prompt and show progress in real-time.",
-        name_localizations={
-            Locale.zh_TW: "實時生成文字",
-            Locale.zh_CN: "实时生成文字",
-            Locale.ja: "テキストを生成",
-        },
+        name_localizations={Locale.zh_TW: "實時生成文字", Locale.ja: "テキストを生成"},
         description_localizations={
             Locale.zh_TW: "根據提示詞即時生成回覆，並在生成過程中顯示進度。",
-            Locale.zh_CN: "根据提示词实时生成回复，并在生成过程中显示进度。",
             Locale.ja: "指定されたプロンプトに基づいてリアルタイムで応答を生成し、進捗を表示します。",
         },
         dm_permission=True,
@@ -164,7 +151,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="Enter your prompt.",
             description_localizations={
                 Locale.zh_TW: "請輸入提示詞。",
-                Locale.zh_CN: "请输入提示词。",
                 Locale.ja: "プロンプトを入力してください。",
             },
         ),
@@ -172,7 +158,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="Choose a model (default: GPT-4o).",
             description_localizations={
                 Locale.zh_TW: "選擇模型 (預設為 GPT-4o)",
-                Locale.zh_CN: "选择模型（默认: GPT-4o）",
                 Locale.ja: "モデルを選択してください（デフォルトは GPT-4o）",
             },
             choices=MODEL_CHOICES,
@@ -183,7 +168,6 @@ class ReplyGeneratorCogs(commands.Cog):
             description="(Optional) Upload an image.",
             description_localizations={
                 Locale.zh_TW: "（可選）上傳一張圖片。",
-                Locale.zh_CN: "（可选）上传一张图片。",
                 Locale.ja: "（オプション）画像をアップロードしてください。",
             },
             required=False,

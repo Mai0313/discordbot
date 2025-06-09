@@ -14,10 +14,9 @@ logger = logging.getLogger(__name__)
 CHANNEL_OPTION = SlashOption(
     name="channel",
     description="Voice channel to join (optional, defaults to your current channel)",
-    name_localizations={Locale.zh_TW: "頻道", Locale.zh_CN: "频道", Locale.ja: "チャンネル"},
+    name_localizations={Locale.zh_TW: "頻道", Locale.ja: "チャンネル"},
     description_localizations={
         Locale.zh_TW: "要加入的語音頻道（可選，預設為你目前的頻道）",
-        Locale.zh_CN: "要加入的语音频道（可选，默认为你当前的频道）",
         Locale.ja: "参加するボイスチャンネル（オプション、デフォルトは現在のチャンネル）",
     },
     required=False,
@@ -27,10 +26,9 @@ CHANNEL_OPTION = SlashOption(
 MAX_DURATION_OPTION = SlashOption(
     name="max_duration",
     description="Maximum connection duration in minutes (1-60, default: 5)",
-    name_localizations={Locale.zh_TW: "最長時間", Locale.zh_CN: "最长时间", Locale.ja: "最大時間"},
+    name_localizations={Locale.zh_TW: "最長時間", Locale.ja: "最大時間"},
     description_localizations={
         Locale.zh_TW: "最長連接時間（分鐘，1-60，預設: 5）",
-        Locale.zh_CN: "最长连接时间（分钟，1-60，默认: 5）",
         Locale.ja: "最大接続時間（分、1-60、デフォルト: 5）",
     },
     required=False,
@@ -63,14 +61,9 @@ class VoiceRecordingCogs(commands.Cog):
     @nextcord.slash_command(
         name="voice_join",
         description="Join voice channel",
-        name_localizations={
-            Locale.zh_TW: "加入語音",
-            Locale.zh_CN: "加入语音",
-            Locale.ja: "ボイス参加",
-        },
+        name_localizations={Locale.zh_TW: "加入語音", Locale.ja: "ボイス参加"},
         description_localizations={
             Locale.zh_TW: "加入語音頻道",
-            Locale.zh_CN: "加入语音频道",
             Locale.ja: "ボイスチャンネルに参加",
         },
         dm_permission=False,
@@ -171,14 +164,9 @@ class VoiceRecordingCogs(commands.Cog):
     @nextcord.slash_command(
         name="voice_stop",
         description="Leave voice channel",
-        name_localizations={
-            Locale.zh_TW: "離開語音",
-            Locale.zh_CN: "离开语音",
-            Locale.ja: "ボイス退出",
-        },
+        name_localizations={Locale.zh_TW: "離開語音", Locale.ja: "ボイス退出"},
         description_localizations={
             Locale.zh_TW: "離開語音頻道",
-            Locale.zh_CN: "离开语音频道",
             Locale.ja: "ボイスチャンネルから退出",
         },
         dm_permission=False,
@@ -245,14 +233,9 @@ class VoiceRecordingCogs(commands.Cog):
     @nextcord.slash_command(
         name="voice_status",
         description="Check current voice connection status",
-        name_localizations={
-            Locale.zh_TW: "語音狀態",
-            Locale.zh_CN: "语音状态",
-            Locale.ja: "ボイス状態",
-        },
+        name_localizations={Locale.zh_TW: "語音狀態", Locale.ja: "ボイス状態"},
         description_localizations={
             Locale.zh_TW: "查看目前的語音連接狀態",
-            Locale.zh_CN: "查看当前的语音连接状态",
             Locale.ja: "現在のボイス接続状態を確認",
         },
         dm_permission=False,

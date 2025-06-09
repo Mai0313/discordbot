@@ -61,11 +61,8 @@ def foo(self, extra_input: str) -> str:
 
 ```python
 # Define at module level
-URL_OPTION = SlashOption(
-    name="url",
-    description="YouTube URL or search query",
-    required=True,
-)
+URL_OPTION = SlashOption(name="url", description="YouTube URL or search query", required=True)
+
 
 # Reference in function parameter
 async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:

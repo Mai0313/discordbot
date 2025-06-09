@@ -93,10 +93,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="join",
         description="Join your current voice channel",
-        name_localizations={Locale.zh_TW: "加入", Locale.zh_CN: "加入", Locale.ja: "参加"},
+        name_localizations={Locale.zh_TW: "加入", Locale.ja: "参加"},
         description_localizations={
             Locale.zh_TW: "加入你目前的語音頻道",
-            Locale.zh_CN: "加入你当前的语音频道",
             Locale.ja: "現在のボイスチャンネルに参加",
         },
         dm_permission=False,
@@ -144,10 +143,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="play",
         description="Play music from YouTube",
-        name_localizations={Locale.zh_TW: "播放", Locale.zh_CN: "播放", Locale.ja: "再生"},
+        name_localizations={Locale.zh_TW: "播放", Locale.ja: "再生"},
         description_localizations={
             Locale.zh_TW: "從 YouTube 播放音樂",
-            Locale.zh_CN: "从 YouTube 播放音乐",
             Locale.ja: "YouTubeから音楽を再生",
         },
         dm_permission=False,
@@ -159,10 +157,9 @@ class MusicCogs(commands.Cog):
         url: str = SlashOption(
             name="url",
             description="YouTube URL or search query",
-            name_localizations={Locale.zh_TW: "網址", Locale.zh_CN: "网址", Locale.ja: "URL"},
+            name_localizations={Locale.zh_TW: "網址", Locale.ja: "URL"},
             description_localizations={
                 Locale.zh_TW: "YouTube 網址或搜尋關鍵字",
-                Locale.zh_CN: "YouTube 网址或搜索关键字",
                 Locale.ja: "YouTube または検索キーワード",
             },
             required=True,
@@ -209,10 +206,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="stream",
         description="Stream music from YouTube (no download)",
-        name_localizations={Locale.zh_TW: "串流", Locale.zh_CN: "串流", Locale.ja: "ストリーム"},
+        name_localizations={Locale.zh_TW: "串流", Locale.ja: "ストリーム"},
         description_localizations={
             Locale.zh_TW: "從 YouTube 串流音樂（不下載）",
-            Locale.zh_CN: "从 YouTube 串流音乐（不下载）",
             Locale.ja: "YouTubeから音楽をストリーミング（ダウンロードなし）",
         },
         dm_permission=False,
@@ -224,10 +220,9 @@ class MusicCogs(commands.Cog):
         url: str = SlashOption(
             name="url",
             description="YouTube URL or search query",
-            name_localizations={Locale.zh_TW: "網址", Locale.zh_CN: "网址", Locale.ja: "URL"},
+            name_localizations={Locale.zh_TW: "網址", Locale.ja: "URL"},
             description_localizations={
                 Locale.zh_TW: "YouTube 網址或搜尋關鍵字",
-                Locale.zh_CN: "YouTube 网址或搜索关键字",
                 Locale.ja: "YouTube または検索キーワード",
             },
             required=True,
@@ -274,12 +269,8 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="volume",
         description="Change the music volume",
-        name_localizations={Locale.zh_TW: "音量", Locale.zh_CN: "音量", Locale.ja: "ボリューム"},
-        description_localizations={
-            Locale.zh_TW: "調整音樂音量",
-            Locale.zh_CN: "调整音乐音量",
-            Locale.ja: "音楽の音量を調整",
-        },
+        name_localizations={Locale.zh_TW: "音量", Locale.ja: "ボリューム"},
+        description_localizations={Locale.zh_TW: "調整音樂音量", Locale.ja: "音楽の音量を調整"},
         dm_permission=False,
         nsfw=False,
     )
@@ -289,14 +280,9 @@ class MusicCogs(commands.Cog):
         volume: int = SlashOption(
             name="volume",
             description="Volume level (0-100)",
-            name_localizations={
-                Locale.zh_TW: "音量",
-                Locale.zh_CN: "音量",
-                Locale.ja: "ボリューム",
-            },
+            name_localizations={Locale.zh_TW: "音量", Locale.ja: "ボリューム"},
             description_localizations={
                 Locale.zh_TW: "音量等級 (0-100)",
-                Locale.zh_CN: "音量等级 (0-100)",
                 Locale.ja: "ボリュームレベル (0-100)",
             },
             required=True,
@@ -326,10 +312,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="stop",
         description="Stop music and disconnect from voice channel",
-        name_localizations={Locale.zh_TW: "停止", Locale.zh_CN: "停止", Locale.ja: "停止"},
+        name_localizations={Locale.zh_TW: "停止", Locale.ja: "停止"},
         description_localizations={
             Locale.zh_TW: "停止音樂並離開語音頻道",
-            Locale.zh_CN: "停止音乐并离开语音频道",
             Locale.ja: "音楽を停止してボイスチャンネルから退出",
         },
         dm_permission=False,
@@ -355,10 +340,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="pause",
         description="Pause the current music",
-        name_localizations={Locale.zh_TW: "暫停", Locale.zh_CN: "暂停", Locale.ja: "一時停止"},
+        name_localizations={Locale.zh_TW: "暫停", Locale.ja: "一時停止"},
         description_localizations={
             Locale.zh_TW: "暫停當前音樂",
-            Locale.zh_CN: "暂停当前音乐",
             Locale.ja: "現在の音楽を一時停止",
         },
         dm_permission=False,
@@ -383,10 +367,9 @@ class MusicCogs(commands.Cog):
     @nextcord.slash_command(
         name="resume",
         description="Resume the paused music",
-        name_localizations={Locale.zh_TW: "繼續", Locale.zh_CN: "继续", Locale.ja: "再開"},
+        name_localizations={Locale.zh_TW: "繼續", Locale.ja: "再開"},
         description_localizations={
             Locale.zh_TW: "繼續播放暫停的音樂",
-            Locale.zh_CN: "继续播放暂停的音乐",
             Locale.ja: "一時停止した音楽を再開",
         },
         dm_permission=False,
