@@ -4,7 +4,6 @@ import time
 from typing import Optional
 import asyncio
 import logging
-from pathlib import Path
 
 import nextcord
 
@@ -18,14 +17,8 @@ class VoiceRecorder:
     注意：nextcord 目前不支援內建語音錄音功能
     """
 
-    def __init__(self, output_folder: str = "./data/recordings") -> None:
-        """初始化語音管理器
-
-        Args:
-            output_folder (str): 錄音文件輸出資料夾路徑（暫時保留以備將來使用）
-        """
-        self.output_folder = Path(output_folder)
-        self.output_folder.mkdir(parents=True, exist_ok=True)
+    def __init__(self) -> None:
+        """初始化語音管理器"""
         self.is_connected = False
         self.voice_client: Optional[nextcord.VoiceClient] = None
         self.start_time: Optional[float] = None
@@ -109,6 +102,8 @@ class VoiceRecorder:
             self._disconnect_task = None
             logger.error(f"語音頻道連接失敗: {e}")
             raise
+
+    async def leave_voice_channel(self) -> bool:
         """離開語音頻道
 
         Returns:

@@ -20,7 +20,6 @@ class TestVoiceRecorder:
         assert self.voice_recorder.is_connected is False
         assert self.voice_recorder.voice_client is None
         assert self.voice_recorder.start_time is None
-        assert self.voice_recorder.output_folder.exists()
 
     @pytest.mark.asyncio
     async def test_join_voice_channel_success(self):
@@ -146,7 +145,7 @@ class TestVoiceRecorder:
         status = self.voice_recorder.get_status()
 
         assert status["is_connected"] is True
-        assert status["channel_name"] == "測試頻道"
+        assert status["channel"] == "測試頻道"
         assert 29 <= status["duration"] <= 31
 
     def test_get_status_not_connected(self):
@@ -155,7 +154,7 @@ class TestVoiceRecorder:
 
         assert status["is_connected"] is False
         assert status["duration"] == 0
-        assert status["channel_name"] is None
+        assert status["channel"] is None
 
 
 @pytest.mark.asyncio
