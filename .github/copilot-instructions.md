@@ -150,7 +150,47 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Exception handling with user-friendly error messages
 - File size validation before Discord upload
 
-#### 5. Image Generation (`src/cogs/gen_image.py`)
+#### 5. Voice Channel Connection (`src/cogs/voice_recording.py`)
+
+**Commands:**
+
+- `/voice_join` - Join voice channel and establish connection
+- `/voice_stop` - Leave voice channel and disconnect
+- `/voice_status` - Check current voice connection status
+
+**Implementation Details:**
+
+- **Voice Connection**: Full voice channel connection management via `VoiceRecorder` utility (`src/utils/voice_recorder.py`)
+- **Connection Management**: Per-guild voice connection tracking with automatic cleanup
+- **Duration Control**: Configurable maximum connection duration (1-60 minutes, default 5 minutes)
+- **Auto-Disconnect**: Automatic disconnection after maximum duration to prevent resource waste
+- **Permission Validation**: Comprehensive permission checking (connect/speak permissions)
+- **Channel Detection**: Smart channel detection (user's current channel or specified channel)
+- **Connection Status**: Real-time connection status monitoring and reporting
+- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
+
+**Technical Features:**
+
+- Voice client management with proper connection lifecycle
+- Automatic cleanup on bot disconnection events
+- Connection duration tracking and status reporting
+- Error handling for permission issues and connection failures
+- Guild-specific voice recorder instances with isolated state management
+
+**Current Limitations:**
+
+- **⚠️ Audio Recording Not Supported**: nextcord framework does not include the `sinks` module required for audio recording
+- **Connection Only**: This implementation provides voice channel connection capabilities but cannot record audio
+- **Alternative Solution**: For audio recording, consider migrating to **pycord** which includes full `discord.sinks` support
+- **Functional Scope**: Current implementation focuses on voice channel presence and connection management
+
+**Audio Recording Migration Path:**
+
+- **Recommended**: Migrate to `pycord` library which includes `discord.sinks.WaveSink`, `MP3Sink`, `MP4Sink`, etc.
+- **Required Changes**: Update imports from `nextcord` to `discord` and install `py-cord[voice]`
+- **Recording Features Available in Pycord**: Multi-format recording, per-user audio separation, automatic file generation
+
+#### 6. Image Generation (`src/cogs/gen_image.py`)
 
 **Commands:**
 
@@ -162,7 +202,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Architecture**: Ready for integration with image generation APIs
 - **Response Pattern**: Placeholder response with proper interaction handling
 
-#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
+#### 7. MapleStory Database Query (`src/cogs/maplestory.py`)
 
 **Database Query Commands:**
 
@@ -170,7 +210,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
 
-#### 7. Auction System (`src/cogs/auction.py`)
+#### 8. Auction System (`src/cogs/auction.py`)
 
 **Auction System Commands:**
 
@@ -320,6 +360,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `gen_search.py` - Web search via Perplexity API
     - `summary.py` - Message summarization with interactive UI
     - `video.py` - Multi-platform video downloading
+    - `voice_recording.py` - Voice channel connection management (recording not supported by nextcord)
     - `maplestory.py` - MapleStory database queries and drop searches
     - `auction.py` - Auction system with bidding functionality
     - `gen_image.py` - Image generation placeholder
@@ -348,3 +389,5 @@ The comprehensive auction system allows users to create item auctions and partic
 - Documentation generation with MkDocs
 
 This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and utility capabilities with enterprise-grade logging and monitoring.
+
+**Important Note**: Voice recording functionality is currently **not supported** due to nextcord framework limitations (missing `sinks` module). The bot provides voice channel connection capabilities only. For full audio recording features, migration to **pycord** is recommended, which includes complete `discord.sinks` support for multi-format audio recording.
