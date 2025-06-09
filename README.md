@@ -69,6 +69,7 @@ _Suggestions and contributions are always welcome!_
 | `/auction_info`   | View auction details              | Current bid info, bid history        |
 | `/auction_my`     | View personal auctions            | Created & leading auctions           |
 | `/ping`           | Bot performance testing           | Latency measurement                  |
+| `/dice`           | Roll a dice with custom sides     | Random number game                   |
 
 ## 🚀 Quick Start
 
