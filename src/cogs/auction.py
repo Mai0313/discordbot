@@ -1043,14 +1043,9 @@ class AuctionCogs(commands.Cog):
     @nextcord.slash_command(
         name="auction_create",
         description="Create a new item auction",
-        name_localizations={
-            Locale.zh_TW: "創建拍賣",
-            Locale.zh_CN: "创建拍卖",
-            Locale.ja: "オークション作成",
-        },
+        name_localizations={Locale.zh_TW: "創建拍賣", Locale.ja: "オークション作成"},
         description_localizations={
             Locale.zh_TW: "創建新的物品拍賣",
-            Locale.zh_CN: "创建新的物品拍卖",
             Locale.ja: "新しいアイテムオークションを作成",
         },
         dm_permission=False,
@@ -1077,14 +1072,9 @@ class AuctionCogs(commands.Cog):
     @nextcord.slash_command(
         name="auction_list",
         description="View active auctions",
-        name_localizations={
-            Locale.zh_TW: "拍賣列表",
-            Locale.zh_CN: "拍卖列表",
-            Locale.ja: "オークションリスト",
-        },
+        name_localizations={Locale.zh_TW: "拍賣列表", Locale.ja: "オークションリスト"},
         description_localizations={
             Locale.zh_TW: "查看進行中的拍賣列表",
-            Locale.zh_CN: "查看进行中的拍卖列表",
             Locale.ja: "進行中のオークション一覧を表示",
         },
         dm_permission=False,
@@ -1146,14 +1136,9 @@ class AuctionCogs(commands.Cog):
     @nextcord.slash_command(
         name="auction_info",
         description="View detailed information about a specific auction",
-        name_localizations={
-            Locale.zh_TW: "拍賣資訊",
-            Locale.zh_CN: "拍卖资讯",
-            Locale.ja: "オークション情報",
-        },
+        name_localizations={Locale.zh_TW: "拍賣資訊", Locale.ja: "オークション情報"},
         description_localizations={
             Locale.zh_TW: "查看特定拍賣的詳細資訊",
-            Locale.zh_CN: "查看特定拍卖的详细资讯",
             Locale.ja: "特定のオークションの詳細情報を表示",
         },
         dm_permission=False,
@@ -1165,14 +1150,9 @@ class AuctionCogs(commands.Cog):
         auction_id: int = nextcord.SlashOption(
             name="auction_id",
             description="Auction ID to view",
-            name_localizations={
-                Locale.zh_TW: "拍賣編號",
-                Locale.zh_CN: "拍卖编号",
-                Locale.ja: "オークション番号",
-            },
+            name_localizations={Locale.zh_TW: "拍賣編號", Locale.ja: "オークション番号"},
             description_localizations={
                 Locale.zh_TW: "要查看的拍賣編號",
-                Locale.zh_CN: "要查看的拍卖编号",
                 Locale.ja: "表示するオークション番号",
             },
             required=True,
@@ -1208,14 +1188,9 @@ class AuctionCogs(commands.Cog):
     @nextcord.slash_command(
         name="auction_my",
         description="View your auctions and bids",
-        name_localizations={
-            Locale.zh_TW: "我的拍賣",
-            Locale.zh_CN: "我的拍卖",
-            Locale.ja: "マイオークション",
-        },
+        name_localizations={Locale.zh_TW: "我的拍賣", Locale.ja: "マイオークション"},
         description_localizations={
             Locale.zh_TW: "查看你的拍賣和出價記錄",
-            Locale.zh_CN: "查看你的拍卖和出价记录",
             Locale.ja: "あなたのオークションと入札記録を表示",
         },
         dm_permission=False,
@@ -1322,5 +1297,5 @@ class AuctionCogs(commands.Cog):
         return embed
 
 
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     bot.add_cog(AuctionCogs(bot))

@@ -240,14 +240,9 @@ class MapleStoryCogs(commands.Cog):
     @nextcord.slash_command(
         name="maple_monster",
         description="Search for monster drop information in MapleStory",
-        name_localizations={
-            Locale.zh_TW: "楓之谷怪物",
-            Locale.zh_CN: "楓之谷怪物",
-            Locale.ja: "メイプルモンスター",
-        },
+        name_localizations={Locale.zh_TW: "楓之谷怪物", Locale.ja: "メイプルモンスター"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷怪物的掉落資訊",
-            Locale.zh_CN: "搜尋楓之谷怪物的掉落資訊",
             Locale.ja: "メイプルストーリーのモンスタードロップ情報を検索",
         },
         dm_permission=True,
@@ -259,14 +254,9 @@ class MapleStoryCogs(commands.Cog):
         monster_name: str = nextcord.SlashOption(
             name="monster_name",
             description="Name of the monster to search",
-            name_localizations={
-                Locale.zh_TW: "怪物名稱",
-                Locale.zh_CN: "怪物名稱",
-                Locale.ja: "モンスター名",
-            },
+            name_localizations={Locale.zh_TW: "怪物名稱", Locale.ja: "モンスター名"},
             description_localizations={
                 Locale.zh_TW: "要搜尋的怪物名稱",
-                Locale.zh_CN: "要搜尋的怪物名稱",
                 Locale.ja: "検索するモンスターの名前",
             },
             required=True,
@@ -326,14 +316,9 @@ class MapleStoryCogs(commands.Cog):
     @nextcord.slash_command(
         name="maple_item",
         description="Search for item drop sources in MapleStory",
-        name_localizations={
-            Locale.zh_TW: "楓之谷物品",
-            Locale.zh_CN: "楓之谷物品",
-            Locale.ja: "メイプルアイテム",
-        },
+        name_localizations={Locale.zh_TW: "楓之谷物品", Locale.ja: "メイプルアイテム"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷物品的掉落來源",
-            Locale.zh_CN: "搜尋楓之谷物品的掉落來源",
             Locale.ja: "メイプルストーリーのアイテムドロップ元を検索",
         },
         dm_permission=True,
@@ -345,14 +330,9 @@ class MapleStoryCogs(commands.Cog):
         item_name: str = nextcord.SlashOption(
             name="item_name",
             description="Name of the item to search",
-            name_localizations={
-                Locale.zh_TW: "物品名稱",
-                Locale.zh_CN: "物品名稱",
-                Locale.ja: "アイテム名",
-            },
+            name_localizations={Locale.zh_TW: "物品名稱", Locale.ja: "アイテム名"},
             description_localizations={
                 Locale.zh_TW: "要搜尋的物品名稱",
-                Locale.zh_CN: "要搜尋的物品名稱",
                 Locale.ja: "検索するアイテムの名前",
             },
             required=True,
@@ -418,14 +398,9 @@ class MapleStoryCogs(commands.Cog):
     @nextcord.slash_command(
         name="maple_stats",
         description="Get MapleStory database statistics",
-        name_localizations={
-            Locale.zh_TW: "楓之谷統計",
-            Locale.zh_CN: "楓之谷統計",
-            Locale.ja: "メイプル統計",
-        },
+        name_localizations={Locale.zh_TW: "楓之谷統計", Locale.ja: "メイプル統計"},
         description_localizations={
             Locale.zh_TW: "顯示楓之谷資料庫統計資訊",
-            Locale.zh_CN: "顯示楓之谷資料庫統計資訊",
             Locale.ja: "メイプルストーリーデータベース統計を表示",
         },
         dm_permission=True,
@@ -489,5 +464,5 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-def setup(bot: commands.Bot) -> None:
+async def setup(bot: commands.Bot) -> None:
     bot.add_cog(MapleStoryCogs(bot))

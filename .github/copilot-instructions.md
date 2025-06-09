@@ -61,11 +61,8 @@ def foo(self, extra_input: str) -> str:
 
 ```python
 # Define at module level
-URL_OPTION = SlashOption(
-    name="url",
-    description="YouTube URL or search query",
-    required=True,
-)
+URL_OPTION = SlashOption(name="url", description="YouTube URL or search query", required=True)
+
 
 # Reference in function parameter
 async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
@@ -75,7 +72,7 @@ async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
 
 ## Discord Bot Project Overview
 
-This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) that provides AI-powered interactions, content processing, and utility features. The bot follows a modular Cog-based architecture with all commands implemented as slash commands supporting multiple languages (Traditional Chinese, Simplified Chinese, Japanese, and English).
+This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) that provides AI-powered interactions, content processing, and utility features. The bot follows a modular Cog-based architecture with all commands implemented as slash commands supporting multiple languages (Traditional Chinese, Japanese, and English).
 
 ### Core Architecture
 
@@ -190,7 +187,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Permission Validation**: Comprehensive permission checking (connect/speak permissions)
 - **Channel Detection**: Smart channel detection (user's current channel or specified channel)
 - **Connection Status**: Real-time connection status monitoring and reporting
-- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
+- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Japanese, and English
 
 **Technical Features:**
 
@@ -234,7 +231,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - **Stream Mode**: Direct streaming without local storage for reduced disk usage
 - **Smart Channel Management**: Automatic connection to user's current voice channel with validation
 - **User Presence Validation**: Requires users to be in a voice channel before allowing bot connection
-- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
+- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Japanese, and English
 
 **Technical Features:**
 
@@ -342,7 +339,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - **Data Source**: Comprehensive JSON database (`data/monsters.json`) with 192+ monsters
 - **Search Engine**: Fuzzy string matching with case-insensitive search
 - **Interactive UI**: `MapleDropSearchView` with dropdown selection for multiple results
-- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
+- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Japanese, and English
 - **Performance Optimization**: LRU cache for frequent queries and item popularity tracking
 - **Rich Information Display**:
     - Monster attributes (level, HP, MP, EXP, defense stats)
@@ -476,3 +473,39 @@ The comprehensive auction system allows users to create item auctions and partic
 This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and utility capabilities with enterprise-grade logging and monitoring.
 
 **Important Note**: Voice recording functionality is currently **not supported** due to nextcord framework limitations (missing `sinks` module). The bot provides voice channel connection capabilities only. For full audio recording features, migration to **pycord** is recommended, which includes complete `discord.sinks` support for multi-format audio recording.
+
+## Change Log
+
+### 2025-06-10 - Language Support Update
+
+**Removed Simplified Chinese Support:**
+
+- Removed all `Locale.zh_CN` (Simplified Chinese) translations from all cog files
+- Only Traditional Chinese (`Locale.zh_TW`), Japanese (`Locale.ja`), and English (default) are now supported
+- This change affects all slash commands in the following modules:
+    - `auction.py` - Auction system commands
+    - `gen_reply.py` - AI text generation commands
+    - `maplestory.py` - MapleStory database queries
+    - `music.py` - YouTube music player commands
+    - `voice_recording.py` - Voice channel connection commands
+    - `summary.py` - Message summarization commands
+    - `gen_image.py` - Image generation commands
+    - `gen_search.py` - Web search commands
+    - `template.py` - Template and utility commands
+    - `video.py` - Video download commands
+
+**Japanese Translation Review:**
+
+- Verified all Japanese translations for accuracy and proper formatting
+- Fixed duplicate command names in `gen_reply.py` (changed oais command from "テキストを生成" to "リアルタイム生成")
+- Confirmed all Japanese translations use appropriate:
+    - Katakana for foreign words (オークション, ボリューム, ストリーム, etc.)
+    - Kanji for native concepts (参加, 再生, 停止, etc.)
+    - Proper honorific language (します, してください, etc.)
+    - No inappropriate spaces or special characters
+
+**Technical Impact:**
+
+- Simplified maintenance by reducing language variants from 4 to 3
+- Improved consistency in multi-language documentation
+- All existing functionality remains unchanged, only language options reduced
