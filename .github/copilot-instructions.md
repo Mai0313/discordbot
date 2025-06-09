@@ -50,6 +50,29 @@ def foo(self, extra_input: str) -> str:
 - Use `TypeVar` for generic types
 - Use `Protocol` for duck typing
 
+## Discord Bot Development
+
+- Use module-level variables for `SlashOption` definitions to avoid B008 linting errors
+- Do not perform function calls like `SlashOption()` in argument defaults
+- Create module-level singleton variables for reusable slash command options
+- Follow the pattern: define options at module level, then reference them in function parameters
+
+### SlashOption Best Practices
+
+```python
+# Define at module level
+URL_OPTION = SlashOption(
+    name="url",
+    description="YouTube URL or search query",
+    required=True,
+)
+
+# Reference in function parameter
+async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
+    """Play music from YouTube"""
+    pass
+```
+
 ## Discord Bot Project Overview
 
 This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) that provides AI-powered interactions, content processing, and utility features. The bot follows a modular Cog-based architecture with all commands implemented as slash commands supporting multiple languages (Traditional Chinese, Simplified Chinese, Japanese, and English).
@@ -194,7 +217,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Commands:**
 
-- `/join` - Join voice channel and establish music bot presence
+- `/join` - Join the user's current voice channel (user must be in a voice channel)
 - `/play` - Play music from YouTube URL or search query
 - `/stream` - Stream music from YouTube without downloading
 - `/volume` - Adjust music volume (0-100%)
@@ -209,7 +232,8 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Playback Modes**:
     - **Download Mode**: Downloads audio files for stable playback
     - **Stream Mode**: Direct streaming without local storage for reduced disk usage
-- **Smart Channel Management**: Automatic voice channel detection and connection management
+- **Smart Channel Management**: Automatic connection to user's current voice channel with validation
+- **User Presence Validation**: Requires users to be in a voice channel before allowing bot connection
 - **Multi-language Support**: Commands and responses localized for Traditional Chinese, Simplified Chinese, Japanese, and English
 
 **Technical Features:**
@@ -219,7 +243,8 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Playlist Support**: Automatic first-track selection from YouTube playlists
 - **Error Handling**: Comprehensive error management for network issues, unavailable content, and permission problems
 - **Resource Management**: Automatic cleanup of audio sources and voice connections
-- **Connection Lifecycle**: Smart voice channel connection with user presence detection
+- **Connection Lifecycle**: Smart voice channel connection requiring user presence in voice channel
+- **Join Behavior**: Simplified join command that connects to user's current voice channel only
 
 **Advanced Features:**
 
