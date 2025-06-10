@@ -86,14 +86,23 @@ class ReplyGeneratorCogs(commands.Cog):
             },
         ),
         model: str = SlashOption(
-            description="Choose a model (default: GPT-4o).",
+            description="Choose a model (default: GPT-4.1).",
             description_localizations={
-                Locale.zh_TW: "選擇模型 (預設為 GPT-4o)",
-                Locale.ja: "モデルを選択してください（デフォルトは GPT-4o）",
+                Locale.zh_TW: "選擇模型 (預設為 GPT-4.1)",
+                Locale.ja: "モデルを選択してください（デフォルトは GPT-4.1）",
             },
             choices=MODEL_CHOICES,
             required=False,
             default="gpt-4.1",
+        ),
+        stream: bool = SlashOption(
+            description="Enable streaming response (default: False).",
+            description_localizations={
+                Locale.zh_TW: "啟用串流回應 (預設為 False)",
+                Locale.ja: "ストリーミング応答を有効にする（デフォルト: False）",
+            },
+            required=False,
+            default=False,
         ),
         image: Optional[nextcord.Attachment] = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
@@ -107,12 +116,13 @@ class ReplyGeneratorCogs(commands.Cog):
         """Generate a reply based on the user's prompt.
 
         If the model 'o1' is selected along with an image, an error message is returned since 'o1' does not support image input.
-        Otherwise, the function retrieves attachments from the message, calls the LLM SDK to generate a reply, and updates the original message with the generated content.
+        The function can either generate a complete response or stream the response in real-time based on the stream parameter.
 
         Args:
             interaction (Interaction): The interaction object for the command.
             prompt (str): The prompt text provided by the user.
-            model (str): The selected model, defaults to "gpt-4o" if not specified.
+            model (str): The selected model, defaults to "gpt-4.1" if not specified.
+            stream (bool): Whether to stream the response in real-time, defaults to False.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
         await interaction.response.defer()
@@ -120,97 +130,32 @@ class ReplyGeneratorCogs(commands.Cog):
         if model not in ["o1", "o1-mini"] and image:
             attachments.append(image.url)
 
-        init_message = (
-            "⚠️ 你選擇的 o1 模型速度較慢，請稍候..." if model == "o1" else "Generating..."
-        )
-        await interaction.followup.send(content=init_message)
+        await interaction.followup.send(content="思考中...")
 
         try:
             llm_sdk = LLMSDK(model=model)
-            response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
-            final_content = f"{interaction.user.mention} {response.choices[0].message.content}"
-            await interaction.edit_original_message(content=final_content)
-        except Exception as e:
-            await interaction.edit_original_message(content=f"Error processing the message: {e!s}")
 
-    @nextcord.slash_command(
-        name="oais",
-        description="Generate a reply based on the prompt and show progress in real-time.",
-        name_localizations={Locale.zh_TW: "實時生成文字", Locale.ja: "リアルタイム生成"},
-        description_localizations={
-            Locale.zh_TW: "根據提示詞即時生成回覆，並在生成過程中顯示進度。",
-            Locale.ja: "指定されたプロンプトに基づいてリアルタイムで応答を生成し、進捗を表示します。",
-        },
-        dm_permission=True,
-        nsfw=False,
-    )
-    async def oais(
-        self,
-        interaction: Interaction,
-        prompt: str = SlashOption(
-            description="Enter your prompt.",
-            description_localizations={
-                Locale.zh_TW: "請輸入提示詞。",
-                Locale.ja: "プロンプトを入力してください。",
-            },
-        ),
-        model: str = SlashOption(
-            description="Choose a model (default: GPT-4o).",
-            description_localizations={
-                Locale.zh_TW: "選擇模型 (預設為 GPT-4o)",
-                Locale.ja: "モデルを選択してください（デフォルトは GPT-4o）",
-            },
-            choices=MODEL_CHOICES,
-            required=False,
-            default="gpt-4.1",
-        ),
-        image: Optional[nextcord.Attachment] = SlashOption(  # noqa: B008
-            description="(Optional) Upload an image.",
-            description_localizations={
-                Locale.zh_TW: "（可選）上傳一張圖片。",
-                Locale.ja: "（オプション）画像をアップロードしてください。",
-            },
-            required=False,
-        ),
-    ) -> None:
-        """Generate a reply in real-time based on the user's prompt.
-
-        If the selected model is 'o1' or 'o1-mini', which do not support real-time responses, an error message is returned.
-        Otherwise, the function retrieves attachments and continuously updates the reply message with the generated content.
-
-        Args:
-            interaction (Interaction): The interaction object for the command.
-            prompt (str): The prompt text provided by the user.
-            model (str): The selected model, defaults to "gpt-4o" if not specified.
-            image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
-        """
-        await interaction.response.defer()
-        attachments = []
-        if model not in ["o1", "o1-mini"] and image:
-            attachments.append(image.url)
-
-        init_message = (
-            "⚠️ 你選擇的 o1 模型速度較慢，請稍候..." if model == "o1" else "Generating..."
-        )
-        await interaction.followup.send(content=init_message)
-
-        try:
-            llm_sdk = LLMSDK(model=model)
-            accumulated_text = f"{interaction.user.mention}\n"
-            async for res in llm_sdk.get_oai_reply_stream(prompt=prompt, image_urls=attachments):
-                if (
-                    hasattr(res, "choices")
-                    and len(res.choices) > 0
-                    and res.choices[0].delta.content
+            if stream:
+                # Streaming response
+                accumulated_text = f"{interaction.user.mention}\n"
+                async for res in llm_sdk.get_oai_reply_stream(
+                    prompt=prompt, image_urls=attachments
                 ):
-                    accumulated_text += res.choices[0].delta.content
-                    await interaction.edit_original_message(content=accumulated_text)
+                    if res.choices[0].delta.content:
+                        accumulated_text += res.choices[0].delta.content
+                        await interaction.edit_original_message(content=accumulated_text)
+            else:
+                # Non-streaming response
+                response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
+                final_content = (
+                    f"{interaction.user.mention}\n{response.choices[0].message.content}"
+                )
+                await interaction.edit_original_message(content=final_content)
 
-        except Exception as e:
-            await interaction.edit_original_message(
-                content=f"{interaction.user.mention} Unable to generate a valid reply, please try another prompt."
-            )
-            logfire.error(f"Error in oais: {e}")
+        except Exception:
+            error_message = "Error processing the message."
+            await interaction.edit_original_message(content=error_message)
+            logfire.error("Error in oai", _exc_info=True)
 
 
 async def setup(bot: commands.Bot) -> None:

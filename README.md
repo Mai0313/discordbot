@@ -56,8 +56,7 @@ _Suggestions and contributions are always welcome!_
 
 | Command           | Description                       | Features                             |
 | ----------------- | --------------------------------- | ------------------------------------ |
-| `/oai`            | Generate AI text response         | Multi-model support, image input     |
-| `/oais`           | Real-time streaming AI response   | Live response updates                |
+| `/oai`            | Generate AI text response         | Multi-model support, image input, optional streaming |
 | `/search`         | Web search with AI summary        | Perplexity API integration           |
 | `/sum`            | Interactive message summarization | User filtering, configurable count   |
 | `/download_video` | Multi-platform video downloader   | Quality options, size validation     |
