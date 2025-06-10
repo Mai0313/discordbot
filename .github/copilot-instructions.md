@@ -1,75 +1,5 @@
 <!-- Use this file to provide workspace-specific custom instructions to Copilot. For more details, visit https://code.visualstudio.com/docs/copilot/copilot-customization#_use-a-githubcopilotinstructionsmd-file -->
 
-# Python Best Practices
-
-## Coding Style
-
-- Follow `ruff-check` and `ruff-format` for code style and formatting using `pre-commit` hooks.
-- Follow PEP 8 naming conventions:
-    - snake_case for functions and variables
-    - PascalCase for classes
-    - UPPER_CASE for constants
-- Follow the Python version specified in the `pyproject.toml` or `.python-version` file.
-- Use pydantic model, and all pydantic models should include `Field`, and `description` should be included.
-- Maximum line length of 99 characters
-- Use absolute imports over relative imports
-- For tests, it should be placed in the `tests/` directory, and the test file should start with `test_`.
-    - Use `assert` statements for testing conditions
-
-### Example
-
-```python
-from pydantic import BaseModel, Field
-
-
-class User(BaseModel):
-    """Example User model.
-
-    Attributes:
-        name (str): The name of the user
-    """
-
-    name: str = Field(..., description="The name of the user")
-
-
-def foo(self, extra_input: str) -> str:
-    """Example function.
-
-    Args:
-        extra_input (str): Extra input for the function
-
-    Returns:
-        str: Result of the function
-    """
-    return f"Hello, {self.name} and {extra_input}"
-```
-
-## Type Hints
-
-- Use type hints for all function parameters and returns
-- Use `TypeVar` for generic types
-- Use `Protocol` for duck typing
-
-## Discord Bot Development
-
-- Use module-level variables for `SlashOption` definitions to avoid B008 linting errors
-- Do not perform function calls like `SlashOption()` in argument defaults
-- Create module-level singleton variables for reusable slash command options
-- Follow the pattern: define options at module level, then reference them in function parameters
-
-### SlashOption Best Practices
-
-```python
-# Define at module level
-URL_OPTION = SlashOption(name="url", description="YouTube URL or search query", required=True)
-
-
-# Reference in function parameter
-async def play(self, interaction: Interaction, url: str = URL_OPTION) -> None:
-    """Play music from YouTube"""
-    pass
-```
-
 ## Discord Bot Project Overview
 
 This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) that provides AI-powered interactions, content processing, and utility features. The bot follows a modular Cog-based architecture with all commands implemented as slash commands supporting multiple languages (Traditional Chinese, Japanese, and English).
@@ -88,15 +18,14 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Commands:**
 
-- `/oai` - Generate single AI response
-- `/oais` - Generate AI response with real-time streaming
+- `/oai` - Generate AI response with optional streaming support (unified command)
 
 **Implementation Details:**
 
-- **Model Support**: Multiple OpenAI models (GPT-4o, GPT-4o-mini, GPT-4-Turbo, o1, o1-mini, o3-mini)
+- **Model Support**: Multiple OpenAI models (GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4o, GPT-4o-mini)
 - **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/sdk/llm.py`
 - **Image Processing**: Supports image uploads with vision models using `autogen.agentchat.contrib.img_utils`
-- **Streaming Response**: Real-time message editing for streaming responses
+- **Unified Streaming**: Single command with optional `stream` parameter (default: False) for real-time streaming responses
 - **Content Preparation**: Automatic conversion of images to base64 data URIs
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
 - **Response Format**: Automatically mentions the user in responses
@@ -170,47 +99,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Exception handling with user-friendly error messages
 - File size validation before Discord upload
 
-#### 5. Voice Channel Connection (`src/cogs/voice_recording.py`)
-
-**Commands:**
-
-- `/voice_join` - Join voice channel and establish connection
-- `/voice_stop` - Leave voice channel and disconnect
-- `/voice_status` - Check current voice connection status
-
-**Implementation Details:**
-
-- **Voice Connection**: Full voice channel connection management via `VoiceRecorder` utility (`src/utils/voice_recorder.py`)
-- **Connection Management**: Per-guild voice connection tracking with automatic cleanup
-- **Duration Control**: Configurable maximum connection duration (1-60 minutes, default 5 minutes)
-- **Auto-Disconnect**: Automatic disconnection after maximum duration to prevent resource waste
-- **Permission Validation**: Comprehensive permission checking (connect/speak permissions)
-- **Channel Detection**: Smart channel detection (user's current channel or specified channel)
-- **Connection Status**: Real-time connection status monitoring and reporting
-- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Japanese, and English
-
-**Technical Features:**
-
-- Voice client management with proper connection lifecycle
-- Automatic cleanup on bot disconnection events
-- Connection duration tracking and status reporting
-- Error handling for permission issues and connection failures
-- Guild-specific voice recorder instances with isolated state management
-
-**Current Limitations:**
-
-- **⚠️ Audio Recording Not Supported**: nextcord framework does not include the `sinks` module required for audio recording
-- **Connection Only**: This implementation provides voice channel connection capabilities but cannot record audio
-- **Alternative Solution**: For audio recording, consider migrating to **pycord** which includes full `discord.sinks` support
-- **Functional Scope**: Current implementation focuses on voice channel presence and connection management
-
-**Audio Recording Migration Path:**
-
-- **Recommended**: Migrate to `pycord` library which includes `discord.sinks.WaveSink`, `MP3Sink`, `MP4Sink`, etc.
-- **Required Changes**: Update imports from `nextcord` to `discord` and install `py-cord[voice]`
-- **Recording Features Available in Pycord**: Multi-format recording, per-user audio separation, automatic file generation
-
-#### 6. YouTube Music Player (`src/cogs/music.py`)
+#### 5. YouTube Music Player (`src/cogs/music.py`)
 
 **Commands:**
 
@@ -271,7 +160,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Mock Integration**: Proper audio source mocking for reliable test execution
 - **Error Simulation**: Testing of various failure modes and recovery mechanisms
 
-#### 7. Image Generation (`src/cogs/gen_image.py`)
+#### 6. Image Generation (`src/cogs/gen_image.py`)
 
 **Commands:**
 
@@ -283,7 +172,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Architecture**: Ready for integration with image generation APIs
 - **Response Pattern**: Placeholder response with proper interaction handling
 
-#### 8. MapleStory Database Query (`src/cogs/maplestory.py`)
+#### 7. MapleStory Database Query (`src/cogs/maplestory.py`)
 
 **Database Query Commands:**
 
@@ -291,7 +180,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
 
-#### 9. Auction System (`src/cogs/auction.py`)
+#### 8. Auction System (`src/cogs/auction.py`)
 
 **Auction System Commands:**
 
@@ -437,11 +326,10 @@ The comprehensive auction system allows users to create item auctions and partic
 #### Project Structure:
 
 - **Cogs**: Modular command implementations in `src/cogs/`
-    - `gen_reply.py` - AI text generation with OpenAI models
+    - `gen_reply.py` - AI text generation with OpenAI models (unified streaming support)
     - `gen_search.py` - Web search via Perplexity API
     - `summary.py` - Message summarization with interactive UI
     - `video.py` - Multi-platform video downloading
-    - `voice_recording.py` - Voice channel connection management (recording not supported by nextcord)
     - `music.py` - YouTube music player with streaming and volume control
     - `maplestory.py` - MapleStory database queries and drop searches
     - `auction.py` - Auction system with bidding functionality
@@ -471,41 +359,3 @@ The comprehensive auction system allows users to create item auctions and partic
 - Documentation generation with MkDocs
 
 This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and utility capabilities with enterprise-grade logging and monitoring.
-
-**Important Note**: Voice recording functionality is currently **not supported** due to nextcord framework limitations (missing `sinks` module). The bot provides voice channel connection capabilities only. For full audio recording features, migration to **pycord** is recommended, which includes complete `discord.sinks` support for multi-format audio recording.
-
-## Change Log
-
-### 2025-06-10 - Language Support Update
-
-**Removed Simplified Chinese Support:**
-
-- Removed all `Locale.zh_CN` (Simplified Chinese) translations from all cog files
-- Only Traditional Chinese (`Locale.zh_TW`), Japanese (`Locale.ja`), and English (default) are now supported
-- This change affects all slash commands in the following modules:
-    - `auction.py` - Auction system commands
-    - `gen_reply.py` - AI text generation commands
-    - `maplestory.py` - MapleStory database queries
-    - `music.py` - YouTube music player commands
-    - `voice_recording.py` - Voice channel connection commands
-    - `summary.py` - Message summarization commands
-    - `gen_image.py` - Image generation commands
-    - `gen_search.py` - Web search commands
-    - `template.py` - Template and utility commands
-    - `video.py` - Video download commands
-
-**Japanese Translation Review:**
-
-- Verified all Japanese translations for accuracy and proper formatting
-- Fixed duplicate command names in `gen_reply.py` (changed oais command from "テキストを生成" to "リアルタイム生成")
-- Confirmed all Japanese translations use appropriate:
-    - Katakana for foreign words (オークション, ボリューム, ストリーム, etc.)
-    - Kanji for native concepts (参加, 再生, 停止, etc.)
-    - Proper honorific language (します, してください, etc.)
-    - No inappropriate spaces or special characters
-
-**Technical Impact:**
-
-- Simplified maintenance by reducing language variants from 4 to 3
-- Improved consistency in multi-language documentation
-- All existing functionality remains unchanged, only language options reduced
