@@ -1693,7 +1693,7 @@ wheels = [
 
 [[package]]
 name = "logfire"
-version = "3.16.0"
+version = "3.21.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "executing" },
@@ -1705,9 +1705,9 @@ dependencies = [
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/76/bdc8f1e8fd92607b0f3cc5df02f4954fdc93cfd498a399a43f767f613349/logfire-3.16.0.tar.gz", hash = "sha256:f09061cffd09b4787e2b785e2603da0868c1ac9c7cb124fdc04de82298feef15", size = 476592, upload-time = "2025-05-14T13:27:20.874Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/2c/1fcb1440accbace48df3151a559f1d082e905d2ca4da6848c1d74cbc11e9/logfire-3.21.2.tar.gz", hash = "sha256:81ade93399b156bee0bd0d89ef921b2fb90034217960725598745941d6c36da4", size = 490071, upload-time = "2025-06-30T13:49:52.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/b8/04e9c59fae63357a39ca5cc033885d74576f98c0497fde066a2e5397413e/logfire-3.16.0-py3-none-any.whl", hash = "sha256:ac49c1a63c492e6ed205a3d49ee9ded318ca6e5af49c942465cade51c759605b", size = 194464, upload-time = "2025-05-14T13:27:17.943Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/b4/185e335ce772ed1b0004993ef456742119e88fe0a0ee196d8b4452fdc222/logfire-3.21.2-py3-none-any.whl", hash = "sha256:a08bc6a3b3dcbf98dd27067325ea3d178e6e046fe0d7f8e63e971db52d317e70", size = 201619, upload-time = "2025-06-30T13:49:49.446Z" },
 ]
 
 [[package]]
