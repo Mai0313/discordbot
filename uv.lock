@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "ag2"
-version = "0.9.1.post0"
+version = "0.9.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -24,9 +24,9 @@ dependencies = [
     { name = "termcolor" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4f/c3/7659541cf82327b3fad546d44af57d419339af19efdd043d2c73610a1849/ag2-0.9.1.post0.tar.gz", hash = "sha256:19ee0c3da585d4a862a370839485009796218efc2a8c2f0716f665d82d01bf75", size = 3276850, upload-time = "2025-05-06T17:17:57.124Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/15/edfbbf217e19ea647225b3ab72a6e3755d2677665f1a7f8e5108da3feabd/ag2-0.9.6.tar.gz", hash = "sha256:d6f7812b1a49654d14113fa3c13ccb593115dee1193744ca428d7178d2b32090", size = 3356270, upload-time = "2025-07-08T14:56:21.63Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/38/1a36f6e1c6e4878eea2d1b366f96bbbbb96e72e198bf7970e24b424f196d/ag2-0.9.1.post0-py3-none-any.whl", hash = "sha256:dc09570b90ea5b1f3cff71e9b615bc0a3ad17939a85fb2d52af9a5333aa5a06c", size = 787485, upload-time = "2025-05-06T17:17:55.262Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/2d/2ffe77dc9ee5f50af45dacc2441c8404e74ed6aa912379c89afb5371a6a7/ag2-0.9.6-py3-none-any.whl", hash = "sha256:aa632dddec50384ce2df23a5189ef534cdc92133ccf0bd512feac25e536cb234", size = 859166, upload-time = "2025-07-08T14:56:19.89Z" },
 ]
 
 [[package]]
