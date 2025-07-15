@@ -123,7 +123,10 @@ class DocsGenerator(BaseModel):
         elif self.source_path.is_file():
             all_files = [self.source_path]
         else:
-            raise ValueError("Invalid source path")
+            all_files = []
+            console.log(
+                f"[red]Source path {self.source_path} does not exist or is not a valid file or directory."
+            )
         return all_files
 
     async def _prepare_docs_path(self, file: Path) -> Path:

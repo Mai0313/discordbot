@@ -18,11 +18,6 @@ on:
 
 permissions: write-all
 
-env:
-  BUILDKIT_NO_CLIENT_TOKEN: 1 # docker buildkit env
-  # gitea action download node.js skip certificate !https
-  NODE_TLS_REJECT_UNAUTHORIZED: 0
-
 jobs:
   build_images:
     name: Build and Push Images
@@ -78,7 +73,15 @@ jobs:
           VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
           uv version $VERSION
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "GITHUB_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
+
+      # - name: Set tags
+      #   run: |
+      #     if [[ $GITHUB_REF == refs/tags/* ]]; then
+      #       VERSION=${GITHUB_REF#refs/tags/}
+      #       echo "VERSION=${VERSION}" >> $GITHUB_ENV
+      #     else
+      #       echo "VERSION=latest" >> $GITHUB_ENV
+      #     fi
 
       - name: Login to the Container registry
         uses: docker/login-action@v3.4.0
