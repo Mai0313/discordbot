@@ -54,20 +54,20 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                             |
-| ----------------- | --------------------------------- | ------------------------------------ |
+| Command           | Description                       | Features                                             |
+| ----------------- | --------------------------------- | ---------------------------------------------------- |
 | `/oai`            | Generate AI text response         | Multi-model support, image input, optional streaming |
-| `/search`         | Web search with AI summary        | Perplexity API integration           |
-| `/sum`            | Interactive message summarization | User filtering, configurable count   |
-| `/download_video` | Multi-platform video downloader   | Quality options, size validation     |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information         |
-| `/maple_item`     | Search MapleStory item sources    | Drop source tracking                 |
-| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items      |
-| `/auction_create` | Create new item auction           | Interactive form, currency selection |
-| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu     |
-| `/auction_info`   | View auction details              | Current bid info, bid history        |
-| `/auction_my`     | View personal auctions            | Created & leading auctions           |
-| `/ping`           | Bot performance testing           | Latency measurement                  |
+| `/search`         | Web search with AI summary        | Perplexity API integration                           |
+| `/sum`            | Interactive message summarization | User filtering, configurable count                   |
+| `/download_video` | Multi-platform video downloader   | Quality options, size validation                     |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information                         |
+| `/maple_item`     | Search MapleStory item sources    | Drop source tracking                                 |
+| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items                      |
+| `/auction_create` | Create new item auction           | Interactive form, currency selection                 |
+| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu                     |
+| `/auction_info`   | View auction details              | Current bid info, bid history                        |
+| `/auction_my`     | View personal auctions            | Created & leading auctions                           |
+| `/ping`           | Bot performance testing           | Latency measurement                                  |
 
 ## 🚀 Quick Start
 
