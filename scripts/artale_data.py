@@ -1,5 +1,6 @@
 import json
 from typing import Any
+from pathlib import Path
 import contextlib
 from urllib.parse import urljoin
 
@@ -95,7 +96,9 @@ def fetch_monster_cards() -> list[dict[str, Any]]:
         for monster_card in monster_cards:
             parsed_card = parse_monster_card(monster_card)
             results.append(parsed_card)
-        with open("./data/monsters.json", "w", encoding="utf-8") as f:
+        output_path = Path("./data/monsters.json")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=4)
         console.print("✅ JSON 已儲存至 monsters.json")
         return results

@@ -75,6 +75,7 @@ dependencies = [
     "orjson>=3.10.18",
     "pandas>=2.2.3",
     "pillow>=11.2.1",
+    "playwright>=1.53.0",
     "psycopg2-binary>=2.9.10",
     "pydantic>=2.11.4",
     "pydantic-settings>=2.9.1",
@@ -181,6 +182,9 @@ path = "README.md"
 [tool.poe.tasks]
 api = "python ./api.py"
 main = "python ./main.py"
+install_chrome = "playwright install chromium"
+update_data = "python ./scripts/artale_data.py"
+update = ["install_chrome", "update_data"]
 
 # Documentation
 docs_gen = "make gen-docs"
