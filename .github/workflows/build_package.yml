@@ -53,12 +53,25 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Version
+        id: version
         shell: bash
         run: |
           VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
           uv version $VERSION
-          echo "Version: $VERSION"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # - name: Set tags
+      #   id: version
+      #   run: |
+      #     if [[ $GITHUB_REF == refs/tags/* ]]; then
+      #       VERSION=${GITHUB_REF#refs/tags/}
+      #       echo "VERSION=${VERSION}" >> $GITHUB_ENV
+      #       echo "version=${VERSION}" >> $GITHUB_OUTPUT
+      #     else
+      #       echo "VERSION=latest" >> $GITHUB_ENV
+      #       echo "version=latest" >> $GITHUB_OUTPUT
+      #     fi
 
       - name: Build Package
         run: |
@@ -71,7 +84,7 @@ jobs:
           OUTPUT: CHANGELOG.md
         with:
           config: pyproject.toml
-          args: --unreleased --tag ${{ env.VERSION }}
+          args: --unreleased --tag ${{ steps.version.outputs.version }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifact
