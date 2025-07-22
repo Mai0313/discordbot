@@ -10,7 +10,7 @@ from playwright.sync_api import sync_playwright
 
 console = Console()
 
-BASE_URL = "https://mai0313.github.io/artale-drop/"
+BASE_URL = "https://a2983456456.github.io/artale-drop/"
 
 
 def parse_monster_card(card: Tag) -> dict:
