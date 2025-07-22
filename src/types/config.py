@@ -1,5 +1,3 @@
-from typing import Optional
-
 import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
@@ -62,7 +60,7 @@ class DiscordConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-    discord_test_server_id: Optional[str] = Field(
+    discord_test_server_id: str | None = Field(
         default=None,
         description="The id of the test server for testing the bot.",
         examples=["1143289646042853487", "981592566745149522"],

@@ -4,6 +4,7 @@ from unittest.mock import Mock, AsyncMock, MagicMock, patch
 
 import pytest
 import nextcord
+
 from src.cogs.music import MusicCogs, YTDLSource
 
 

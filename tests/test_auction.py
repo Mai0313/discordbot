@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import tempfile
 
 import pytest
+
 from src.cogs.auction import Bid, Auction, AuctionDatabase, get_currency_display
 
 

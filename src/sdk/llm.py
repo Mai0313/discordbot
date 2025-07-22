@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from collections.abc import AsyncGenerator
 
 from openai import AsyncOpenAI, AsyncAzureOpenAI
@@ -69,7 +69,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
         return response
 
     async def _prepare_content(
-        self, prompt: str, image_urls: Optional[list[str]] = None
+        self, prompt: str, image_urls: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         if not image_urls:
@@ -81,7 +81,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
         return content
 
     async def get_oai_reply(
-        self, prompt: str, image_urls: Optional[list[str]] = None
+        self, prompt: str, image_urls: list[str] | None = None
     ) -> ChatCompletion:
         content = await self._prepare_content(prompt, image_urls)
         completion = self.client.chat.completions.create(
@@ -94,7 +94,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
         return await completion
 
     async def get_oai_reply_stream(
-        self, prompt: str, image_urls: Optional[list[str]] = None
+        self, prompt: str, image_urls: list[str] | None = None
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         content = await self._prepare_content(prompt, image_urls)
         completion: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(

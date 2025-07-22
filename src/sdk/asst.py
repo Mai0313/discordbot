@@ -1,5 +1,5 @@
 import time
-from typing import Any, Optional
+from typing import Any
 
 from openai import OpenAI
 from pydantic import Field, ConfigDict, computed_field
@@ -13,9 +13,9 @@ from src.types.config import OpenAIConfig
 
 class AssistantAPI(OpenAIConfig):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    thread_id: Optional[str] = Field(default=None)
-    assistant_id: Optional[str] = Field(default=None)
-    message_id: Optional[str] = Field(default=None)
+    thread_id: str | None = Field(default=None)
+    assistant_id: str | None = Field(default=None)
+    message_id: str | None = Field(default=None)
     metadata: dict[str, str] = Field(default={"backend_id": "default"})
 
     @computed_field

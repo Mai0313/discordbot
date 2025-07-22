@@ -1,5 +1,3 @@
-from typing import Optional
-
 import logfire
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
@@ -34,7 +32,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
 
     async def _get_attachment_list(
-        self, messages: Optional[list[nextcord.Message]] = None
+        self, messages: list[nextcord.Message] | None = None
     ) -> list[str]:
         """Retrieve all attachments from a message.
 
@@ -104,7 +102,7 @@ class ReplyGeneratorCogs(commands.Cog):
             required=False,
             default=False,
         ),
-        image: Optional[nextcord.Attachment] = SlashOption(  # noqa: B008
+        image: nextcord.Attachment | None = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
             description_localizations={
                 Locale.zh_TW: "（可選）上傳一張圖片。",

@@ -1,5 +1,4 @@
 import io
-from typing import Optional
 from pathlib import Path
 import datetime
 
@@ -21,7 +20,7 @@ class DiscordNotify(BaseNotify):
         frozen=False,
         deprecated=False,
     )
-    target_image: Optional[Image.Image | str] = Field(
+    target_image: Image.Image | str | None = Field(
         default=None,
         title="Image Object",
         description="The image object to send.",
