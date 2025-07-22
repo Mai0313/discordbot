@@ -99,7 +99,6 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "autorootcwd>=1.0.1",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
     "notebook>=7.4.3",
@@ -284,7 +283,7 @@ line-length = 99
 # Enable preview features.
 preview = true
 detect-string-imports = true
-direction = "Dependencies"
+direction = "dependencies"
 
 
 [tool.ruff.lint]
@@ -436,7 +435,7 @@ force-to-top = []
 force-wrap-aliases = false
 forced-separate = []
 from-first = false
-known-first-party = []
+known-first-party = ["src", "tests"]
 known-local-folder = []
 known-third-party = []
 length-sort = true

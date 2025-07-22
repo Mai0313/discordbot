@@ -29,7 +29,7 @@ jobs:
         target:
           - name: Build and Push Images (Latest / Release)
             target_step: prod
-            tag: ghcr.io/mai0313/${{ github.event.repository.name }}
+            tag: ghcr.io/${{ github.repository }}
 
     env:
       BUILDKIT_NO_CLIENT_TOKEN: 1 # docker buildkit env
@@ -68,19 +68,24 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Version
+        id: version
         shell: bash
         run: |
           VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
           uv version $VERSION
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       # - name: Set tags
+      #   id: version
       #   run: |
       #     if [[ $GITHUB_REF == refs/tags/* ]]; then
       #       VERSION=${GITHUB_REF#refs/tags/}
       #       echo "VERSION=${VERSION}" >> $GITHUB_ENV
+      #       echo "version=${VERSION}" >> $GITHUB_OUTPUT
       #     else
       #       echo "VERSION=latest" >> $GITHUB_ENV
+      #       echo "version=latest" >> $GITHUB_OUTPUT
       #     fi
 
       - name: Login to the Container registry
@@ -117,6 +122,21 @@ jobs:
         #       [worker.oci.environmentfile]
         #         GIT_SSL_NO_VERIFY = "true"
 
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.target.tag }}
+          tags: |
+            latest
+            ${{ steps.version.outputs.version }}
+
+      - name: Extract Image Name
+        id: extracted_name
+        run: |
+          IMAGE_NAME=$(echo "${{ steps.meta.outputs.tags }}" | head -n1 | cut -d':' -f1)
+          echo "name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
       - name: ${{ matrix.target.name }}
         uses: docker/build-push-action@v6
         with:
@@ -124,12 +144,9 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           target: ${{ matrix.target.target_step }}
-          build-args: ${{ matrix.target.build_args }}
-          labels: ${{ env.VERSION }}
           tags: |
-            ${{ matrix.target.tag }}:latest
-            ${{ matrix.target.tag }}:${{ env.VERSION }}
+            ${{ steps.meta.outputs.tags }}
           sbom: false
           provenance: false
-          cache-from: type=registry,ref=${{ matrix.target.tag }}:buildcache
-          cache-to: type=registry,ref=${{ matrix.target.tag }}:buildcache,image-manifest=true,oci-mediatypes=true,mode=max
+          cache-from: type=registry,ref=${{ steps.extracted_name.outputs.name }}:buildcache
+          cache-to: type=registry,ref=${{ steps.extracted_name.outputs.name }}:buildcache,image-manifest=true,oci-mediatypes=true,mode=max

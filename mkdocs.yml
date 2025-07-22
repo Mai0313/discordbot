@@ -175,7 +175,7 @@ extra:
   #   name: zh-hant - 繁體中文
 
 watch:
-  - src
+  # - src
   - mkdocs.yml
   - docs
 
