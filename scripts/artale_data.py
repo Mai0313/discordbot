@@ -85,7 +85,33 @@ def fetch_monster_cards() -> list[dict[str, Any]]:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(BASE_URL)
-        page.wait_for_timeout(3000)
+
+        # 等待初始內容加載
+        page.wait_for_timeout(2000)
+
+        # 滾動到頁面底部以加載所有內容
+        console.print("🔄 開始滾動頁面加載所有怪物...")
+        previous_count = 0
+        retry_count = 0
+        max_retries = 5
+
+        while retry_count < max_retries:
+            # 滾動到頁面底部
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2000)  # 等待新內容加載
+
+            # 檢查當前怪物卡片數量
+            current_count = page.locator(".monster-card").count()
+            console.print(f"📊 當前怪物數量: {current_count}")
+
+            # 如果數量沒有變化，增加重試次數
+            if current_count == previous_count:
+                retry_count += 1
+                console.print(f"⏳ 等待更多內容... (重試 {retry_count}/{max_retries})")
+                page.wait_for_timeout(3000)  # 等待更長時間
+            else:
+                retry_count = 0  # 重置重試計數器
+                previous_count = current_count
 
         html = page.content()
         soup = BeautifulSoup(html, "html.parser")
