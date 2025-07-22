@@ -1,5 +1,4 @@
 import os
-from typing import Optional
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -21,7 +20,7 @@ def get_currency_display(currency_type: str) -> str:
 class Auction(BaseModel):
     """競標資料模型"""
 
-    id: Optional[int] = Field(None, description="競標ID")
+    id: int | None = Field(None, description="競標ID")
     guild_id: int = Field(..., description="伺服器ID")
     item_name: str = Field(..., description="拍賣物品名稱")
     starting_price: float = Field(..., description="起標價格")
@@ -32,8 +31,8 @@ class Auction(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now, description="創建時間")
     end_time: datetime = Field(..., description="結束時間")
     current_price: float = Field(..., description="當前最高價")
-    current_bidder_id: Optional[int] = Field(None, description="當前最高出價者ID")
-    current_bidder_name: Optional[str] = Field(None, description="當前最高出價者名稱")
+    current_bidder_id: int | None = Field(None, description="當前最高出價者ID")
+    current_bidder_name: str | None = Field(None, description="當前最高出價者名稱")
     is_active: bool = Field(default=True, description="是否活躍中")
     currency_type: str = Field(default="楓幣", description="貨幣類型 (楓幣、雪花或台幣)")
 
@@ -41,7 +40,7 @@ class Auction(BaseModel):
 class Bid(BaseModel):
     """出價記錄模型"""
 
-    id: Optional[int] = Field(None, description="出價ID")
+    id: int | None = Field(None, description="出價ID")
     auction_id: int = Field(..., description="競標ID")
     guild_id: int = Field(..., description="伺服器ID")
     bidder_id: int = Field(..., description="出價者Discord ID")
@@ -246,7 +245,7 @@ class AuctionDatabase:
             result = cursor.lastrowid
             return result if result is not None else 0
 
-    def get_auction(self, auction_id: int, guild_id: int) -> Optional[Auction]:
+    def get_auction(self, auction_id: int, guild_id: int) -> Auction | None:
         """取得特定競標"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

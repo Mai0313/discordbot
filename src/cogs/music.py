@@ -1,6 +1,6 @@
 """YouTube 音樂播放功能模組"""
 
-from typing import Any, Optional
+from typing import Any
 import asyncio
 import logging
 
@@ -59,7 +59,7 @@ class YTDLSource(nextcord.PCMVolumeTransformer):
 
     @classmethod
     async def from_url(
-        cls, url: str, *, loop: Optional[asyncio.AbstractEventLoop] = None, stream: bool = False
+        cls, url: str, *, loop: asyncio.AbstractEventLoop | None = None, stream: bool = False
     ) -> "YTDLSource":
         """從 URL 創建音源
 

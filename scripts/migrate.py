@@ -4,6 +4,7 @@ import pandas as pd
 from pydantic import Field, BaseModel
 from sqlalchemy import create_engine
 import autorootcwd  # noqa: F401
+
 from src.types.database import DatabaseConfig
 
 
