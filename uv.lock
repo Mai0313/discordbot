@@ -777,7 +777,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.9.1" },
     { name = "redis", specifier = ">=6.1.0" },
     { name = "requests", specifier = ">=2.32.3" },
-    { name = "setuptools", specifier = ">=80.8.0" },
+    { name = "setuptools", specifier = "<81" },
     { name = "sqlalchemy", specifier = ">=2.0.41" },
     { name = "yt-dlp", specifier = ">=2025.5.22" },
 ]
