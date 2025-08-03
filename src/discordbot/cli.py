@@ -59,9 +59,11 @@ class DiscordBot(commands.Bot):
         #     relative_path = f.relative_to(cog_path).with_suffix("")
         #     parts = ["src", "cogs", *list(relative_path.parts)]
         #     cog_files.append(".".join(parts))
-        cog_path = Path("./src/cogs")
+        cog_path = Path("./src/discordbot/cogs")
         cog_files = [
-            f"src.cogs.{f.stem}" for f in cog_path.glob("*.py") if not f.stem.startswith("__")
+            f"discordbot.cogs.{f.stem}"
+            for f in cog_path.glob("*.py")
+            if not f.stem.startswith("__")
         ]
         return cog_files
 
