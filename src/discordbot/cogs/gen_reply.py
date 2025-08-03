@@ -6,18 +6,12 @@ from nextcord.ext import commands
 from discordbot.sdk.llm import LLMSDK
 
 available_models = [
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    # "o4-mini",
-    # "o3",
-    # "o3-mini",
-    # "o1",
-    # "o1-preview",
-    # "o1-mini",
     "gpt-4o",
     "gpt-4o-mini",
-    # "chatgpt-4o-latest",
+    "qwen/qwen3-coder:free",
+    "qwen/qwen2.5-vl-72b-instruct:free",
+    "deepseek/deepseek-r1-0528:free",
+    "deepseek/deepseek-chat-v3-0324:free",
 ]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
@@ -91,7 +85,7 @@ class ReplyGeneratorCogs(commands.Cog):
             },
             choices=MODEL_CHOICES,
             required=False,
-            default="gpt-4.1",
+            default="gpt-4o",
         ),
         stream: bool = SlashOption(
             description="Enable streaming response (default: False).",
