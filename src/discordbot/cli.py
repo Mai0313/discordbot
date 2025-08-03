@@ -10,7 +10,7 @@ from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord.ext import tasks, commands
 
-from discordbot.types.config import DiscordConfig
+from discordbot.typings.config import DiscordConfig
 from discordbot.sdk.log_message import MessageLogger
 
 

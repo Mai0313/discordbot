@@ -4,7 +4,7 @@ import nextcord
 from pydantic import Field, BaseModel, ConfigDict, computed_field
 from sqlalchemy import create_engine
 
-from discordbot.types.database import DatabaseConfig
+from discordbot.typings.database import DatabaseConfig
 
 
 class MessageLogger(BaseModel):
