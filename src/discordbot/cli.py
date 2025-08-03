@@ -191,10 +191,11 @@ class DiscordBot(commands.Bot):
             raise error
 
 
-def main():
+def main() -> None:
     discord_config = DiscordConfig()
     bot = DiscordBot()
     bot.run(token=discord_config.discord_bot_token)
+
 
 if __name__ == "__main__":
     main()
