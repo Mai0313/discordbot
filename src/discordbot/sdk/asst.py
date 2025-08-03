@@ -8,7 +8,7 @@ from openai.types.beta import Thread, Assistant, ThreadDeleted, AssistantDeleted
 from openai.types.beta.threads import Run, Message, MessageDeleted
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from src.types.config import OpenAIConfig
+from discordbot.types.config import OpenAIConfig
 
 
 class AssistantAPI(OpenAIConfig):

@@ -1,7 +1,7 @@
 from typing import Any
 from unittest.mock import Mock, patch
 
-from src.cogs.maplestory import MapleStoryCogs
+from src.discordbot.cogs.maplestory import MapleStoryCogs
 
 
 def load_fake_data() -> list[dict[str, Any]]:

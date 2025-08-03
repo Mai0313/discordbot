@@ -89,6 +89,10 @@ readme = "README.md"
 requires-python = ">= 3.10"
 license = { text = "MIT" }
 
+[project.scripts]
+cli = "discordbot.cli:main"
+discordbot = "discordbot.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/Mai0313/discordbot"
 Repository = "https://github.com/Mai0313/discordbot"
@@ -99,31 +103,31 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "ipykernel>=6.29.5",
-    "ipywidgets>=8.1.7",
-    "notebook>=7.4.3",
-    "poethepoet>=0.34.0",
-    "pre-commit>=4.2.0",
+    "ipykernel",
+    "ipywidgets",
+    "notebook",
+    "poethepoet",
+    "pre-commit",
 ]
 test = [
-    "genbadge[all]>=1.1.2",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=1.0.0",
-    "pytest-cov>=6.1.1",
-    "pytest-xdist[psutil]>=3.7.0",
+    "genbadge[all]",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist[psutil]",
 ]
 docs = [
-    "anyio>=4.9.0",
-    "fire>=0.7.0",
-    "griffe-typingdoc>=0.2.8",
-    "markdown-exec[ansi]>=1.10.3",
-    "mkdocs-autorefs>=1.4.2",
-    "mkdocs-coverage>=1.1.0",
-    "mkdocs-material>=9.6.14",
-    "mkdocstrings[python]>=0.29.1",
-    "rich>=14.0.0",
-    "ruff>=0.11.11",
-    "tabulate>=0.9.0",
+    "anyio",
+    "fire",
+    "griffe-typingdoc",
+    "markdown-exec[ansi]",
+    "mkdocs-autorefs",
+    "mkdocs-coverage",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "rich",
+    "ruff",
+    "tabulate",
 ]
 
 [tool.hatch.metadata]
@@ -131,11 +135,11 @@ allow-direct-references = true
 
 [tool.hatch.build]
 include = [
-    "src/*"
+    "src/discordbot"
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/template"]
+packages = ["src/discordbot"]
 
 [tool.hatch.build.targets.sdist]
 # Basically everything except hidden files/directories (such as .github, .devcontainers, .python-version, etc)
@@ -179,8 +183,8 @@ content-type = "text/markdown"
 path = "README.md"
 
 [tool.poe.tasks]
-api = "python ./api.py"
-main = "python ./main.py"
+api = "python ./src/discordbot/cli.py"
+main = "python ./src/discordbot/cli.py"
 install_chrome = "playwright install chromium"
 update_data = "python ./scripts/artale_data.py"
 update = ["install_chrome", "update_data"]
@@ -195,9 +199,10 @@ docs = ["docs_gen", "docs_run"]
 # https://docs.astral.sh/uv/reference/settings
 [tool.uv]
 managed = true
-package = false
-check-url = "https://test.pypi.org/simple"
-publish-url = "https://test.pypi.org/legacy/"
+# If you don't want to use the `uv` CLI, you can set this to false.
+package = true
+check-url = "https://pypi.org/simple"
+publish-url = "https://upload.pypi.org/legacy/"
 compile-bytecode = true
 # concurrent-builds = 4
 # concurrent-downloads = 4

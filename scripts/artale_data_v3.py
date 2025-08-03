@@ -251,7 +251,7 @@ def fetch_equipment_cards() -> list[dict[str, Any]]:
                                 const typeElements = Array.from(card.querySelectorAll('div'));
                                 let equipmentType = '';
                                 const equipmentTypes = ['帽', '上衣', '下衣', '套服', '鞋子', '手套', '披風', '盾牌', '臉飾', '眼飾', '耳環', '腰帶', '肩章', '項鍊', '勳章', '單手劍', '雙手劍', '單手斧', '雙手斧', '單手棍', '雙手棍', '槍', '矛', '短杖', '長杖', '弓', '弩', '短劍', '拳套', '指虎', '手槍', '箭', '飛鏢', '子彈'];
-                                
+
                                 for (const el of typeElements) {
                                     const text = el.textContent.trim();
                                     if (equipmentTypes.includes(text)) {
@@ -384,7 +384,7 @@ def fetch_equipment_cards() -> list[dict[str, Any]]:
 # 主程式
 if __name__ == "__main__":
     import sys
-    
+
     # 檢查命令行參數
     if len(sys.argv) > 1:
         action = sys.argv[1].lower()

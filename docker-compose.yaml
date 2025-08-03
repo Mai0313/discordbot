@@ -6,8 +6,9 @@ services:
       target: prod
       dockerfile: ./docker/Dockerfile
     command:
-      - python
-      - ./main.py
+      - uv
+      - run
+      - discordbot
     env_file:
       - .env
     volumes:

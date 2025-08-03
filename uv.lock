@@ -713,7 +713,7 @@ wheels = [
 [[package]]
 name = "discordbot"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "ag2" },
     { name = "logfire" },
@@ -784,31 +784,31 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ipykernel", specifier = ">=6.29.5" },
-    { name = "ipywidgets", specifier = ">=8.1.7" },
-    { name = "notebook", specifier = ">=7.4.3" },
-    { name = "poethepoet", specifier = ">=0.34.0" },
-    { name = "pre-commit", specifier = ">=4.2.0" },
+    { name = "ipykernel" },
+    { name = "ipywidgets" },
+    { name = "notebook" },
+    { name = "poethepoet" },
+    { name = "pre-commit" },
 ]
 docs = [
-    { name = "anyio", specifier = ">=4.9.0" },
-    { name = "fire", specifier = ">=0.7.0" },
-    { name = "griffe-typingdoc", specifier = ">=0.2.8" },
-    { name = "markdown-exec", extras = ["ansi"], specifier = ">=1.10.3" },
-    { name = "mkdocs-autorefs", specifier = ">=1.4.2" },
-    { name = "mkdocs-coverage", specifier = ">=1.1.0" },
-    { name = "mkdocs-material", specifier = ">=9.6.14" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.29.1" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "ruff", specifier = ">=0.11.11" },
-    { name = "tabulate", specifier = ">=0.9.0" },
+    { name = "anyio" },
+    { name = "fire" },
+    { name = "griffe-typingdoc" },
+    { name = "markdown-exec", extras = ["ansi"] },
+    { name = "mkdocs-autorefs" },
+    { name = "mkdocs-coverage" },
+    { name = "mkdocs-material" },
+    { name = "mkdocstrings", extras = ["python"] },
+    { name = "rich" },
+    { name = "ruff" },
+    { name = "tabulate" },
 ]
 test = [
-    { name = "genbadge", extras = ["all"], specifier = ">=1.1.2" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
-    { name = "pytest-cov", specifier = ">=6.1.1" },
-    { name = "pytest-xdist", extras = ["psutil"], specifier = ">=3.7.0" },
+    { name = "genbadge", extras = ["all"] },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-xdist", extras = ["psutil"] },
 ]
 
 [[package]]
