@@ -1,7 +1,7 @@
 import pytest
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
-from src.sdk.llm import LLMSDK
+from src.discordbot.sdk.llm import LLMSDK
 
 prompt = "Hi"
 

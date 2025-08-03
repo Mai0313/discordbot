@@ -2,7 +2,7 @@ import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from src.utils.downloader import VideoDownloader
+from discordbot.utils.downloader import VideoDownloader
 
 
 class VideoCogs(commands.Cog):

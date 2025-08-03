@@ -3,7 +3,7 @@ import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from src.sdk.llm import LLMSDK
+from discordbot.sdk.llm import LLMSDK
 
 available_models = [
     "gpt-4.1",

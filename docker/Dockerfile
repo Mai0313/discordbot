@@ -15,29 +15,10 @@ RUN git config --global http.sslVerify false && \
 
 ########################################################################################
 
-FROM builder AS base
-WORKDIR /base
-COPY ./pyproject.toml ./pyproject.toml
+FROM builder AS prod
+WORKDIR /app
+COPY . .
 # RUN uv sync --frozen --no-dev && uv cache clean
 RUN uv export --no-dev --no-hashes --output-file ./requirements.lock && \
     uv pip install --system -r requirements.lock && \
     uv cache clean
-
-FROM builder AS dev
-WORKDIR /base
-COPY ./pyproject.toml ./pyproject.toml
-# RUN uv sync --frozen && uv cache clean
-RUN uv export --no-hashes --group docs --output-file ./requirements-dev.lock && \
-    uv pip install --system -r ./requirements-dev.lock && \
-    uv cache clean
-
-########################################################################################
-
-FROM base AS prod
-WORKDIR /app
-COPY . .
-
-FROM dev AS docs
-WORKDIR /app
-COPY . .
-RUN make gen-docs

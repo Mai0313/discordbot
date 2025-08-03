@@ -10,8 +10,8 @@ from logfire import LogfireLoggingHandler
 import nextcord
 from nextcord.ext import tasks, commands
 
-from src.types.config import DiscordConfig
-from src.sdk.log_message import MessageLogger
+from discordbot.types.config import DiscordConfig
+from discordbot.sdk.log_message import MessageLogger
 
 
 class DiscordBot(commands.Bot):
@@ -189,3 +189,12 @@ class DiscordBot(commands.Bot):
             await context.send(embed=embed)
         else:
             raise error
+
+
+def main():
+    discord_config = DiscordConfig()
+    bot = DiscordBot()
+    bot.run(token=discord_config.discord_bot_token)
+
+if __name__ == "__main__":
+    main()

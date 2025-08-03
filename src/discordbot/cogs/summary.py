@@ -2,7 +2,7 @@ import nextcord
 from nextcord import Locale, Member, Interaction
 from nextcord.ext import commands
 
-from src.sdk.llm import LLMSDK
+from discordbot.sdk.llm import LLMSDK
 
 SUMMARY_PROMPT = """
 請將總結的部分以發送者當作主要分類，並將他在這段期間內發送的內容總結。
