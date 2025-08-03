@@ -51,7 +51,7 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
                 azure_deployment=self.model,
             )
         else:
-            client = AsyncOpenAI(api_key=self.api_key)
+            client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
         return client
 
     async def get_search_result(self, prompt: str) -> ChatCompletion:
