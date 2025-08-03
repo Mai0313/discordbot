@@ -7,7 +7,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.shared import ChatModel
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from discordbot.types.config import OpenAIConfig, PerplexityConfig
+from discordbot.typings.config import OpenAIConfig, PerplexityConfig
 
 if TYPE_CHECKING:
     from openai._streaming import AsyncStream

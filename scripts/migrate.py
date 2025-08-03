@@ -5,7 +5,7 @@ from pydantic import Field, BaseModel
 from sqlalchemy import create_engine
 import autorootcwd  # noqa: F401
 
-from src.discordbot.types.database import DatabaseConfig
+from src.discordbot.typings.database import DatabaseConfig
 
 
 class DatabaseMigration(BaseModel):
