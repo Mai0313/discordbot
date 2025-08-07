@@ -90,7 +90,8 @@ class VideoDownloader(BaseModel):
 if __name__ == "__main__":
     downloader = VideoDownloader()
     # url = "https://x.com/reissuerecords/status/1917171960255058421"
-    # url = "https://www.facebook.com/share/r/17h4SsC2p1/"
+    url = "https://www.facebook.com/share/r/17h4SsC2p1/"
     # url = "https://www.instagram.com/reels/DFUuxmMPz4n/"
-    url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
+    # url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
+    # url = "https://v.douyin.com/LuXDmRrZvWs"
     result = downloader.download(url)
