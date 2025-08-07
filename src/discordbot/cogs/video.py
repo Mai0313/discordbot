@@ -35,7 +35,6 @@ class VideoCogs(commands.Cog):
                 "High (1080p)": "high",
                 "Medium (720p)": "medium",
                 "Low (480p)": "low",
-                "Audio Only": "audio",
             },
         ),
     ) -> None:
