@@ -83,7 +83,7 @@ dependencies = [
     "requests>=2.32.3",
     "setuptools<81",
     "sqlalchemy>=2.0.41",
-    "yt-dlp>=2025.5.22",
+    "yt-dlp>=2025.7.21",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"
