@@ -6,10 +6,10 @@ from nextcord.ext import commands
 from discordbot.sdk.llm import LLMSDK
 
 available_models = [
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-5-chat-latest",
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "openai/gpt-5-chat-latest",
     "claude-3-5-haiku-20241022",
 ]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
@@ -129,19 +129,19 @@ class ReplyGeneratorCogs(commands.Cog):
             if stream:
                 # Streaming response
                 accumulated_text = f"{interaction.user.mention}\n"
-                async for res in llm_sdk.get_oai_reply_stream(
+                responses = await llm_sdk.get_oai_reply_stream(
                     prompt=prompt, image_urls=attachments
-                ):
+                )
+                async for res in responses:
                     if res.choices[0].delta.content:
                         accumulated_text += res.choices[0].delta.content
                         await interaction.edit_original_message(content=accumulated_text)
             else:
                 # Non-streaming response
                 response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
-                final_content = (
-                    f"{interaction.user.mention}\n{response.choices[0].message.content}"
+                await interaction.edit_original_message(
+                    content=f"{interaction.user.mention}\n{response.choices[0].message.content}"
                 )
-                await interaction.edit_original_message(content=final_content)
 
         except Exception:
             error_message = "Error processing the message."
