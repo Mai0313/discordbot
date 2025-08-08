@@ -133,7 +133,6 @@ DISCORD_TEST_SERVER_ID=your_test_server_id  # Optional
 # OpenAI Configuration
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_TYPE=openai  # or "azure"
 
 # Azure OpenAI (if using Azure)
 AZURE_OPENAI_API_KEY=your_azure_key

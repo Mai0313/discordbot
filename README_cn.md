@@ -133,7 +133,6 @@ DISCORD_TEST_SERVER_ID=你的_測試_伺服器_id  # 可選
 # OpenAI 設定
 OPENAI_API_KEY=你的_openai_api_金鑰
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_TYPE=openai  # 或 "azure"
 
 # Azure OpenAI（如果使用 Azure）
 AZURE_OPENAI_API_KEY=你的_azure_金鑰
