@@ -8,17 +8,11 @@ LABEL maintainer="Wei Lee <mai@mai0313.com>" \
     org.label-schema.schema-version="1.0" \
     com.centurylinklabs.watchtower.stop-signal="SIGINT"
 
-# Install python packages
-COPY ./docker/mirror/pip.conf /root/.pip/pip.conf
-RUN git config --global http.sslVerify false && \
-    python -m pip install --upgrade pip
-
 ########################################################################################
 
 FROM builder AS prod
 WORKDIR /app
 COPY . .
 # RUN uv sync --frozen --no-dev && uv cache clean
-RUN uv export --no-dev --no-hashes --output-file ./requirements.lock && \
-    uv pip install --system -r requirements.lock && \
+RUN uv sync --no-dev && \
     uv cache clean

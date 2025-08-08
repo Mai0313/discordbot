@@ -1,20 +1,47 @@
 from typing import TYPE_CHECKING, Any
 from collections.abc import AsyncGenerator
 
+import dotenv
 from openai import AsyncOpenAI, AsyncAzureOpenAI
-from pydantic import Field, ConfigDict, computed_field, model_validator
+from pydantic import Field, ConfigDict, AliasChoices, computed_field
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from pydantic_settings import BaseSettings
 from openai.types.shared import ChatModel
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
-
-from discordbot.typings.config import OpenAIConfig, PerplexityConfig
 
 if TYPE_CHECKING:
     from openai._streaming import AsyncStream
 
 
-class LLMSDK(PerplexityConfig, OpenAIConfig):
+dotenv.load_dotenv()
+
+
+class LLMSDK(BaseSettings):
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    base_url: str = Field(
+        ...,
+        description="The base url from openai for calling models.",
+        examples=["https://api.openai.com/v1", "https://xxxx.openai.azure.com"],
+        validation_alias=AliasChoices("OPENAI_BASE_URL", "AZURE_OPENAI_ENDPOINT"),
+        frozen=False,
+        deprecated=False,
+    )
+    api_key: str = Field(
+        ...,
+        description="The api key from openai for calling models.",
+        examples=["sk-proj-...", "141698ac..."],
+        validation_alias=AliasChoices("OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"),
+        frozen=False,
+        deprecated=False,
+    )
+    api_version: str | None = Field(
+        default=None,
+        description="The api version from openai for calling models.",
+        examples=["2025-04-01-preview"],
+        validation_alias=AliasChoices("OPENAI_API_VERSION"),
+        frozen=False,
+        deprecated=False,
+    )
     model: ChatModel = Field(
         default="gpt-4.1",
         title="LLM Model Selection",
@@ -22,28 +49,19 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
         frozen=False,
         deprecated=False,
     )
-    system_prompt: str = Field(
-        default="""
-        角色定位：我被設定為一個知識豐富、語氣專業但親切的助手，目的是幫你解決問題、提供準確資訊，或一起創作內容。
-        行為準則：我會避免給出虛假、自相矛盾或無依據的答案，並且如果我不知道某件事，我會直接說明或幫你找答案。
-        互動風格：我應該簡潔、直接，有需要時會主動提出追問幫你釐清目標，特別是技術或寫作相關的任務。
-        """,
-        title="System Prompt",
-        description="This is the system prompt for the LLM.",
+    pplx_api_key: str = Field(
+        ...,
+        description="The api key from perplexity for calling models.",
+        examples=["pplx-..."],
+        validation_alias=AliasChoices("PERPLEXITY_API_KEY"),
         frozen=False,
         deprecated=False,
     )
 
-    @model_validator(mode="after")
-    def _set_model_name(self) -> "LLMSDK":
-        if self.api_type == "azure":
-            self.model = f"aide-{self.model}"
-        return self
-
     @computed_field
     @property
     def client(self) -> AsyncOpenAI | AsyncAzureOpenAI:
-        if self.api_type == "azure":
+        if self.api_version:
             client = AsyncAzureOpenAI(
                 api_key=self.api_key,
                 azure_endpoint=self.base_url,
@@ -54,17 +72,16 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
             client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
         return client
 
+    @computed_field
+    @property
+    def pplx_client(self) -> AsyncOpenAI:
+        pplx_client = AsyncOpenAI(api_key=self.pplx_api_key, base_url="https://api.perplexity.ai")
+        return pplx_client
+
     async def get_search_result(self, prompt: str) -> ChatCompletion:
-        client = AsyncOpenAI(api_key=self.pplx_api_key, base_url="https://api.perplexity.ai")
-        response = await client.chat.completions.create(
+        response = await self.pplx_client.chat.completions.create(
             model="llama-3.1-sonar-large-128k-online",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an artificial intelligence assistant and you need to engage in a helpful, detailed, polite conversation with a user.",
-                },
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "user", "content": prompt}],
         )
         return response
 
@@ -83,27 +100,18 @@ class LLMSDK(PerplexityConfig, OpenAIConfig):
     async def get_oai_reply(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> ChatCompletion:
-        content = await self._prepare_content(prompt, image_urls)
+        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
         completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": content},
-            ],
+            model=self.model, messages=[{"role": "user", "content": content}]
         )
         return await completion
 
     async def get_oai_reply_stream(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
-        content = await self._prepare_content(prompt, image_urls)
+        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
         completion: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": content},
-            ],
-            stream=True,
+            model=self.model, messages=[{"role": "user", "content": content}], stream=True
         )
         async for chunk in completion:
             if len(chunk.choices) > 0:

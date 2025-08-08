@@ -8,6 +8,8 @@ services:
     command:
       - uv
       - run
+      - --no-dev
+      - --frozen
       - discordbot
     env_file:
       - .env

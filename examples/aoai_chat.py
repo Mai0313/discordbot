@@ -1,30 +1,38 @@
-from openai import AzureOpenAI
-from rich.console import Console
+import dotenv
+from openai import OpenAI, AzureOpenAI
 
-console = Console()
+dotenv.load_dotenv()
 
 
-def get_aoai_response(api_key: str, question: str) -> str:
+def get_aoai_response(model: str, question: str) -> str:
     client = AzureOpenAI(
-        api_key=api_key,
-        api_version="2025-04-01-preview",
-        azure_endpoint="https://xxx.openai.azure.com",
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version=os.getenv("OPENAI_API_VERSION"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     )
     response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a helpful AI assistant. I am here to help you with your questions.",
-            },
-            {"role": "user", "content": question},
-        ],
+        model=model, messages=[{"role": "user", "content": question}]
+    )
+    return response.choices[0].message
+
+
+def get_oai_response(model: str, question: str) -> str:
+    client = OpenAI(base_url=os.getenv("OPENAI_BASE_URL"), api_key=os.getenv("OPENAI_API_KEY"))
+    response = client.chat.completions.create(
+        model=model, messages=[{"role": "user", "content": question}]
     )
     return response.choices[0].message
 
 
 if __name__ == "__main__":
-    api_key = "..."
+    import os
+
+    import dotenv
+    from rich.console import Console
+
+    console = Console()
+    dotenv.load_dotenv()
+    model = "gpt-5"
     question = "What is the meaning of life?"
-    response = get_aoai_response(api_key, question)
+    response = get_oai_response(model=model, question=question)
     console.print(response)
