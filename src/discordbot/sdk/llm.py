@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from collections.abc import AsyncGenerator
 
 import dotenv
@@ -6,12 +6,7 @@ from openai import AsyncOpenAI, AsyncAzureOpenAI
 from pydantic import Field, ConfigDict, AliasChoices, computed_field
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from pydantic_settings import BaseSettings
-from openai.types.shared import ChatModel
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
-
-if TYPE_CHECKING:
-    from openai._streaming import AsyncStream
-
 
 dotenv.load_dotenv()
 
@@ -42,7 +37,7 @@ class LLMSDK(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-    model: ChatModel = Field(
+    model: str = Field(
         default="gpt-4.1",
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
@@ -101,21 +96,37 @@ class LLMSDK(BaseSettings):
         self, prompt: str, image_urls: list[str] | None = None
     ) -> ChatCompletion:
         content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
-        completion = self.client.chat.completions.create(
+        responses = self.client.chat.completions.create(
             model=self.model, messages=[{"role": "user", "content": content}]
         )
-        return await completion
+        return await responses
+
+    async def get_oai_response(
+        self, prompt: str, image_urls: list[str] | None = None
+    ) -> ChatCompletion:
+        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
+        responses = self.client.responses.create(
+            model=self.model, input=[{"role": "user", "content": content}]
+        )
+        return await responses
 
     async def get_oai_reply_stream(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
-        completion: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
+        responses = self.client.chat.completions.create(
             model=self.model, messages=[{"role": "user", "content": content}], stream=True
         )
-        async for chunk in completion:
-            if len(chunk.choices) > 0:
-                yield chunk
+        return await responses
+
+    async def get_oai_response_stream(
+        self, prompt: str, image_urls: list[str] | None = None
+    ) -> AsyncGenerator[ChatCompletionChunk, None]:
+        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
+        responses = self.client.responses.create(
+            model=self.model, input=[{"role": "user", "content": content}], stream=True
+        )
+        return await responses
 
 
 if __name__ == "__main__":
@@ -134,7 +145,8 @@ if __name__ == "__main__":
     async def main_stream() -> None:
         llm_sdk = LLMSDK()
         prompt = "既然從地球發射火箭那麼困難, 為何我們不直接在太空中建造火箭呢?"
-        async for res in llm_sdk.get_oai_reply_stream(prompt=prompt):
-            console.print(res.choices[0].delta.content)
+        responses = await llm_sdk.get_oai_reply_stream(prompt=prompt)
+        async for res in responses:
+            console.print(res.choices[0].delta.content, end="")
 
     asyncio.run(main_stream())

@@ -19,5 +19,6 @@ async def test_get_oai_reply(llm_sdk: LLMSDK) -> None:
 
 @pytest.mark.asyncio
 async def test_get_oai_reply_stream(llm_sdk: LLMSDK) -> None:
-    async for response in llm_sdk.get_oai_reply_stream(prompt=prompt):
+    responses = await llm_sdk.get_oai_reply_stream(prompt=prompt)
+    async for response in responses:
         assert isinstance(response, ChatCompletionChunk)
