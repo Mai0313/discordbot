@@ -26,7 +26,11 @@ def get_oai_reply(model: str, question: str) -> str:
 
 def get_oai_response(model: str, question: str) -> str:
     client = OpenAI(base_url=os.getenv("OPENAI_BASE_URL"), api_key=os.getenv("OPENAI_API_KEY"))
-    response = client.responses.create(model=model, input=[{"role": "user", "content": question}])
+    response = client.responses.create(
+        model=model,
+        tools=[{"type": "web_search_preview"}],
+        input=[{"role": "user", "content": question}],
+    )
     return response.output_text
 
 
@@ -38,7 +42,7 @@ if __name__ == "__main__":
 
     console = Console()
     dotenv.load_dotenv()
-    model = "gpt-5"
-    question = "What is the meaning of life?"
+    model = "openai/gpt-5-mini"
+    question = "幫我搜一下新竹美食"
     response = get_oai_response(model=model, question=question)
     console.print(response)

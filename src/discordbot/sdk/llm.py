@@ -1,10 +1,8 @@
 from typing import Any
-from collections.abc import AsyncGenerator
 
 import dotenv
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from pydantic import Field, ConfigDict, AliasChoices, computed_field
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from pydantic_settings import BaseSettings
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
@@ -38,17 +36,9 @@ class LLMSDK(BaseSettings):
         deprecated=False,
     )
     model: str = Field(
-        default="gpt-5-mini",
+        ...,
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
-        frozen=False,
-        deprecated=False,
-    )
-    pplx_api_key: str = Field(
-        ...,
-        description="The api key from perplexity for calling models.",
-        examples=["pplx-..."],
-        validation_alias=AliasChoices("PERPLEXITY_API_KEY"),
         frozen=False,
         deprecated=False,
     )
@@ -57,30 +47,18 @@ class LLMSDK(BaseSettings):
     @property
     def client(self) -> AsyncOpenAI | AsyncAzureOpenAI:
         if self.api_version:
+            model = self.model.split("/")[1] if "/" in self.model else self.model
             client = AsyncAzureOpenAI(
                 api_key=self.api_key,
                 azure_endpoint=self.base_url,
                 api_version=self.api_version,
-                azure_deployment=self.model,
+                azure_deployment=model,
             )
         else:
             client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
         return client
 
-    @computed_field
-    @property
-    def pplx_client(self) -> AsyncOpenAI:
-        pplx_client = AsyncOpenAI(api_key=self.pplx_api_key, base_url="https://api.perplexity.ai")
-        return pplx_client
-
-    async def get_search_result(self, prompt: str) -> ChatCompletion:
-        response = await self.pplx_client.chat.completions.create(
-            model="llama-3.1-sonar-large-128k-online",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response
-
-    async def _prepare_completion_content(
+    async def prepare_completion_content(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -92,7 +70,7 @@ class LLMSDK(BaseSettings):
             content.append({"type": "image_url", "image_url": {"url": image_base64}})
         return content
 
-    async def _prepare_response_content(
+    async def prepare_response_content(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
@@ -103,39 +81,3 @@ class LLMSDK(BaseSettings):
             image_base64 = pil_to_data_uri(image=image)
             content.append({"type": "input_image", "image_url": image_base64})
         return content
-
-    async def get_oai_reply(
-        self, prompt: str, image_urls: list[str] | None = None
-    ) -> ChatCompletion:
-        content = await self._prepare_completion_content(prompt=prompt, image_urls=image_urls)
-        responses = self.client.chat.completions.create(
-            model=self.model, messages=[{"role": "user", "content": content}]
-        )
-        return await responses
-
-    async def get_oai_reply_stream(
-        self, prompt: str, image_urls: list[str] | None = None
-    ) -> AsyncGenerator[ChatCompletionChunk, None]:
-        content = await self._prepare_completion_content(prompt=prompt, image_urls=image_urls)
-        responses = self.client.chat.completions.create(
-            model=self.model, messages=[{"role": "user", "content": content}], stream=True
-        )
-        return await responses
-
-    async def get_oai_response(
-        self, prompt: str, image_urls: list[str] | None = None
-    ) -> ChatCompletion:
-        content = await self._prepare_response_content(prompt=prompt, image_urls=image_urls)
-        responses = self.client.responses.create(
-            model=self.model, input=[{"role": "user", "content": content}]
-        )
-        return await responses
-
-    async def get_oai_response_stream(
-        self, prompt: str, image_urls: list[str] | None = None
-    ) -> AsyncGenerator[ChatCompletionChunk, None]:
-        content = await self._prepare_response_content(prompt=prompt, image_urls=image_urls)
-        responses = self.client.responses.create(
-            model=self.model, input=[{"role": "user", "content": content}], stream=True
-        )
-        return await responses
