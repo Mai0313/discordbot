@@ -189,6 +189,25 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/auction_info` - View detailed information about a specific auction
 - `/auction_my` - View your created auctions and their current status
 
+#### 9. Lottery System (`src/cogs/lottery.py`)
+
+**Lottery System Commands:**
+
+- `/lottery create_reaction` - Create Discord reaction-based lottery
+- `/lottery create_youtube` - Create YouTube chat keyword-based lottery
+- `/lottery start` - Start the lottery drawing process with animated wheel
+- `/lottery status` - View detailed lottery status with complete participant lists
+
+**Lottery System Features:**
+
+- **Dual-Platform Registration**: Support for either Discord reaction OR YouTube chat participation (prevents cross-platform duplication)
+- **Advanced Animation System**: 15-step spinning wheel animation with cryptographically secure random selection
+- **Comprehensive Status Monitoring**: Complete participant lists with cross-platform breakdown and intelligent display limits
+- **Real-time Participant Management**: Automatic registration/removal via Discord reactions or YouTube chat keyword detection
+- **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
+- **Interactive UI Components**: Modal forms, animated drawing views, detailed status displays, and reset functionality
+- **Security Features**: Creator-only controls, duplicate prevention, platform validation, and automatic winner removal
+
 **Auction System Usage Guide:**
 
 The comprehensive auction system allows users to create item auctions and participate in bidding with complete interactive features:
@@ -235,6 +254,33 @@ The comprehensive auction system allows users to create item auctions and partic
     - Drop item categorization (equipment vs consumables/materials)
     - Location mapping with up to 5 display locations
     - Item source tracking with visual thumbnails and external links
+
+**Lottery System Implementation:**
+
+- **Data Storage**: Optimized in-memory global variables with defaultdict for automatic initialization (lightweight, resets on restart)
+- **Single-Platform Support**: Either Discord reactions OR YouTube chat per lottery (prevents cross-platform confusion)
+- **Data Models**: Pydantic models (`LotteryData`, `LotteryParticipant`) with complete validation and type safety
+- **Interactive UI Components**:
+    - `LotteryCreateModal` for activity creation with platform-specific form fields
+    - `LotterySpinView` for animated drawing with 4-button control panel (🎰 Draw, 📊 View, 🔄 Reset, ❌ End)
+    - Advanced status display with participant name lists and platform breakdown
+- **Animation System**: 15-step spinning wheel with cryptographically secure random selection using `secrets` module
+- **Security Features**:
+    - Creator-only access controls for all lottery operations
+    - Cross-platform duplicate prevention with intelligent source validation
+    - Automatic participant removal upon winner selection
+    - Permission validation for all interactive elements
+- **YouTube Integration**: Seamless integration with existing `YoutubeStream.get_registered_accounts()` functionality
+- **Memory Architecture**: defaultdict-optimized storage with automatic list creation
+    - `active_lotteries: dict[int, LotteryData]`: One active lottery per guild
+    - `lottery_participants: defaultdict[int, list[LotteryParticipant]]`: Auto-initializing participant lists
+    - `lottery_winners: defaultdict[int, list[LotteryParticipant]]`: Winner history tracking
+    - `reaction_messages: dict[int, int]`: Message ID mapping for reaction validation
+- **Advanced Features**:
+    - One-click reset functionality that restores all participants while clearing winners
+    - Intelligent display limits (15 participants per platform) with overflow indicators
+    - Cross-platform participant breakdown in status displays
+    - Real-time participant counting and validation
 
 **Auction System Implementation:**
 
@@ -333,6 +379,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `music.py` - YouTube music player with streaming and volume control
     - `maplestory.py` - MapleStory database queries and drop searches
     - `auction.py` - Auction system with bidding functionality
+    - `lottery.py` - Multi-platform lottery system with animated drawings
     - `gen_image.py` - Image generation placeholder
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/sdk/`
@@ -342,6 +389,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - **Data**: Game databases and user data in `data/`
     - `monsters.json` - MapleStory monster and drop database (192+ monsters)
     - `auctions.db` - SQLite database for auction system with bid tracking
+    - `lottery.db` - SQLite database for lottery system with participant and winner tracking
 
 #### Key Dependencies:
 
