@@ -5,13 +5,7 @@ from nextcord.ext import commands
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = [
-    "openai/gpt-5",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "openai/gpt-5-chat-latest",
-    "claude-3-5-haiku-20241022",
-]
+available_models = ["gpt-5-mini", "gpt-5-nano", "claude-3-5-haiku-20241022"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 
