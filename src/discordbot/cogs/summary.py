@@ -129,7 +129,7 @@ class MessageFetcher(commands.Cog):
 
         chat_history_string, attachments = self._format_messages(messages)
         final_prompt = self._create_summary_prompt(history_count, chat_history_string)
-        summary = await self._call_llm(final_prompt, attachments)
+        summary = await self._call_llm(prompt=final_prompt, attachments=attachments)
         return summary
 
     async def _fetch_messages(
@@ -176,9 +176,13 @@ class MessageFetcher(commands.Cog):
         )
 
     async def _call_llm(self, prompt: str, attachments: list[str]) -> str:
-        llm_sdk = LLMSDK(system_prompt=SUMMARY_PROMPT)
-        response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
-        return response.choices[0].message.content
+        llm_sdk = LLMSDK(model="openai/gpt-5-mini")
+        prompt = SUMMARY_PROMPT + "\n\n" + prompt
+        content = await llm_sdk.prepare_completion_content(prompt=prompt, image_urls=attachments)
+        responses = await llm_sdk.client.chat.completions.create(
+            model=llm_sdk.model, messages=[{"role": "user", "content": content}]
+        )
+        return responses.choices[0].message.content
 
 
 async def setup(bot: commands.Bot) -> None:

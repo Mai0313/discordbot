@@ -5,7 +5,7 @@ from nextcord.ext import commands
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = ["gpt-5-mini", "gpt-5-nano", "claude-3-5-haiku-20241022"]
+available_models = ["openai/gpt-5-mini", "openai/gpt-5-nano", "claude-3-5-haiku-20241022"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 
@@ -78,16 +78,7 @@ class ReplyGeneratorCogs(commands.Cog):
             },
             choices=MODEL_CHOICES,
             required=False,
-            default="gpt-5-mini",
-        ),
-        stream: bool = SlashOption(
-            description="Enable streaming response (default: False).",
-            description_localizations={
-                Locale.zh_TW: "啟用串流回應 (預設為 False)",
-                Locale.ja: "ストリーミング応答を有効にする（デフォルト: False）",
-            },
-            required=False,
-            default=False,
+            default=available_models[0],
         ),
         image: nextcord.Attachment | None = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
@@ -107,7 +98,6 @@ class ReplyGeneratorCogs(commands.Cog):
             interaction (Interaction): The interaction object for the command.
             prompt (str): The prompt text provided by the user.
             model (str): The selected model, defaults to "gpt-5" if not specified.
-            stream (bool): Whether to stream the response in real-time, defaults to False.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
         await interaction.response.defer()
@@ -119,26 +109,18 @@ class ReplyGeneratorCogs(commands.Cog):
 
         try:
             llm_sdk = LLMSDK(model=model)
+            content = await llm_sdk.prepare_response_content(prompt=prompt, image_urls=attachments)
+            responses = await llm_sdk.client.responses.create(
+                model=model,
+                tools=[{"type": "web_search_preview"}],
+                input=[{"role": "user", "content": content}],
+            )
+            await interaction.edit_original_message(
+                content=f"{interaction.user.mention}\n{responses.output_text}"
+            )
 
-            if stream:
-                # Streaming response
-                accumulated_text = f"{interaction.user.mention}\n"
-                responses = await llm_sdk.get_oai_reply_stream(
-                    prompt=prompt, image_urls=attachments
-                )
-                async for res in responses:
-                    if res.choices[0].delta.content:
-                        accumulated_text += res.choices[0].delta.content
-                        await interaction.edit_original_message(content=accumulated_text)
-            else:
-                # Non-streaming response
-                response = await llm_sdk.get_oai_reply(prompt=prompt, image_urls=attachments)
-                await interaction.edit_original_message(
-                    content=f"{interaction.user.mention}\n{response.choices[0].message.content}"
-                )
-
-        except Exception:
-            error_message = "Error processing the message."
+        except Exception as e:
+            error_message = f"Error processing the message.\n{e}"
             await interaction.edit_original_message(content=error_message)
             logfire.error("Error in oai", _exc_info=True)
 
