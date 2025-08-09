@@ -72,12 +72,12 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Advanced Features:**
 
-- Message count selection (10, 25, 50, 100, 200 messages)
+- Message count selection (5, 10, 20, 50 messages)
 - User-specific message filtering
 - Attachment URL extraction and processing
 - Embed content integration
 
-#### 4. Video Downloading (`src/cogs/video.py`)
+#### 4. Video Downloading (`src/discordbot/cogs/video.py`)
 
 **Commands:**
 
@@ -86,13 +86,13 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 **Implementation Details:**
 
 - **Platform Support**: YouTube, Facebook Reels, Instagram, X (Twitter), TikTok, and more
-- **Quality Options**: Best, High (1080p), Medium (720p), Low (480p), Audio Only
-- **Backend**: `yt-dlp` library via `VideoDownloader` class in `src/utils/downloader.py`
+- **Quality Options**: Best, High (1080p), Medium (720p), Low (480p)
+- **Backend**: `yt-dlp` library via `VideoDownloader` class in `src/discordbot/utils/downloader.py`
 - **File Management**:
-    - Downloads to `./data/downloads/` with timestamp-based naming
-    - Automatic file size checking against Discord's 25MB limit
-    - Error handling with fallback embed responses
-- **Progress Tracking**: Real-time status updates during download process
+    - Downloads to `./data/downloads/` under daily YYYYMMDD folders
+    - Automatic file size checking against Discord's 25MB limit; auto low-quality re-download if exceeded
+    - Error handling with user-facing messages
+- **Progress Tracking**: Informational status updates during download process
 
 **Technical Features:**
 
@@ -101,7 +101,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Exception handling with user-friendly error messages
 - File size validation before Discord upload
 
-#### 5. Image Generation (`src/cogs/gen_image.py`)
+#### 5. Image Generation (`src/discordbot/cogs/gen_image.py`)
 
 **Commands:**
 
@@ -114,7 +114,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Response Pattern**: Currently displays "功能沒寫完..." (Feature not implemented) message
 - **Technical Foundation**: Command structure and localization already implemented
 
-#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
+#### 6. MapleStory Database Query (`src/discordbot/cogs/maplestory.py`)
 
 **Database Query Commands:**
 
@@ -122,7 +122,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
 
-#### 7. Auction System (`src/cogs/auction.py`)
+#### 7. Auction System (`src/discordbot/cogs/auction.py`)
 
 **Auction System Commands:**
 
@@ -131,7 +131,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/auction_info` - View detailed information about a specific auction
 - `/auction_my` - View your created auctions and their current status
 
-#### 8. Lottery System (`src/cogs/lottery.py`)
+#### 8. Lottery System (`src/discordbot/cogs/lottery.py`)
 
 **Lottery System Commands:**
 
@@ -299,15 +299,14 @@ The comprehensive auction system allows users to create item auctions and partic
 
 - `DISCORD_BOT_TOKEN` - Discord bot token
 - `OPENAI_API_KEY` - OpenAI API key
-- `AZURE_OPENAI_API_KEY` - Azure OpenAI API key (if using Azure)
-- `OPENAI_BASE_URL` - API base URL
-- `PERPLEXITY_API_KEY` - Perplexity API key for search
+- `OPENAI_BASE_URL` - API base URL (or `AZURE_OPENAI_ENDPOINT` when using Azure)
+- Optional: `AZURE_OPENAI_API_KEY`, `OPENAI_API_VERSION`, `SQLITE_FILE_PATH`, `POSTGRES_URL`, `REDIS_URL`
 
 #### Key Configuration Classes:
 
-- `DiscordConfig` - Bot token and server configuration
-- `OpenAIConfig` - OpenAI/Azure API configuration with type detection
-- `PerplexityConfig` - Perplexity API configuration
+- `DiscordConfig` - Bot token and test server configuration
+- `LLMSDK` - OpenAI/Azure client configuration (model, base URL, API key, optional version)
+- `DatabaseConfig` - Aggregates `SQLiteConfig`, `PostgreSQLConfig`, and `RedisConfig`
 
 ### Development and Deployment
 
@@ -323,7 +322,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `gen_image.py` - Image generation (placeholder implementation)
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/discordbot/sdk/`
-- **Types**: Configuration and data models in `src/discordbot/types/`
+- **Typings**: Configuration and data models in `src/discordbot/typings/`
 - **Utils**: Utility functions in `src/discordbot/utils/`
 - **Tests**: Comprehensive test suite in `tests/`
 - **Data**: Game databases and user data in `data/`
@@ -331,12 +330,28 @@ The comprehensive auction system allows users to create item auctions and partic
     - `auctions.db` - SQLite database for auction system with bid tracking
     - `downloads/` - Video download storage directory
 
+#### Running Locally
+
+```bash
+uv sync
+uv run discordbot
+# or: uv run python -m discordbot.cli
+```
+
+#### Docker
+
+```bash
+docker-compose up -d
+# or
+docker build -t discordbot . && docker run -d discordbot
+```
+
 #### Key Dependencies:
 
 - `nextcord` - Discord API wrapper
 - `openai` - OpenAI API client
 - `pydantic` - Data validation and configuration
-- `yt-dlp` - Video downloading
+- `yt-dlp` - Video downloading (with configured headers and retries)
 - `logfire` - Advanced logging and monitoring
 
 #### Deployment Features:
