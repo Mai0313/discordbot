@@ -70,7 +70,8 @@ class DiscordBot(commands.Bot):
     async def load_cogs(self) -> None:
         cog_files = await self.get_cogs_names()
         self.load_extensions(cog_files, stop_at_error=True)
-        logfire.info("Cogs Loaded", cog_files=", ".join(cog_files))
+        all_cogs = ", ".join(cog_files)
+        logfire.info(f"Cogs Loaded: {all_cogs}")
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
@@ -98,8 +99,9 @@ class DiscordBot(commands.Bot):
         guild_id = None
         if self.discord_config.discord_test_server_id:
             guild_id = self.get_guild(self.discord_config.discord_test_server_id)
-        # await self.tree.sync(guild=guild)
-        await self.sync_application_commands(guild_id=guild_id)
+        if isinstance(guild_id, nextcord.Guild):
+            await self.sync_application_commands(guild_id=guild_id.id)
+        await self.sync_all_application_commands()
         self.status_task.start()
 
     async def on_message(self, message: nextcord.Message) -> None:
