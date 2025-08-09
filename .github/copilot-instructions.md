@@ -6,51 +6,53 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 ### Core Architecture
 
-- **Main Bot Implementation**: The primary bot class `DiscordBot` is implemented in `src/bot.py`, which extends `nextcord.ext.commands.Bot` and handles bot initialization, cog loading, logging configuration, and event management
+- **Main Bot Implementation**: The primary bot class `DiscordBot` is implemented in `src/discordbot/cli.py`, which extends `nextcord.ext.commands.Bot` and handles bot initialization, cog loading, logging configuration, and event management
 - **Framework**: Nextcord (Discord.py fork) with async/await patterns
-- **Structure**: Modular Cog system under `src/cogs/` with implementation details in `src/sdk/`
+- **Structure**: Modular Cog system under `src/discordbot/cogs/` with implementation details in `src/discordbot/sdk/`
 - **Configuration**: Pydantic-based config management with environment variable support
 - **Logging**: Comprehensive logging with Logfire integration
 
 ### Main Features
 
-#### 1. AI Text Generation (`src/cogs/gen_reply.py`)
+#### 1. AI Text Generation (`src/discordbot/cogs/gen_reply.py`)
 
 **Commands:**
 
-- `/oai` - Generate AI response with optional streaming support (unified command)
+- `/oai` - Generate AI response with integrated web search capabilities
 
 **Implementation Details:**
 
-- **Model Support**: Multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, GPT-5-chat-latest, Claude-3.5-Haiku-20241022)
-- **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/sdk/llm.py`
+- **Model Support**: Multiple AI models (openai/gpt-5-mini, openai/gpt-5-nano, claude-3-5-haiku-20241022)
+- **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/discordbot/sdk/llm.py`
 - **Image Processing**: Supports image uploads with vision models using `autogen.agentchat.contrib.img_utils`
-- **Unified Streaming**: Single command with optional `stream` parameter (default: False) for real-time streaming responses
-- **Content Preparation**: Automatic conversion of images to base64 data URIs
+- **Integrated Web Search**: Uses `tools=[{"type": "web_search_preview"}]` in the new responses API, allowing LLM to automatically access web information when needed
+- **Content Preparation**: Automatic conversion of images to base64 data URIs via `prepare_response_content()` method
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
 - **Response Format**: Automatically mentions the user in responses
+- **Architecture**: Uses the new OpenAI responses API instead of chat completions, enabling tool use for web search
 
 **Technical Features:**
 
-- Async OpenAI client with proper streaming support
+- Async OpenAI client with responses API for tool usage
 - Pydantic configuration with model mapping for Azure deployments
 - Content type detection and preparation for multi-modal inputs
 - Proper error handling for API rate limits and model constraints
+- Automatic web search integration through tool usage
 
-#### 2. Web Search Integration (`src/cogs/gen_search.py`)
+#### 2. Web Search Integration
 
-**Commands:**
+**Implementation:**
 
-- `/search` - Perform web search with AI summarization
+- **Removed**: Standalone `/search` command has been removed
+- **Integration**: Web search functionality is now integrated directly into the `/oai` command
+- **Technical Details**:
+    - Uses OpenAI's new responses API with `web_search_preview` tool
+    - LLM can automatically determine when web search is needed
+    - No separate search endpoint or UI required
+    - Search results are processed contextually within the conversation
+    - Eliminates need for separate search command and reduces complexity
 
-**Implementation Details:**
-
-- **Search Engine**: Perplexity API with `llama-3.1-sonar-large-128k-online` model
-- **Response Processing**: Direct integration with `LLMSDK.get_search_result()`
-- **Real-time Updates**: Deferred response with follow-up editing
-- **Multi-language Support**: Localized command descriptions and prompts
-
-#### 3. Message Summarization (`src/cogs/summary.py`)
+#### 3. Message Summarization (`src/discordbot/cogs/summary.py`)
 
 **Commands:**
 
@@ -274,22 +276,22 @@ The comprehensive auction system allows users to create item auctions and partic
 
 ### Critical Core Functionality
 
-#### LLM Integration SDK (`src/sdk/llm.py`)
+#### LLM Integration SDK (`src/discordbot/sdk/llm.py`)
 
 **Core Features:**
 
 - **Multi-Provider Support**: OpenAI and Azure OpenAI with automatic client selection
 - **Model Mapping**: Azure deployment name mapping for seamless switching
-- **Streaming Support**: Full async streaming implementation for real-time responses
+- **Tool Usage Support**: Supports OpenAI responses API with tool usage for web search
 - **Image Processing**: Automatic image conversion to base64 data URIs
 - **Configuration Management**: Pydantic-based configuration with environment variable support
 
-**API Implementations:**
+**API Methods:**
 
-- `get_oai_reply()` - Single response generation
-- `get_oai_reply_stream()` - Streaming response generation
-- `get_search_result()` - Perplexity API integration
-- `_prepare_content()` - Multi-modal content preparation
+- `prepare_response_content()` - Multi-modal content preparation for responses API (supports input_text and input_image types)
+- `prepare_completion_content()` - Multi-modal content preparation for completions API (supports text and image_url types)
+
+**Note:** Previous methods `get_oai_reply()`, `get_oai_reply_stream()`, and `get_search_result()` have been removed. The new architecture uses OpenAI's responses API directly with integrated web search tools.
 
 ### Configuration and Environment
 
@@ -311,9 +313,8 @@ The comprehensive auction system allows users to create item auctions and partic
 
 #### Project Structure:
 
-- **Cogs**: Modular command implementations in `src/cogs/`
-    - `gen_reply.py` - AI text generation with multiple AI models (GPT-5, Claude) and streaming support
-    - `gen_search.py` - Web search via Perplexity API
+- **Cogs**: Modular command implementations in `src/discordbot/cogs/`
+    - `gen_reply.py` - AI text generation with multiple AI models (GPT-5, Claude) and integrated web search
     - `summary.py` - Message summarization with interactive UI (5/10/20/50 message options)
     - `video.py` - Multi-platform video downloading with quality options
     - `maplestory.py` - MapleStory database queries and drop searches
@@ -321,9 +322,9 @@ The comprehensive auction system allows users to create item auctions and partic
     - `lottery.py` - Multi-platform lottery system with animated drawings
     - `gen_image.py` - Image generation (placeholder implementation)
     - `template.py` - System utilities and ping testing
-- **SDK**: Core business logic in `src/sdk/`
-- **Types**: Configuration and data models in `src/types/`
-- **Utils**: Utility functions in `src/utils/`
+- **SDK**: Core business logic in `src/discordbot/sdk/`
+- **Types**: Configuration and data models in `src/discordbot/types/`
+- **Utils**: Utility functions in `src/discordbot/utils/`
 - **Tests**: Comprehensive test suite in `tests/`
 - **Data**: Game databases and user data in `data/`
     - `monsters.json` - MapleStory monster and drop database (192+ monsters)
