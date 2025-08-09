@@ -47,7 +47,7 @@ _Suggestions and contributions are always welcome!_
 
 ### 🔧 Technical Features
 
-- **Main Bot Implementation**: The core bot class `DiscordBot` is implemented in `src/bot.py`, extending `nextcord.ext.commands.Bot` with comprehensive initialization, cog loading, and event handling
+- **Main Bot Implementation**: The core bot class `DiscordBot` is implemented in `src/discordbot/cli.py`, extending `nextcord.ext.commands.Bot` with comprehensive initialization, cog loading, and event handling
 - Modular Cog-based architecture
 - Async/await patterns with nextcord
 - Pydantic-based configuration management
@@ -56,25 +56,24 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command | Description               | Features                                                               |
-| ------- | ------------------------- | ---------------------------------------------------------------------- |
-| `/oai`  | Generate AI text response | Multi-model support (GPT-5, Claude), image input, automatic web search |
-
-| `/sum` | Interactive message summarization | User filtering, 5/10/20/50 message options |
-| `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality options |
-| `/maple_monster` | Search MapleStory monster drops | Detailed monster information |
-| `/maple_item` | Search MapleStory item sources | Drop source tracking |
-| `/maple_stats` | MapleStory database statistics | Data overview and popular items |
-| `/auction_create` | Create new item auction | Interactive form, currency selection |
-| `/auction_list` | Browse active auctions | Real-time updates, dropdown menu |
-| `/auction_info` | View auction details | Current bid info, bid history |
-| `/auction_my` | View personal auctions | Created & leading auctions |
-| `/lottery create_reaction` | Create Discord reaction lottery | Emoji-based participation, real-time tracking |
-| `/lottery create_youtube` | Create YouTube chat lottery | Chat keyword registration, YouTube integration |
-| `/lottery start` | Start lottery drawing process | Animated wheel, transparent selection |
-| `/lottery status` | View lottery activity status | Complete participant list, cross-platform breakdown |
-| `/graph` | Generate images (placeholder) | Framework ready for implementation |
-| `/ping` | Bot performance testing | Latency measurement |
+| Command                    | Description                       | Features                                                                               |
+| -------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| `/oai`                     | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search |
+| `/sum`                     | Interactive message summarization | User filter, 5/10/20/50 messages                                                       |
+| `/download_video`          | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                       |
+| `/maple_monster`           | Search MapleStory monster drops   | Detailed stats, images, maps                                                           |
+| `/maple_item`              | Search MapleStory item sources    | Drop source mapping                                                                    |
+| `/maple_stats`             | MapleStory DB statistics          | Totals, level distribution, popular items                                              |
+| `/auction_create`          | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                      |
+| `/auction_list`            | Browse active auctions            | Dropdown selection, preview                                                            |
+| `/auction_info`            | View auction details              | Current bid, end time, history button                                                  |
+| `/auction_my`              | View personal auctions            | Created & leading                                                                      |
+| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji join, reaction tracking                                                          |
+| `/lottery create_youtube`  | Create YouTube chat lottery       | Keyword registration via YouTube chat                                                  |
+| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                                                  |
+| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown                                    |
+| `/graph`                   | Generate images (placeholder)     | Framework ready for implementation                                                     |
+| `/ping`                    | Bot performance testing           | Latency measurement                                                                    |
 
 ## 🚀 Quick Start
 
@@ -113,7 +112,11 @@ _Suggestions and contributions are always welcome!_
 4. **Run the bot**
 
     ```bash
-    uv run python main.py
+    # Recommended (via entry point)
+    uv run discordbot
+
+    # Or
+    uv run python -m discordbot.cli
     ```
 
 ### Docker Setup
@@ -150,23 +153,26 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 ## 📁 Project Structure
 
 ```
-src/
-├── bot.py              # Main bot entry point
+src/discordbot/
+├── cli.py              # Main bot entry point
 ├── cogs/               # Command modules
-│   ├── gen_reply.py    # AI text generation
-
-│   ├── summary.py      # Message summarization
-│   ├── video.py        # Video downloading
+│   ├── gen_reply.py    # AI text generation (/oai)
+│   ├── summary.py      # Message summarization (/sum)
+│   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
 │   ├── auction.py      # Auction system with bidding
 │   ├── lottery.py      # Multi-platform lottery system
 │   ├── gen_image.py    # Image generation (placeholder)
-│   └── template.py     # System utilities and ping testing
+│   └── template.py     # Utilities & /ping
 ├── sdk/                # Core business logic
-│   ├── llm.py          # LLM integration
-│   └── asst.py         # Assistant API wrapper
-├── types/              # Configuration models
+│   ├── llm.py          # LLM integration (OpenAI/Azure)
+│   ├── log_message.py  # Message logging to SQLite
+│   └── yt_chat.py      # YouTube chat helper
+├── typings/            # Configuration models
+│   ├── config.py       # Discord config
+│   └── database.py     # DB configs (SQLite/Postgres/Redis)
 └── utils/              # Utility functions
+    └── downloader.py   # yt-dlp wrapper
 data/
 ├── monsters.json       # MapleStory monster and drop database
 ├── auctions.db         # SQLite database for auction system
@@ -217,22 +223,21 @@ data/
 - **In-Memory Storage**: Lightweight global variables with defaultdict optimization for runtime data (resets on bot restart for fresh starts)
 - **Interactive UI Components**: Modal forms for creation, animated drawing views, detailed status displays, and real-time updates
 
-# 🔒 Privacy Policy
+# 🔒 Privacy & Data
 
-This Discord bot is committed to protecting user privacy and complies with Discord’s Terms of Service and Developer Policy.
+This Discord bot complies with Discord’s Terms of Service and Developer Policy.
 
 ## 📦 Data Collection and Usage
 
-- **No Message Storage**: This bot does **NOT** store, log, or retain any user messages, message content, or chat history beyond the immediate processing needed for a response.
-- **No Personal Data Collection**: We do not collect, store, or process any personal identifying information (PII) from users.
-- **Temporary Processing Only**: All inputs are processed in memory only and discarded immediately after the response is generated.
-- **No Third-Party Sharing**: No user data is shared with any third parties, other than trusted APIs (e.g., OpenAI) for processing the specific user request.
+- **Local Message Logging**: By default, messages in channels where the bot is present are logged to a local SQLite database at `./data/messages.db` (author, content, timestamps, attachments/stickers). This remains on your server and is not shared externally.
+- **No Third-Party Sharing**: Aside from calling trusted APIs (e.g., OpenAI) to fulfill requests, data is not shared with third parties.
+- **Opt-out**: Server owners can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/sdk/log_message.py`.
 
 ## ⚙️ Bot Permissions and Intents
 
 This bot uses certain Discord intents solely to provide its core features:
 
-- **Message Content Intent**: Required to read and respond to natural-language commands without slash syntax (e.g., keyword detection like "查怪", "掉落", etc.).
+- **Message Content Intent**: Required for slash-command context, limited keyword handling, and optional local logging as described above.
 - **Slash Commands**: Used for interactive and explicit command triggers.
 - **Embed Links / File Attachments**: Used to display structured output and allow interaction with visual content.
 - **Presence Intent (if applicable)**: May be used to improve responsiveness based on online status; not stored.
@@ -254,7 +259,7 @@ If you have privacy concerns or questions about this policy, feel free to:
 
 This bot is designed using **privacy-by-design principles** with a strict minimal-data-handling approach to protect all users.
 
-_Last updated: 2025/05/29_
+_Last updated: 2025/08/09_
 
 ## Contributors
 

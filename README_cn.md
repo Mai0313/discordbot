@@ -47,7 +47,7 @@ _歡迎提供建議和貢獻!_
 
 ### 🔧 技術特色
 
-- **主要機器人實現**：核心機器人類別 `DiscordBot` 在 `src/bot.py` 中實現，繼承 `nextcord.ext.commands.Bot` 並包含完整的初始化、Cog 載入和事件處理
+- **主要機器人實現**：核心機器人類別 `DiscordBot` 在 `src/discordbot/cli.py` 中實現，繼承 `nextcord.ext.commands.Bot` 並包含完整的初始化、Cog 載入和事件處理
 - 模組化 Cog 架構設計
 - 非同步處理配合 nextcord
 - Pydantic 基礎配置管理
@@ -61,7 +61,7 @@ _歡迎提供建議和貢獻!_
 | `/oai` | 生成 AI 文字回應 | 多模型支援（GPT-5、Claude）、圖像輸入、自動網路搜尋 |
 
 | `/sum` | 互動式訊息摘要 | 用戶篩選、5/10/20/50 則訊息選項 |
-| `/download_video` | 多平台影片下載器 | 最佳/高/中/低品質選項 |
+| `/download_video` | 多平台影片下載器 | 最佳/高/中/低品質；若超過 25MB 自動降為低畫質 |
 | `/maple_monster` | 搜尋楓之谷怪物掉落 | 詳細怪物資訊 |
 | `/maple_item` | 搜尋楓之谷物品來源 | 掉落來源追蹤 |
 | `/maple_stats` | 楓之谷資料庫統計 | 資料概覽和熱門物品 |
@@ -113,7 +113,11 @@ _歡迎提供建議和貢獻!_
 4. **啟動機器人**
 
     ```bash
-    uv run python main.py
+    # 推薦（透過 entry point）
+    uv run discordbot
+
+    # 或
+    uv run python -m discordbot.cli
     ```
 
 ### Docker 部署
@@ -147,26 +151,43 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 
 ```
 
+### 可選環境變數
+
+```env
+# 如果使用 Azure OpenAI
+OPENAI_API_VERSION=2025-04-01-preview
+
+# 訊息記錄（SQLite）
+SQLITE_FILE_PATH=sqlite:///data/messages.db
+
+# 其他服務（如有使用）
+POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
+REDIS_URL=redis://redis:6379/0
+```
+
 ## 📁 專案結構
 
 ```
-src/
-├── bot.py              # 主要機器人入口點
+src/discordbot/
+├── cli.py              # 主要機器人入口點
 ├── cogs/               # 指令模組
-│   ├── gen_reply.py    # AI 文字生成
-
-│   ├── summary.py      # 訊息摘要
-│   ├── video.py        # 影片下載
+│   ├── gen_reply.py    # AI 文字生成 (/oai)
+│   ├── summary.py      # 訊息摘要 (/sum)
+│   ├── video.py        # 影片下載 (/download_video)
 │   ├── maplestory.py   # 楓之谷資料庫查詢
 │   ├── auction.py      # 競標系統
 │   ├── lottery.py      # 多平台抽獎系統
 │   ├── gen_image.py    # 圖像生成（預留）
 │   └── template.py     # 系統工具與延遲測試
 ├── sdk/                # 核心業務邏輯
-│   ├── llm.py          # LLM 整合
-│   └── asst.py         # Assistant API 包裝器
-├── types/              # 配置模型
+│   ├── llm.py          # LLM 整合（OpenAI/Azure）
+│   ├── log_message.py  # 訊息記錄（寫入 SQLite）
+│   └── yt_chat.py      # YouTube 聊天輔助
+├── typings/            # 配置模型
+│   ├── config.py       # Discord 設定
+│   └── database.py     # DB 設定（SQLite/Postgres/Redis）
 └── utils/              # 工具函數
+    └── downloader.py   # yt-dlp 包裝
 data/
 ├── monsters.json       # 楓之谷怪物與掉落資料庫
 ├── auctions.db         # 競標系統 SQLite 資料庫
@@ -338,22 +359,21 @@ grep ERROR logs/bot.log
 3. 配置適當的 API 請求限制
 4. 使用連接池優化資料庫連接
 
-## 🔒 隱私政策
+## 🔒 隱私與資料
 
-本 Discord 機器人致力於保護用戶隱私，並遵守 Discord 服務條款和開發者政策。
+本 Discord 機器人遵守 Discord 服務條款與開發者政策。
 
 ### 資料收集與使用
 
-- **不儲存訊息內容**：本機器人不會儲存、記錄或保留任何用戶訊息、對話內容或聊天記錄
-- **不收集個人資料**：我們不會收集、儲存或處理任何用戶個人資訊
-- **僅臨時處理**：用戶輸入僅為生成回應而臨時處理，處理完畢後立即丟棄
-- **不與第三方分享**：除了提供機器人功能所需的 API 呼叫外，不會與第三方分享任何用戶資料
+- **本地訊息記錄**：預設情況下，機器人在所在頻道的訊息會記錄到本機 SQLite（`./data/messages.db`），包含作者、內容、時間戳與附件/貼圖連結。資料僅存在你的伺服器，不會外傳。
+- **不與第三方分享**：除了為完成請求所需的受信任 API（例如 OpenAI）之外，不會與第三方分享資料。
+- **如何停用**：伺服器擁有者可在 `src/discordbot/cli.py` 移除記錄呼叫，或依需求調整 `src/discordbot/sdk/log_message.py`。
 
 ### 機器人權限與意圖
 
 本機器人僅為功能需求申請以下權限：
 
-- **訊息內容意圖**：用於讀取和回應用戶指令及提及
+- **訊息內容意圖**：用於斜線指令情境、少量關鍵字處理與上述本地記錄（可調整）
 - **斜線指令**：用於互動式指令處理
 - **檔案附件**：用於處理 AI 視覺功能中的圖像和下載用戶請求的內容
 - **嵌入連結**：用於格式化豐富回應和搜尋結果
