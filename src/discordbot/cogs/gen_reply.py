@@ -77,10 +77,10 @@ class ReplyGeneratorCogs(commands.Cog):
             },
         ),
         model: str = SlashOption(
-            description="Choose a model (default: GPT-4.1).",
+            description="Choose a model (default: GPT-5).",
             description_localizations={
-                Locale.zh_TW: "選擇模型 (預設為 GPT-4.1)",
-                Locale.ja: "モデルを選択してください（デフォルトは GPT-4.1）",
+                Locale.zh_TW: "選擇模型 (預設為 GPT-5)",
+                Locale.ja: "モデルを選択してください（デフォルトは GPT-5）",
             },
             choices=MODEL_CHOICES,
             required=False,
@@ -112,7 +112,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Args:
             interaction (Interaction): The interaction object for the command.
             prompt (str): The prompt text provided by the user.
-            model (str): The selected model, defaults to "gpt-4.1" if not specified.
+            model (str): The selected model, defaults to "gpt-5" if not specified.
             stream (bool): Whether to stream the response in real-time, defaults to False.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
