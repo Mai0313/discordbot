@@ -38,7 +38,7 @@ class LLMSDK(BaseSettings):
         deprecated=False,
     )
     model: str = Field(
-        default="gpt-4.1",
+        default="gpt-5-mini",
         title="LLM Model Selection",
         description="This model should be OpenAI Model.",
         frozen=False,
@@ -80,7 +80,7 @@ class LLMSDK(BaseSettings):
         )
         return response
 
-    async def _prepare_content(
+    async def _prepare_completion_content(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -92,61 +92,50 @@ class LLMSDK(BaseSettings):
             content.append({"type": "image_url", "image_url": {"url": image_base64}})
         return content
 
+    async def _prepare_response_content(
+        self, prompt: str, image_urls: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        if not image_urls:
+            return content
+        for image_url in image_urls:
+            image = get_pil_image(image_file=image_url)
+            image_base64 = pil_to_data_uri(image=image)
+            content.append({"type": "input_image", "image_url": image_base64})
+        return content
+
     async def get_oai_reply(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> ChatCompletion:
-        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
+        content = await self._prepare_completion_content(prompt=prompt, image_urls=image_urls)
         responses = self.client.chat.completions.create(
             model=self.model, messages=[{"role": "user", "content": content}]
-        )
-        return await responses
-
-    async def get_oai_response(
-        self, prompt: str, image_urls: list[str] | None = None
-    ) -> ChatCompletion:
-        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
-        responses = self.client.responses.create(
-            model=self.model, input=[{"role": "user", "content": content}]
         )
         return await responses
 
     async def get_oai_reply_stream(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
-        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
+        content = await self._prepare_completion_content(prompt=prompt, image_urls=image_urls)
         responses = self.client.chat.completions.create(
             model=self.model, messages=[{"role": "user", "content": content}], stream=True
+        )
+        return await responses
+
+    async def get_oai_response(
+        self, prompt: str, image_urls: list[str] | None = None
+    ) -> ChatCompletion:
+        content = await self._prepare_response_content(prompt=prompt, image_urls=image_urls)
+        responses = self.client.responses.create(
+            model=self.model, input=[{"role": "user", "content": content}]
         )
         return await responses
 
     async def get_oai_response_stream(
         self, prompt: str, image_urls: list[str] | None = None
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
-        content = await self._prepare_content(prompt=prompt, image_urls=image_urls)
+        content = await self._prepare_response_content(prompt=prompt, image_urls=image_urls)
         responses = self.client.responses.create(
             model=self.model, input=[{"role": "user", "content": content}], stream=True
         )
         return await responses
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from rich.console import Console
-
-    console = Console()
-
-    async def main() -> None:
-        llm_sdk = LLMSDK()
-        prompt = "既然從地球發射火箭那麼困難, 為何我們不直接在太空中建造火箭呢?"
-        response = await llm_sdk.get_oai_reply(prompt=prompt)
-        console.print(response.choices[0].message.content)
-
-    async def main_stream() -> None:
-        llm_sdk = LLMSDK()
-        prompt = "既然從地球發射火箭那麼困難, 為何我們不直接在太空中建造火箭呢?"
-        responses = await llm_sdk.get_oai_reply_stream(prompt=prompt)
-        async for res in responses:
-            console.print(res.choices[0].delta.content, end="")
-
-    asyncio.run(main_stream())
