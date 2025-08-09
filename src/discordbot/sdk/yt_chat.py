@@ -110,7 +110,7 @@ class YoutubeStream(BaseSettings):
             chat_history += f"{name}: {message}\n"
         return chat_history
 
-    def get_register(self, target_word: str) -> list[str]:
+    def get_registered_accounts(self, target_word: str) -> list[str]:
         live_chat_id = self.get_chat_id()
         live_message = self.youtube.liveChatMessages()
         live_messages = live_message.list(
