@@ -69,6 +69,9 @@ authors = [
 ]
 dependencies = [
     "ag2>=0.9.1.post0",
+    "google-api-python-client>=2.178.0",
+    "google-auth>=2.40.3",
+    "google-auth-oauthlib>=1.2.2",
     "logfire>=3.16.0",
     "nextcord[speed,voice]==2.6.0",
     "openai>=1.81.0",
