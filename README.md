@@ -211,7 +211,7 @@ data/
 - **Dual Registration Modes**: Support for either Discord reaction-based OR YouTube chat keyword-based participation (prevents cross-platform duplication)
 - **Animated Drawing Process**: Interactive spinning wheel animation for transparent and fair lottery draws with 15-step visual effects
 - **Reset Functionality**: One-click lottery reset that restores all participants while clearing winners (🔄 button)
-- **Comprehensive Status Monitoring**: Real-time participant tracking with complete name lists, cross-platform breakdown, and intelligent display limits (15 users per platform)
+- **Comprehensive Status Monitoring**: Real-time participant tracking with complete name lists showing all participants, cross-platform breakdown with comma-separated display
 - **Advanced Participant Management**: Automatic registration via Discord reactions or YouTube chat keywords, with duplicate prevention and platform validation
 - **Security Features**: Creator-only controls, cryptographically secure random selection, participant validation, and automatic winner removal
 - **Single-Platform Focus**: Each lottery uses only one registration method to ensure fairness and prevent confusion

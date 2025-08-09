@@ -344,29 +344,27 @@ class LotterySpinView(nextcord.ui.View):
             await interaction.response.send_message("目前沒有參與者", ephemeral=True)
             return
 
-        # 分頁顯示參與者
+        # 顯示所有參與者（完整名單）
         discord_users = [p for p in self.participants if p.source == "discord"]
         youtube_users = [p for p in self.participants if p.source == "youtube"]
 
         embed = nextcord.Embed(title="📊 抽獎參與者名單", color=0x0099FF)
 
         if discord_users:
-            discord_names = [f"• {user.name}" for user in discord_users[:10]]
-            if len(discord_users) > 10:
-                discord_names.append(f"... 還有 {len(discord_users) - 10} 人")
+            # 使用逗號分隔顯示所有Discord用戶
+            discord_names_str = ", ".join([user.name for user in discord_users])
             embed.add_field(
                 name=f"Discord 參與者 ({len(discord_users)} 人)",
-                value="\n".join(discord_names),
+                value=discord_names_str,
                 inline=False,
             )
 
         if youtube_users:
-            youtube_names = [f"• {user.name}" for user in youtube_users[:10]]
-            if len(youtube_users) > 10:
-                youtube_names.append(f"... 還有 {len(youtube_users) - 10} 人")
+            # 使用逗號分隔顯示所有YouTube用戶
+            youtube_names_str = ", ".join([user.name for user in youtube_users])
             embed.add_field(
                 name=f"YouTube 參與者 ({len(youtube_users)} 人)",
-                value="\n".join(youtube_names),
+                value=youtube_names_str,
                 inline=False,
             )
 
@@ -530,29 +528,27 @@ class LotteryCog(commands.Cog):
         if active_lottery.youtube_keyword:
             embed.add_field(name="報名關鍵字", value=active_lottery.youtube_keyword, inline=True)
 
-        # 顯示參與者名單
+        # 顯示參與者名單（完整顯示所有參與者）
         if participants:
             # 按平台分類參與者
             discord_users = [p for p in participants if p.source == "discord"]
             youtube_users = [p for p in participants if p.source == "youtube"]
 
             if discord_users:
-                discord_names = [f"• {user.name}" for user in discord_users[:15]]
-                if len(discord_users) > 15:
-                    discord_names.append(f"... 還有 {len(discord_users) - 15} 人")
+                # 使用逗號分隔顯示所有Discord用戶，但限制在Discord的1024字符限制內
+                discord_names_str = ", ".join([user.name for user in discord_users])
                 embed.add_field(
                     name=f"Discord 參與者 ({len(discord_users)} 人)",
-                    value="\n".join(discord_names),
+                    value=discord_names_str,
                     inline=False,
                 )
 
             if youtube_users:
-                youtube_names = [f"• {user.name}" for user in youtube_users[:15]]
-                if len(youtube_users) > 15:
-                    youtube_names.append(f"... 還有 {len(youtube_users) - 15} 人")
+                # 使用逗號分隔顯示所有YouTube用戶
+                youtube_names_str = ", ".join([user.name for user in youtube_users])
                 embed.add_field(
                     name=f"YouTube 參與者 ({len(youtube_users)} 人)",
-                    value="\n".join(youtube_names),
+                    value=youtube_names_str,
                     inline=False,
                 )
         else:
