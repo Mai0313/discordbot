@@ -25,17 +25,18 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple OpenAI models (GPT-4o, o1, o3-mini) with real-time streaming
+- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with real-time streaming
 - **Image Processing**: Vision model support with automatic image conversion
 - **Web Search**: Integrated Perplexity API for real-time web search and summarization
 
 ### 📊 Content Processing
 
-- **Message Summarization**: Smart channel conversation summaries with user filtering
-- **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
-- **MapleStory Database**: Search monsters and items with drop information
+- **Message Summarization**: Smart channel conversation summaries with user filtering (5, 10, 20, 50 messages)
+- **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
+- **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
 - **Lottery System**: Multi-platform lottery with Discord reactions and YouTube chat integration, featuring animated drawing process
+- **Image Generation**: Framework ready (placeholder implementation)
 
 ### 🌍 Multi-Language Support
 
@@ -55,24 +56,25 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command                    | Description                       | Features                                             |
-| -------------------------- | --------------------------------- | ---------------------------------------------------- |
-| `/oai`                     | Generate AI text response         | Multi-model support, image input, optional streaming |
-| `/search`                  | Web search with AI summary        | Perplexity API integration                           |
-| `/sum`                     | Interactive message summarization | User filtering, configurable count                   |
-| `/download_video`          | Multi-platform video downloader   | Quality options, size validation                     |
-| `/maple_monster`           | Search MapleStory monster drops   | Detailed monster information                         |
-| `/maple_item`              | Search MapleStory item sources    | Drop source tracking                                 |
-| `/maple_stats`             | MapleStory database statistics    | Data overview and popular items                      |
-| `/auction_create`          | Create new item auction           | Interactive form, currency selection                 |
-| `/auction_list`            | Browse active auctions            | Real-time updates, dropdown menu                     |
-| `/auction_info`            | View auction details              | Current bid info, bid history                        |
-| `/auction_my`              | View personal auctions            | Created & leading auctions                           |
-| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji-based participation, real-time tracking        |
-| `/lottery create_youtube`  | Create YouTube chat lottery       | Chat keyword registration, YouTube integration       |
-| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                |
-| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown  |
-| `/ping`                    | Bot performance testing           | Latency measurement                                  |
+| Command                    | Description                       | Features                                                    |
+| -------------------------- | --------------------------------- | ----------------------------------------------------------- |
+| `/oai`                     | Generate AI text response         | Multi-model support (GPT-5, Claude), image input, streaming |
+| `/search`                  | Web search with AI summary        | Perplexity API integration                                  |
+| `/sum`                     | Interactive message summarization | User filtering, 5/10/20/50 message options                  |
+| `/download_video`          | Multi-platform video downloader   | Best/High/Medium/Low quality options                        |
+| `/maple_monster`           | Search MapleStory monster drops   | Detailed monster information                                |
+| `/maple_item`              | Search MapleStory item sources    | Drop source tracking                                        |
+| `/maple_stats`             | MapleStory database statistics    | Data overview and popular items                             |
+| `/auction_create`          | Create new item auction           | Interactive form, currency selection                        |
+| `/auction_list`            | Browse active auctions            | Real-time updates, dropdown menu                            |
+| `/auction_info`            | View auction details              | Current bid info, bid history                               |
+| `/auction_my`              | View personal auctions            | Created & leading auctions                                  |
+| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji-based participation, real-time tracking               |
+| `/lottery create_youtube`  | Create YouTube chat lottery       | Chat keyword registration, YouTube integration              |
+| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                       |
+| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown         |
+| `/graph`                   | Generate images (placeholder)     | Framework ready for implementation                          |
+| `/ping`                    | Bot performance testing           | Latency measurement                                         |
 
 ## 🚀 Quick Start
 
@@ -161,7 +163,7 @@ src/
 │   ├── auction.py      # Auction system with bidding
 │   ├── lottery.py      # Multi-platform lottery system
 │   ├── gen_image.py    # Image generation (placeholder)
-│   └── template.py     # System utilities
+│   └── template.py     # System utilities and ping testing
 ├── sdk/                # Core business logic
 │   ├── llm.py          # LLM integration
 │   └── asst.py         # Assistant API wrapper
@@ -170,7 +172,6 @@ src/
 data/
 ├── monsters.json       # MapleStory monster and drop database
 ├── auctions.db         # SQLite database for auction system
-
 └── downloads/          # Video download storage
 ```
 

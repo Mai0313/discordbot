@@ -22,7 +22,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Implementation Details:**
 
-- **Model Support**: Multiple OpenAI models (GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4o, GPT-4o-mini)
+- **Model Support**: Multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, GPT-5-chat-latest, Claude-3.5-Haiku-20241022)
 - **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/sdk/llm.py`
 - **Image Processing**: Supports image uploads with vision models using `autogen.agentchat.contrib.img_utils`
 - **Unified Streaming**: Single command with optional `stream` parameter (default: False) for real-time streaming responses
@@ -99,68 +99,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Exception handling with user-friendly error messages
 - File size validation before Discord upload
 
-#### 5. YouTube Music Player (`src/cogs/music.py`)
-
-**Commands:**
-
-- `/join` - Join the user's current voice channel (user must be in a voice channel)
-- `/play` - Play music from YouTube URL or search query
-- `/stream` - Stream music from YouTube without downloading
-- `/volume` - Adjust music volume (0-100%)
-- `/pause` - Pause current music playback
-- `/resume` - Resume paused music playback
-- `/stop` - Stop music and disconnect from voice channel
-
-**Implementation Details:**
-
-- **YouTube Integration**: Full `yt-dlp` integration for YouTube content extraction and playback
-- **Audio Processing**: `YTDLSource` class extends `nextcord.PCMVolumeTransformer` for volume control and audio streaming
-- **Playback Modes**:
-    - **Download Mode**: Downloads audio files for stable playback
-    - **Stream Mode**: Direct streaming without local storage for reduced disk usage
-- **Smart Channel Management**: Automatic connection to user's current voice channel with validation
-- **User Presence Validation**: Requires users to be in a voice channel before allowing bot connection
-- **Multi-language Support**: Commands and responses localized for Traditional Chinese, Japanese, and English
-
-**Technical Features:**
-
-- **Audio Source Management**: Custom `YTDLSource` class with proper cleanup and error handling
-- **Volume Control**: Real-time volume adjustment with percentage-based controls (0-100%)
-- **Playlist Support**: Automatic first-track selection from YouTube playlists
-- **Error Handling**: Comprehensive error management for network issues, unavailable content, and permission problems
-- **Resource Management**: Automatic cleanup of audio sources and voice connections
-- **Connection Lifecycle**: Smart voice channel connection requiring user presence in voice channel
-- **Join Behavior**: Simplified join command that connects to user's current voice channel only
-
-**Advanced Features:**
-
-- **Search Integration**: Support for both direct YouTube URLs and search queries
-- **Quality Optimization**: Automatic best audio quality selection via yt-dlp
-- **Permission Validation**: Voice channel permission checking before connection attempts
-- **State Management**: Real-time playback state tracking (playing, paused, stopped)
-- **Multi-guild Support**: Independent music sessions per Discord server
-
-**Technical Architecture:**
-
-- **YTDLSource Class**: Custom audio source with volume transformation and cleanup management
-- **yt-dlp Configuration**: Optimized audio extraction settings for Discord voice streaming
-- **FFmpeg Integration**: PCM audio processing for Discord voice gateway compatibility
-- **Async Processing**: Non-blocking audio extraction and playback initialization
-- **Error Recovery**: Graceful handling of audio source failures and connection issues
-
-**Configuration Options:**
-
-- **YTDL_FORMAT_OPTIONS**: Best audio format selection, IPv4 binding, and error suppression
-- **FFMPEG_OPTIONS**: Audio-only processing for voice channel compatibility
-- **Volume Defaults**: 50% default volume with full range adjustment capability
-
-**Testing Coverage:**
-
-- **Unit Tests**: Comprehensive test suite covering audio source creation, command functionality, and error scenarios
-- **Mock Integration**: Proper audio source mocking for reliable test execution
-- **Error Simulation**: Testing of various failure modes and recovery mechanisms
-
-#### 6. Image Generation (`src/cogs/gen_image.py`)
+#### 5. Image Generation (`src/cogs/gen_image.py`)
 
 **Commands:**
 
@@ -168,11 +107,12 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Implementation Details:**
 
-- **Current Status**: Stub implementation with async deferral pattern
-- **Architecture**: Ready for integration with image generation APIs
-- **Response Pattern**: Placeholder response with proper interaction handling
+- **Current Status**: Placeholder implementation with async deferral pattern
+- **Architecture**: Framework ready for integration with image generation APIs (DALL-E, Stable Diffusion)
+- **Response Pattern**: Currently displays "功能沒寫完..." (Feature not implemented) message
+- **Technical Foundation**: Command structure and localization already implemented
 
-#### 7. MapleStory Database Query (`src/cogs/maplestory.py`)
+#### 6. MapleStory Database Query (`src/cogs/maplestory.py`)
 
 **Database Query Commands:**
 
@@ -180,7 +120,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/maple_item` - Search for item drop sources
 - `/maple_stats` - Display database statistics
 
-#### 8. Auction System (`src/cogs/auction.py`)
+#### 7. Auction System (`src/cogs/auction.py`)
 
 **Auction System Commands:**
 
@@ -189,7 +129,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `/auction_info` - View detailed information about a specific auction
 - `/auction_my` - View your created auctions and their current status
 
-#### 9. Lottery System (`src/cogs/lottery.py`)
+#### 8. Lottery System (`src/cogs/lottery.py`)
 
 **Lottery System Commands:**
 
@@ -372,15 +312,14 @@ The comprehensive auction system allows users to create item auctions and partic
 #### Project Structure:
 
 - **Cogs**: Modular command implementations in `src/cogs/`
-    - `gen_reply.py` - AI text generation with OpenAI models (unified streaming support)
+    - `gen_reply.py` - AI text generation with multiple AI models (GPT-5, Claude) and streaming support
     - `gen_search.py` - Web search via Perplexity API
-    - `summary.py` - Message summarization with interactive UI
-    - `video.py` - Multi-platform video downloading
-    - `music.py` - YouTube music player with streaming and volume control
+    - `summary.py` - Message summarization with interactive UI (5/10/20/50 message options)
+    - `video.py` - Multi-platform video downloading with quality options
     - `maplestory.py` - MapleStory database queries and drop searches
-    - `auction.py` - Auction system with bidding functionality
+    - `auction.py` - Auction system with bidding functionality and multi-currency support
     - `lottery.py` - Multi-platform lottery system with animated drawings
-    - `gen_image.py` - Image generation placeholder
+    - `gen_image.py` - Image generation (placeholder implementation)
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/sdk/`
 - **Types**: Configuration and data models in `src/types/`
@@ -389,7 +328,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - **Data**: Game databases and user data in `data/`
     - `monsters.json` - MapleStory monster and drop database (192+ monsters)
     - `auctions.db` - SQLite database for auction system with bid tracking
-    - `lottery.db` - SQLite database for lottery system with participant and winner tracking
+    - `downloads/` - Video download storage directory
 
 #### Key Dependencies:
 
