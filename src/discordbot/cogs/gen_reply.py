@@ -93,7 +93,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 Locale.ja: "ストリーミング応答を有効にする（デフォルト: False）",
             },
             required=False,
-            default=True,
+            default=False,
         ),
         image: nextcord.Attachment | None = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
