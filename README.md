@@ -35,6 +35,7 @@ _Suggestions and contributions are always welcome!_
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook)
 - **MapleStory Database**: Search monsters and items with drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
+- **Lottery System**: Multi-platform lottery with Discord reactions and YouTube chat integration, featuring animated drawing process
 
 ### 🌍 Multi-Language Support
 
@@ -54,20 +55,24 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                             |
-| ----------------- | --------------------------------- | ---------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model support, image input, optional streaming |
-| `/search`         | Web search with AI summary        | Perplexity API integration                           |
-| `/sum`            | Interactive message summarization | User filtering, configurable count                   |
-| `/download_video` | Multi-platform video downloader   | Quality options, size validation                     |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed monster information                         |
-| `/maple_item`     | Search MapleStory item sources    | Drop source tracking                                 |
-| `/maple_stats`    | MapleStory database statistics    | Data overview and popular items                      |
-| `/auction_create` | Create new item auction           | Interactive form, currency selection                 |
-| `/auction_list`   | Browse active auctions            | Real-time updates, dropdown menu                     |
-| `/auction_info`   | View auction details              | Current bid info, bid history                        |
-| `/auction_my`     | View personal auctions            | Created & leading auctions                           |
-| `/ping`           | Bot performance testing           | Latency measurement                                  |
+| Command                    | Description                       | Features                                             |
+| -------------------------- | --------------------------------- | ---------------------------------------------------- |
+| `/oai`                     | Generate AI text response         | Multi-model support, image input, optional streaming |
+| `/search`                  | Web search with AI summary        | Perplexity API integration                           |
+| `/sum`                     | Interactive message summarization | User filtering, configurable count                   |
+| `/download_video`          | Multi-platform video downloader   | Quality options, size validation                     |
+| `/maple_monster`           | Search MapleStory monster drops   | Detailed monster information                         |
+| `/maple_item`              | Search MapleStory item sources    | Drop source tracking                                 |
+| `/maple_stats`             | MapleStory database statistics    | Data overview and popular items                      |
+| `/auction_create`          | Create new item auction           | Interactive form, currency selection                 |
+| `/auction_list`            | Browse active auctions            | Real-time updates, dropdown menu                     |
+| `/auction_info`            | View auction details              | Current bid info, bid history                        |
+| `/auction_my`              | View personal auctions            | Created & leading auctions                           |
+| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji-based participation, real-time tracking        |
+| `/lottery create_youtube`  | Create YouTube chat lottery       | Chat keyword registration, YouTube integration       |
+| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                |
+| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown  |
+| `/ping`                    | Bot performance testing           | Latency measurement                                  |
 
 ## 🚀 Quick Start
 
@@ -154,6 +159,7 @@ src/
 │   ├── video.py        # Video downloading
 │   ├── maplestory.py   # MapleStory database queries
 │   ├── auction.py      # Auction system with bidding
+│   ├── lottery.py      # Multi-platform lottery system
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # System utilities
 ├── sdk/                # Core business logic
@@ -164,6 +170,7 @@ src/
 data/
 ├── monsters.json       # MapleStory monster and drop database
 ├── auctions.db         # SQLite database for auction system
+
 └── downloads/          # Video download storage
 ```
 
@@ -198,6 +205,18 @@ data/
     - Personal auction management and bid tracking with currency type display
     - Security features preventing self-bidding and duplicate bids
     - SQLite database storage with ACID compliance and backward compatibility
+
+### Lottery System
+
+- **Dual Registration Modes**: Support for either Discord reaction-based OR YouTube chat keyword-based participation (prevents cross-platform duplication)
+- **Animated Drawing Process**: Interactive spinning wheel animation for transparent and fair lottery draws with 15-step visual effects
+- **Reset Functionality**: One-click lottery reset that restores all participants while clearing winners (🔄 button)
+- **Comprehensive Status Monitoring**: Real-time participant tracking with complete name lists, cross-platform breakdown, and intelligent display limits (15 users per platform)
+- **Advanced Participant Management**: Automatic registration via Discord reactions or YouTube chat keywords, with duplicate prevention and platform validation
+- **Security Features**: Creator-only controls, cryptographically secure random selection, participant validation, and automatic winner removal
+- **Single-Platform Focus**: Each lottery uses only one registration method to ensure fairness and prevent confusion
+- **In-Memory Storage**: Lightweight global variables with defaultdict optimization for runtime data (resets on bot restart for fresh starts)
+- **Interactive UI Components**: Modal forms for creation, animated drawing views, detailed status displays, and real-time updates
 
 # 🔒 Privacy Policy
 
