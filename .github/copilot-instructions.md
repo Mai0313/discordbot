@@ -202,7 +202,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 - **Dual-Platform Registration**: Support for either Discord reaction OR YouTube chat participation (prevents cross-platform duplication)
 - **Advanced Animation System**: 15-step spinning wheel animation with cryptographically secure random selection
-- **Comprehensive Status Monitoring**: Complete participant lists with cross-platform breakdown and intelligent display limits
+- **Comprehensive Status Monitoring**: Complete participant lists with cross-platform breakdown showing all participants in comma-separated format
 - **Real-time Participant Management**: Automatic registration/removal via Discord reactions or YouTube chat keyword detection
 - **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
 - **Interactive UI Components**: Modal forms, animated drawing views, detailed status displays, and reset functionality
@@ -278,7 +278,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `reaction_messages: dict[int, int]`: Message ID mapping for reaction validation
 - **Advanced Features**:
     - One-click reset functionality that restores all participants while clearing winners
-    - Intelligent display limits (15 participants per platform) with overflow indicators
+    - Smart display optimization with comma-separated format to show all participants within Discord's 1024-character limit
     - Cross-platform participant breakdown in status displays
     - Real-time participant counting and validation
 
