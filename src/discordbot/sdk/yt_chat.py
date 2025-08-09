@@ -56,7 +56,7 @@ class YoutubeStream(BaseSettings):
                 except Exception:
                     credentials = None
 
-            if not credentials:
+            else:
                 console.print("🔐 需要重新授權...")
                 flow = InstalledAppFlow.from_client_secrets_file(
                     client_secrets_file="./data/client_secret.json",
