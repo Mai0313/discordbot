@@ -150,6 +150,21 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Interactive UI Components**: Modal forms, animated drawing views, detailed status displays, and reset functionality
 - **Security Features**: Creator-only controls, duplicate prevention, platform validation, and automatic winner removal
 
+**Internal Design (Refactor Notes):**
+
+- `active_lotteries: dict[int, LotteryData]` — one active lottery per guild
+- `lotteries_by_id: dict[int, LotteryData]` — direct lookup by `lottery_id` to avoid scanning global state
+- `lottery_participants: defaultdict[int, list[LotteryParticipant]]` — auto-initialized participant lists
+- `lottery_winners: defaultdict[int, list[LotteryParticipant]]` — winner history tracking
+- Removed legacy `reaction_messages` mapping; `reaction_message_id` now lives inside `LotteryData` and is updated via `update_reaction_message_id()`
+- Extracted helpers to remove duplication:
+    - `split_participants_by_source(participants)`
+    - `add_participants_fields_to_embed(embed, participants)`
+    - `_get_reaction_lottery_or_none(reaction)` for unified reaction validation in both add/remove handlers
+    - `LotteryCog._ensure_no_active_lottery()` and `LotteryCog._get_active_lottery_or_reply()` to standardize common checks
+
+These changes are internal-only and preserve all user-visible behaviors.
+
 **Auction System Usage Guide:**
 
 The comprehensive auction system allows users to create item auctions and participate in bidding with complete interactive features:

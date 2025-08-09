@@ -11,14 +11,14 @@ from nextcord.ext import commands
 from discordbot.sdk.yt_chat import YoutubeStream
 
 # 全局變數來存儲抽獎數據（使用 defaultdict 自動初始化）
-# guild_id -> LotteryData
+# guild_id -> LotteryData（每個伺服器同時間僅允許一個活動）
 active_lotteries: dict[int, "LotteryData"] = {}
+# lottery_id -> LotteryData（用於依 ID 直接查找，避免掃描）
+lotteries_by_id: dict[int, "LotteryData"] = {}
 # lottery_id -> 參與者列表
 lottery_participants: defaultdict[int, list["LotteryParticipant"]] = defaultdict(list)
 # lottery_id -> 中獎者列表
 lottery_winners: defaultdict[int, list["LotteryParticipant"]] = defaultdict(list)
-# lottery_id -> message_id
-reaction_messages: dict[int, int] = {}
 # 簡單的ID生成器
 next_lottery_id = 1
 
@@ -77,19 +77,17 @@ def create_lottery(lottery_data: dict) -> int:
 
     # 存儲到全局變數
     active_lotteries[lottery_data["guild_id"]] = lottery
+    lotteries_by_id[lottery_id] = lottery
     # defaultdict 會自動初始化空列表，無需手動設置
 
     return lottery_id
 
 
 def update_reaction_message_id(lottery_id: int, message_id: int) -> None:
-    """更新反應消息ID"""
-    reaction_messages[lottery_id] = message_id
-    # 也更新抽獎對象中的message_id
-    for lottery in active_lotteries.values():
-        if lottery.lottery_id == lottery_id:
-            lottery.reaction_message_id = message_id
-            break
+    """更新反應消息ID（透過 ID 直接更新目前活動）"""
+    lottery = lotteries_by_id.get(lottery_id)
+    if lottery is not None:
+        lottery.reaction_message_id = message_id
 
 
 def get_active_lottery(guild_id: int) -> "LotteryData | None":
@@ -100,11 +98,7 @@ def get_active_lottery(guild_id: int) -> "LotteryData | None":
 def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
     """添加參與者，返回是否成功添加（防止跨平台重複報名和平台不匹配）"""
     # 首先驗證參與者來源是否與抽獎註冊方式匹配
-    lottery_data = None
-    for lottery in active_lotteries.values():
-        if lottery.lottery_id == lottery_id:
-            lottery_data = lottery
-            break
+    lottery_data = lotteries_by_id.get(lottery_id)
 
     if not lottery_data:
         return False  # 抽獎不存在
@@ -156,11 +150,40 @@ def reset_lottery_participants(lottery_id: int) -> None:
 def close_lottery(lottery_id: int) -> None:
     """關閉抽獎活動"""
     # 找到並關閉抽獎
-    for guild_id, lottery in active_lotteries.items():
+    for guild_id, lottery in list(active_lotteries.items()):
         if lottery.lottery_id == lottery_id:
             lottery.is_active = False
             del active_lotteries[guild_id]
             break
+    lotteries_by_id.pop(lottery_id, None)
+
+
+def split_participants_by_source(
+    participants: list["LotteryParticipant"],
+) -> tuple[list["LotteryParticipant"], list["LotteryParticipant"]]:
+    discord_users = [p for p in participants if p.source == "discord"]
+    youtube_users = [p for p in participants if p.source == "youtube"]
+    return discord_users, youtube_users
+
+
+def add_participants_fields_to_embed(
+    embed: nextcord.Embed, participants: list["LotteryParticipant"]
+) -> None:
+    discord_users, youtube_users = split_participants_by_source(participants)
+
+    if discord_users:
+        discord_names_str = ", ".join([user.name for user in discord_users])
+        embed.add_field(
+            name=f"Discord 參與者 ({len(discord_users)} 人)", value=discord_names_str, inline=False
+        )
+
+    if youtube_users:
+        youtube_names_str = ", ".join([user.name for user in youtube_users])
+        embed.add_field(
+            name=f"YouTube 參與者 ({len(youtube_users)} 人)", value=youtube_names_str, inline=False
+        )
+
+    embed.add_field(name="總參與人數", value=f"**{len(participants)}** 人", inline=False)
 
 
 class LotteryCreateModal(nextcord.ui.Modal):
@@ -344,31 +367,8 @@ class LotterySpinView(nextcord.ui.View):
             await interaction.response.send_message("目前沒有參與者", ephemeral=True)
             return
 
-        # 顯示所有參與者（完整名單）
-        discord_users = [p for p in self.participants if p.source == "discord"]
-        youtube_users = [p for p in self.participants if p.source == "youtube"]
-
         embed = nextcord.Embed(title="📊 抽獎參與者名單", color=0x0099FF)
-
-        if discord_users:
-            # 使用逗號分隔顯示所有Discord用戶
-            discord_names_str = ", ".join([user.name for user in discord_users])
-            embed.add_field(
-                name=f"Discord 參與者 ({len(discord_users)} 人)",
-                value=discord_names_str,
-                inline=False,
-            )
-
-        if youtube_users:
-            # 使用逗號分隔顯示所有YouTube用戶
-            youtube_names_str = ", ".join([user.name for user in youtube_users])
-            embed.add_field(
-                name=f"YouTube 參與者 ({len(youtube_users)} 人)",
-                value=youtube_names_str,
-                inline=False,
-            )
-
-        embed.add_field(name="總參與人數", value=f"**{len(self.participants)}** 人", inline=False)
+        add_participants_fields_to_embed(embed, self.participants)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -420,6 +420,29 @@ class LotteryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # -------- Helper methods (避免重複邏輯) --------
+    async def _ensure_no_active_lottery(self, interaction: Interaction) -> bool:
+        active_lottery = get_active_lottery(interaction.guild.id)
+        if active_lottery:
+            await interaction.response.send_message(
+                f"目前已有活躍的抽獎活動：**{active_lottery.title}**", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _get_active_lottery_or_reply(self, interaction: Interaction) -> "LotteryData | None":
+        active_lottery = get_active_lottery(interaction.guild.id)
+        if not active_lottery:
+            await interaction.response.send_message("目前沒有活躍的抽獎活動", ephemeral=True)
+            return None
+        return active_lottery
+
+    async def _open_create_modal(self, interaction: Interaction, method: str) -> None:
+        if not await self._ensure_no_active_lottery(interaction):
+            return
+        modal = LotteryCreateModal(method)
+        await interaction.response.send_modal(modal)
+
     @nextcord.slash_command(
         name="lottery",
         description="抽獎功能主選單",
@@ -437,37 +460,18 @@ class LotteryCog(commands.Cog):
     @lottery_main.subcommand(name="create_reaction", description="創建Discord表情符號抽獎")
     async def create_reaction_lottery(self, interaction: Interaction) -> None:
         """創建Discord表情符號抽獎"""
-        # 檢查是否已有活躍的抽獎
-        active_lottery = get_active_lottery(interaction.guild.id)
-        if active_lottery:
-            await interaction.response.send_message(
-                f"目前已有活躍的抽獎活動：**{active_lottery.title}**", ephemeral=True
-            )
-            return
-
-        modal = LotteryCreateModal("reaction")
-        await interaction.response.send_modal(modal)
+        await self._open_create_modal(interaction, "reaction")
 
     @lottery_main.subcommand(name="create_youtube", description="創建YouTube聊天室關鍵字抽獎")
     async def create_youtube_lottery(self, interaction: Interaction) -> None:
         """創建YouTube聊天室關鍵字抽獎"""
-        # 檢查是否已有活躍的抽獎
-        active_lottery = get_active_lottery(interaction.guild.id)
-        if active_lottery:
-            await interaction.response.send_message(
-                f"目前已有活躍的抽獎活動：**{active_lottery.title}**", ephemeral=True
-            )
-            return
-
-        modal = LotteryCreateModal("youtube")
-        await interaction.response.send_modal(modal)
+        await self._open_create_modal(interaction, "youtube")
 
     @lottery_main.subcommand(name="start", description="開始抽獎")
     async def start_lottery(self, interaction: Interaction) -> None:
         """開始抽獎"""
-        active_lottery = get_active_lottery(interaction.guild.id)
+        active_lottery = await self._get_active_lottery_or_reply(interaction)
         if not active_lottery:
-            await interaction.response.send_message("目前沒有活躍的抽獎活動", ephemeral=True)
             return
 
         if interaction.user.id != active_lottery.creator_id:
@@ -530,27 +534,7 @@ class LotteryCog(commands.Cog):
 
         # 顯示參與者名單（完整顯示所有參與者）
         if participants:
-            # 按平台分類參與者
-            discord_users = [p for p in participants if p.source == "discord"]
-            youtube_users = [p for p in participants if p.source == "youtube"]
-
-            if discord_users:
-                # 使用逗號分隔顯示所有Discord用戶，但限制在Discord的1024字符限制內
-                discord_names_str = ", ".join([user.name for user in discord_users])
-                embed.add_field(
-                    name=f"Discord 參與者 ({len(discord_users)} 人)",
-                    value=discord_names_str,
-                    inline=False,
-                )
-
-            if youtube_users:
-                # 使用逗號分隔顯示所有YouTube用戶
-                youtube_names_str = ", ".join([user.name for user in youtube_users])
-                embed.add_field(
-                    name=f"YouTube 參與者 ({len(youtube_users)} 人)",
-                    value=youtube_names_str,
-                    inline=False,
-                )
+            add_participants_fields_to_embed(embed, participants)
         else:
             embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
 
@@ -587,64 +571,40 @@ class LotteryCog(commands.Cog):
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: nextcord.Reaction, user: Member | User) -> None:
         """處理Discord反應報名"""
-        if user.bot:
+        lottery = _get_reaction_lottery_or_none(reaction)
+        if lottery is None:
             return
 
-        if str(reaction.emoji) != "🎉":
-            return
-
-        # 檢查是否有活躍的抽獎，並且這個消息是抽獎消息
-        guild_id = reaction.message.guild.id
-        active_lottery = get_active_lottery(guild_id)
-        if not active_lottery:
-            return
-
-        if active_lottery.registration_method != "reaction":
-            return
-
-        # 檢查是否是正確的抽獎消息
-        if (
-            hasattr(active_lottery, "reaction_message_id")
-            and active_lottery.reaction_message_id != reaction.message.id
-        ):
-            return
-
-        # 添加參與者（檢查是否跨平台重複報名）
-        participant = LotteryParticipant(id=str(user.id), name=user.display_name, source="discord")
-        success = add_participant(active_lottery.lottery_id, participant)
-
-        if not success:
-            # 如果添加失敗，說明用戶已經透過其他方式報名了
-            # 移除這個反應，因為不能重複報名
-            await reaction.remove(user)
+        if isinstance(user, (Member, User)) and not getattr(user, "bot", False):
+            participant = LotteryParticipant(
+                id=str(user.id), name=user.display_name, source="discord"
+            )
+            success = add_participant(lottery.lottery_id, participant)
+            if not success:
+                await reaction.remove(user)
 
     @commands.Cog.listener()
     async def on_reaction_remove(self, reaction: nextcord.Reaction, user: Member | User) -> None:
         """處理Discord反應取消報名"""
-        if user.bot:
+        lottery = _get_reaction_lottery_or_none(reaction)
+        if lottery is None:
             return
 
-        if str(reaction.emoji) != "🎉":
-            return
+        if isinstance(user, (Member, User)) and not getattr(user, "bot", False):
+            remove_participant(lottery.lottery_id, str(user.id), "discord")
 
-        # 檢查是否有活躍的抽獎，並且這個消息是抽獎消息
-        guild_id = reaction.message.guild.id
-        active_lottery = get_active_lottery(guild_id)
-        if not active_lottery:
-            return
 
-        if active_lottery.registration_method != "reaction":
-            return
-
-        # 檢查是否是正確的抽獎消息
-        if (
-            hasattr(active_lottery, "reaction_message_id")
-            and active_lottery.reaction_message_id != reaction.message.id
-        ):
-            return
-
-        # 移除參與者
-        remove_participant(active_lottery.lottery_id, str(user.id), "discord")
+def _get_reaction_lottery_or_none(reaction: nextcord.Reaction) -> "LotteryData | None":
+    if str(reaction.emoji) != "🎉":
+        return None
+    if reaction.message.guild is None:
+        return None
+    active_lottery = get_active_lottery(reaction.message.guild.id)
+    if not active_lottery or active_lottery.registration_method != "reaction":
+        return None
+    if active_lottery.reaction_message_id != reaction.message.id:
+        return None
+    return active_lottery
 
 
 async def setup(bot: commands.Bot) -> None:

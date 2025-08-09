@@ -222,6 +222,7 @@ data/
 - **Single-Platform Focus**: Each lottery uses only one registration method to ensure fairness and prevent confusion
 - **In-Memory Storage**: Lightweight global variables with defaultdict optimization for runtime data (resets on bot restart for fresh starts)
 - **Interactive UI Components**: Modal forms for creation, animated drawing views, detailed status displays, and real-time updates
+- **Lightweight Internals**: Simplified, faster in-memory logic with no behavior changes to reduce maintenance overhead
 
 # 🔒 Privacy & Data
 
