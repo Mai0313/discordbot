@@ -7,7 +7,7 @@ from yt_dlp import YoutubeDL
 import logfire
 from pydantic import Field, BaseModel, computed_field
 
-logfire.configure(send_to_logfire=False)
+logfire.configure(send_to_logfire=False, scrubbing=False)
 
 
 class VideoDownloader(BaseModel):
