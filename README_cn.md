@@ -17,7 +17,7 @@
 
 </center>
 
-基於 **nextcord** 框架開發的全功能 Discord 機器人，提供 AI 智能對話、內容處理和實用工具功能。支援多語言介面與即時串流回應。🚀⚡🔥
+基於 **nextcord** 框架開發的全功能 Discord 機器人，提供 AI 智能對話、內容處理和實用工具功能。支援多語言介面與整合式網路搜尋功能。🚀⚡🔥
 
 _歡迎提供建議和貢獻!_
 
@@ -25,9 +25,9 @@ _歡迎提供建議和貢獻!_
 
 ### 🤖 AI 智能互動
 
-- **文字生成**：支援多種 AI 模型（GPT-5、GPT-5-mini、GPT-5-nano、Claude-3.5-Haiku）與即時串流回應
+- **文字生成**：支援多種 AI 模型（GPT-5、GPT-5-mini、GPT-5-nano、Claude-3.5-Haiku）與整合式網路搜尋
 - **圖像處理**：視覺模型支援，自動圖像格式轉換
-- **網路搜尋**：整合 Perplexity API，提供即時網路搜尋與摘要
+- **智慧網路存取**：LLM 可於需要時自動搜尋網路，提供最新資訊
 
 ### 📊 內容處理
 
@@ -56,25 +56,25 @@ _歡迎提供建議和貢獻!_
 
 ## 🎯 核心指令
 
-| 指令                       | 功能說明                | 特色功能                                    |
-| -------------------------- | ----------------------- | ------------------------------------------- |
-| `/oai`                     | 生成 AI 文字回應        | 多模型支援（GPT-5、Claude）、圖像輸入、串流 |
-| `/search`                  | 網路搜尋與 AI 摘要      | Perplexity API 整合                         |
-| `/sum`                     | 互動式訊息摘要          | 用戶篩選、5/10/20/50 則訊息選項             |
-| `/download_video`          | 多平台影片下載器        | 最佳/高/中/低品質選項                       |
-| `/maple_monster`           | 搜尋楓之谷怪物掉落      | 詳細怪物資訊                                |
-| `/maple_item`              | 搜尋楓之谷物品來源      | 掉落來源追蹤                                |
-| `/maple_stats`             | 楓之谷資料庫統計        | 資料概覽和熱門物品                          |
-| `/auction_create`          | 創建物品拍賣            | 互動表單、貨幣類型選擇                      |
-| `/auction_list`            | 瀏覽進行中拍賣          | 即時更新、下拉選單                          |
-| `/auction_info`            | 查看拍賣詳情            | 當前競標、競標歷史                          |
-| `/auction_my`              | 查看個人拍賣            | 我的拍賣與領先競標                          |
-| `/lottery create_reaction` | 創建 Discord 反應抽獎   | 表情符號參與、即時追蹤                      |
-| `/lottery create_youtube`  | 創建 YouTube 聊天室抽獎 | 聊天關鍵字報名、YouTube 整合                |
-| `/lottery start`           | 開始抽獎流程            | 動畫轉盤、透明選擇                          |
-| `/lottery status`          | 查看抽獎活動狀態        | 完整參與者名單、跨平台統計                  |
-| `/graph`                   | 生成圖像（預留）        | 框架已準備實現                              |
-| `/ping`                    | 機器人效能測試          | 延遲測量                                    |
+| 指令   | 功能說明         | 特色功能                                            |
+| ------ | ---------------- | --------------------------------------------------- |
+| `/oai` | 生成 AI 文字回應 | 多模型支援（GPT-5、Claude）、圖像輸入、自動網路搜尋 |
+
+| `/sum` | 互動式訊息摘要 | 用戶篩選、5/10/20/50 則訊息選項 |
+| `/download_video` | 多平台影片下載器 | 最佳/高/中/低品質選項 |
+| `/maple_monster` | 搜尋楓之谷怪物掉落 | 詳細怪物資訊 |
+| `/maple_item` | 搜尋楓之谷物品來源 | 掉落來源追蹤 |
+| `/maple_stats` | 楓之谷資料庫統計 | 資料概覽和熱門物品 |
+| `/auction_create` | 創建物品拍賣 | 互動表單、貨幣類型選擇 |
+| `/auction_list` | 瀏覽進行中拍賣 | 即時更新、下拉選單 |
+| `/auction_info` | 查看拍賣詳情 | 當前競標、競標歷史 |
+| `/auction_my` | 查看個人拍賣 | 我的拍賣與領先競標 |
+| `/lottery create_reaction` | 創建 Discord 反應抽獎 | 表情符號參與、即時追蹤 |
+| `/lottery create_youtube` | 創建 YouTube 聊天室抽獎 | 聊天關鍵字報名、YouTube 整合 |
+| `/lottery start` | 開始抽獎流程 | 動畫轉盤、透明選擇 |
+| `/lottery status` | 查看抽獎活動狀態 | 完整參與者名單、跨平台統計 |
+| `/graph` | 生成圖像（預留） | 框架已準備實現 |
+| `/ping` | 機器人效能測試 | 延遲測量 |
 
 ## 🚀 快速開始
 
@@ -83,7 +83,6 @@ _歡迎提供建議和貢獻!_
 - Python 3.10 或更高版本
 - Discord 機器人 Token
 - OpenAI API 金鑰
-- Perplexity API 金鑰（用於搜尋功能）
 
 ### 安裝步驟
 
@@ -145,8 +144,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 AZURE_OPENAI_API_KEY=你的_azure_金鑰
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 
-# Perplexity API（用於搜尋）
-PERPLEXITY_API_KEY=你的_perplexity_api_金鑰
+
 ```
 
 ## 📁 專案結構
@@ -156,7 +154,7 @@ src/
 ├── bot.py              # 主要機器人入口點
 ├── cogs/               # 指令模組
 │   ├── gen_reply.py    # AI 文字生成
-│   ├── gen_search.py   # 網路搜尋整合
+
 │   ├── summary.py      # 訊息摘要
 │   ├── video.py        # 影片下載
 │   ├── maplestory.py   # 楓之谷資料庫查詢
@@ -182,7 +180,7 @@ data/
 - 文字和圖像輸入處理
 - 自動圖像轉 base64 格式
 - 模型特定限制處理
-- 串流回應功能
+- 自動網路搜尋回應功能
 
 ### 影片下載引擎
 
@@ -264,15 +262,14 @@ uv run mkdocs serve
 #### `src/sdk/llm.py`
 
 ```python
-# AI 文字生成
-await get_oai_reply(messages, model="gpt-4.1")
+# AI 文字生成（範例代碼已更新為新架構）
+# 現在透過 Discord 的 /oai 指令使用
 
-# 串流回應
-async for chunk in get_oai_reply_stream(messages):
-    print(chunk)
+# AI 回應與自動網路搜尋
+# 現在整合在 /oai 指令中，LLM 會自動判斷是否需要搜尋網路
 
-# 網路搜尋
-result = await get_search_result(query)
+# 網路搜尋功能已整合至 AI 回應中
+# 無需單獨呼叫，LLM 會自動處理
 ```
 
 ## 🚀 部署

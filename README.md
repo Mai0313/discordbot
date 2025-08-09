@@ -17,7 +17,7 @@
 
 </center>
 
-A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support and real-time streaming responses. 🚀⚡🔥
+A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support and integrated web search capabilities. 🚀⚡🔥
 
 _Suggestions and contributions are always welcome!_
 
@@ -25,9 +25,9 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with real-time streaming
+- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search
 - **Image Processing**: Vision model support with automatic image conversion
-- **Web Search**: Integrated Perplexity API for real-time web search and summarization
+- **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
 ### 📊 Content Processing
 
@@ -56,25 +56,25 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command                    | Description                       | Features                                                    |
-| -------------------------- | --------------------------------- | ----------------------------------------------------------- |
-| `/oai`                     | Generate AI text response         | Multi-model support (GPT-5, Claude), image input, streaming |
-| `/search`                  | Web search with AI summary        | Perplexity API integration                                  |
-| `/sum`                     | Interactive message summarization | User filtering, 5/10/20/50 message options                  |
-| `/download_video`          | Multi-platform video downloader   | Best/High/Medium/Low quality options                        |
-| `/maple_monster`           | Search MapleStory monster drops   | Detailed monster information                                |
-| `/maple_item`              | Search MapleStory item sources    | Drop source tracking                                        |
-| `/maple_stats`             | MapleStory database statistics    | Data overview and popular items                             |
-| `/auction_create`          | Create new item auction           | Interactive form, currency selection                        |
-| `/auction_list`            | Browse active auctions            | Real-time updates, dropdown menu                            |
-| `/auction_info`            | View auction details              | Current bid info, bid history                               |
-| `/auction_my`              | View personal auctions            | Created & leading auctions                                  |
-| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji-based participation, real-time tracking               |
-| `/lottery create_youtube`  | Create YouTube chat lottery       | Chat keyword registration, YouTube integration              |
-| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                       |
-| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown         |
-| `/graph`                   | Generate images (placeholder)     | Framework ready for implementation                          |
-| `/ping`                    | Bot performance testing           | Latency measurement                                         |
+| Command | Description               | Features                                                               |
+| ------- | ------------------------- | ---------------------------------------------------------------------- |
+| `/oai`  | Generate AI text response | Multi-model support (GPT-5, Claude), image input, automatic web search |
+
+| `/sum` | Interactive message summarization | User filtering, 5/10/20/50 message options |
+| `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality options |
+| `/maple_monster` | Search MapleStory monster drops | Detailed monster information |
+| `/maple_item` | Search MapleStory item sources | Drop source tracking |
+| `/maple_stats` | MapleStory database statistics | Data overview and popular items |
+| `/auction_create` | Create new item auction | Interactive form, currency selection |
+| `/auction_list` | Browse active auctions | Real-time updates, dropdown menu |
+| `/auction_info` | View auction details | Current bid info, bid history |
+| `/auction_my` | View personal auctions | Created & leading auctions |
+| `/lottery create_reaction` | Create Discord reaction lottery | Emoji-based participation, real-time tracking |
+| `/lottery create_youtube` | Create YouTube chat lottery | Chat keyword registration, YouTube integration |
+| `/lottery start` | Start lottery drawing process | Animated wheel, transparent selection |
+| `/lottery status` | View lottery activity status | Complete participant list, cross-platform breakdown |
+| `/graph` | Generate images (placeholder) | Framework ready for implementation |
+| `/ping` | Bot performance testing | Latency measurement |
 
 ## 🚀 Quick Start
 
@@ -83,7 +83,6 @@ _Suggestions and contributions are always welcome!_
 - Python 3.10 or higher
 - Discord Bot Token
 - OpenAI API Key
-- Perplexity API Key (for search)
 
 ### Installation
 
@@ -145,8 +144,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 AZURE_OPENAI_API_KEY=your_azure_key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 
-# Perplexity API (for search)
-PERPLEXITY_API_KEY=your_perplexity_api_key
+
 ```
 
 ## 📁 Project Structure
@@ -156,7 +154,7 @@ src/
 ├── bot.py              # Main bot entry point
 ├── cogs/               # Command modules
 │   ├── gen_reply.py    # AI text generation
-│   ├── gen_search.py   # Web search integration
+
 │   ├── summary.py      # Message summarization
 │   ├── video.py        # Video downloading
 │   ├── maplestory.py   # MapleStory database queries
@@ -182,7 +180,7 @@ data/
 - Text and image input processing
 - Automatic image-to-base64 conversion
 - Model-specific constraint handling
-- Streaming response capabilities
+- Integrated web search for real-time information
 
 ### Video Download Engine
 
