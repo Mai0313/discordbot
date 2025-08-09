@@ -14,10 +14,10 @@ class DiscordConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-    discord_test_server_id: str | None = Field(
+    discord_test_server_id: int | None = Field(
         default=None,
         description="The id of the test server for testing the bot.",
-        examples=["1143289646042853487", "981592566745149522"],
+        examples=[1143289646042853487, 981592566745149522],
         validation_alias=AliasChoices("DISCORD_TEST_SERVER_ID"),
         frozen=False,
         deprecated=False,
