@@ -23,26 +23,8 @@ class YoutubeStream(BaseSettings):
     yt_api_key: str = Field(..., validation_alias="YOUTUBE_DATA_API_KEY", exclude=True)
     url: str
 
-    @computed_field
-    @property
-    def video_id(self) -> str:
-        parsed_url = urlparse(url=self.url)
-        video_id = parsed_url.query.split("=")[-1]
-        return video_id
-
-    @computed_field
-    @cached_property
-    def youtube(self) -> Resource:
-        credentials = self.get_credentials()
-        youtube = build(
-            serviceName="youtube",
-            version="v3",
-            developerKey=self.yt_api_key,
-            credentials=credentials,
-        )
-        return youtube
-
-    def get_credentials(self) -> Credentials:
+    @classmethod
+    def _get_credentials(cls) -> Credentials:
         token_file = Path("./data/token.pickle")
         if token_file.exists():
             with open(token_file, "rb") as token:
@@ -70,10 +52,30 @@ class YoutubeStream(BaseSettings):
                 console.print("💾 憑證已保存")
         return credentials
 
+    @computed_field
+    @cached_property
+    def youtube(self) -> Resource:
+        credentials = self._get_credentials()
+        youtube = build(
+            serviceName="youtube",
+            version="v3",
+            developerKey=self.yt_api_key,
+            credentials=credentials,
+        )
+        return youtube
+
+    def get_chat_id(self) -> str:
+        parsed_url = urlparse(url=self.url)
+        video_id = parsed_url.query.split("=")[-1]
+        video_list = self.youtube.videos().list(part="liveStreamingDetails", id=video_id)
+        response_dict = video_list.execute()
+        response = VideoListResponse(**response_dict)
+        chat_id = response.items[0].live_streaming_details.active_live_chat_id
+        return chat_id
+
     def reply_to_chat(self, message: str) -> None:
         live_chat_id = self.get_chat_id()
         live_message = self.youtube.liveChatMessages()
-
         chat = live_message.insert(
             part="snippet",
             body={
@@ -85,15 +87,7 @@ class YoutubeStream(BaseSettings):
             },
         ).execute()
         chat = LiveChatMessageItem(**chat)
-
         console.print(f"📤 已發送: {message}")
-
-    def get_chat_id(self) -> str:
-        video_list = self.youtube.videos().list(part="liveStreamingDetails", id=self.video_id)
-        response_dict = video_list.execute()
-        response = VideoListResponse(**response_dict)
-        chat_id = response.items[0].live_streaming_details.active_live_chat_id
-        return chat_id
 
     def get_chat_messages(self) -> str:
         live_chat_id = self.get_chat_id()
