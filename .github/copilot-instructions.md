@@ -156,7 +156,6 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Internal Design (Refactor Notes):**
 
-- `active_lotteries: dict[int, LotteryData]` — one active lottery per guild (restored for test compatibility)
 - `lotteries_by_id: dict[int, LotteryData]` — direct lookup by `lottery_id` to avoid scanning global state
 - `lottery_participants: defaultdict[int, list[LotteryParticipant]]` — auto-initialized participant lists
 - `lottery_winners: defaultdict[int, list[LotteryParticipant]]` — winner history tracking
@@ -166,8 +165,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - `add_participants_fields_to_embed(embed, participants)`
     - `add_participants_ids_fields_to_embed(embed, participants)`
     - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
-    - `_get_reaction_lottery_or_none(reaction)` remains for Discord reaction-based join removal compatibility
-    - `LotteryCog.ensure_no_active_lottery()` and `LotteryCog.get_active_lottery_or_reply()` retained for compatibility
+    - Reaction-based helpers and active-lottery compatibility shims were removed in v0
     - UI Button classes: `JoinLotteryButton` and `CancelJoinLotteryButton` now subclass `nextcord.ui.Button` and encapsulate their own `callback` logic. This replaces inline closures for better readability, reuse, testing, and persistent-view readiness (easy to assign stable `custom_id` if needed).
 
 **Data Model Changes:**
@@ -253,7 +251,6 @@ The comprehensive auction system allows users to create item auctions and partic
     - Permission validation for all interactive elements
 - **YouTube Integration**: Seamless integration with existing `YoutubeStream.get_registered_accounts()` functionality
 - **Memory Architecture**: defaultdict-optimized storage with automatic list creation
-    - `active_lotteries: dict[int, LotteryData]`: One active lottery per guild
     - `lottery_participants: defaultdict[int, list[LotteryParticipant]]`: Auto-initializing participant lists
     - `lottery_winners: defaultdict[int, list[LotteryParticipant]]`: Winner history tracking
     - `reaction_message_id` (field on `LotteryData`): Message ID of the creation/control panel message. Used to map button interactions back to the correct lottery via `get_lottery_by_message_id()`; reactions are no longer used

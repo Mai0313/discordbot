@@ -6,14 +6,12 @@ from discordbot.cogs import lottery as lot
 @pytest.fixture(autouse=True)
 def reset_lottery_state():
     """Reset in-memory lottery state before each test to avoid cross-test pollution."""
-    lot.active_lotteries.clear()
     lot.lotteries_by_id.clear()
     lot.lottery_participants.clear()
     lot.lottery_winners.clear()
     lot.next_lottery_id = 1
     yield
     # Ensure clean after as well
-    lot.active_lotteries.clear()
     lot.lotteries_by_id.clear()
     lot.lottery_participants.clear()
     lot.lottery_winners.clear()
@@ -48,7 +46,6 @@ def _create_youtube_lottery(guild_id: int = 456) -> lot.LotteryData:
 def test_create_and_retrieve_lottery_reaction():
     data = _create_reaction_lottery(111)
     assert data.is_active is True
-    assert lot.get_active_lottery(111) is data
     assert lot.lotteries_by_id[data.lottery_id] is data
 
 
@@ -139,7 +136,6 @@ def test_close_lottery_clears_mappings():
     lot.update_reaction_message_id(data.lottery_id, 12345)
 
     lot.close_lottery(data.lottery_id)
-    assert lot.get_active_lottery(666) is None
     assert data.lottery_id not in lot.lotteries_by_id
 
 
