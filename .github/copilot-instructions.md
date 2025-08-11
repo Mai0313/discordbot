@@ -135,7 +135,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Lottery System Command:**
 
-- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord button join / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message renders a button control panel (no more control reactions):
+- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord button join / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message renders a button control panel; reactions are no longer used at all (any reactions on the message will be removed):
     - `🎉` Join (Discord mode)
     - `🚫` Cancel join (Discord mode)
     - `✅` Start drawing (host-only)
@@ -144,7 +144,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Lottery System Features:**
 
-- **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication)
+- **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication). Reactions are disabled and removed to avoid confusion.
 - **Button Controls**: `🎉` Join, `🚫` Cancel, `✅` Start (host-only), `📊` Status (ephemeral), `🔄` Recreate (host-only)
 - **Winners Per Draw**: Creation modal supports configuring `draw_count` (default 1). On `✅`, the bot draws up to `min(draw_count, len(participants))` winners in a single go
 - **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners) and closes the old lottery
