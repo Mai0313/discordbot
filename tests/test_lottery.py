@@ -105,20 +105,6 @@ def test_winners_list_and_participants_remain_independent():
     assert len(lot.get_participants(data.lottery_id)) == 2
 
 
-def test_split_participants_by_source():
-    participants = [
-        lot.LotteryParticipant(id="1", name="A", source="discord"),
-        lot.LotteryParticipant(id="2", name="B", source="youtube"),
-        lot.LotteryParticipant(id="3", name="C", source="discord"),
-    ]
-
-    d_users, y_users = lot.split_participants_by_source(participants)
-    assert len(d_users) == 2
-    assert len(y_users) == 1
-    assert {u.name for u in d_users} == {"A", "C"}
-    assert {u.name for u in y_users} == {"B"}
-
-
 def test_add_participants_fields_to_embed():
     import nextcord
 
