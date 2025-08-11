@@ -1,4 +1,5 @@
 import pickle
+from typing import TYPE_CHECKING
 from pathlib import Path
 from functools import cached_property
 from urllib.parse import urlparse
@@ -6,6 +7,7 @@ from urllib.parse import urlparse
 import dotenv
 from pydantic import Field, computed_field
 from rich.console import Console
+from chat_downloader import ChatDownloader
 from pydantic_settings import BaseSettings
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -13,10 +15,14 @@ from googleapiclient.discovery import Resource, build
 from google.auth.transport.requests import Request
 
 from discordbot.typings.models import (
+    ChatItem,
+    VideoListResponse,
     LiveChatMessageItem,
     LiveChatMessageListResponse,
-    VideoListResponse,
 )
+
+if TYPE_CHECKING:
+    from chat_downloader.sites.common import Chat
 
 dotenv.load_dotenv()
 console = Console()
@@ -92,32 +98,53 @@ class YoutubeStream(BaseSettings):
         chat = LiveChatMessageItem(**chat)
         console.print(f"📤 已發送: {message}")
 
-    def get_chat_messages(self) -> str:
+    def get_chat_messages(self) -> LiveChatMessageListResponse:
         live_chat_id = self.get_chat_id()
         live_message = self.youtube.liveChatMessages()
         live_messages = live_message.list(
             liveChatId=live_chat_id, part="snippet,authorDetails", pageToken=None
         )
         response = LiveChatMessageListResponse(**live_messages.execute())
-
-        chat_history = ""
-        for item in response.items:
-            name = item.author_details.display_name
-            message = item.snippet.display_message
-            chat_history += f"{name}: {message}\n"
-        return chat_history
+        return response
 
     def get_registered_accounts(self, target_word: str) -> list[str]:
-        live_chat_id = self.get_chat_id()
-        live_message = self.youtube.liveChatMessages()
-        live_messages = live_message.list(
-            liveChatId=live_chat_id, part="snippet,authorDetails", pageToken=None
-        )
-        response = LiveChatMessageListResponse(**live_messages.execute())
+        response = self.get_chat_messages()
 
-        registered_accounts = []
+        registered_accounts: list[str] = []
         for item in response.items:
             if target_word in item.snippet.display_message:
                 registered_accounts.append(item.author_details.display_name)
+        unique_accounts = list(set(registered_accounts))
+        return unique_accounts
+
+    def get_chat_messages_without_auth(self) -> list[ChatItem]:
+        chat_downloader = ChatDownloader(
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/115.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+            }
+        )
+        chat: Chat = chat_downloader.get_chat(
+            url=self.url, chat_type="live", inactivity_timeout=0.2, max_attempts=1
+        )
+        messages: list[ChatItem] = []
+        for message in chat:
+            message_item = ChatItem(**message)
+            messages.append(message_item)
+        return messages
+
+    def get_registered_accounts_without_auth(self, target_word: str) -> list[str]:
+        responses = self.get_chat_messages_without_auth()
+
+        registered_accounts: list[str] = []
+        for response in responses:
+            if target_word in response.message:
+                registered_accounts.append(response.author.name)
         unique_accounts = list(set(registered_accounts))
         return unique_accounts

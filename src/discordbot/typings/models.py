@@ -34,7 +34,7 @@ class Snippet(BaseModel):
         ..., validation_alias="displayMessage", description="聊天室中顯示的訊息文字"
     )
     text_message_details: TextMessageDetails | None = Field(
-        None, validation_alias="textMessageDetails", description="包含訊息詳細資料的物件"
+        default=None, validation_alias="textMessageDetails", description="包含訊息詳細資料的物件"
     )
 
 
@@ -79,7 +79,7 @@ class LiveChatMessageListResponse(BaseModel):
     )
     page_info: PageInfo = Field(..., validation_alias="pageInfo", description="分頁資訊")
     next_page_token: str | None = Field(
-        None, validation_alias="nextPageToken", description="下一頁的分頁標記"
+        default=None, validation_alias="nextPageToken", description="下一頁的分頁標記"
     )
     items: list[LiveChatMessageItem] = Field(..., description="聊天室訊息列表")
 
@@ -87,16 +87,16 @@ class LiveChatMessageListResponse(BaseModel):
 # Stream-related models
 class LiveStreamingDetails(BaseModel):
     actual_start_time: datetime | None = Field(
-        None, validation_alias="actualStartTime", description="實際開播時間"
+        default=None, validation_alias="actualStartTime", description="實際開播時間"
     )
     scheduled_start_time: datetime | None = Field(
-        None, validation_alias="scheduledStartTime", description="預定開播時間"
+        default=None, validation_alias="scheduledStartTime", description="預定開播時間"
     )
     concurrent_viewers: str | None = Field(
-        None, validation_alias="concurrentViewers", description="同時觀看人數"
+        default=None, validation_alias="concurrentViewers", description="同時觀看人數"
     )
     active_live_chat_id: str | None = Field(
-        None, validation_alias="activeLiveChatId", description="目前使用中的聊天室 ID"
+        default=None, validation_alias="activeLiveChatId", description="目前使用中的聊天室 ID"
     )
 
 
@@ -105,7 +105,7 @@ class VideoItem(BaseModel):
     etag: str = Field(..., description="資源的 ETag")
     id: str = Field(..., description="影片 ID")
     live_streaming_details: LiveStreamingDetails | None = Field(
-        None, validation_alias="liveStreamingDetails", description="直播相關詳細資訊"
+        default=None, validation_alias="liveStreamingDetails", description="直播相關詳細資訊"
     )
 
 
@@ -116,8 +116,37 @@ class VideoListResponse(BaseModel):
     page_info: PageInfo = Field(..., validation_alias="pageInfo", description="分頁資訊")
 
 
+class Image(BaseModel):
+    url: str = Field(..., validation_alias="url", description="圖片的 URL 連結")
+    width: int | None = Field(
+        default=None, validation_alias="width", description="圖片寬度（像素），如果有提供"
+    )
+    height: int | None = Field(
+        default=None, validation_alias="height", description="圖片高度（像素），如果有提供"
+    )
+    id: str = Field(..., validation_alias="id", description="圖片的唯一識別碼")
+
+
+class Author(BaseModel):
+    name: str = Field(..., validation_alias="name", description="作者名稱")
+    images: list[Image] = Field(..., validation_alias="images", description="作者相關的圖片列表")
+    id: str = Field(..., validation_alias="id", description="作者的唯一識別碼")
+
+
+class ChatItem(BaseModel):
+    action_type: str = Field(..., validation_alias="action_type", description="動作類型")
+    message: str = Field(..., validation_alias="message", description="訊息內容")
+    message_id: str = Field(..., validation_alias="message_id", description="訊息的唯一識別碼")
+    timestamp: int = Field(..., validation_alias="timestamp", description="訊息的時間戳記（微秒）")
+    author: Author = Field(..., validation_alias="author", description="訊息的作者資訊")
+    message_type: str = Field(..., validation_alias="message_type", description="訊息的類型")
+
+
 __all__ = [
+    "Author",
     "AuthorDetails",
+    "ChatItem",
+    "Image",
     "LiveChatMessageItem",
     "LiveChatMessageListResponse",
     "LiveStreamingDetails",
