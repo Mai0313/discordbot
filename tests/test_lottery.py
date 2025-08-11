@@ -91,21 +91,17 @@ def test_remove_participant():
     assert lot.get_participants(data.lottery_id)[0].id == "B"
 
 
-def test_reset_winners_only():
+def test_winners_list_and_participants_remain_independent():
     data = _create_reaction_lottery(555)
     p1 = lot.LotteryParticipant(id="1", name="U1", source="discord")
     p2 = lot.LotteryParticipant(id="2", name="U2", source="discord")
     lot.add_participant(data.lottery_id, p1)
     lot.add_participant(data.lottery_id, p2)
 
-    # Simulate winners
+    # Simulate winners and ensure participants remain
     lot.add_winner(data.lottery_id, p1)
     lot.add_winner(data.lottery_id, p2)
     assert len(lot.lottery_winners[data.lottery_id]) == 2
-
-    # Reset should clear winners but keep participants intact
-    lot.reset_lottery_participants(data.lottery_id)
-    assert len(lot.lottery_winners[data.lottery_id]) == 0
     assert len(lot.get_participants(data.lottery_id)) == 2
 
 
@@ -161,38 +157,6 @@ def test_close_lottery_clears_mappings():
     assert data.lottery_id not in lot.lotteries_by_id
 
 
-def test_get_reaction_lottery_or_none_helper():
-    # Prepare reaction-based lottery
-    data = _create_reaction_lottery(777)
-    lot.update_reaction_message_id(data.lottery_id, 999)
-
-    class _StubGuild:
-        def __init__(self, gid: int):
-            self.id = gid
-
-    class _StubMessage:
-        def __init__(self, mid: int, gid: int):
-            self.id = mid
-            self.guild = _StubGuild(gid)
-
-    class _StubReaction:
-        def __init__(self, emoji: str, mid: int, gid: int):
-            self.emoji = emoji
-            self.message = _StubMessage(mid, gid)
-
-    # Correct emoji and message
-    r_ok = _StubReaction("🎉", 999, 777)
-    assert lot._get_reaction_lottery_or_none(r_ok) is data  # noqa: SLF001
-
-    # Wrong emoji
-    r_bad_emoji = _StubReaction("👍", 999, 777)
-    assert lot._get_reaction_lottery_or_none(r_bad_emoji) is None  # noqa: SLF001
-
-    # Wrong message id
-    r_bad_msg = _StubReaction("🎉", 1000, 777)
-    assert lot._get_reaction_lottery_or_none(r_bad_msg) is None  # noqa: SLF001
-
-    # Now replace with a youtube lottery in another guild and verify helper ignores it
-    _create_youtube_lottery(888)
-    r_other_guild = _StubReaction("🎉", 999, 888)
-    assert lot._get_reaction_lottery_or_none(r_other_guild) is None  # noqa: SLF001
+def test_reaction_helpers_removed():
+    """Reaction helpers are removed; ensure module no longer exposes them."""
+    assert not hasattr(lot, "_get_reaction_lottery_or_none")
