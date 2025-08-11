@@ -56,21 +56,21 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command                    | Description                       | Features                                                                               |
-| -------------------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
-| `/oai`                     | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search |
-| `/sum`                     | Interactive message summarization | User filter, 5/10/20/50 messages                                                       |
-| `/download_video`          | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                       |
-| `/maple_monster`           | Search MapleStory monster drops   | Detailed stats, images, maps                                                           |
-| `/maple_item`              | Search MapleStory item sources    | Drop source mapping                                                                    |
-| `/maple_stats`             | MapleStory DB statistics          | Totals, level distribution, popular items                                              |
-| `/auction_create`          | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                      |
-| `/auction_list`            | Browse active auctions            | Dropdown selection, preview                                                            |
-| `/auction_info`            | View auction details              | Current bid, end time, history button                                                  |
-| `/auction_my`              | View personal auctions            | Created & leading                                                                      |
-| `/lottery`                 | Lottery main                      | Dropdown to choose method; host starts via ✅ reaction; 📊 reaction shows status       |
-| `/graph`                   | Generate images (placeholder)     | Framework ready for implementation                                                     |
-| `/ping`                    | Bot performance testing           | Latency measurement                                                                    |
+| Command           | Description                       | Features                                                                               |
+| ----------------- | --------------------------------- | -------------------------------------------------------------------------------------- |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search |
+| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                       |
+| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                       |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                           |
+| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                    |
+| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                              |
+| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                      |
+| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                            |
+| `/auction_info`   | View auction details              | Current bid, end time, history button                                                  |
+| `/auction_my`     | View personal auctions            | Created & leading                                                                      |
+| `/lottery`        | Lottery main                      | Dropdown to choose method; host starts via ✅ reaction; 📊 reaction shows status       |
+| `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                     |
+| `/ping`           | Bot performance testing           | Latency measurement                                                                    |
 
 ## 🚀 Quick Start
 
