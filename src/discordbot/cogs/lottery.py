@@ -46,11 +46,7 @@ class LotteryData(BaseModel):
     youtube_url: str | None = None
     youtube_keyword: str | None = None
     reaction_message_id: int | None = None
-    # 每次抽出人數（預設 1）
     draw_count: int = 1
-
-
-# 簡化的數據操作函數（替代數據庫）
 
 
 def create_lottery(lottery_data: dict) -> int:
@@ -76,10 +72,7 @@ def create_lottery(lottery_data: dict) -> int:
         draw_count=max(1, int(lottery_data.get("draw_count", 1) or 1)),
     )
 
-    # 存儲到全局變數（允許同時存在多個抽獎）
     lotteries_by_id[lottery_id] = lottery
-    # defaultdict 會自動初始化空列表，無需手動設置
-
     return lottery_id
 
 
@@ -126,17 +119,16 @@ def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
 
 def get_participants(lottery_id: int) -> list[LotteryParticipant]:
     """獲取所有參與者"""
-    return lottery_participants[lottery_id]  # defaultdict 自動返回空列表
+    return lottery_participants[lottery_id]
 
 
 def add_winner(lottery_id: int, participant: LotteryParticipant) -> None:
     """記錄中獎者"""
-    lottery_winners[lottery_id].append(participant)  # defaultdict 自動創建空列表
+    lottery_winners[lottery_id].append(participant)
 
 
 def remove_participant(lottery_id: int, participant_id: str, source: str) -> None:
     """移除參與者"""
-    # defaultdict 保證列表存在，直接操作即可
     lottery_participants[lottery_id] = [
         p
         for p in lottery_participants[lottery_id]
@@ -151,47 +143,23 @@ def close_lottery(lottery_id: int) -> None:
         lottery.is_active = False
         if lottery.reaction_message_id is not None:
             message_to_lottery_id.pop(lottery.reaction_message_id, None)
-        # 清除活躍清單中的映射（舊版相容：已移除 active_lotteries）
 
 
 def add_participants_fields_to_embed(
-    embed: nextcord.Embed, participants: list["LotteryParticipant"]
+    embed: nextcord.Embed, participants: list[LotteryParticipant]
 ) -> None:
-    discord_users = [p for p in participants if p.source == "discord"]
-    youtube_users = [p for p in participants if p.source == "youtube"]
-
-    if discord_users:
-        discord_names_str = ", ".join([user.name for user in discord_users])
-        embed.add_field(
-            name=f"Discord 參與者 ({len(discord_users)} 人)", value=discord_names_str, inline=False
-        )
-
-    if youtube_users:
-        youtube_names_str = ", ".join([user.name for user in youtube_users])
-        embed.add_field(
-            name=f"YouTube 參與者 ({len(youtube_users)} 人)", value=youtube_names_str, inline=False
-        )
-
-    # 顯示總參與人數（相容測試期待）
-    embed.add_field(name="總參與人數", value=f"{len(participants)} 人", inline=False)
-
-
-def add_participants_ids_fields_to_embed(
-    embed: nextcord.Embed, participants: list["LotteryParticipant"]
-) -> None:
-    """在建立訊息上顯示參與者的 ID 清單。"""
     discord_names = [p.name for p in participants if p.source == "discord"]
     youtube_names = [p.name for p in participants if p.source == "youtube"]
 
     if discord_names:
         embed.add_field(
-            name=f"Discord 參與者ID ({len(discord_names)} 人)",
+            name=f"Discord 參與者 ({len(discord_names)} 人)",
             value=", ".join(discord_names),
             inline=False,
         )
     if youtube_names:
         embed.add_field(
-            name=f"YouTube 參與者ID ({len(youtube_names)} 人)",
+            name=f"YouTube 參與者 ({len(youtube_names)} 人)",
             value=", ".join(youtube_names),
             inline=False,
         )
@@ -202,14 +170,7 @@ def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
     embed = nextcord.Embed(title="🎉 抽獎活動已創建!", color=0x00FF00)
     embed.add_field(name="活動標題", value=lottery_data.title, inline=False)
     embed.add_field(name="活動描述", value=lottery_data.description or "無", inline=False)
-    # 顯示更友善的註冊方式文案（Discord 改為按鈕，不再鼓勵使用表情）
-    registration_label = (
-        "Discord 按鈕" if lottery_data.registration_method == "reaction" else "YouTube 關鍵字"
-    )
-    embed.add_field(name="註冊方式", value=registration_label, inline=True)
-    embed.add_field(
-        name="每次抽出人數", value=f"{getattr(lottery_data, 'draw_count', 1)} 人", inline=True
-    )
+    embed.add_field(name="每次抽出", value=f"{lottery_data.draw_count} 人", inline=True)
     if lottery_data.registration_method == "youtube":
         if lottery_data.youtube_url:
             embed.add_field(name="YouTube直播", value=str(lottery_data.youtube_url), inline=False)
@@ -221,7 +182,7 @@ def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
     # 附加參與者ID清單
     participants = get_participants(lottery_data.lottery_id)
     if participants:
-        add_participants_ids_fields_to_embed(embed, participants)
+        add_participants_fields_to_embed(embed, participants)
     else:
         embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
     return embed
@@ -241,7 +202,11 @@ class LotteryCreateModal(nextcord.ui.Modal):
 
         # 每次抽出人數
         self.draw_count_input = nextcord.ui.TextInput(
-            label="每次抽出人數", placeholder="預設 1", required=False, max_length=3
+            label="每次抽出人數",
+            default_value="1",
+            placeholder="預設 1",
+            max_length=3,
+            required=False,
         )
         self.add_item(self.draw_count_input)
 
@@ -610,11 +575,8 @@ class LotteryCog(commands.Cog):
         embed = nextcord.Embed(title="📊 抽獎活動狀態", color=0x0099FF)
         embed.add_field(name="活動標題", value=lottery_data.title, inline=False)
         embed.add_field(name="活動描述", value=lottery_data.description or "無", inline=False)
+        embed.add_field(name="每次抽出", value=f"{lottery_data.draw_count} 人", inline=True)
         embed.add_field(name="發起人", value=lottery_data.creator_name, inline=True)
-        embed.add_field(
-            name="每次抽出人數", value=f"{getattr(lottery_data, 'draw_count', 1)} 人", inline=True
-        )
-        # 移除註冊方式與目前參與人數，避免版面冗長
         if lottery_data.youtube_url:
             embed.add_field(name="YouTube直播", value=lottery_data.youtube_url, inline=False)
         if lottery_data.youtube_keyword:

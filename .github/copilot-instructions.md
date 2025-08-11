@@ -135,7 +135,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Lottery System Command:**
 
-- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord button join / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message renders a button control panel; reactions are no longer used at all (any reactions on the message will be removed):
+- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord button join / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message renders a button control panel; reactions are not used:
     - `🎉` Join (Discord mode)
     - `🚫` Cancel join (Discord mode)
     - `✅` Start drawing (host-only)
@@ -144,35 +144,31 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Lottery System Features:**
 
-- **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication). Reactions are disabled and removed to avoid confusion.
+- **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication). Reactions are not used.
 - **Button Controls**: `🎉` Join, `🚫` Cancel, `✅` Start (host-only), `📊` Status (ephemeral), `🔄` Recreate (host-only)
 - **Winners Per Draw**: Creation modal supports configuring `draw_count` (default 1). On `✅`, the bot draws up to `min(draw_count, len(participants))` winners in a single go
 - **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners) and closes the old lottery
 - **Comprehensive Status Monitoring**: Press `📊` to get an ephemeral status embed only visible to the requester
 - **Auto-Updating Creation Message**: The creation message is edited in place to include participant name lists as users join or cancel
 - **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
-- **Interactive UI Components**: Modal forms, animated drawing views, detailed status displays, and reset functionality
+- **Interactive UI Components**: Modal forms, button views, and detailed status displays; includes recreate functionality
 - **Security Features**: Creator-only controls, duplicate prevention, platform validation, and automatic winner removal
 
-**Internal Design (Refactor Notes):**
+**Internal Design (Implementation Notes):**
 
 - `lotteries_by_id: dict[int, LotteryData]` — direct lookup by `lottery_id` to avoid scanning global state
 - `lottery_participants: defaultdict[int, list[LotteryParticipant]]` — auto-initialized participant lists
 - `lottery_winners: defaultdict[int, list[LotteryParticipant]]` — winner history tracking
 - Removed legacy `reaction_messages` mapping; `reaction_message_id` now lives inside `LotteryData` and is updated via `update_reaction_message_id()`
 - Extracted helpers to remove duplication:
-    - `split_participants_by_source(participants)`
-    - `add_participants_fields_to_embed(embed, participants)`
-    - `add_participants_ids_fields_to_embed(embed, participants)`
+    - `add_participants_fields_to_embed(embed, participants)` groups participant names by platform for display
     - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
-    - Reaction-based helpers and active-lottery compatibility shims were removed in v0
+    - Reaction-based helpers were removed in favor of button-based interactions
     - UI Button classes: `JoinLotteryButton` and `CancelJoinLotteryButton` now subclass `nextcord.ui.Button` and encapsulate their own `callback` logic. This replaces inline closures for better readability, reuse, testing, and persistent-view readiness (easy to assign stable `custom_id` if needed).
 
-**Data Model Changes:**
+**Data Model Notes:**
 
-- `LotteryData` now includes `draw_count: int = 1` for winners-per-draw configuration
-
-- Removed unused `reaction_emoji` property from `LotteryData` (buttons fully replace reactions)
+- `LotteryData` includes `draw_count: int = 1` for winners-per-draw configuration
 
 - **Button Handling:**
 
@@ -185,6 +181,10 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `🔄` Recreate: Gathers previous participants and winners, deduplicates by `(id, source)`, creates a new lottery with the same settings (including `draw_count` and YouTube fields), restores participants to the new lottery, sends a fresh embed with the control view, updates `reaction_message_id`, and calls `close_lottery()` on the old one
 
 These changes are internal-only and preserve all user-visible behaviors.
+
+Additional behavior:
+
+- In YouTube mode, participants are fetched from live chat using the configured keyword when the host presses `✅`.
 
 **Auction System Usage Guide:**
 
@@ -236,27 +236,25 @@ The comprehensive auction system allows users to create item auctions and partic
 **Lottery System Implementation:**
 
 - **Data Storage**: Optimized in-memory global variables with defaultdict for automatic initialization (lightweight, resets on restart)
-- **Single-Platform Support**: Either Discord reactions OR YouTube chat per lottery (prevents cross-platform confusion)
-- **Data Models**: Pydantic models (`LotteryData`, `LotteryParticipant`) with complete validation and type safety
+- **Single-Platform Support**: Either Discord button-based joins OR YouTube chat per lottery (prevents cross-platform confusion)
+- **Data Models**: Pydantic models (`LotteryData`, `LotteryParticipant`) with type validation
 - **Interactive UI Components**:
     - `LotteryMethodSelectionView` for pre-selecting the registration method via dropdown
     - `LotteryCreateModal` for activity creation with platform-specific form fields
-    - `LotterySpinView` for animated drawing with 4-button control panel (🎰 Draw, 📊 View, 🔄 Reset, ❌ End)
-    - Advanced status display with participant name lists and platform breakdown
-- **Animation System**: 15-step spinning wheel with cryptographically secure random selection using `secrets` module
+    - Detailed status display with participant name lists and platform breakdown
+- **Selection**: Cryptographically secure random selection using the `secrets` module
 - **Security Features**:
-    - Creator-only access controls for all lottery operations
-    - Cross-platform duplicate prevention with intelligent source validation
+    - Creator-only access controls for lottery operations
+    - Cross-platform duplicate prevention with source validation
     - Automatic participant removal upon winner selection
-    - Permission validation for all interactive elements
-- **YouTube Integration**: Seamless integration with existing `YoutubeStream.get_registered_accounts()` functionality
+    - Permission validation for interactive elements
+- **YouTube Integration**: Uses `YoutubeStream.get_registered_accounts()` to fetch participants by keyword at draw-time
 - **Memory Architecture**: defaultdict-optimized storage with automatic list creation
     - `lottery_participants: defaultdict[int, list[LotteryParticipant]]`: Auto-initializing participant lists
     - `lottery_winners: defaultdict[int, list[LotteryParticipant]]`: Winner history tracking
-    - `reaction_message_id` (field on `LotteryData`): Message ID of the creation/control panel message. Used to map button interactions back to the correct lottery via `get_lottery_by_message_id()`; reactions are no longer used
-- **Advanced Features**:
-    - One-click reset functionality that restores all participants while clearing winners
-    - Smart display optimization with comma-separated format to show all participants within Discord's 1024-character limit
+    - `reaction_message_id` (field on `LotteryData`): Message ID of the creation/control panel message. Used to map button interactions back to the correct lottery via `get_lottery_by_message_id()`
+- **Display Optimization**:
+    - Comma-separated participant formatting to fit within Discord field limits
     - Cross-platform participant breakdown in status displays
     - Real-time participant counting and validation
 
@@ -354,7 +352,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `video.py` - Multi-platform video downloading with quality options
     - `maplestory.py` - MapleStory database queries and drop searches
     - `auction.py` - Auction system with bidding functionality and multi-currency support
-    - `lottery.py` - Multi-platform lottery system with animated drawings
+    - `lottery.py` - Multi-platform lottery system with button-based controls
     - `gen_image.py` - Image generation (placeholder implementation)
     - `template.py` - System utilities and ping testing
 - **SDK**: Core business logic in `src/discordbot/sdk/`
