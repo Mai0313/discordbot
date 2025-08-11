@@ -312,8 +312,7 @@ class LotteryCreateModal(nextcord.ui.Modal):
             embed.add_field(
                 name="使用說明",
                 value=(
-                    "下方按鈕：🎉 報名（限 Discord 模式）、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。\n"
-                    "Discord 模式亦可對訊息加上 🎉 報名。"
+                    "下方按鈕：🎉 報名（限 Discord 模式）、🚫 取消報名、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。"
                 ),
                 inline=False,
             )
@@ -327,9 +326,7 @@ class LotteryCreateModal(nextcord.ui.Modal):
             # 記錄建立訊息ID
             update_reaction_message_id(lottery_id, message.id)
 
-            # 報名用 🎉（僅 reaction 模式）。其他控制改為按鈕，不再使用反應。
-            if lottery_data["registration_method"] == "reaction":
-                await message.add_reaction("🎉")
+            # 不再自動添加任何控制反應；全部透過按鈕進行。
 
         except Exception as e:
             await interaction.followup.send(f"創建抽獎活動時發生錯誤：{e!s}", ephemeral=True)
@@ -419,6 +416,31 @@ class LotteryControlView(nextcord.ui.View):
 
             join_button.callback = _join_callback  # type: ignore[assignment]
             self.add_item(join_button)
+
+            # 取消報名按鈕（僅 Discord/Reaction 模式）
+            cancel_button = nextcord.ui.Button(
+                label="取消報名", emoji="🚫", style=nextcord.ButtonStyle.danger
+            )
+
+            async def _cancel_callback(interaction: Interaction) -> None:
+                lottery = get_lottery_by_message_id(interaction.message.id)
+                if lottery is None:
+                    await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+                    return
+                user = interaction.user
+                if not isinstance(user, (Member, User)):
+                    await interaction.response.send_message("僅限伺服器成員可取消。", ephemeral=True)
+                    return
+                before = len(get_participants(lottery.lottery_id))
+                remove_participant(lottery.lottery_id, str(user.id), "discord")
+                after = len(get_participants(lottery.lottery_id))
+                if after < before:
+                    await interaction.response.send_message("已取消你的報名。", ephemeral=True)
+                else:
+                    await interaction.response.send_message("你尚未報名。", ephemeral=True)
+
+            cancel_button.callback = _cancel_callback  # type: ignore[assignment]
+            self.add_item(cancel_button)
 
     @nextcord.ui.button(label="開始抽獎", emoji="✅", style=nextcord.ButtonStyle.success)
     async def start_draw(  # type: ignore[override]
