@@ -35,7 +35,7 @@ _Suggestions and contributions are always welcome!_
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
-- **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions), featuring animated drawing process
+ - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate
     - Implementation note: Join/Cancel buttons are implemented as subclasses of `nextcord.ui.Button` (`JoinLotteryButton`, `CancelJoinLotteryButton`) for better maintainability and potential persistent view support.
 - **Image Generation**: Framework ready (placeholder implementation)
 
@@ -216,6 +216,8 @@ data/
 - **Live Status**: Pressing 📊 returns an ephemeral status only visible to the requester
 - **Auto-Updating Message**: The creation message automatically updates to list participant names as users join/cancel
 - **Message Binding**: Button interactions are bound to the creation message so the bot can reliably identify the correct lottery (no emoji reactions involved)
+- **YouTube Mode Participant Fetch**: In YouTube mode, participants are fetched from live chat using the configured keyword when the host presses ✅ Start
+- **Discord Mode Buttons**: 🎉 Join and 🚫 Cancel buttons are shown only for Discord mode
 - **Winners Per Draw**: Configure how many winners to draw per trigger in the creation modal
 - **Recreate Functionality (🔄)**: Recreate a fresh lottery with identical settings and restored participants (including prior winners)
 - **Security Features**: Creator-only controls, cryptographically secure random selection, participant validation, and automatic winner removal
