@@ -4,7 +4,7 @@ import contextlib
 from collections import defaultdict
 
 import nextcord
-from nextcord import User, Locale, Member, Interaction
+from nextcord import Locale, Interaction
 from pydantic import BaseModel
 from nextcord.ext import commands
 
@@ -144,24 +144,14 @@ def close_lottery(lottery_id: int) -> None:
             message_to_lottery_id.pop(lottery.control_message_id, None)
 
 
-def add_participants_fields_to_embed(
-    embed: nextcord.Embed, participants: list[LotteryParticipant]
+def add_participants_field(
+    embed: nextcord.Embed, participants: list["LotteryParticipant"]
 ) -> None:
-    discord_names = [p.name for p in participants if p.source == "discord"]
-    youtube_names = [p.name for p in participants if p.source == "youtube"]
-
-    if discord_names:
-        embed.add_field(
-            name=f"Discord 參與者 ({len(discord_names)} 人)",
-            value=", ".join(discord_names),
-            inline=False,
-        )
-    if youtube_names:
-        embed.add_field(
-            name=f"YouTube 參與者 ({len(youtube_names)} 人)",
-            value=", ".join(youtube_names),
-            inline=False,
-        )
+    names = [p.name for p in participants]
+    total = len(names)
+    embed.add_field(
+        name=f"參與者（{total} 人）", value=", ".join(names) if names else "無", inline=False
+    )
 
 
 def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
@@ -178,10 +168,10 @@ def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
                 name="報名關鍵字", value=str(lottery_data.youtube_keyword), inline=True
             )
 
-    # 附加參與者ID清單
+    # 附加參與者名單
     participants = get_participants(lottery_data.lottery_id)
     if participants:
-        add_participants_fields_to_embed(embed, participants)
+        add_participants_field(embed, participants)
     else:
         embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
     return embed
@@ -331,7 +321,7 @@ class LotteryMethodSelectionView(nextcord.ui.View):
 
 
 class JoinLotteryButton(nextcord.ui.Button):
-    """『🎉 報名』按鈕（Discord/Reaction 模式）"""
+    """『🎉 報名』按鈕（Discord 模式）"""
 
     def __init__(self) -> None:
         super().__init__(label="報名", emoji="🎉", style=nextcord.ButtonStyle.primary)
@@ -346,45 +336,22 @@ class JoinLotteryButton(nextcord.ui.Button):
             return
 
         user = interaction.user
-        if not isinstance(user, (Member, User)):
-            await interaction.response.send_message("僅限伺服器成員可報名。", ephemeral=True)
-            return
-
-        # 若已在此活動中中獎，禁止再次參加（直到使用『重新建立』開新活動）
-        has_won = any(
-            w.id == str(user.id) and w.source == "discord"
-            for w in lottery_winners.get(lottery.lottery_id, [])
-        )
-        if has_won:
-            await interaction.response.send_message(
-                "你已經在此活動中中獎，無法再次參加。", ephemeral=True
-            )
-            return
-
-        existing = any(
-            p.id == str(user.id) and p.source == "discord"
-            for p in get_participants(lottery.lottery_id)
-        )
         participant = LotteryParticipant(id=str(user.id), name=user.display_name, source="discord")
         ok = add_participant(lottery.lottery_id, participant)
 
-        if ok and not existing:
+        if ok:
             await interaction.response.send_message("✅ 報名成功!", ephemeral=True)
-            # 更新原始建立訊息的 embed 以加入最新的參與者ID名單
             with contextlib.suppress(Exception):
                 updated = build_creation_embed(lottery)
                 await interaction.message.edit(embed=updated, view=self.view)
-        elif ok and existing:
-            await interaction.response.send_message("你已經完成報名。", ephemeral=True)
         else:
-            # 可能為跨平台重複或已中獎被阻擋
             await interaction.response.send_message(
-                "無法加入此抽獎（可能已中獎或平台限制）。", ephemeral=True
+                "無法加入此抽獎（可能已中獎或活動限制）。", ephemeral=True
             )
 
 
 class CancelJoinLotteryButton(nextcord.ui.Button):
-    """『🚫 取消報名』按鈕（Discord/Reaction 模式）"""
+    """『🚫 取消報名』按鈕（Discord 模式）"""
 
     def __init__(self) -> None:
         super().__init__(label="取消報名", emoji="🚫", style=nextcord.ButtonStyle.danger)
@@ -396,10 +363,6 @@ class CancelJoinLotteryButton(nextcord.ui.Button):
             return
 
         user = interaction.user
-        if not isinstance(user, (Member, User)):
-            await interaction.response.send_message("僅限伺服器成員可取消。", ephemeral=True)
-            return
-
         before = len(get_participants(lottery.lottery_id))
         remove_participant(lottery.lottery_id, str(user.id), "discord")
         after = len(get_participants(lottery.lottery_id))
@@ -411,7 +374,7 @@ class CancelJoinLotteryButton(nextcord.ui.Button):
                 updated = build_creation_embed(lottery)
                 await interaction.message.edit(embed=updated, view=self.view)
         else:
-            await interaction.response.send_message("你尚未報名。", ephemeral=True)
+            await interaction.response.send_message("已處理。", ephemeral=True)
 
 
 class UpdateYoutubeParticipantsButton(nextcord.ui.Button):
@@ -646,7 +609,7 @@ class LotteryCog(commands.Cog):
         if lottery_data.youtube_keyword:
             embed.add_field(name="報名關鍵字", value=lottery_data.youtube_keyword, inline=True)
         if participants:
-            add_participants_fields_to_embed(embed, participants)
+            add_participants_field(embed, participants)
         else:
             embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
         return embed

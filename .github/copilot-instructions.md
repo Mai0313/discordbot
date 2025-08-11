@@ -163,11 +163,11 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - `lottery_winners: defaultdict[int, list[LotteryParticipant]]` — winner history tracking
 - Removed legacy `reaction_messages` mapping; `control_message_id` now lives inside `LotteryData` and is updated via `update_control_message_id()`
 - Extracted helpers to remove duplication:
-    - `add_participants_fields_to_embed(embed, participants)` groups participant names by platform for display
+    - `add_participants_field(embed, participants)` shows a unified participant list (single field)
     - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
     - Reaction-based helpers were removed in favor of button-based interactions
     - UI Button classes: `JoinLotteryButton` and `CancelJoinLotteryButton` now subclass `nextcord.ui.Button` and encapsulate their own `callback` logic. This replaces inline closures for better readability, reuse, testing, and persistent-view readiness (easy to assign stable `custom_id` if needed).
-    - Winner re-join prevention is implemented centrally in `add_participant()` and also guarded in the Discord Join button flow
+    - Winner re-join prevention is implemented centrally in `add_participant()`; UI flows rely on it to avoid duplicate checks
 
 **Data Model Notes:**
 
@@ -258,7 +258,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - `control_message_id` (field on `LotteryData`): Message ID of the creation/control panel message. Used to map button interactions back to the correct lottery via `get_lottery_by_message_id()`
 - **Display Optimization**:
     - Comma-separated participant formatting to fit within Discord field limits
-    - Participant lists grouped by platform (only one platform will appear per lottery)
+    - Unified participant list field; platform is single per lottery so grouping is unnecessary
     - Real-time participant counting and validation
 
 **Auction System Implementation:**

@@ -97,7 +97,7 @@ def test_winners_list_and_participants_remain_independent():
     assert len(lot.get_participants(data.lottery_id)) == 2
 
 
-def test_add_participants_fields_to_embed():
+def test_add_participants_field_unified():
     import nextcord
 
     participants = [
@@ -107,22 +107,18 @@ def test_add_participants_fields_to_embed():
     ]
 
     embed = nextcord.Embed(title="測試")
-    lot.add_participants_fields_to_embed(embed, participants)
+    lot.add_participants_field(embed, participants)
     data = embed.to_dict()
     fields = data.get("fields", [])
 
-    # Discord field + YouTube field (no total field)
-    assert len(fields) == 2
-    names = [f["name"] for f in fields]
-    assert any("Discord 參與者 (2 人)" in n for n in names)
-    assert any("YouTube 參與者 (1 人)" in n for n in names)
+    # Unified single field
+    assert len(fields) == 1
+    assert fields[0]["name"].startswith("參與者（3 人）")
 
     # Values contain joined names
-    discord_field = next(f for f in fields if f["name"].startswith("Discord 參與者"))
-    youtube_field = next(f for f in fields if f["name"].startswith("YouTube 參與者"))
-    assert "A" in discord_field["value"]
-    assert "C" in discord_field["value"]
-    assert "B" in youtube_field["value"]
+    assert "A" in fields[0]["value"]
+    assert "B" in fields[0]["value"]
+    assert "C" in fields[0]["value"]
 
 
 def test_close_lottery_clears_mappings():
