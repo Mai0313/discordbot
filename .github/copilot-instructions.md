@@ -168,6 +168,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
     - `_get_reaction_lottery_or_none(reaction)` remains for Discord reaction-based join removal compatibility
     - `LotteryCog.ensure_no_active_lottery()` and `LotteryCog.get_active_lottery_or_reply()` retained for compatibility
+    - UI Button classes: `JoinLotteryButton` and `CancelJoinLotteryButton` now subclass `nextcord.ui.Button` and encapsulate their own `callback` logic. This replaces inline closures for better readability, reuse, testing, and persistent-view readiness (easy to assign stable `custom_id` if needed).
 
 **Data Model Changes:**
 

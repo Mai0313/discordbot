@@ -369,93 +369,87 @@ class LotteryMethodSelectionView(nextcord.ui.View):
         await interaction.response.send_modal(modal)
 
 
+class JoinLotteryButton(nextcord.ui.Button):
+    """『🎉 報名』按鈕（Discord/Reaction 模式）"""
+
+    def __init__(self) -> None:
+        super().__init__(label="報名", emoji="🎉", style=nextcord.ButtonStyle.primary)
+
+    async def callback(self, interaction: Interaction) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+        if lottery.registration_method != "reaction":
+            await interaction.response.send_message("此抽獎不支援以按鈕報名。", ephemeral=True)
+            return
+
+        user = interaction.user
+        if not isinstance(user, (Member, User)):
+            await interaction.response.send_message("僅限伺服器成員可報名。", ephemeral=True)
+            return
+
+        existing = any(
+            p.id == str(user.id) and p.source == "discord"
+            for p in get_participants(lottery.lottery_id)
+        )
+        participant = LotteryParticipant(id=str(user.id), name=user.display_name, source="discord")
+        ok = add_participant(lottery.lottery_id, participant)
+
+        if ok and not existing:
+            await interaction.response.send_message("✅ 報名成功!", ephemeral=True)
+            # 更新原始建立訊息的 embed 以加入最新的參與者ID名單
+            with contextlib.suppress(Exception):
+                updated = build_creation_embed(lottery)
+                await interaction.message.edit(embed=updated, view=self.view)
+        elif ok and existing:
+            await interaction.response.send_message("你已經完成報名。", ephemeral=True)
+        else:
+            await interaction.response.send_message(
+                "此抽獎僅限其他平台報名，無法以 Discord 報名。", ephemeral=True
+            )
+
+
+class CancelJoinLotteryButton(nextcord.ui.Button):
+    """『🚫 取消報名』按鈕（Discord/Reaction 模式）"""
+
+    def __init__(self) -> None:
+        super().__init__(label="取消報名", emoji="🚫", style=nextcord.ButtonStyle.danger)
+
+    async def callback(self, interaction: Interaction) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+
+        user = interaction.user
+        if not isinstance(user, (Member, User)):
+            await interaction.response.send_message("僅限伺服器成員可取消。", ephemeral=True)
+            return
+
+        before = len(get_participants(lottery.lottery_id))
+        remove_participant(lottery.lottery_id, str(user.id), "discord")
+        after = len(get_participants(lottery.lottery_id))
+
+        if after < before:
+            await interaction.response.send_message("已取消你的報名。", ephemeral=True)
+            # 同步更新建立訊息
+            with contextlib.suppress(Exception):
+                updated = build_creation_embed(lottery)
+                await interaction.message.edit(embed=updated, view=self.view)
+        else:
+            await interaction.response.send_message("你尚未報名。", ephemeral=True)
+
+
 class LotteryControlView(nextcord.ui.View):
     """抽獎控制面板：🎉 報名、✅ 開始、📊 狀態（ephemeral）、🔄 重新建立。"""
 
     def __init__(self, registration_method: str | None = None) -> None:
         super().__init__(timeout=None)
-        # 動態加入『🎉 報名』按鈕（僅 Discord/Reaction 模式）
+        # 動態加入自定義按鈕（僅 Discord/Reaction 模式）
         if registration_method == "reaction":
-            join_button = nextcord.ui.Button(
-                label="報名", emoji="🎉", style=nextcord.ButtonStyle.primary
-            )
-
-            async def _join_callback(interaction: Interaction) -> None:
-                lottery = get_lottery_by_message_id(interaction.message.id)
-                if lottery is None:
-                    await interaction.response.send_message(
-                        "找不到對應的抽獎活動。", ephemeral=True
-                    )
-                    return
-                if lottery.registration_method != "reaction":
-                    await interaction.response.send_message(
-                        "此抽獎不支援以按鈕報名。", ephemeral=True
-                    )
-                    return
-                user = interaction.user
-                if not isinstance(user, (Member, User)):
-                    await interaction.response.send_message(
-                        "僅限伺服器成員可報名。", ephemeral=True
-                    )
-                    return
-                existing = any(
-                    p.id == str(user.id) and p.source == "discord"
-                    for p in get_participants(lottery.lottery_id)
-                )
-                participant = LotteryParticipant(
-                    id=str(user.id), name=user.display_name, source="discord"
-                )
-                ok = add_participant(lottery.lottery_id, participant)
-                if ok and not existing:
-                    await interaction.response.send_message("✅ 報名成功!", ephemeral=True)
-                    # 更新原始建立訊息的 embed 以加入最新的參與者ID名單
-                    with contextlib.suppress(Exception):
-                        original_message = interaction.message
-                        updated = build_creation_embed(lottery)
-                        await original_message.edit(embed=updated, view=self)
-                elif ok and existing:
-                    await interaction.response.send_message("你已經完成報名。", ephemeral=True)
-                else:
-                    await interaction.response.send_message(
-                        "此抽獎僅限其他平台報名，無法以 Discord 報名。", ephemeral=True
-                    )
-
-            join_button.callback = _join_callback
-            self.add_item(join_button)
-
-            # 取消報名按鈕（僅 Discord/Reaction 模式）
-            cancel_button = nextcord.ui.Button(
-                label="取消報名", emoji="🚫", style=nextcord.ButtonStyle.danger
-            )
-
-            async def _cancel_callback(interaction: Interaction) -> None:
-                lottery = get_lottery_by_message_id(interaction.message.id)
-                if lottery is None:
-                    await interaction.response.send_message(
-                        "找不到對應的抽獎活動。", ephemeral=True
-                    )
-                    return
-                user = interaction.user
-                if not isinstance(user, (Member, User)):
-                    await interaction.response.send_message(
-                        "僅限伺服器成員可取消。", ephemeral=True
-                    )
-                    return
-                before = len(get_participants(lottery.lottery_id))
-                remove_participant(lottery.lottery_id, str(user.id), "discord")
-                after = len(get_participants(lottery.lottery_id))
-                if after < before:
-                    await interaction.response.send_message("已取消你的報名。", ephemeral=True)
-                    # 同步更新建立訊息
-                    with contextlib.suppress(Exception):
-                        original_message = interaction.message
-                        updated = build_creation_embed(lottery)
-                        await original_message.edit(embed=updated, view=self)
-                else:
-                    await interaction.response.send_message("你尚未報名。", ephemeral=True)
-
-            cancel_button.callback = _cancel_callback
-            self.add_item(cancel_button)
+            self.add_item(JoinLotteryButton())
+            self.add_item(CancelJoinLotteryButton())
 
     @nextcord.ui.button(label="開始抽獎", emoji="✅", style=nextcord.ButtonStyle.success)
     async def start_draw(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
