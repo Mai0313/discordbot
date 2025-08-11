@@ -35,7 +35,7 @@ _Suggestions and contributions are always welcome!_
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
- - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate
+- **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate
     - Implementation note: Join/Cancel buttons are implemented as subclasses of `nextcord.ui.Button` (`JoinLotteryButton`, `CancelJoinLotteryButton`) for better maintainability and potential persistent view support.
 - **Image Generation**: Framework ready (placeholder implementation)
 
