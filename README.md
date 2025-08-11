@@ -68,10 +68,7 @@ _Suggestions and contributions are always welcome!_
 | `/auction_list`            | Browse active auctions            | Dropdown selection, preview                                                            |
 | `/auction_info`            | View auction details              | Current bid, end time, history button                                                  |
 | `/auction_my`              | View personal auctions            | Created & leading                                                                      |
-| `/lottery create_reaction` | Create Discord reaction lottery   | Emoji join, reaction tracking                                                          |
-| `/lottery create_youtube`  | Create YouTube chat lottery       | Keyword registration via YouTube chat                                                  |
-| `/lottery start`           | Start lottery drawing process     | Animated wheel, transparent selection                                                  |
-| `/lottery status`          | View lottery activity status      | Complete participant list, cross-platform breakdown                                    |
+| `/lottery`                 | Lottery main                      | Dropdown to choose method; host starts via ✅ reaction; 📊 reaction shows status       |
 | `/graph`                   | Generate images (placeholder)     | Framework ready for implementation                                                     |
 | `/ping`                    | Bot performance testing           | Latency measurement                                                                    |
 
