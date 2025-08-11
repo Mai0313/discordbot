@@ -47,7 +47,6 @@ class LotteryData(BaseModel):
     registration_method: str  # "reaction" 或 "youtube"
     youtube_url: str | None = None
     youtube_keyword: str | None = None
-    reaction_emoji: str = "🎉"
     reaction_message_id: int | None = None
     # 每次抽出人數（預設 1）
     draw_count: int = 1
@@ -75,7 +74,6 @@ def create_lottery(lottery_data: dict) -> int:
         registration_method=lottery_data["registration_method"],
         youtube_url=lottery_data.get("youtube_url"),
         youtube_keyword=lottery_data.get("youtube_keyword"),
-        reaction_emoji=lottery_data.get("reaction_emoji", "🎉"),
         reaction_message_id=lottery_data.get("reaction_message_id"),
         draw_count=max(1, int(lottery_data.get("draw_count", 1) or 1)),
     )
@@ -464,11 +462,8 @@ class LotteryControlView(nextcord.ui.View):
 
         # 如為 YouTube 模式，先抓取參與者
         cog: LotteryCog = interaction.client.get_cog("LotteryCog")
-        try:
-            if lottery.registration_method == "youtube":
-                await cog.fetch_youtube_participants(lottery)
-        except Exception:
-            pass
+        if lottery.registration_method == "youtube":
+            await cog.fetch_youtube_participants(lottery)
 
         participants = get_participants(lottery.lottery_id)
         if not participants:
@@ -547,7 +542,6 @@ class LotteryControlView(nextcord.ui.View):
             "registration_method": lottery.registration_method,
             "youtube_url": lottery.youtube_url,
             "youtube_keyword": lottery.youtube_keyword,
-            "reaction_emoji": lottery.reaction_emoji,
             "draw_count": getattr(lottery, "draw_count", 1) or 1,
         }
 
