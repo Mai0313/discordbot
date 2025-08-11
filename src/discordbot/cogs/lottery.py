@@ -102,6 +102,11 @@ def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
     if not lottery_data:
         return False  # 抽獎不存在
 
+    # 不允許已中獎者重新加入；除非主持人使用「重新建立」
+    for winner in lottery_winners.get(lottery_id, []):
+        if winner.id == participant.id and winner.source == participant.source:
+            return False
+
     # 檢查用戶是否已經以其他方式報名（同 id 不允許更換來源）
     for existing in lottery_participants[lottery_id]:
         if existing.id == participant.id:
@@ -347,6 +352,17 @@ class JoinLotteryButton(nextcord.ui.Button):
             await interaction.response.send_message("僅限伺服器成員可報名。", ephemeral=True)
             return
 
+        # 若已在此活動中中獎，禁止再次參加（直到使用『重新建立』開新活動）
+        has_won = any(
+            w.id == str(user.id) and w.source == "discord"
+            for w in lottery_winners.get(lottery.lottery_id, [])
+        )
+        if has_won:
+            await interaction.response.send_message(
+                "你已經在此活動中中獎，無法再次參加。", ephemeral=True
+            )
+            return
+
         existing = any(
             p.id == str(user.id) and p.source == "discord"
             for p in get_participants(lottery.lottery_id)
@@ -363,8 +379,9 @@ class JoinLotteryButton(nextcord.ui.Button):
         elif ok and existing:
             await interaction.response.send_message("你已經完成報名。", ephemeral=True)
         else:
+            # 可能為跨平台重複或已中獎被阻擋
             await interaction.response.send_message(
-                "此抽獎僅限其他平台報名，無法以 Discord 報名。", ephemeral=True
+                "無法加入此抽獎（可能已中獎或平台限制）。", ephemeral=True
             )
 
 
