@@ -133,12 +133,12 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 #### 8. Lottery System (`src/discordbot/cogs/lottery.py`)
 
-**Lottery System Commands:**
+**Lottery System Command:**
 
-- `/lottery create_reaction` - Create Discord reaction-based lottery
-- `/lottery create_youtube` - Create YouTube chat keyword-based lottery
-- `/lottery start` - Start the lottery drawing process with animated wheel
-- `/lottery status` - View detailed lottery status with complete participant lists
+- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord reaction / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message automatically adds control reactions:
+  - `🎉` Register (only when method is reaction)
+  - `✅` Start drawing (host-only)
+  - `📊` Show status (anyone)
 
 **Lottery System Features:**
 
@@ -218,6 +218,7 @@ The comprehensive auction system allows users to create item auctions and partic
 - **Single-Platform Support**: Either Discord reactions OR YouTube chat per lottery (prevents cross-platform confusion)
 - **Data Models**: Pydantic models (`LotteryData`, `LotteryParticipant`) with complete validation and type safety
 - **Interactive UI Components**:
+    - `LotteryMethodSelectionView` for pre-selecting the registration method via dropdown
     - `LotteryCreateModal` for activity creation with platform-specific form fields
     - `LotterySpinView` for animated drawing with 4-button control panel (🎰 Draw, 📊 View, 🔄 Reset, ❌ End)
     - Advanced status display with participant name lists and platform breakdown
@@ -232,7 +233,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `active_lotteries: dict[int, LotteryData]`: One active lottery per guild
     - `lottery_participants: defaultdict[int, list[LotteryParticipant]]`: Auto-initializing participant lists
     - `lottery_winners: defaultdict[int, list[LotteryParticipant]]`: Winner history tracking
-    - `reaction_messages: dict[int, int]`: Message ID mapping for reaction validation
+    - `reaction_message_id` (field on `LotteryData`): Message ID used for reaction validation
 - **Advanced Features**:
     - One-click reset functionality that restores all participants while clearing winners
     - Smart display optimization with comma-separated format to show all participants within Discord's 1024-character limit

@@ -69,10 +69,7 @@ _歡迎提供建議和貢獻!_
 | `/auction_list` | 瀏覽進行中拍賣 | 即時更新、下拉選單 |
 | `/auction_info` | 查看拍賣詳情 | 當前競標、競標歷史 |
 | `/auction_my` | 查看個人拍賣 | 我的拍賣與領先競標 |
-| `/lottery create_reaction` | 創建 Discord 反應抽獎 | 表情符號參與、即時追蹤 |
-| `/lottery create_youtube` | 創建 YouTube 聊天室抽獎 | 聊天關鍵字報名、YouTube 整合 |
-| `/lottery start` | 開始抽獎流程 | 動畫轉盤、透明選擇 |
-| `/lottery status` | 查看抽獎活動狀態 | 完整參與者名單、跨平台統計 |
+| `/lottery` | 抽獎主指令 | 下拉選擇方式；主持人以 ✅ 反應開始，📊 反應顯示狀態 |
 | `/graph` | 生成圖像（預留） | 框架已準備實現 |
 | `/ping` | 機器人效能測試 | 延遲測量 |
 
