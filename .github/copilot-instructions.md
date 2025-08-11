@@ -135,19 +135,21 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Lottery System Command:**
 
-- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord reaction / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message automatically adds control reactions:
-    - `🎉` Register (only when method is reaction)
+- `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord button join / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message renders a button control panel (no more control reactions):
+    - `🎉` Join (Discord mode)
+    - `🚫` Cancel join (Discord mode)
     - `✅` Start drawing (host-only)
-    - `📊` Show status (anyone)
+    - `📊` Status (ephemeral to the requester)
     - `🔄` Recreate lottery (host-only)
 
 **Lottery System Features:**
 
-- **Dual-Platform Registration**: Support for either Discord reaction OR YouTube chat participation (prevents cross-platform duplication)
+- **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication)
+- **Button Controls**: `🎉` Join, `🚫` Cancel, `✅` Start (host-only), `📊` Status (ephemeral), `🔄` Recreate (host-only)
 - **Winners Per Draw**: Creation modal supports configuring `draw_count` (default 1). On `✅`, the bot draws up to `min(draw_count, len(participants))` winners in a single go
-- **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners), with deduplication by `(id, source)`, then closes the old lottery and binds reactions to the new message
-- **Comprehensive Status Monitoring**: Complete participant lists with cross-platform breakdown showing all participants in comma-separated format
-- **Real-time Participant Management**: Automatic registration/removal via Discord reactions or YouTube chat keyword detection
+- **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners) and closes the old lottery
+- **Comprehensive Status Monitoring**: Press `📊` to get an ephemeral status embed only visible to the requester
+- **Auto-Updating Creation Message**: The creation message is edited in place to include participant name lists as users join or cancel
 - **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
 - **Interactive UI Components**: Modal forms, animated drawing views, detailed status displays, and reset functionality
 - **Security Features**: Creator-only controls, duplicate prevention, platform validation, and automatic winner removal
@@ -162,17 +164,24 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Extracted helpers to remove duplication:
     - `split_participants_by_source(participants)`
     - `add_participants_fields_to_embed(embed, participants)`
-    - `_get_reaction_lottery_or_none(reaction)` validates emoji and ensures guild consistency with the lottery's `guild_id`
-    - `LotteryCog._ensure_no_active_lottery()` and `LotteryCog._get_active_lottery_or_reply()` to standardize common checks
+    - `add_participants_ids_fields_to_embed(embed, participants)`
+    - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
+    - `_get_reaction_lottery_or_none(reaction)` remains for Discord reaction-based join removal compatibility
+    - `LotteryCog.ensure_no_active_lottery()` and `LotteryCog.get_active_lottery_or_reply()` retained for compatibility
 
 **Data Model Changes:**
 
 - `LotteryData` now includes `draw_count: int = 1` for winners-per-draw configuration
 
-**Reaction Handling:**
+- **Button Handling:**
+
+- `🎉` Join: Adds the Discord user to participants and edits the creation message to show updated participant name lists
+
+- `🚫` Cancel: Removes the Discord user from participants and edits the creation message accordingly
 
 - `✅` Draw: Draws up to `draw_count` winners. Each winner is removed from `lottery_participants` and appended to `lottery_winners`
-- `🔄` Recreate: Gathers previous participants and winners, deduplicates by `(id, source)`, creates a new lottery with the same settings (including `draw_count` and YouTube fields), restores participants to the new lottery, sends a fresh embed, adds reactions (`🎉` if reaction mode, then `✅`, `📊`, `🔄`), updates `reaction_message_id`, and calls `close_lottery()` on the old one
+
+- `🔄` Recreate: Gathers previous participants and winners, deduplicates by `(id, source)`, creates a new lottery with the same settings (including `draw_count` and YouTube fields), restores participants to the new lottery, sends a fresh embed with the control view, updates `reaction_message_id`, and calls `close_lottery()` on the old one
 
 These changes are internal-only and preserve all user-visible behaviors.
 
