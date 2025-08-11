@@ -268,6 +268,16 @@ class LotteryCreateModal(nextcord.ui.Modal):
             lottery_id = create_lottery(lottery_data)
             lottery = lotteries_by_id[lottery_id]
 
+            # YouTube 模式：建立當下先抓取一次參與者，讓面板顯示正確人數
+            if lottery.registration_method == "youtube":
+                try:
+                    cog: LotteryCog | None = interaction.client.get_cog("LotteryCog")
+                except Exception:
+                    cog = None
+                if cog is not None:
+                    with contextlib.suppress(Exception):
+                        await cog.fetch_youtube_participants(lottery)
+
             # 建立回應 embed（含參與者ID清單）
             embed = build_creation_embed(lottery)
             message = await interaction.followup.send(
@@ -389,6 +399,52 @@ class CancelJoinLotteryButton(nextcord.ui.Button):
             await interaction.response.send_message("你尚未報名。", ephemeral=True)
 
 
+class UpdateYoutubeParticipantsButton(nextcord.ui.Button):
+    """『🔁 更新參與者』按鈕（YouTube 模式，僅主持人可用）"""
+
+    def __init__(self) -> None:
+        super().__init__(label="更新參與者", emoji="🔁", style=nextcord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: Interaction) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+
+        if lottery.registration_method != "youtube":
+            await interaction.response.send_message(
+                "此抽獎不是 YouTube 模式，無需更新。", ephemeral=True
+            )
+            return
+
+        if interaction.user.id != lottery.creator_id:
+            await interaction.response.send_message("只有主持人可以更新參與者。", ephemeral=True)
+            return
+
+        # 抓取並更新名單
+        await interaction.response.defer(ephemeral=True)
+        cog: LotteryCog = interaction.client.get_cog("LotteryCog")
+
+        before = len([p for p in get_participants(lottery.lottery_id) if p.source == "youtube"])
+        try:
+            await cog.fetch_youtube_participants(lottery)
+        except Exception as e:
+            await interaction.followup.send(f"更新參與者失敗：{e!s}", ephemeral=True)
+            return
+
+        after = len([p for p in get_participants(lottery.lottery_id) if p.source == "youtube"])
+        added = max(0, after - before)
+
+        # 同步更新建立訊息的 embed（顯示最新名單）
+        with contextlib.suppress(Exception):
+            updated = build_creation_embed(lottery)
+            await interaction.message.edit(embed=updated, view=self.view)
+
+        await interaction.followup.send(
+            f"已更新參與者：新增 {added} 人；YouTube 總計 {after} 人。", ephemeral=True
+        )
+
+
 class LotteryControlView(nextcord.ui.View):
     """抽獎控制面板：🎉 報名、✅ 開始、📊 狀態（ephemeral）、🔄 重新建立。"""
 
@@ -398,6 +454,8 @@ class LotteryControlView(nextcord.ui.View):
         if registration_method == "reaction":
             self.add_item(JoinLotteryButton())
             self.add_item(CancelJoinLotteryButton())
+        elif registration_method == "youtube":
+            self.add_item(UpdateYoutubeParticipantsButton())
 
     @nextcord.ui.button(label="開始抽獎", emoji="✅", style=nextcord.ButtonStyle.success)
     async def start_draw(self, button: nextcord.ui.Button, interaction: Interaction) -> None:

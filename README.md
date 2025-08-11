@@ -57,21 +57,21 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                                                                                                                                               |
-| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                                                                                 |
-| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                       |
-| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                       |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                           |
-| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                    |
-| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                              |
-| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                                                                                                      |
-| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                                                                            |
-| `/auction_info`   | View auction details              | Current bid, end time, history button                                                                                                                                  |
-| `/auction_my`     | View personal auctions            | Created & leading                                                                                                                                                      |
-| `/lottery`        | Lottery main                      | Dropdown to choose method; Buttons: 🎉 Join, 🚫 Cancel, ✅ Start, 📊 Status (ephemeral), 🔄 Recreate; creation message auto-updates participant list; winners-per-draw |
-| `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                                                                                                     |
-| `/ping`           | Bot performance testing           | Latency measurement                                                                                                                                                    |
+| Command           | Description                       | Features                                                                                                                                                                                                           |
+| ----------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                                                                                                                             |
+| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                                                   |
+| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                                                   |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                                                       |
+| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                                                                |
+| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                                                                          |
+| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                                                                                                                                                  |
+| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                                                                                                                        |
+| `/auction_info`   | View auction details              | Current bid, end time, history button                                                                                                                                                                              |
+| `/auction_my`     | View personal auctions            | Created & leading                                                                                                                                                                                                  |
+| `/lottery`        | Lottery main                      | Dropdown to choose method; Buttons: 🎉 Join, 🚫 Cancel, ✅ Start, 📊 Status (ephemeral), 🔄 Recreate, 🔁 Update Participants (YouTube/host-only); creation message auto-updates participant list; winners-per-draw |
+| `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                                                                                                                                                 |
+| `/ping`           | Bot performance testing           | Latency measurement                                                                                                                                                                                                |
 
 ## 🚀 Quick Start
 
@@ -212,11 +212,11 @@ data/
 ### Lottery System
 
 - **Registration Modes**: Discord button-based join or YouTube chat keyword-based participation (prevents cross-platform duplication)
-- **Button Controls**: 🎉 Join, 🚫 Cancel, ✅ Start (host-only), 📊 Status (ephemeral), 🔄 Recreate (host-only)
+- **Button Controls**: 🎉 Join, 🚫 Cancel, ✅ Start (host-only), 📊 Status (ephemeral), 🔄 Recreate (host-only), 🔁 Update Participants (YouTube/host-only)
 - **Live Status**: Pressing 📊 returns an ephemeral status only visible to the requester
 - **Auto-Updating Message**: The creation message automatically updates to list participant names as users join/cancel
 - **Message Binding**: Button interactions are bound to the creation message so the bot can reliably identify the correct lottery (no emoji reactions involved)
-- **YouTube Mode Participant Fetch**: In YouTube mode, participants are fetched from live chat using the configured keyword when the host presses ✅ Start
+- **YouTube Mode Participant Fetch**: In YouTube mode, participants can be fetched any time by the host using the new 🔁 Update Participants button; the bot also fetches right before drawing when the host presses ✅ Start
 - **Discord Mode Buttons**: 🎉 Join and 🚫 Cancel buttons are shown only for Discord mode
 - **Winners Per Draw**: Configure how many winners to draw per trigger in the creation modal
 - **Recreate Functionality (🔄)**: Recreate a fresh lottery with identical settings and restored participants (including prior winners)

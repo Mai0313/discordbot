@@ -146,6 +146,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 - **Dual-Platform Registration**: Discord button-based join OR YouTube chat keyword participation (prevents cross-platform duplication). Reactions are not used.
 - **Button Controls**: `🎉` Join, `🚫` Cancel, `✅` Start (host-only), `📊` Status (ephemeral), `🔄` Recreate (host-only)
+- **Button Controls**: `🎉` Join, `🚫` Cancel, `✅` Start (host-only), `📊` Status (ephemeral), `🔄` Recreate (host-only), `🔁` Update Participants (YouTube/host-only)
 - **Winners Per Draw**: Creation modal supports configuring `draw_count` (default 1). On `✅`, the bot draws up to `min(draw_count, len(participants))` winners in a single go
 - **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners) and closes the old lottery
 - **Comprehensive Status Monitoring**: Press `📊` to get an ephemeral status embed only visible to the requester
@@ -184,7 +185,7 @@ These changes are internal-only and preserve all user-visible behaviors.
 
 Additional behavior:
 
-- In YouTube mode, participants are fetched from live chat using the configured keyword when the host presses `✅`.
+- In YouTube mode, the host can press `🔁` Update Participants at any time to fetch participants from live chat using the configured keyword; the bot also performs a fetch right before drawing on `✅`.
 
 **Auction System Usage Guide:**
 
