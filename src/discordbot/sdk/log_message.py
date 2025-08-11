@@ -59,7 +59,7 @@ class MessageLogger(BaseModel):
             "attachments": ";".join(attachment_paths)[:30],
             "stickers": ";".join(sticker_paths)[:30],
         }
-        logfire.info("Message data", **data_dict)
+        # logfire.info("Message data", **data_dict)
         message_df = pd.DataFrame([data_dict])
         message_df = message_df.astype(str)
 
