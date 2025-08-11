@@ -13,8 +13,6 @@ from discordbot.sdk.yt_chat import YoutubeStream
 # 全局變數來存儲抽獎數據（使用 defaultdict 自動初始化）
 # lottery_id -> LotteryData（用於依 ID 直接查找）
 lotteries_by_id: dict[int, "LotteryData"] = {}
-# guild_id -> 當前活躍的 LotteryData（相容舊版測試）
-active_lotteries: dict[int, "LotteryData"] = {}
 # lottery_id -> 參與者列表
 lottery_participants: defaultdict[int, list["LotteryParticipant"]] = defaultdict(list)
 # lottery_id -> 中獎者列表
@@ -80,8 +78,6 @@ def create_lottery(lottery_data: dict) -> int:
 
     # 存儲到全局變數（允許同時存在多個抽獎）
     lotteries_by_id[lottery_id] = lottery
-    # 註冊到活躍清單（相容舊版測試）
-    active_lotteries[lottery.guild_id] = lottery
     # defaultdict 會自動初始化空列表，無需手動設置
 
     return lottery_id
@@ -99,11 +95,6 @@ def get_lottery_by_message_id(message_id: int) -> "LotteryData | None":
     """由建立訊息ID獲取抽獎活動資料。"""
     lottery_id = message_to_lottery_id.get(message_id)
     return lotteries_by_id.get(lottery_id) if lottery_id is not None else None
-
-
-def get_active_lottery(guild_id: int) -> "LotteryData | None":
-    """取得伺服器當前活躍抽獎（供相容測試使用）。"""
-    return active_lotteries.get(guild_id)
 
 
 def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
@@ -160,9 +151,7 @@ def close_lottery(lottery_id: int) -> None:
         lottery.is_active = False
         if lottery.reaction_message_id is not None:
             message_to_lottery_id.pop(lottery.reaction_message_id, None)
-        # 清除活躍清單中的映射（若尚存在）
-        if active_lotteries.get(lottery.guild_id) is lottery:
-            active_lotteries.pop(lottery.guild_id, None)
+        # 清除活躍清單中的映射（舊版相容：已移除 active_lotteries）
 
 
 def add_participants_fields_to_embed(
