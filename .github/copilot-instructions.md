@@ -151,6 +151,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners) and closes the old lottery
 - **Comprehensive Status Monitoring**: Press `📊` to get an ephemeral status embed only visible to the requester
 - **Auto-Updating Creation Message**: The creation message is edited in place to include participant name lists as users join or cancel
+- **Winner Exclusion**: Winners are prevented from re-joining the same lottery. Use `🔄` Recreate to reset eligibility.
 - **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
 - **Interactive UI Components**: Modal forms, button views, and detailed status displays; includes recreate functionality
 - **Security Features**: Creator-only controls, duplicate prevention, platform validation, and automatic winner removal
@@ -166,6 +167,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - `build_creation_embed(lottery)` centralizes creation message embed with live participant name lists
     - Reaction-based helpers were removed in favor of button-based interactions
     - UI Button classes: `JoinLotteryButton` and `CancelJoinLotteryButton` now subclass `nextcord.ui.Button` and encapsulate their own `callback` logic. This replaces inline closures for better readability, reuse, testing, and persistent-view readiness (easy to assign stable `custom_id` if needed).
+    - Winner re-join prevention is implemented centrally in `add_participant()` and also guarded in the Discord Join button flow
 
 **Data Model Notes:**
 
