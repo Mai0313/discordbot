@@ -42,10 +42,10 @@ class LotteryData(BaseModel):
     creator_name: str
     created_at: datetime
     is_active: bool
-    registration_method: str  # "reaction" 或 "youtube"
+    registration_method: str  # "discord" 或 "youtube"
     youtube_url: str | None = None
     youtube_keyword: str | None = None
-    reaction_message_id: int | None = None
+    control_message_id: int | None = None
     draw_count: int = 1
 
 
@@ -68,7 +68,7 @@ def create_lottery(lottery_data: dict) -> int:
         registration_method=lottery_data["registration_method"],
         youtube_url=lottery_data.get("youtube_url"),
         youtube_keyword=lottery_data.get("youtube_keyword"),
-        reaction_message_id=lottery_data.get("reaction_message_id"),
+        control_message_id=lottery_data.get("control_message_id"),
         draw_count=max(1, int(lottery_data.get("draw_count", 1) or 1)),
     )
 
@@ -76,11 +76,11 @@ def create_lottery(lottery_data: dict) -> int:
     return lottery_id
 
 
-def update_reaction_message_id(lottery_id: int, message_id: int) -> None:
-    """更新反應消息ID（透過 ID 直接更新目前活動）"""
+def update_control_message_id(lottery_id: int, message_id: int) -> None:
+    """更新控制面板訊息 ID 並建立訊息與抽獎活動的映射。"""
     lottery = lotteries_by_id.get(lottery_id)
     if lottery is not None:
-        lottery.reaction_message_id = message_id
+        lottery.control_message_id = message_id
         message_to_lottery_id[message_id] = lottery_id
 
 
@@ -91,12 +91,11 @@ def get_lottery_by_message_id(message_id: int) -> "LotteryData | None":
 
 
 def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
-    """添加參與者，返回是否成功添加（防止跨平台重複報名）。
+    """添加參與者（僅做最小必要檢查）。
 
-    平台限制改由 UI 與呼叫端流程保證：
-    - Discord 模式僅顯示『報名/取消』按鈕
-    - YouTube 模式於抽獎開始時抓取聊天室參與者
-    因此此處不再檢查 registration_method 與 source 的匹配，只負責避免跨平台重複報名。
+    - 由 UI 控制入口（Discord 按鈕或 YouTube 名單抓取），此處不檢查平台一致性。
+    - 阻擋同活動內已中獎者再次加入。
+    - 同一來源重複加入視為成功（冪等），不新增重複條目。
     """
     lottery_data = lotteries_by_id.get(lottery_id)
     if not lottery_data:
@@ -107,11 +106,10 @@ def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
         if winner.id == participant.id and winner.source == participant.source:
             return False
 
-    # 檢查用戶是否已經以其他方式報名（同 id 不允許更換來源）
+    # 檢查同平台重複
     for existing in lottery_participants[lottery_id]:
-        if existing.id == participant.id:
-            # 來源相同允許（重複操作），來源不同不允許（跨平台重複報名）
-            return existing.source == participant.source
+        if existing.id == participant.id and existing.source == participant.source:
+            return True  # 已存在同一來源的相同使用者，視為成功（冪等）
 
     # 添加新參與者
     lottery_participants[lottery_id].append(participant)
@@ -142,8 +140,8 @@ def close_lottery(lottery_id: int) -> None:
     lottery = lotteries_by_id.pop(lottery_id, None)
     if lottery is not None:
         lottery.is_active = False
-        if lottery.reaction_message_id is not None:
-            message_to_lottery_id.pop(lottery.reaction_message_id, None)
+        if lottery.control_message_id is not None:
+            message_to_lottery_id.pop(lottery.control_message_id, None)
 
 
 def add_participants_fields_to_embed(
@@ -292,7 +290,7 @@ class LotteryCreateModal(nextcord.ui.Modal):
             )
 
             # 記錄建立訊息ID；控制改用按鈕
-            update_reaction_message_id(lottery_id, message.id)
+            update_control_message_id(lottery_id, message.id)
             # 不再自動添加任何控制反應；全部透過按鈕進行。
 
         except Exception as e:
@@ -311,9 +309,9 @@ class LotteryMethodSelectionView(nextcord.ui.View):
         options=[
             nextcord.SelectOption(
                 label="Discord 按鈕",
-                value="reaction",
+                value="discord",
                 emoji="🎉",
-                description="按下『報名』按鈕即可參加（不再使用表情反應）",
+                description="按下『報名』按鈕即可參加（不使用表情反應）",
             ),
             nextcord.SelectOption(
                 label="YouTube 關鍵字",
@@ -343,7 +341,7 @@ class JoinLotteryButton(nextcord.ui.Button):
         if lottery is None:
             await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
             return
-        if lottery.registration_method != "reaction":
+        if lottery.registration_method != "discord":
             await interaction.response.send_message("此抽獎不支援以按鈕報名。", ephemeral=True)
             return
 
@@ -467,8 +465,8 @@ class LotteryControlView(nextcord.ui.View):
 
     def __init__(self, registration_method: str | None = None) -> None:
         super().__init__(timeout=None)
-        # 動態加入自定義按鈕（僅 Discord/Reaction 模式）
-        if registration_method == "reaction":
+        # 動態加入自定義按鈕（僅 Discord 模式）
+        if registration_method == "discord":
             self.add_item(JoinLotteryButton())
             self.add_item(CancelJoinLotteryButton())
         elif registration_method == "youtube":
@@ -591,7 +589,7 @@ class LotteryControlView(nextcord.ui.View):
                 view=LotteryControlView(registration_method=new_lottery.registration_method),
                 wait=True,
             )
-        update_reaction_message_id(new_lottery_id, new_message.id)
+        update_control_message_id(new_lottery_id, new_message.id)
 
         # 關閉舊活動
         close_lottery(lottery.lottery_id)
@@ -621,7 +619,7 @@ class LotteryCog(commands.Cog):
         embed = nextcord.Embed(title="🧰 抽獎建立精靈", color=0x00FF00)
         embed.add_field(
             name="步驟 1",
-            value="從下方選擇報名方式（Discord 表情符號 或 YouTube 關鍵字）",
+            value="從下方選擇報名方式（Discord 按鈕 或 YouTube 關鍵字）",
             inline=False,
         )
         embed.add_field(name="步驟 2", value="系統將開啟表單讓你填寫標題與描述", inline=False)
@@ -655,7 +653,7 @@ class LotteryCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    """Register the reply generation cog with the bot.
+    """Register the lottery cog with the bot.
 
     Args:
         bot (commands.Bot): The bot instance to which the cog will be added.
