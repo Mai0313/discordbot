@@ -56,21 +56,21 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                                                                                            |
-| ----------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                              |
-| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                    |
-| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                    |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                        |
-| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                 |
-| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                           |
-| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                                                   |
-| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                         |
-| `/auction_info`   | View auction details              | Current bid, end time, history button                                                                               |
-| `/auction_my`     | View personal auctions            | Created & leading                                                                                                   |
-| `/lottery`        | Lottery main                      | Dropdown to choose method; ✅ start; 📊 status; 🔄 recreate fresh lottery; creation modal supports winners-per-draw |
-| `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                                                  |
-| `/ping`           | Bot performance testing           | Latency measurement                                                                                                 |
+| Command           | Description                       | Features                                                                                                                                                               |
+| ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                                                                                 |
+| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                       |
+| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                       |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                           |
+| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                    |
+| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                              |
+| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                                                                                                      |
+| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                                                                            |
+| `/auction_info`   | View auction details              | Current bid, end time, history button                                                                                                                                  |
+| `/auction_my`     | View personal auctions            | Created & leading                                                                                                                                                      |
+| `/lottery`        | Lottery main                      | Dropdown to choose method; Buttons: 🎉 Join, 🚫 Cancel, ✅ Start, 📊 Status (ephemeral), 🔄 Recreate; creation message auto-updates participant list; winners-per-draw |
+| `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                                                                                                     |
+| `/ping`           | Bot performance testing           | Latency measurement                                                                                                                                                    |
 
 ## 🚀 Quick Start
 
@@ -210,17 +210,15 @@ data/
 
 ### Lottery System
 
-- **Dual Registration Modes**: Support for either Discord reaction-based OR YouTube chat keyword-based participation (prevents cross-platform duplication)
-- **Animated Drawing Process**: Interactive spinning wheel animation for transparent and fair lottery draws with 15-step visual effects
+- **Registration Modes**: Discord button-based join or YouTube chat keyword-based participation (prevents cross-platform duplication)
+- **Button Controls**: 🎉 Join, 🚫 Cancel, ✅ Start (host-only), 📊 Status (ephemeral), 🔄 Recreate (host-only)
+- **Live Status**: Pressing 📊 returns an ephemeral status only visible to the requester
+- **Auto-Updating Message**: The creation message automatically updates to list participant names as users join/cancel
 - **Winners Per Draw**: Configure how many winners to draw per trigger in the creation modal
-- **Recreate Functionality (🔄)**: Host-only reaction recreates a fresh lottery with the same settings and automatically restores all previous participants (including past winners)
-- **Comprehensive Status Monitoring**: Real-time participant tracking with complete name lists showing all participants, cross-platform breakdown with comma-separated display
-- **Advanced Participant Management**: Automatic registration via Discord reactions or YouTube chat keywords, with duplicate prevention and platform validation
+- **Recreate Functionality (🔄)**: Recreate a fresh lottery with identical settings and restored participants (including prior winners)
 - **Security Features**: Creator-only controls, cryptographically secure random selection, participant validation, and automatic winner removal
 - **Single-Platform Focus**: Each lottery uses only one registration method to ensure fairness and prevent confusion
 - **In-Memory Storage**: Lightweight global variables with defaultdict optimization for runtime data (resets on bot restart for fresh starts)
-- **Interactive UI Components**: Modal forms for creation, animated drawing views, detailed status displays, and real-time updates
-- **Lightweight Internals**: Simplified, faster in-memory logic with no behavior changes to reduce maintenance overhead
 
 # 🔒 Privacy & Data
 
