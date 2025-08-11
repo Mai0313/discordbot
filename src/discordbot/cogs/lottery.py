@@ -201,6 +201,52 @@ def add_participants_fields_to_embed(
     embed.add_field(name="總參與人數", value=f"{len(participants)} 人", inline=False)
 
 
+def add_participants_ids_fields_to_embed(
+    embed: nextcord.Embed, participants: list["LotteryParticipant"]
+) -> None:
+    """在建立訊息上顯示參與者的 ID 清單。"""
+    discord_names = [p.name for p in participants if p.source == "discord"]
+    youtube_names = [p.name for p in participants if p.source == "youtube"]
+
+    if discord_names:
+        embed.add_field(
+            name=f"Discord 參與者ID ({len(discord_names)} 人)",
+            value=", ".join(discord_names),
+            inline=False,
+        )
+    if youtube_names:
+        embed.add_field(
+            name=f"YouTube 參與者ID ({len(youtube_names)} 人)",
+            value=", ".join(youtube_names),
+            inline=False,
+        )
+    embed.add_field(name="總參與人數", value=f"{len(participants)} 人", inline=False)
+
+
+def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
+    """建立或更新『抽獎活動已創建』訊息的 Embed（包含參與者ID清單）。"""
+    embed = nextcord.Embed(title="🎉 抽獎活動已創建!", color=0x00FF00)
+    embed.add_field(name="活動標題", value=lottery_data.title, inline=False)
+    embed.add_field(name="活動描述", value=lottery_data.description or "無", inline=False)
+    embed.add_field(name="註冊方式", value=lottery_data.registration_method, inline=True)
+    embed.add_field(
+        name="每次抽出人數", value=f"{getattr(lottery_data, 'draw_count', 1)} 人", inline=True
+    )
+    if lottery_data.registration_method == "youtube":
+        if lottery_data.youtube_url:
+            embed.add_field(name="YouTube直播", value=str(lottery_data.youtube_url), inline=False)
+        if lottery_data.youtube_keyword:
+            embed.add_field(name="報名關鍵字", value=str(lottery_data.youtube_keyword), inline=True)
+
+    # 附加參與者ID清單
+    participants = get_participants(lottery_data.lottery_id)
+    if participants:
+        add_participants_ids_fields_to_embed(embed, participants)
+    else:
+        embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
+    return embed
+
+
 class LotteryCreateModal(nextcord.ui.Modal):
     """創建抽獎活動的表單"""
 
@@ -279,53 +325,18 @@ class LotteryCreateModal(nextcord.ui.Modal):
 
             # 直接創建抽獎活動
             lottery_id = create_lottery(lottery_data)
-            lottery_data["lottery_id"] = lottery_id
+            lottery = lotteries_by_id[lottery_id]
 
-            # 創建回應embed
-            embed = nextcord.Embed(title="🎉 抽獎活動已創建!", color=0x00FF00)
-            embed.add_field(name="活動標題", value=lottery_data["title"], inline=False)
-            embed.add_field(
-                name="活動描述", value=lottery_data["description"] or "無", inline=False
-            )
-            embed.add_field(
-                name="註冊方式", value=lottery_data["registration_method"], inline=True
-            )
-            embed.add_field(
-                name="每次抽出人數", value=f"{lottery_data['draw_count']} 人", inline=True
-            )
-
-            if lottery_data["registration_method"] == "reaction":
-                embed.add_field(
-                    name="Discord報名方式", value="對此訊息加上 🎉 表情符號即可報名", inline=False
-                )
-            elif lottery_data["registration_method"] == "youtube":
-                embed.add_field(
-                    name="YouTube直播", value=lottery_data["youtube_url"], inline=False
-                )
-                embed.add_field(
-                    name="報名關鍵字",
-                    value=f"在聊天室發送包含「{lottery_data['youtube_keyword']}」的訊息",
-                    inline=False,
-                )
-
-            # 使用說明：改為以按鈕操作
-            embed.add_field(
-                name="使用說明",
-                value=(
-                    "下方按鈕：🎉 報名（限 Discord 模式）、🚫 取消報名、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。"
-                ),
-                inline=False,
-            )
-
+            # 建立回應 embed（含參與者ID清單）
+            embed = build_creation_embed(lottery)
             message = await interaction.followup.send(
                 embed=embed,
-                view=LotteryControlView(registration_method=lottery_data["registration_method"]),
+                view=LotteryControlView(registration_method=lottery.registration_method),
                 wait=True,
             )
 
-            # 記錄建立訊息ID
+            # 記錄建立訊息ID；控制改用按鈕
             update_reaction_message_id(lottery_id, message.id)
-
             # 不再自動添加任何控制反應；全部透過按鈕進行。
 
         except Exception as e:
@@ -407,6 +418,11 @@ class LotteryControlView(nextcord.ui.View):
                 ok = add_participant(lottery.lottery_id, participant)
                 if ok and not existing:
                     await interaction.response.send_message("✅ 報名成功！", ephemeral=True)
+                    # 更新原始建立訊息的 embed 以加入最新的參與者ID名單
+                    with contextlib.suppress(Exception):
+                        original_message = interaction.message
+                        updated = build_creation_embed(lottery)
+                        await original_message.edit(embed=updated, view=self)
                 elif ok and existing:
                     await interaction.response.send_message("你已經完成報名。", ephemeral=True)
                 else:
@@ -436,6 +452,11 @@ class LotteryControlView(nextcord.ui.View):
                 after = len(get_participants(lottery.lottery_id))
                 if after < before:
                     await interaction.response.send_message("已取消你的報名。", ephemeral=True)
+                    # 同步更新建立訊息
+                    with contextlib.suppress(Exception):
+                        original_message = interaction.message
+                        updated = build_creation_embed(lottery)
+                        await original_message.edit(embed=updated, view=self)
                 else:
                     await interaction.response.send_message("你尚未報名。", ephemeral=True)
 
@@ -556,36 +577,7 @@ class LotteryControlView(nextcord.ui.View):
         if restored_participants:
             lottery_participants[new_lottery_id] = list(restored_participants)
 
-        embed = nextcord.Embed(title="🎉 抽獎活動已重新建立!", color=0x00FF00)
-        embed.add_field(name="活動標題", value=new_lottery.title, inline=False)
-        embed.add_field(name="活動描述", value=new_lottery.description or "無", inline=False)
-        embed.add_field(name="註冊方式", value=new_lottery.registration_method, inline=True)
-        embed.add_field(
-            name="每次抽出人數",
-            value=f"{getattr(new_lottery, 'draw_count', 1)} 人",
-            inline=True,
-        )
-        if new_lottery.registration_method == "reaction":
-            embed.add_field(
-                name="Discord報名方式", value="對此訊息加上 🎉 表情符號即可報名", inline=False
-            )
-        elif new_lottery.registration_method == "youtube":
-            if new_lottery.youtube_url:
-                embed.add_field(name="YouTube直播", value=new_lottery.youtube_url, inline=False)
-            if new_lottery.youtube_keyword:
-                embed.add_field(
-                    name="報名關鍵字",
-                    value=f"在聊天室發送包含「{new_lottery.youtube_keyword}」的訊息",
-                    inline=False,
-                )
-        embed.add_field(
-            name="使用說明",
-            value=(
-                "下方按鈕：🎉 報名（限 Discord 模式）、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。\n"
-                "Discord 模式亦可對訊息加上 🎉 報名。"
-            ),
-            inline=False,
-        )
+        embed = build_creation_embed(new_lottery)
 
         # 發送新的控制面板訊息
         channel = getattr(interaction, "channel", None)
