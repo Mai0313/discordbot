@@ -56,8 +56,8 @@ class MessageLogger(BaseModel):
             "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "channel_name": self.channel_name_or_author_name,
             "channel_id": self.channel_id_or_author_id,
-            "attachments": ";".join(attachment_paths)[:10],
-            "stickers": ";".join(sticker_paths)[:10],
+            "attachments": ";".join(attachment_paths)[:30],
+            "stickers": ";".join(sticker_paths)[:30],
         }
         logfire.info("Message data", **data_dict)
         message_df = pd.DataFrame([data_dict])
