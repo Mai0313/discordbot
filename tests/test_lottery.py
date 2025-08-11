@@ -17,14 +17,14 @@ def reset_lottery_state():
     lot.lottery_winners.clear()
 
 
-def _create_reaction_lottery(guild_id: int = 123) -> lot.LotteryData:
+def _create_discord_lottery(guild_id: int = 123) -> lot.LotteryData:
     lottery_id = lot.create_lottery({
         "guild_id": guild_id,
         "title": "單純測試抽獎",
         "description": "desc",
         "creator_id": 999,
         "creator_name": "tester",
-        "registration_method": "reaction",
+        "registration_method": "discord",
     })
     return lot.lotteries_by_id[lottery_id]
 
@@ -43,26 +43,21 @@ def _create_youtube_lottery(guild_id: int = 456) -> lot.LotteryData:
     return lot.lotteries_by_id[lottery_id]
 
 
-def test_create_and_retrieve_lottery_reaction():
-    data = _create_reaction_lottery(111)
+def test_create_and_retrieve_lottery_discord():
+    data = _create_discord_lottery(111)
     assert data.is_active is True
     assert lot.lotteries_by_id[data.lottery_id] is data
 
 
-def test_update_reaction_message_id():
-    data = _create_reaction_lottery(222)
-    assert data.reaction_message_id is None
-    lot.update_reaction_message_id(data.lottery_id, 555555)
-    assert data.reaction_message_id == 555555
+def test_update_control_message_id():
+    data = _create_discord_lottery(222)
+    assert data.control_message_id is None
+    lot.update_control_message_id(data.lottery_id, 555555)
+    assert data.control_message_id == 555555
 
 
-def test_add_participant_platform_validation_and_duplicates():
-    data = _create_reaction_lottery(333)
-
-    # YouTube user cannot join reaction-based lottery
-    yt_user = lot.LotteryParticipant(id="yt_user", name="yt_user", source="youtube")
-    assert lot.add_participant(data.lottery_id, yt_user) is False
-    assert len(lot.get_participants(data.lottery_id)) == 0
+def test_add_participant_duplicates():
+    data = _create_discord_lottery(333)
 
     # Discord user can join
     dc_user = lot.LotteryParticipant(id="123", name="DC", source="discord")
@@ -89,7 +84,7 @@ def test_remove_participant():
 
 
 def test_winners_list_and_participants_remain_independent():
-    data = _create_reaction_lottery(555)
+    data = _create_discord_lottery(555)
     p1 = lot.LotteryParticipant(id="1", name="U1", source="discord")
     p2 = lot.LotteryParticipant(id="2", name="U2", source="discord")
     lot.add_participant(data.lottery_id, p1)
@@ -116,12 +111,11 @@ def test_add_participants_fields_to_embed():
     data = embed.to_dict()
     fields = data.get("fields", [])
 
-    # Discord field, YouTube field, Total field
-    assert len(fields) == 3
+    # Discord field + YouTube field (no total field)
+    assert len(fields) == 2
     names = [f["name"] for f in fields]
     assert any("Discord 參與者 (2 人)" in n for n in names)
     assert any("YouTube 參與者 (1 人)" in n for n in names)
-    assert any("總參與人數" in n for n in names)
 
     # Values contain joined names
     discord_field = next(f for f in fields if f["name"].startswith("Discord 參與者"))
@@ -132,8 +126,8 @@ def test_add_participants_fields_to_embed():
 
 
 def test_close_lottery_clears_mappings():
-    data = _create_reaction_lottery(666)
-    lot.update_reaction_message_id(data.lottery_id, 12345)
+    data = _create_discord_lottery(666)
+    lot.update_control_message_id(data.lottery_id, 12345)
 
     lot.close_lottery(data.lottery_id)
     assert data.lottery_id not in lot.lotteries_by_id

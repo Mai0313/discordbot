@@ -35,7 +35,7 @@ _Suggestions and contributions are always welcome!_
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
-- **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate").
+- **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate"). Uses "discord" naming (no legacy "reaction" terminology).
     - Implementation note: Join/Cancel buttons are implemented as subclasses of `nextcord.ui.Button` (`JoinLotteryButton`, `CancelJoinLotteryButton`) for better maintainability and potential persistent view support.
 - **Image Generation**: Framework ready (placeholder implementation)
 
@@ -69,7 +69,7 @@ _Suggestions and contributions are always welcome!_
 | `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                                                                                                                                                                             |
 | `/auction_info`   | View auction details              | Current bid, end time, history button                                                                                                                                                                                                                                   |
 | `/auction_my`     | View personal auctions            | Created & leading                                                                                                                                                                                                                                                       |
-| `/lottery`        | Lottery main                      | Dropdown to choose method; Buttons: 🎉 Join, 🚫 Cancel, ✅ Start, 📊 Status (ephemeral), 🔄 Recreate, 🔁 Update Participants (YouTube/host-only); creation message auto-updates participant list; winners-per-draw; winners are excluded from re-joining until Recreate |
+| `/lottery`        | Lottery main                      | Dropdown to choose method; Buttons: 🎉 Join, 🚫 Cancel (Discord mode), ✅ Start, 📊 Status (ephemeral), 🔄 Recreate, 🔁 Update Participants (YouTube/host-only); creation message auto-updates participant list; winners-per-draw; winners are excluded from re-joining until Recreate |
 | `/graph`          | Generate images (placeholder)     | Framework ready for implementation                                                                                                                                                                                                                                      |
 | `/ping`           | Bot performance testing           | Latency measurement                                                                                                                                                                                                                                                     |
 
@@ -211,7 +211,7 @@ data/
 
 ### Lottery System
 
-- **Registration Modes**: Discord button-based join or YouTube chat keyword-based participation (prevents cross-platform duplication)
+- **Registration Modes**: Discord button-based join or YouTube chat keyword-based participation
 - **Button Controls**: 🎉 Join, 🚫 Cancel, ✅ Start (host-only), 📊 Status (ephemeral), 🔄 Recreate (host-only), 🔁 Update Participants (YouTube/host-only)
 - **Live Status**: Pressing 📊 returns an ephemeral status only visible to the requester
 - **Auto-Updating Message**: The creation message automatically updates to list participant names as users join/cancel
