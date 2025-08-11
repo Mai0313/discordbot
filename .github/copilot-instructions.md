@@ -174,6 +174,8 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 - `LotteryData` now includes `draw_count: int = 1` for winners-per-draw configuration
 
+- Removed unused `reaction_emoji` property from `LotteryData` (buttons fully replace reactions)
+
 - **Button Handling:**
 
 - `🎉` Join: Adds the Discord user to participants and edits the creation message to show updated participant name lists
@@ -254,7 +256,7 @@ The comprehensive auction system allows users to create item auctions and partic
     - `active_lotteries: dict[int, LotteryData]`: One active lottery per guild
     - `lottery_participants: defaultdict[int, list[LotteryParticipant]]`: Auto-initializing participant lists
     - `lottery_winners: defaultdict[int, list[LotteryParticipant]]`: Winner history tracking
-    - `reaction_message_id` (field on `LotteryData`): Message ID used for reaction validation
+    - `reaction_message_id` (field on `LotteryData`): Message ID of the creation/control panel message. Used to map button interactions back to the correct lottery via `get_lottery_by_message_id()`; reactions are no longer used
 - **Advanced Features**:
     - One-click reset functionality that restores all participants while clearing winners
     - Smart display optimization with comma-separated format to show all participants within Discord's 1024-character limit

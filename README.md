@@ -215,6 +215,7 @@ data/
 - **Button Controls**: 🎉 Join, 🚫 Cancel, ✅ Start (host-only), 📊 Status (ephemeral), 🔄 Recreate (host-only)
 - **Live Status**: Pressing 📊 returns an ephemeral status only visible to the requester
 - **Auto-Updating Message**: The creation message automatically updates to list participant names as users join/cancel
+- **Message Binding**: Button interactions are bound to the creation message so the bot can reliably identify the correct lottery (no emoji reactions involved)
 - **Winners Per Draw**: Configure how many winners to draw per trigger in the creation modal
 - **Recreate Functionality (🔄)**: Recreate a fresh lottery with identical settings and restored participants (including prior winners)
 - **Security Features**: Creator-only controls, cryptographically secure random selection, participant validation, and automatic winner removal
@@ -257,7 +258,7 @@ If you have privacy concerns or questions about this policy, feel free to:
 
 This bot is designed using **privacy-by-design principles** with a strict minimal-data-handling approach to protect all users.
 
-_Last updated: 2025/08/09_
+_Last updated: 2025/08/11_
 
 ## Contributors
 
