@@ -91,22 +91,18 @@ def get_lottery_by_message_id(message_id: int) -> "LotteryData | None":
 
 
 def add_participant(lottery_id: int, participant: LotteryParticipant) -> bool:
-    """添加參與者，返回是否成功添加（防止跨平台重複報名和平台不匹配）"""
-    # 首先驗證參與者來源是否與抽獎註冊方式匹配
-    lottery_data = lotteries_by_id.get(lottery_id)
+    """添加參與者，返回是否成功添加（防止跨平台重複報名）。
 
+    平台限制改由 UI 與呼叫端流程保證：
+    - Discord 模式僅顯示『報名/取消』按鈕
+    - YouTube 模式於抽獎開始時抓取聊天室參與者
+    因此此處不再檢查 registration_method 與 source 的匹配，只負責避免跨平台重複報名。
+    """
+    lottery_data = lotteries_by_id.get(lottery_id)
     if not lottery_data:
         return False  # 抽獎不存在
 
-    # 檢查平台匹配：Discord用戶只能參與reaction抽獎，YouTube用戶只能參與youtube抽獎
-    if participant.source == "discord" and lottery_data.registration_method != "reaction":
-        return False  # Discord用戶嘗試參與非reaction抽獎
-
-    if participant.source == "youtube" and lottery_data.registration_method != "youtube":
-        return False  # YouTube用戶嘗試參與非youtube抽獎
-
-    # 檢查用戶是否已經以其他方式報名
-    # defaultdict 自動創建空列表
+    # 檢查用戶是否已經以其他方式報名（同 id 不允許更換來源）
     for existing in lottery_participants[lottery_id]:
         if existing.id == participant.id:
             # 來源相同允許（重複操作），來源不同不允許（跨平台重複報名）
@@ -557,18 +553,13 @@ class LotteryCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    async def fetch_youtube_participants(self, lottery_data: LotteryData) -> int:
-        """從 YouTube 聊天室抓取參與者，返回新增人數。"""
-        if not lottery_data.youtube_url or not lottery_data.youtube_keyword:
-            return 0
+    async def fetch_youtube_participants(self, lottery_data: LotteryData) -> list[str]:
         yt_stream = YoutubeStream(url=lottery_data.youtube_url)
         registered_accounts = yt_stream.get_registered_accounts(lottery_data.youtube_keyword)
-        added = 0
-        for account_name in registered_accounts:
-            participant = LotteryParticipant(id=account_name, name=account_name, source="youtube")
-            if add_participant(lottery_data.lottery_id, participant):
-                added += 1
-        return added
+        for account in registered_accounts:
+            participant = LotteryParticipant(id=account, name=account, source="youtube")
+            add_participant(lottery_data.lottery_id, participant)
+        return registered_accounts
 
     def build_status_embed(self, lottery_data: LotteryData) -> nextcord.Embed:
         participants = get_participants(lottery_data.lottery_id)
