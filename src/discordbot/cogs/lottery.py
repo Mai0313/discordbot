@@ -312,13 +312,16 @@ class LotteryCreateModal(nextcord.ui.Modal):
             embed.add_field(
                 name="使用說明",
                 value=(
-                    "主持人加上 ✅ 以開始抽獎；任何人加上 📊 可查看狀態。\n"
+                    "主持人加上 ✅ 以開始抽獎。按下下方『📊 狀態』按鈕可僅自己查看；"
+                    "若使用 📊 反應也會私訊給你。\n"
                     "若為 Discord 表情報名，參與者對此訊息加上 🎉 即可報名。"
                 ),
                 inline=False,
             )
 
-            message = await interaction.followup.send(embed=embed, wait=True)
+            message = await interaction.followup.send(
+                embed=embed, view=LotteryStatusView(), wait=True
+            )
 
             # 記錄建立訊息ID，並在訊息上添加控制用反應
             update_reaction_message_id(lottery_id, message.id)
@@ -376,6 +379,30 @@ class LotterySpinView(nextcord.ui.View):
         self.lottery_data = lottery_data
         self.participants = participants
 
+
+class LotteryStatusView(nextcord.ui.View):
+    """提供『📊 狀態』按鈕，回覆使用者 ephemeral 狀態訊息。"""
+
+    def __init__(self) -> None:
+        # 使用無限 timeout 以提升持久度（非持久視圖）
+        super().__init__(timeout=None)
+
+    @nextcord.ui.button(label="狀態", emoji="📊", style=nextcord.ButtonStyle.secondary)
+    async def show_status(  # type: ignore[override]
+        self, button: nextcord.ui.Button, interaction: Interaction
+    ) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+
+        # 取得 Cog 並呼叫其內部的狀態建構器
+        cog = interaction.client.get_cog("LotteryCog")
+        try:
+            embed = cog._build_status_embed(lottery)  # type: ignore[attr-defined]
+        except Exception:
+            embed = nextcord.Embed(title="📊 抽獎活動狀態", description="狀態載入失敗", color=0x0099FF)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 class LotteryCog(commands.Cog):
     """抽獎功能Cog"""
@@ -640,7 +667,9 @@ class LotteryCog(commands.Cog):
                 inline=False,
             )
 
-            new_message = await reaction.message.channel.send(embed=embed)
+            new_message = await reaction.message.channel.send(
+                embed=embed, view=LotteryStatusView()
+            )
             update_reaction_message_id(new_lottery_id, new_message.id)
 
             if new_lottery.registration_method == "reaction":
@@ -658,7 +687,14 @@ class LotteryCog(commands.Cog):
         # 3) 狀態（任何人）
         if emoji_str == "📊":
             embed = self._build_status_embed(lottery)
-            await reaction.message.channel.send(embed=embed)
+            # 盡量以私訊傳送，避免洗頻；若使用者關閉私訊則退回公開顯示
+            try:
+                if isinstance(user, (Member, User)):
+                    await user.send(embed=embed)
+                else:
+                    await reaction.message.channel.send(embed=embed)
+            except Exception:
+                await reaction.message.channel.send(embed=embed)
             with contextlib.suppress(Exception):
                 await reaction.remove(user)
             return
