@@ -136,9 +136,9 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 **Lottery System Command:**
 
 - `/lottery` - Single entry. Shows a dropdown to choose registration method (Discord reaction / YouTube keyword), then opens a modal to fill in title/description and method-specific fields. The creation message automatically adds control reactions:
-  - `🎉` Register (only when method is reaction)
-  - `✅` Start drawing (host-only)
-  - `📊` Show status (anyone)
+    - `🎉` Register (only when method is reaction)
+    - `✅` Start drawing (host-only)
+    - `📊` Show status (anyone)
 
 **Lottery System Features:**
 
