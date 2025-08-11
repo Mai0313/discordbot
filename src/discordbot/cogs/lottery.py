@@ -308,31 +308,28 @@ class LotteryCreateModal(nextcord.ui.Modal):
                     inline=False,
                 )
 
-            # 說明改為以反應操作：✅ 開始、📊 狀態
+            # 使用說明：改為以按鈕操作
             embed.add_field(
                 name="使用說明",
                 value=(
-                    "主持人加上 ✅ 以開始抽獎。按下下方『📊 狀態』按鈕可僅自己查看；"
-                    "若使用 📊 反應也會私訊給你。\n"
-                    "若為 Discord 表情報名，參與者對此訊息加上 🎉 即可報名。"
+                    "下方按鈕：🎉 報名（限 Discord 模式）、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。\n"
+                    "Discord 模式亦可對訊息加上 🎉 報名。"
                 ),
                 inline=False,
             )
 
             message = await interaction.followup.send(
-                embed=embed, view=LotteryStatusView(), wait=True
+                embed=embed,
+                view=LotteryControlView(registration_method=lottery_data["registration_method"]),
+                wait=True,
             )
 
-            # 記錄建立訊息ID，並在訊息上添加控制用反應
+            # 記錄建立訊息ID
             update_reaction_message_id(lottery_id, message.id)
 
-            # 報名用 🎉（僅 reaction 模式）
+            # 報名用 🎉（僅 reaction 模式）。其他控制改為按鈕，不再使用反應。
             if lottery_data["registration_method"] == "reaction":
                 await message.add_reaction("🎉")
-            # 開始用 ✅、狀態用 📊、重新抽用 🔄（兩種模式皆可）
-            await message.add_reaction("✅")
-            await message.add_reaction("📊")
-            await message.add_reaction("🔄")
 
         except Exception as e:
             await interaction.followup.send(f"創建抽獎活動時發生錯誤：{e!s}", ephemeral=True)
@@ -380,12 +377,105 @@ class LotterySpinView(nextcord.ui.View):
         self.participants = participants
 
 
-class LotteryStatusView(nextcord.ui.View):
-    """提供『📊 狀態』按鈕，回覆使用者 ephemeral 狀態訊息。"""
+class LotteryControlView(nextcord.ui.View):
+    """抽獎控制面板：🎉 報名、✅ 開始、📊 狀態（ephemeral）、🔄 重新建立。"""
 
-    def __init__(self) -> None:
-        # 使用無限 timeout 以提升持久度（非持久視圖）
+    def __init__(self, registration_method: str | None = None) -> None:
         super().__init__(timeout=None)
+        # 動態加入『🎉 報名』按鈕（僅 Discord/Reaction 模式）
+        if registration_method == "reaction":
+            join_button = nextcord.ui.Button(
+                label="報名", emoji="🎉", style=nextcord.ButtonStyle.primary
+            )
+
+            async def _join_callback(interaction: Interaction) -> None:
+                lottery = get_lottery_by_message_id(interaction.message.id)
+                if lottery is None:
+                    await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+                    return
+                if lottery.registration_method != "reaction":
+                    await interaction.response.send_message("此抽獎不支援以按鈕報名。", ephemeral=True)
+                    return
+                user = interaction.user
+                if not isinstance(user, (Member, User)):
+                    await interaction.response.send_message("僅限伺服器成員可報名。", ephemeral=True)
+                    return
+                existing = any(
+                    p.id == str(user.id) and p.source == "discord"
+                    for p in get_participants(lottery.lottery_id)
+                )
+                participant = LotteryParticipant(
+                    id=str(user.id), name=user.display_name, source="discord"
+                )
+                ok = add_participant(lottery.lottery_id, participant)
+                if ok and not existing:
+                    await interaction.response.send_message("✅ 報名成功！", ephemeral=True)
+                elif ok and existing:
+                    await interaction.response.send_message("你已經完成報名。", ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        "此抽獎僅限其他平台報名，無法以 Discord 報名。", ephemeral=True
+                    )
+
+            join_button.callback = _join_callback  # type: ignore[assignment]
+            self.add_item(join_button)
+
+    @nextcord.ui.button(label="開始抽獎", emoji="✅", style=nextcord.ButtonStyle.success)
+    async def start_draw(  # type: ignore[override]
+        self, button: nextcord.ui.Button, interaction: Interaction
+    ) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+
+        if interaction.user.id != lottery.creator_id:  # type: ignore[attr-defined]
+            await interaction.response.send_message("只有主持人可以開始抽獎。", ephemeral=True)
+            return
+
+        # 如為 YouTube 模式，先抓取參與者
+        cog = interaction.client.get_cog("LotteryCog")
+        try:
+            if lottery.registration_method == "youtube":
+                await cog._fetch_youtube_participants_simple(lottery)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+        participants = get_participants(lottery.lottery_id)
+        if not participants:
+            await interaction.response.send_message("沒有參與者，無法開始抽獎!", ephemeral=True)
+            return
+
+        draw_count = getattr(lottery, "draw_count", 1) or 1
+        k = min(int(draw_count), len(participants))
+        winners: list[LotteryParticipant] = []
+        for _ in range(k):
+            winner = secrets.choice(participants)
+            participants.remove(winner)
+            add_winner(lottery.lottery_id, winner)
+            winners.append(winner)
+
+        result_embed = nextcord.Embed(title="🎉 恭喜中獎!", color=0xFFD700)
+        result_embed.add_field(name="活動", value=lottery.title, inline=False)
+        if len(winners) == 1:
+            w = winners[0]
+            result_embed.add_field(name="中獎者", value=f"**{w.name}**", inline=False)
+            result_embed.add_field(
+                name="來源",
+                value=("Discord" if w.source == "discord" else "YouTube"),
+                inline=True,
+            )
+        else:
+            winners_str = ", ".join([
+                f"{w.name}{' (DC)' if w.source == 'discord' else ' (YT)'}" for w in winners
+            ])
+            result_embed.add_field(
+                name=f"中獎者（{len(winners)} 人）", value=winners_str, inline=False
+            )
+        result_embed.add_field(name="剩餘參與者", value=f"{len(participants)} 人", inline=True)
+
+        # 公開公告結果
+        await interaction.response.send_message(embed=result_embed)
 
     @nextcord.ui.button(label="狀態", emoji="📊", style=nextcord.ButtonStyle.secondary)
     async def show_status(  # type: ignore[override]
@@ -395,14 +485,107 @@ class LotteryStatusView(nextcord.ui.View):
         if lottery is None:
             await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
             return
-
-        # 取得 Cog 並呼叫其內部的狀態建構器
         cog = interaction.client.get_cog("LotteryCog")
         try:
             embed = cog._build_status_embed(lottery)  # type: ignore[attr-defined]
         except Exception:
             embed = nextcord.Embed(title="📊 抽獎活動狀態", description="狀態載入失敗", color=0x0099FF)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @nextcord.ui.button(label="重新建立", emoji="🔄", style=nextcord.ButtonStyle.primary)
+    async def recreate_lottery(  # type: ignore[override]
+        self, button: nextcord.ui.Button, interaction: Interaction
+    ) -> None:
+        lottery = get_lottery_by_message_id(interaction.message.id)
+        if lottery is None:
+            await interaction.response.send_message("找不到對應的抽獎活動。", ephemeral=True)
+            return
+
+        if interaction.user.id != lottery.creator_id:  # type: ignore[attr-defined]
+            await interaction.response.send_message("只有主持人可以重新建立抽獎。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        previous_participants = list(get_participants(lottery.lottery_id))
+        previous_winners = list(lottery_winners.get(lottery.lottery_id, []))
+        combined = previous_participants + previous_winners
+        unique_map: dict[tuple[str, str], LotteryParticipant] = {}
+        for p in combined:
+            unique_map[(p.id, p.source)] = p
+        restored_participants = list(unique_map.values())
+
+        new_lottery_data = {
+            "guild_id": lottery.guild_id,
+            "title": lottery.title,
+            "description": lottery.description,
+            "creator_id": lottery.creator_id,
+            "creator_name": lottery.creator_name,
+            "registration_method": lottery.registration_method,
+            "youtube_url": lottery.youtube_url,
+            "youtube_keyword": lottery.youtube_keyword,
+            "reaction_emoji": lottery.reaction_emoji,
+            "draw_count": getattr(lottery, "draw_count", 1) or 1,
+        }
+
+        new_lottery_id = create_lottery(new_lottery_data)
+        new_lottery = lotteries_by_id[new_lottery_id]
+
+        if restored_participants:
+            lottery_participants[new_lottery_id] = list(restored_participants)
+
+        embed = nextcord.Embed(title="🎉 抽獎活動已重新建立!", color=0x00FF00)
+        embed.add_field(name="活動標題", value=new_lottery.title, inline=False)
+        embed.add_field(name="活動描述", value=new_lottery.description or "無", inline=False)
+        embed.add_field(name="註冊方式", value=new_lottery.registration_method, inline=True)
+        embed.add_field(
+            name="每次抽出人數",
+            value=f"{getattr(new_lottery, 'draw_count', 1)} 人",
+            inline=True,
+        )
+        if new_lottery.registration_method == "reaction":
+            embed.add_field(
+                name="Discord報名方式", value="對此訊息加上 🎉 表情符號即可報名", inline=False
+            )
+        elif new_lottery.registration_method == "youtube":
+            if new_lottery.youtube_url:
+                embed.add_field(name="YouTube直播", value=new_lottery.youtube_url, inline=False)
+            if new_lottery.youtube_keyword:
+                embed.add_field(
+                    name="報名關鍵字",
+                    value=f"在聊天室發送包含「{new_lottery.youtube_keyword}」的訊息",
+                    inline=False,
+                )
+        embed.add_field(
+            name="使用說明",
+            value=(
+                "下方按鈕：🎉 報名（限 Discord 模式）、✅ 開始抽獎（僅主持人）、📊 狀態（僅自己可見）、🔄 重新建立（僅主持人）。\n"
+                "Discord 模式亦可對訊息加上 🎉 報名。"
+            ),
+            inline=False,
+        )
+
+        # 發送新的控制面板訊息
+        channel = getattr(interaction, "channel", None)
+        if channel is not None:
+            new_message = await channel.send(
+                embed=embed,
+                view=LotteryControlView(registration_method=new_lottery.registration_method),
+            )
+        else:
+            new_message = await interaction.followup.send(
+                embed=embed,
+                view=LotteryControlView(registration_method=new_lottery.registration_method),
+                wait=True,
+            )
+        update_reaction_message_id(new_lottery_id, new_message.id)
+        if new_lottery.registration_method == "reaction":
+            await new_message.add_reaction("🎉")
+
+        # 關閉舊活動
+        close_lottery(lottery.lottery_id)
+
+        await interaction.followup.send("已重新建立新的抽獎。", ephemeral=True)
 
 class LotteryCog(commands.Cog):
     """抽獎功能Cog"""
@@ -518,7 +701,7 @@ class LotteryCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: nextcord.Reaction, user: Member | User) -> None:
-        """處理 Discord 反應：報名 🎉、開始 ✅、狀態 📊"""
+        """處理 Discord 反應：僅報名 🎉（其餘控制改用按鈕）。"""
         if getattr(user, "bot", False):
             return
 
@@ -540,164 +723,7 @@ class LotteryCog(commands.Cog):
                     await reaction.remove(user)
             return
 
-        # 2) 開始（僅發起人）
-        if emoji_str == "✅" and isinstance(user, (Member, User)):
-            if user.id != lottery.creator_id:
-                # 非發起人點了 ✅，直接移除避免誤觸
-                with contextlib.suppress(Exception):
-                    await reaction.remove(user)
-                return
-
-            # YouTube 模式：安靜地抓取參與者（不再發提示訊息）
-            if lottery.registration_method == "youtube":
-                await self._fetch_youtube_participants_simple(lottery)
-
-            participants = get_participants(lottery.lottery_id)
-            if not participants:
-                await reaction.message.channel.send("沒有參與者，無法開始抽獎!")
-                with contextlib.suppress(Exception):
-                    await reaction.remove(user)
-                return
-
-            # 直接抽出並公告（支援一次抽出多位）
-            draw_count = getattr(lottery, "draw_count", 1) or 1
-            k = min(int(draw_count), len(participants))
-            winners: list[LotteryParticipant] = []
-            for _ in range(k):
-                winner = secrets.choice(participants)
-                participants.remove(winner)
-                add_winner(lottery.lottery_id, winner)
-                winners.append(winner)
-
-            result_embed = nextcord.Embed(title="🎉 恭喜中獎!", color=0xFFD700)
-            result_embed.add_field(name="活動", value=lottery.title, inline=False)
-            if len(winners) == 1:
-                w = winners[0]
-                result_embed.add_field(name="中獎者", value=f"**{w.name}**", inline=False)
-                result_embed.add_field(
-                    name="來源",
-                    value=("Discord" if w.source == "discord" else "YouTube"),
-                    inline=True,
-                )
-            else:
-                winners_str = ", ".join([
-                    f"{w.name}{' (DC)' if w.source == 'discord' else ' (YT)'}" for w in winners
-                ])
-                result_embed.add_field(
-                    name=f"中獎者（{len(winners)} 人）", value=winners_str, inline=False
-                )
-            result_embed.add_field(name="剩餘參與者", value=f"{len(participants)} 人", inline=True)
-
-            await reaction.message.channel.send(embed=result_embed)
-
-            with contextlib.suppress(Exception):
-                await reaction.remove(user)
-            return
-
-        # 2.5) 重新抽獎（僅發起人）
-        if emoji_str == "🔄" and isinstance(user, (Member, User)):
-            if user.id != lottery.creator_id:
-                with contextlib.suppress(Exception):
-                    await reaction.remove(user)
-                return
-
-            # 彙總舊活動所有參與者（包含先前抽中的中獎者），去重後導入新活動
-            previous_participants = list(get_participants(lottery.lottery_id))
-            previous_winners = list(lottery_winners.get(lottery.lottery_id, []))
-            combined = previous_participants + previous_winners
-            unique_map: dict[tuple[str, str], LotteryParticipant] = {}
-            for p in combined:
-                unique_map[(p.id, p.source)] = p
-            restored_participants = list(unique_map.values())
-
-            # 建立新的抽獎（沿用舊設定）
-            new_lottery_data = {
-                "guild_id": lottery.guild_id,
-                "title": lottery.title,
-                "description": lottery.description,
-                "creator_id": lottery.creator_id,
-                "creator_name": lottery.creator_name,
-                "registration_method": lottery.registration_method,
-                "youtube_url": lottery.youtube_url,
-                "youtube_keyword": lottery.youtube_keyword,
-                "reaction_emoji": lottery.reaction_emoji,
-                "draw_count": getattr(lottery, "draw_count", 1) or 1,
-            }
-
-            new_lottery_id = create_lottery(new_lottery_data)
-            new_lottery = lotteries_by_id[new_lottery_id]
-
-            # 將舊活動的人員全部恢復到新活動
-            if restored_participants:
-                lottery_participants[new_lottery_id] = list(restored_participants)
-
-            # 發送新的建立訊息與控制反應
-            embed = nextcord.Embed(title="🎉 抽獎活動已重新建立!", color=0x00FF00)
-            embed.add_field(name="活動標題", value=new_lottery.title, inline=False)
-            embed.add_field(name="活動描述", value=new_lottery.description or "無", inline=False)
-            embed.add_field(name="註冊方式", value=new_lottery.registration_method, inline=True)
-            embed.add_field(
-                name="每次抽出人數",
-                value=f"{getattr(new_lottery, 'draw_count', 1)} 人",
-                inline=True,
-            )
-
-            if new_lottery.registration_method == "reaction":
-                embed.add_field(
-                    name="Discord報名方式", value="對此訊息加上 🎉 表情符號即可報名", inline=False
-                )
-            elif new_lottery.registration_method == "youtube":
-                if new_lottery.youtube_url:
-                    embed.add_field(
-                        name="YouTube直播", value=new_lottery.youtube_url, inline=False
-                    )
-                if new_lottery.youtube_keyword:
-                    embed.add_field(
-                        name="報名關鍵字",
-                        value=f"在聊天室發送包含「{new_lottery.youtube_keyword}」的訊息",
-                        inline=False,
-                    )
-
-            embed.add_field(
-                name="使用說明",
-                value=(
-                    "主持人加上 ✅ 以開始抽獎；🔄 可重新建立一個全新抽獎；任何人加上 📊 可查看狀態。\n"
-                    "若為 Discord 表情報名，參與者對此訊息加上 🎉 即可報名。"
-                ),
-                inline=False,
-            )
-
-            new_message = await reaction.message.channel.send(
-                embed=embed, view=LotteryStatusView()
-            )
-            update_reaction_message_id(new_lottery_id, new_message.id)
-
-            if new_lottery.registration_method == "reaction":
-                await new_message.add_reaction("🎉")
-            await new_message.add_reaction("✅")
-            await new_message.add_reaction("📊")
-            await new_message.add_reaction("🔄")
-
-            # 關閉舊活動並移除主持人觸發反應
-            close_lottery(lottery.lottery_id)
-            with contextlib.suppress(Exception):
-                await reaction.remove(user)
-            return
-
-        # 3) 狀態（任何人）
-        if emoji_str == "📊":
-            embed = self._build_status_embed(lottery)
-            # 盡量以私訊傳送，避免洗頻；若使用者關閉私訊則退回公開顯示
-            try:
-                if isinstance(user, (Member, User)):
-                    await user.send(embed=embed)
-                else:
-                    await reaction.message.channel.send(embed=embed)
-            except Exception:
-                await reaction.message.channel.send(embed=embed)
-            with contextlib.suppress(Exception):
-                await reaction.remove(user)
-            return
+        # 其餘控制（✅ 開始、📊 狀態、🔄 重新建立）已改為按鈕，這裡忽略。
 
     @commands.Cog.listener()
     async def on_reaction_remove(self, reaction: nextcord.Reaction, user: Member | User) -> None:
