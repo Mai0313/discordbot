@@ -220,7 +220,7 @@ def add_participants_ids_fields_to_embed(
             value=", ".join(youtube_names),
             inline=False,
         )
-    embed.add_field(name="總參與人數", value=f"{len(participants)} 人", inline=False)
+    # 不再另外顯示『總參與人數』，因為已在各區塊標題中呈現
 
 
 def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
@@ -228,7 +228,11 @@ def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
     embed = nextcord.Embed(title="🎉 抽獎活動已創建!", color=0x00FF00)
     embed.add_field(name="活動標題", value=lottery_data.title, inline=False)
     embed.add_field(name="活動描述", value=lottery_data.description or "無", inline=False)
-    embed.add_field(name="註冊方式", value=lottery_data.registration_method, inline=True)
+    # 顯示更友善的註冊方式文案（Discord 改為按鈕，不再鼓勵使用表情）
+    registration_label = (
+        "Discord 按鈕" if lottery_data.registration_method == "reaction" else "YouTube 關鍵字"
+    )
+    embed.add_field(name="註冊方式", value=registration_label, inline=True)
     embed.add_field(
         name="每次抽出人數", value=f"{getattr(lottery_data, 'draw_count', 1)} 人", inline=True
     )
@@ -356,10 +360,10 @@ class LotteryMethodSelectionView(nextcord.ui.View):
         placeholder="選擇報名方式...",
         options=[
             nextcord.SelectOption(
-                label="Discord 表情符號",
+                label="Discord 按鈕",
                 value="reaction",
                 emoji="🎉",
-                description="對訊息加上 🎉 表情即可報名",
+                description="按下『報名』按鈕即可參加（不再使用表情反應）",
             ),
             nextcord.SelectOption(
                 label="YouTube 關鍵字",
@@ -513,9 +517,6 @@ class LotteryControlView(nextcord.ui.View):
         if len(winners) == 1:
             w = winners[0]
             result_embed.add_field(name="中獎者", value=f"**{w.name}**", inline=False)
-            result_embed.add_field(
-                name="來源", value=("Discord" if w.source == "discord" else "YouTube"), inline=True
-            )
         else:
             winners_str = ", ".join([
                 f"{w.name}{' (DC)' if w.source == 'discord' else ' (YT)'}" for w in winners
@@ -523,7 +524,8 @@ class LotteryControlView(nextcord.ui.View):
             result_embed.add_field(
                 name=f"中獎者（{len(winners)} 人）", value=winners_str, inline=False
             )
-        result_embed.add_field(name="剩餘參與者", value=f"{len(participants)} 人", inline=True)
+        remaining_names = ", ".join([p.name for p in participants]) or "無"
+        result_embed.add_field(name="剩餘參與者", value=remaining_names, inline=False)
 
         # 公開公告結果
         await interaction.response.send_message(embed=result_embed)
@@ -599,8 +601,6 @@ class LotteryControlView(nextcord.ui.View):
                 wait=True,
             )
         update_reaction_message_id(new_lottery_id, new_message.id)
-        if new_lottery.registration_method == "reaction":
-            await new_message.add_reaction("🎉")
 
         # 關閉舊活動
         close_lottery(lottery.lottery_id)
@@ -722,39 +722,23 @@ class LotteryCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: nextcord.Reaction, user: Member | User) -> None:
-        """處理 Discord 反應：僅報名 🎉（其餘控制改用按鈕）。"""
+        """抽獎訊息全面改用按鈕操作；任何反應都會被移除以避免混淆。"""
         if getattr(user, "bot", False):
             return
 
-        # 僅處理與抽獎建立訊息綁定的反應
         lottery = get_lottery_by_message_id(reaction.message.id)
         if lottery is None:
             return
 
-        emoji_str = str(reaction.emoji)
-
-        # 1) 報名（僅 reaction 模式）
-        if emoji_str == "🎉" and lottery.registration_method == "reaction":
-            if isinstance(user, (Member, User)):
-                participant = LotteryParticipant(
-                    id=str(user.id), name=user.display_name, source="discord"
-                )
-                success = add_participant(lottery.lottery_id, participant)
-                if not success:
-                    await reaction.remove(user)
-            return
-
-        # 其餘控制（✅ 開始、📊 狀態、🔄 重新建立）已改為按鈕，這裡忽略。
+        # 統一移除反應，避免使用者以為可以用表情報名
+        with contextlib.suppress(Exception):
+            await reaction.remove(user)
+        return
 
     @commands.Cog.listener()
     async def on_reaction_remove(self, reaction: nextcord.Reaction, user: Member | User) -> None:
-        """處理Discord反應取消報名"""
-        lottery = _get_reaction_lottery_or_none(reaction)
-        if lottery is None:
-            return
-
-        if isinstance(user, (Member, User)) and not getattr(user, "bot", False):
-            remove_participant(lottery.lottery_id, str(user.id), "discord")
+        """抽獎訊息已不使用反應；忽略移除事件。"""
+        return
 
 
 def _get_reaction_lottery_or_none(reaction: nextcord.Reaction) -> "LotteryData | None":
