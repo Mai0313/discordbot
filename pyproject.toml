@@ -73,7 +73,7 @@ dependencies = [
     "google-auth>=2.40.3",
     "google-auth-oauthlib>=1.2.2",
     "logfire>=3.16.0",
-    "nextcord[speed,voice]==2.6.0",
+    "nextcord[speed]>=2.6.0",
     "openai>=1.99.6",
     "orjson>=3.10.18",
     "pandas>=2.2.3",

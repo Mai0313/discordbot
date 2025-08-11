@@ -805,7 +805,7 @@ dependencies = [
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "logfire" },
-    { name = "nextcord", extra = ["speed", "voice"] },
+    { name = "nextcord", extra = ["speed"] },
     { name = "openai" },
     { name = "orjson" },
     { name = "pandas" },
@@ -857,7 +857,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.40.3" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.2" },
     { name = "logfire", specifier = ">=3.16.0" },
-    { name = "nextcord", extras = ["speed", "voice"], specifier = "==2.6.0" },
+    { name = "nextcord", extras = ["speed"], specifier = ">=2.6.0" },
     { name = "openai", specifier = ">=1.99.6" },
     { name = "orjson", specifier = ">=3.10.18" },
     { name = "pandas", specifier = ">=2.2.3" },
@@ -2338,9 +2338,6 @@ speed = [
     { name = "aiohttp", extra = ["speedups"] },
     { name = "orjson" },
 ]
-voice = [
-    { name = "pynacl" },
-]
 
 [[package]]
 name = "nodeenv"
@@ -3521,22 +3518,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/b3/6d2b3f149bc5413b0a29761c2c5832d8ce904a1d7f621e86616d96f505cc/pymdown_extensions-10.16.1.tar.gz", hash = "sha256:aace82bcccba3efc03e25d584e6a22d27a8e17caa3f4dd9f207e49b787aa9a91", size = 853277, upload-time = "2025-07-28T16:19:34.167Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e4/06/43084e6cbd4b3bc0e80f6be743b2e79fbc6eed8de9ad8c629939fa55d972/pymdown_extensions-10.16.1-py3-none-any.whl", hash = "sha256:d6ba157a6c03146a7fb122b2b9a121300056384eafeec9c9f9e584adfdb2a32d", size = 266178, upload-time = "2025-07-28T16:19:31.401Z" },
-]
-
-[[package]]
-name = "pynacl"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cffi" },
-    { name = "six" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/5a/25aeb636baeceab15c8e57e66b8aa930c011ec1c035f284170cacb05025e/PyNaCl-1.4.0.tar.gz", hash = "sha256:54e9a2c849c742006516ad56a88f5c74bf2ce92c9f67435187c3c5953b346505", size = 3416950, upload-time = "2020-05-25T19:39:23.679Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/68/a84e1cc99e4b08f857f148ba5ff6653afb954e121e8362c7a6242d8755ef/PyNaCl-1.4.0-cp35-abi3-macosx_10_10_x86_64.whl", hash = "sha256:757250ddb3bff1eecd7e41e65f7f833a8405fede0194319f87899690624f2122", size = 380064, upload-time = "2020-05-25T23:23:30.598Z" },
-    { url = "https://files.pythonhosted.org/packages/9d/57/2f5e6226a674b2bcb6db531e8b383079b678df5b10cdaa610d6cf20d77ba/PyNaCl-1.4.0-cp35-abi3-manylinux1_x86_64.whl", hash = "sha256:30f9b96db44e09b3304f9ea95079b1b7316b2b4f3744fe3aaecccd95d547063d", size = 961075, upload-time = "2020-05-25T19:44:56.647Z" },
-    { url = "https://files.pythonhosted.org/packages/50/b8/0918da3835e72a81dfe5da23e7f00b0bf6bafa44ff8e61d68d3789b72050/PyNaCl-1.4.0-cp35-abi3-win32.whl", hash = "sha256:4e10569f8cbed81cb7526ae137049759d2a8d57726d52c1a000a3ce366779634", size = 193669, upload-time = "2020-09-13T16:45:35.91Z" },
-    { url = "https://files.pythonhosted.org/packages/8c/a6/1e94dd44f8b4a1be93a7cf5f61e5998475acd44b30cb49aee0beb5b62cc7/PyNaCl-1.4.0-cp35-abi3-win_amd64.whl", hash = "sha256:c914f78da4953b33d4685e3cdc7ce63401247a21425c16a39760e282075ac4a6", size = 206169, upload-time = "2020-09-13T16:45:37.645Z" },
 ]
 
 [[package]]
