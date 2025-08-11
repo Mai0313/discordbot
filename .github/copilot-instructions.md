@@ -139,11 +139,13 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - `🎉` Register (only when method is reaction)
     - `✅` Start drawing (host-only)
     - `📊` Show status (anyone)
+    - `🔄` Recreate lottery (host-only)
 
 **Lottery System Features:**
 
 - **Dual-Platform Registration**: Support for either Discord reaction OR YouTube chat participation (prevents cross-platform duplication)
-- **Advanced Animation System**: 15-step spinning wheel animation with cryptographically secure random selection
+- **Winners Per Draw**: Creation modal supports configuring `draw_count` (default 1). On `✅`, the bot draws up to `min(draw_count, len(participants))` winners in a single go
+- **Recreate Flow (`🔄`)**: Host can recreate a fresh lottery with identical settings. The bot restores all previous participants (including prior winners), with deduplication by `(id, source)`, then closes the old lottery and binds reactions to the new message
 - **Comprehensive Status Monitoring**: Complete participant lists with cross-platform breakdown showing all participants in comma-separated format
 - **Real-time Participant Management**: Automatic registration/removal via Discord reactions or YouTube chat keyword detection
 - **Memory Optimization**: defaultdict-based storage for automatic list initialization and efficient data handling
@@ -152,7 +154,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Internal Design (Refactor Notes):**
 
-- `active_lotteries: dict[int, LotteryData]` — one active lottery per guild
+- `active_lotteries: dict[int, LotteryData]` — one active lottery per guild (restored for test compatibility)
 - `lotteries_by_id: dict[int, LotteryData]` — direct lookup by `lottery_id` to avoid scanning global state
 - `lottery_participants: defaultdict[int, list[LotteryParticipant]]` — auto-initialized participant lists
 - `lottery_winners: defaultdict[int, list[LotteryParticipant]]` — winner history tracking
@@ -160,8 +162,17 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - Extracted helpers to remove duplication:
     - `split_participants_by_source(participants)`
     - `add_participants_fields_to_embed(embed, participants)`
-    - `_get_reaction_lottery_or_none(reaction)` for unified reaction validation in both add/remove handlers
+    - `_get_reaction_lottery_or_none(reaction)` validates emoji and ensures guild consistency with the lottery's `guild_id`
     - `LotteryCog._ensure_no_active_lottery()` and `LotteryCog._get_active_lottery_or_reply()` to standardize common checks
+
+**Data Model Changes:**
+
+- `LotteryData` now includes `draw_count: int = 1` for winners-per-draw configuration
+
+**Reaction Handling:**
+
+- `✅` Draw: Draws up to `draw_count` winners. Each winner is removed from `lottery_participants` and appended to `lottery_winners`
+- `🔄` Recreate: Gathers previous participants and winners, deduplicates by `(id, source)`, creates a new lottery with the same settings (including `draw_count` and YouTube fields), restores participants to the new lottery, sends a fresh embed, adds reactions (`🎉` if reaction mode, then `✅`, `📊`, `🔄`), updates `reaction_message_id`, and calls `close_lottery()` on the old one
 
 These changes are internal-only and preserve all user-visible behaviors.
 
