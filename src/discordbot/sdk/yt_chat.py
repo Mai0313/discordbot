@@ -12,8 +12,11 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource, build
 from google.auth.transport.requests import Request
 
-from discordbot.typings.chat import LiveChatMessageItem, LiveChatMessageListResponse
-from discordbot.typings.stream import VideoListResponse
+from discordbot.typings.models import (
+    LiveChatMessageItem,
+    LiveChatMessageListResponse,
+    VideoListResponse,
+)
 
 dotenv.load_dotenv()
 console = Console()
