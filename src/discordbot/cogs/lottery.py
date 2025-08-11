@@ -155,11 +155,6 @@ def remove_participant(lottery_id: int, participant_id: str, source: str) -> Non
     ]
 
 
-def reset_lottery_participants(lottery_id: int) -> None:
-    """重置抽獎參與者（清除中獎記錄，恢復所有參與者）"""
-    lottery_winners[lottery_id].clear()  # defaultdict 保證列表存在，直接清空
-
-
 def close_lottery(lottery_id: int) -> None:
     """關閉抽獎活動"""
     lottery = lotteries_by_id.pop(lottery_id, None)
@@ -172,18 +167,11 @@ def close_lottery(lottery_id: int) -> None:
             active_lotteries.pop(lottery.guild_id, None)
 
 
-def split_participants_by_source(
-    participants: list["LotteryParticipant"],
-) -> tuple[list["LotteryParticipant"], list["LotteryParticipant"]]:
-    discord_users = [p for p in participants if p.source == "discord"]
-    youtube_users = [p for p in participants if p.source == "youtube"]
-    return discord_users, youtube_users
-
-
 def add_participants_fields_to_embed(
     embed: nextcord.Embed, participants: list["LotteryParticipant"]
 ) -> None:
-    discord_users, youtube_users = split_participants_by_source(participants)
+    discord_users = [p for p in participants if p.source == "discord"]
+    youtube_users = [p for p in participants if p.source == "youtube"]
 
     if discord_users:
         discord_names_str = ", ".join([user.name for user in discord_users])
@@ -220,7 +208,6 @@ def add_participants_ids_fields_to_embed(
             value=", ".join(youtube_names),
             inline=False,
         )
-    # 不再另外顯示『總參與人數』，因為已在各區塊標題中呈現
 
 
 def build_creation_embed(lottery_data: "LotteryData") -> nextcord.Embed:
@@ -382,15 +369,6 @@ class LotteryMethodSelectionView(nextcord.ui.View):
         await interaction.response.send_modal(modal)
 
 
-class LotterySpinView(nextcord.ui.View):
-    """保留視圖類別以相容，但目前不再顯示控制台或動畫。"""
-
-    def __init__(self, lottery_data: LotteryData, participants: list[LotteryParticipant]):
-        super().__init__(timeout=1)
-        self.lottery_data = lottery_data
-        self.participants = participants
-
-
 class LotteryControlView(nextcord.ui.View):
     """抽獎控制面板：🎉 報名、✅ 開始、📊 狀態（ephemeral）、🔄 重新建立。"""
 
@@ -494,7 +472,7 @@ class LotteryControlView(nextcord.ui.View):
         cog: LotteryCog = interaction.client.get_cog("LotteryCog")
         try:
             if lottery.registration_method == "youtube":
-                await cog.fetch_youtube_participants_simple(lottery)
+                await cog.fetch_youtube_participants(lottery)
         except Exception:
             pass
 
@@ -614,16 +592,6 @@ class LotteryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # -------- Helper methods (避免重複邏輯) --------
-    async def _ensure_no_active_lottery(self, interaction: Interaction) -> bool:
-        # 允許多個抽獎，直接通過
-        return True
-
-    async def _get_active_lottery_or_reply(self, interaction: Interaction) -> "LotteryData | None":
-        # 此方法不再使用（保留以兼容可能的調用）
-        await interaction.response.send_message("目前沒有活躍的抽獎活動", ephemeral=True)
-        return None
-
     @nextcord.slash_command(
         name="lottery",
         description="抽獎功能主選單",
@@ -647,9 +615,7 @@ class LotteryCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    # 移除子指令：create/start/status，改以主指令+反應操作完成
-
-    async def fetch_youtube_participants_simple(self, lottery_data: LotteryData) -> int:
+    async def fetch_youtube_participants(self, lottery_data: LotteryData) -> int:
         """從 YouTube 聊天室抓取參與者，返回新增人數。"""
         if not lottery_data.youtube_url or not lottery_data.youtube_keyword:
             return 0
@@ -661,16 +627,6 @@ class LotteryCog(commands.Cog):
             if add_participant(lottery_data.lottery_id, participant):
                 added += 1
         return added
-
-    async def _send_spin_panel_to_channel(
-        self, lottery_data: LotteryData, channel: nextcord.abc.Messageable
-    ) -> None:
-        """不再發控制台與動畫；保留函式以兼容舊呼叫。"""
-        # 僅在無參與者時做簡短提示
-        participants = get_participants(lottery_data.lottery_id)
-        if not participants:
-            await channel.send("沒有參與者，無法開始抽獎!")
-            return
 
     def build_status_embed(self, lottery_data: LotteryData) -> nextcord.Embed:
         participants = get_participants(lottery_data.lottery_id)
@@ -691,66 +647,6 @@ class LotteryCog(commands.Cog):
         else:
             embed.add_field(name="參與者", value="目前沒有參與者", inline=False)
         return embed
-
-    async def _fetch_youtube_participants(
-        self, lottery_data: LotteryData, interaction: Interaction
-    ) -> None:
-        """從YouTube聊天室獲取參與者"""
-        try:
-            if not lottery_data.youtube_url or not lottery_data.youtube_keyword:
-                return
-
-            await interaction.followup.send("正在從YouTube聊天室獲取參與者...", ephemeral=True)
-
-            yt_stream = YoutubeStream(url=lottery_data.youtube_url)
-            registered_accounts = yt_stream.get_registered_accounts(lottery_data.youtube_keyword)
-
-            for account_name in registered_accounts:
-                participant = LotteryParticipant(
-                    id=account_name,  # YouTube使用顯示名稱作為ID
-                    name=account_name,
-                    source="youtube",
-                )
-                add_participant(lottery_data.lottery_id, participant)
-
-            await interaction.followup.send(
-                f"已從YouTube聊天室獲取 {len(registered_accounts)} 位參與者", ephemeral=True
-            )
-
-        except Exception as e:
-            await interaction.followup.send(f"獲取YouTube參與者時發生錯誤：{e!s}", ephemeral=True)
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction: nextcord.Reaction, user: Member | User) -> None:
-        """抽獎訊息全面改用按鈕操作；任何反應都會被移除以避免混淆。"""
-        if getattr(user, "bot", False):
-            return
-
-        lottery = get_lottery_by_message_id(reaction.message.id)
-        if lottery is None:
-            return
-
-        # 統一移除反應，避免使用者以為可以用表情報名
-        with contextlib.suppress(Exception):
-            await reaction.remove(user)
-        return
-
-    @commands.Cog.listener()
-    async def on_reaction_remove(self, reaction: nextcord.Reaction, user: Member | User) -> None:
-        """抽獎訊息已不使用反應；忽略移除事件。"""
-        return
-
-
-def _get_reaction_lottery_or_none(reaction: nextcord.Reaction) -> "LotteryData | None":
-    # 僅用於處理 🎉 報名/取消報名 的訊息對應
-    if str(reaction.emoji) != "🎉":
-        return None
-    lottery = get_lottery_by_message_id(reaction.message.id)
-    # 驗證伺服器一致，避免跨伺服器誤判
-    guild = getattr(reaction.message, "guild", None)
-    if lottery is not None and getattr(guild, "id", None) == lottery.guild_id:
-        return lottery
-    return None
 
 
 async def setup(bot: commands.Bot) -> None:
