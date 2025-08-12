@@ -845,6 +845,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "redis" },
     { name = "requests" },
+    { name = "setuptools" },
     { name = "sqlalchemy" },
     { name = "yt-dlp" },
 ]
@@ -897,6 +898,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.10.1" },
     { name = "redis", specifier = ">=6.4.0" },
     { name = "requests", specifier = ">=2.32.4" },
+    { name = "setuptools", specifier = "<81" },
     { name = "sqlalchemy", specifier = ">=2.0.42" },
     { name = "yt-dlp", specifier = ">=2025.7.21" },
 ]
