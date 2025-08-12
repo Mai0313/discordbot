@@ -1,3 +1,4 @@
+from openai import BadRequestError
 import logfire
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
@@ -17,6 +18,8 @@ class ReplyGeneratorCogs(commands.Cog):
             bot (commands.Bot): The bot instance.
         """
         self.bot = bot
+        # 儲存每個用戶的上一個 response ID，用於對話記憶
+        self.user_last_response_id: dict[int, str] = {}
 
     async def _get_attachment_list(
         self, messages: list[nextcord.Message] | None = None
@@ -105,23 +108,34 @@ class ReplyGeneratorCogs(commands.Cog):
         if model not in ["o1", "o1-mini"] and image:
             attachments.append(image.url)
 
-        await interaction.followup.send(content="思考中...")
+        await interaction.followup.send(content="Thinking...")
 
         try:
             llm_sdk = LLMSDK(model=model)
             content = await llm_sdk.prepare_response_content(prompt=prompt, image_urls=attachments)
-            responses = await llm_sdk.client.responses.create(
-                model=model,
-                tools=[{"type": "web_search_preview"}],
-                input=[{"role": "user", "content": content}],
-            )
+            try:
+                previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
+                responses = await llm_sdk.client.responses.create(
+                    model=model,
+                    tools=[{"type": "web_search_preview"}],
+                    input=[{"role": "user", "content": content}],
+                    previous_response_id=previous_response_id,
+                )
+            except BadRequestError:
+                responses = await llm_sdk.client.responses.create(
+                    model=model,
+                    tools=[{"type": "web_search_preview"}],
+                    input=[{"role": "user", "content": content}],
+                )
+
+            self.user_last_response_id[interaction.user.id] = responses.id
+
             await interaction.edit_original_message(
                 content=f"{interaction.user.mention}\n{responses.output_text}"
             )
 
         except Exception as e:
-            error_message = f"Error processing the message.\n{e}"
-            await interaction.edit_original_message(content=error_message)
+            await interaction.edit_original_message(content=f"{e}")
             logfire.error("Error in oai", _exc_info=True)
 
 
