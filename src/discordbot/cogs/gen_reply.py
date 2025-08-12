@@ -114,6 +114,7 @@ class ReplyGeneratorCogs(commands.Cog):
             llm_sdk = LLMSDK(model=model)
             content = await llm_sdk.prepare_response_content(prompt=prompt, image_urls=attachments)
             try:
+                # 獲取用戶的最新 response ID
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
@@ -122,12 +123,15 @@ class ReplyGeneratorCogs(commands.Cog):
                     previous_response_id=previous_response_id,
                 )
             except BadRequestError:
+                # 如果 API 回傳錯誤（response ID 無效），清理該用戶記錄並重新嘗試
+                self.user_last_response_id.pop(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
                     tools=[{"type": "web_search_preview"}],
                     input=[{"role": "user", "content": content}],
                 )
 
+            # 儲存新的 response ID
             self.user_last_response_id[interaction.user.id] = responses.id
 
             await interaction.edit_original_message(
