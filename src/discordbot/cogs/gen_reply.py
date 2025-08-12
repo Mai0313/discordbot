@@ -142,6 +142,35 @@ class ReplyGeneratorCogs(commands.Cog):
             await interaction.edit_original_message(content=f"{e}")
             logfire.error("Error in oai", _exc_info=True)
 
+    @nextcord.slash_command(
+        name="clear_memory",
+        description="Clear your conversation memory with the bot.",
+        name_localizations={Locale.zh_TW: "清除記憶", Locale.ja: "メモリをクリア"},
+        description_localizations={
+            Locale.zh_TW: "清除你與機器人的對話記憶。",
+            Locale.ja: "ボットとの会話メモリをクリアします。",
+        },
+        dm_permission=True,
+        nsfw=False,
+    )
+    async def clear_memory(self, interaction: Interaction) -> None:
+        """清除用戶的對話記憶。
+
+        Args:
+            interaction (Interaction): The interaction object for the command.
+        """
+        user_id = interaction.user.id
+        had_memory = self.user_last_response_id.pop(user_id, None) is not None
+
+        if had_memory:
+            await interaction.response.send_message(
+                content="對話記憶已清除! 下次對話將重新開始。", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                content="你目前沒有對話記憶需要清除。", ephemeral=True
+            )
+
 
 async def setup(bot: commands.Bot) -> None:
     """Register the reply generation cog with the bot.
