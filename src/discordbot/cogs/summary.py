@@ -21,7 +21,7 @@ Toudou:
 """
 
 SUMMARY_MESSAGE = """
-總結以下 {history_count} 則消息：
+總結以下消息：
 {chat_history_string}
 """
 
@@ -127,10 +127,21 @@ class MessageFetcher(commands.Cog):
                 return f"在此頻道中找不到 {target_user.mention} 的相關訊息。"
             return "此頻道沒有可供總結的訊息。"
 
-        chat_history_string, attachments = self._format_messages(messages)
-        final_prompt = self._create_summary_prompt(history_count, chat_history_string)
-        summary = await self._call_llm(prompt=final_prompt, attachments=attachments)
-        return summary
+        final_prompt, attachments = self._format_messages(messages)
+
+        llm_sdk = LLMSDK(model="openai/gpt-5-mini")
+        content = await llm_sdk.prepare_response_content(
+            prompt=final_prompt, image_urls=attachments
+        )
+        responses = await llm_sdk.client.responses.create(
+            model=llm_sdk.model,
+            tools=[{"type": "web_search_preview"}],
+            input=[
+                {"role": "assistant", "content": SUMMARY_PROMPT},
+                {"role": "user", "content": content},
+            ],
+        )
+        return responses.output_text
 
     async def _fetch_messages(
         self, channel: nextcord.TextChannel, history_count: int, target_user: Member | None
@@ -168,21 +179,8 @@ class MessageFetcher(commands.Cog):
                 content_text = "附件: " + ", ".join(attachment_urls)
             chat_history_lines.append(f"{msg.author.name}: {content_text}")
         chat_history_string = "\n".join(chat_history_lines)
-        return chat_history_string, attachments
-
-    def _create_summary_prompt(self, history_count: int, chat_history_string: str) -> str:
-        return SUMMARY_MESSAGE.format(
-            history_count=history_count, chat_history_string=chat_history_string
-        )
-
-    async def _call_llm(self, prompt: str, attachments: list[str]) -> str:
-        llm_sdk = LLMSDK(model="openai/gpt-5-mini")
-        prompt = SUMMARY_PROMPT + "\n\n" + prompt
-        content = await llm_sdk.prepare_completion_content(prompt=prompt, image_urls=attachments)
-        responses = await llm_sdk.client.chat.completions.create(
-            model=llm_sdk.model, messages=[{"role": "user", "content": content}]
-        )
-        return responses.choices[0].message.content
+        final_prompt = SUMMARY_MESSAGE.format(chat_history_string=chat_history_string)
+        return final_prompt, attachments
 
 
 async def setup(bot: commands.Bot) -> None:
