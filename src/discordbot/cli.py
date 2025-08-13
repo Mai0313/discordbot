@@ -11,6 +11,7 @@ import nextcord
 from nextcord.ext import tasks, commands
 
 from discordbot.typings.config import DiscordConfig
+from discordbot.sdk.artale_data import fetch_monster_cards
 from discordbot.sdk.log_message import MessageLogger
 
 
@@ -199,6 +200,10 @@ def main() -> None:
     discord_config = DiscordConfig()
     bot = DiscordBot()
     bot.run(token=discord_config.discord_bot_token)
+
+
+def update() -> None:
+    fetch_monster_cards()
 
 
 if __name__ == "__main__":

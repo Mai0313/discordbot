@@ -96,6 +96,7 @@ license = { text = "MIT" }
 [project.scripts]
 cli = "discordbot.cli:main"
 discordbot = "discordbot.cli:main"
+update = "discordbot.cli:update"
 
 [project.urls]
 Homepage = "https://github.com/Mai0313/discordbot"
