@@ -15,4 +15,5 @@ WORKDIR /app
 COPY . .
 # RUN uv sync --frozen --no-dev && uv cache clean
 RUN uv sync --no-dev && \
+    uv run playwright install chromium && \
     uv cache clean
