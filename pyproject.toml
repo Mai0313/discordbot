@@ -85,7 +85,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "redis>=6.4.0",
     "requests>=2.32.4",
-    "setuptools<81",
+    "setuptools==80.8.0",
     "sqlalchemy>=2.0.42",
     "yt-dlp>=2025.7.21",
 ]
