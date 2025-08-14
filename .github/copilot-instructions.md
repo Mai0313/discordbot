@@ -31,7 +31,8 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
 - **Response Format**: Automatically mentions the user in responses
 - **Architecture**: Uses the new OpenAI responses API instead of chat completions, enabling tool use for web search
-- **Memory Handling**: Per-user `previous_response_id` is stored in-memory in the Cog; `/clear_memory` removes it
+- **Memory Handling**: Conversation memory is tracked per user; `/clear_memory` clears the requesting user's memory
+- **UI Enhancements**: Added `OAIRegenerateView` with a "Regenerate" button that reuses the same prompt/content and scoped memory to produce alternative responses. Only the original requester can press the button.
 
 **Technical Features:**
 
