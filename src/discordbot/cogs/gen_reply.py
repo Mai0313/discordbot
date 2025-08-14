@@ -1,14 +1,24 @@
-from typing import Any
+from io import BytesIO
+import base64
+import datetime
 
 from openai import BadRequestError
 import logfire
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
+from openai.types.responses import Response
+from openai.types.responses.tool_param import ImageGeneration
+from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = ["openai/gpt-5-mini", "openai/gpt-5-nano", "claude-3-5-haiku-20241022"]
+available_models = [
+    "openai/gpt-4o",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "claude-3-5-haiku-20241022",
+]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 
@@ -22,6 +32,19 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         # 儲存每個用戶的上一個 response ID，用於對話記憶
         self.user_last_response_id: dict[int, str] = {}
+
+    def extract_image(self, responses: Response) -> bytes | None:
+        image_data: list[str] = []
+        for output in responses.output:
+            if output.type == "image_generation_call":
+                result = output.result
+                if isinstance(output.result, str):
+                    image_data.append(result)
+
+        image_bytes = None
+        if image_data:
+            image_bytes = base64.b64decode(image_data[0])
+        return image_bytes
 
     async def _get_attachment_list(
         self, messages: list[nextcord.Message] | None = None
@@ -122,7 +145,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[{"type": "web_search_preview"}, {"type": "image_generation"}],
+                    tools=[
+                        WebSearchToolParam(type="web_search_preview"),
+                        ImageGeneration(type="image_generation"),
+                    ],
                     input=[{"role": "user", "content": content}],
                     previous_response_id=previous_response_id,
                 )
@@ -131,27 +157,37 @@ class ReplyGeneratorCogs(commands.Cog):
                 self.user_last_response_id.pop(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[{"type": "web_search_preview"}, {"type": "image_generation"}],
+                    tools=[
+                        WebSearchToolParam(type="web_search_preview"),
+                        ImageGeneration(type="image_generation"),
+                    ],
                     input=[{"role": "user", "content": content}],
                 )
 
             # 儲存新的 response ID
             self.user_last_response_id[interaction.user.id] = responses.id
 
-            # 附上「重新生成」按鈕
-            view = OAIRegenerateView(
-                cog=self,
-                requester_id=interaction.user.id,
-                user_id=interaction.user.id,
-                model=model,
-                content=content,
+            await interaction.edit_original_message(
+                content=f"{interaction.user.mention}\n{responses.output_text}"
             )
 
-            edit_kwargs: dict[str, Any] = {
-                "content": f"{interaction.user.mention}\n{responses.output_text}",
-                "view": view,
-            }
-            await interaction.edit_original_message(**edit_kwargs)
+            image_bytes = self.extract_image(responses)
+            if image_bytes:
+                filename = "generated_image.png"
+                file_obj = nextcord.File(BytesIO(image_bytes), filename=filename)
+                embed_obj = nextcord.Embed(
+                    color=nextcord.Color.blurple(),
+                    title="🖼️ 生成的圖片",
+                    description=f"提示詞: {prompt}",
+                    timestamp=datetime.datetime.now(),
+                )
+                embed_obj.set_image(url=f"attachment://{filename}")
+                embed_obj.set_footer(text="Images generated via Responses API")
+                await interaction.edit_original_message(
+                    content=f"{interaction.user.mention}\n{responses.output_text}",
+                    file=file_obj,
+                    embed=embed_obj,
+                )
 
         except Exception as e:
             await interaction.edit_original_message(content=f"{e}")
@@ -194,55 +230,3 @@ async def setup(bot: commands.Bot) -> None:
         bot (commands.Bot): The bot instance to which the cog will be added.
     """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)
-
-
-class OAIRegenerateView(nextcord.ui.View):
-    def __init__(
-        self,
-        cog: ReplyGeneratorCogs,
-        requester_id: int,
-        user_id: int,
-        model: str,
-        content: list[dict[str, Any]],
-        timeout: float = 600,
-    ) -> None:
-        super().__init__(timeout=timeout)
-        self.cog = cog
-        self.requester_id = requester_id
-        self.user_id = user_id
-        self.model = model
-        self.content = content
-
-    @nextcord.ui.button(label="重新生成", emoji="🔁", style=nextcord.ButtonStyle.blurple)
-    async def regenerate(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("此按鈕僅限原請求者使用。", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        await interaction.response.edit_message(content="Thinking...", view=self)
-
-        try:
-            llm_sdk = LLMSDK(model=self.model)
-            previous_id = self.cog.user_last_response_id.get(self.user_id, None)
-            responses = await llm_sdk.client.responses.create(
-                model=self.model,
-                tools=[{"type": "web_search_preview"}],
-                input=[{"role": "user", "content": self.content}],
-                previous_response_id=previous_id,
-            )
-
-            # 更新對話最新 ID（依作用域）
-            self.cog.user_last_response_id[self.user_id] = responses.id
-
-            edit_kwargs: dict[str, Any] = {
-                "content": f"{interaction.user.mention}\n{responses.output_text}",
-                "view": self,
-            }
-
-            await interaction.followup.edit_message(
-                message_id=interaction.message.id, **edit_kwargs
-            )
-
-        except Exception as e:
-            await interaction.followup.send(content=f"重新生成失敗：{e}", ephemeral=True)

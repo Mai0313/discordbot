@@ -26,13 +26,19 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Model Support**: Multiple AI models (openai/gpt-5-mini, openai/gpt-5-nano, claude-3-5-haiku-20241022)
 - **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/discordbot/sdk/llm.py`
 - **Image Processing**: Supports image uploads with vision models using `autogen.agentchat.contrib.img_utils`
-- **Integrated Web Search**: Uses `tools=[{"type": "web_search_preview"}]` in the new responses API, allowing LLM to automatically access web information when needed
+- **Integrated Web Search & Image Generation**: Uses the new Responses API tools, e.g. `{"type": "web_search_preview"}` and `{"type": "image_generation"}`. The cog extracts `image_generation_call` results (base64 or data URI) and posts images as Discord attachments with embeds.
 - **Content Preparation**: Automatic conversion of images to base64 data URIs via `prepare_response_content()` method
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
 - **Response Format**: Automatically mentions the user in responses
 - **Architecture**: Uses the new OpenAI responses API instead of chat completions, enabling tool use for web search
 - **Memory Handling**: Conversation memory is tracked per user; `/clear_memory` clears the requesting user's memory
-- **UI Enhancements**: Added `OAIRegenerateView` with a "Regenerate" button that reuses the same prompt/content and scoped memory to produce alternative responses. Only the original requester can press the button.
+
+**Image Handling Details:**
+
+- After receiving `responses`, images are extracted from `responses.output` entries where `type == "image_generation_call"`.
+- Supports both pure base64 strings and data URIs (`data:image/png;base64,...`).
+- Decoded content is sent as up to 10 attachments per message with corresponding embeds linking each attachment using `attachment://filename`.
+- The regenerate flow also includes the image tool to allow alternate images.
 
 **Technical Features:**
 
@@ -112,7 +118,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Implementation Details:**
 
-- **Current Status**: Placeholder implementation with async deferral pattern
+- **Current Status**: Placeholder implementation with async deferral pattern. Primary image generation is integrated in `/oai` via Responses API tools.
 - **Architecture**: Framework ready for integration with image generation APIs (DALL-E, Stable Diffusion)
 - **Response Pattern**: Currently displays "功能沒寫完..." (Feature not implemented) message
 - **Technical Foundation**: Command structure and localization already implemented
