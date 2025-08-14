@@ -47,7 +47,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 if _attach:
                     attachments.extend(_attach)
             if message.stickers:
-                _attach = [f"data:image/png;base64,{sticker.url}" for sticker in message.stickers]
+                _attach = [sticker.url for sticker in message.stickers]
                 if _attach:
                     attachments.extend(_attach)
         return attachments
@@ -112,7 +112,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         try:
             llm_sdk = LLMSDK(model=model)
-            content = await llm_sdk.prepare_response_content(prompt=prompt, image_urls=attachments)
+            content = await llm_sdk.prepare_response_content(prompt=prompt, attachments=attachments)
             try:
                 # 獲取用戶的最新 response ID
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)

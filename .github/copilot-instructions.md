@@ -327,8 +327,8 @@ The comprehensive auction system allows users to create item auctions and partic
 
 **API Methods:**
 
-- `prepare_response_content()` - Multi-modal content preparation for responses API (supports input_text and input_image types)
-- `prepare_completion_content()` - Multi-modal content preparation for completions API (supports text and image_url types)
+- `prepare_response_content()` - Multi-modal content preparation for responses API (supports input_text and attachments types)
+- `prepare_completion_content()` - Multi-modal content preparation for completions API (supports text and attachments types)
 
 **Note:** Previous methods `get_oai_reply()`, `get_oai_reply_stream()`, and `get_search_result()` have been removed. The new architecture uses OpenAI's responses API directly with integrated web search tools.
 
