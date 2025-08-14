@@ -13,12 +13,7 @@ from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = [
-    "openai/gpt-4o",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "claude-3-5-haiku-20241022",
-]
+available_models = ["openai/gpt-5-mini", "openai/gpt-5-nano"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 _TOOLS = [
@@ -71,11 +66,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="oai",
-        description="Generate a reply based on the given prompt (default streaming).",
-        name_localizations={Locale.zh_TW: "生成文字", Locale.ja: "テキストを生成"},
+        description="Based on the provided hints, I can generate a reply. You can also ask me to search the web or create a drawing.",
+        name_localizations={Locale.zh_TW: "生成", Locale.ja: "生成"},
         description_localizations={
-            Locale.zh_TW: "根據提供的提示生成回覆（預設串流模式）。",
-            Locale.ja: "指定されたプロンプトに基づいて応答を生成します（デフォルトストリーミング）。",
+            Locale.zh_TW: "根據提供的提示生成回覆，你也可以讓我上網搜尋或畫圖。",
+            Locale.ja: "提供されたヒントに基づいて返信を生成できます。また、インターネット検索やイラスト作成も依頼できます。",
         },
         dm_permission=True,
         nsfw=False,
@@ -143,6 +138,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     input=[{"role": "user", "content": content}],
                     stream=True,
                     previous_response_id=previous_response_id,
+                    reasoning={"effort": "minimal"},
                 )
             except BadRequestError:
                 # 如果 API 回傳錯誤（response ID 無效），清理該用戶記錄並重新嘗試
@@ -152,6 +148,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     tools=_TOOLS,
                     input=[{"role": "user", "content": content}],
                     stream=True,
+                    reasoning={"effort": "minimal"},
                 )
 
             await self._handle_streaming_response(
