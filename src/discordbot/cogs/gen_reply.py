@@ -220,6 +220,7 @@ class OAIRegenerateView(nextcord.ui.View):
             return
 
         await interaction.response.defer()
+        await interaction.response.edit_message(content="Thinking...", view=self)
 
         try:
             llm_sdk = LLMSDK(model=self.model)
