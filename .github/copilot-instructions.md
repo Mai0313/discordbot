@@ -19,6 +19,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 **Commands:**
 
 - `/oai` - Generate AI response with integrated web search capabilities
+- `/clear_memory` - Clear per-user conversation memory (resets `previous_response_id`)
 
 **Implementation Details:**
 
@@ -30,6 +31,7 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
 - **Response Format**: Automatically mentions the user in responses
 - **Architecture**: Uses the new OpenAI responses API instead of chat completions, enabling tool use for web search
+- **Memory Handling**: Per-user `previous_response_id` is stored in-memory in the Cog; `/clear_memory` removes it
 
 **Technical Features:**
 
@@ -390,6 +392,7 @@ docker build -t discordbot . && docker run -d discordbot
 - `pydantic` - Data validation and configuration
 - `yt-dlp` - Video downloading (with configured headers and retries)
 - `logfire` - Advanced logging and monitoring
+- `playwright` - Used by `scripts/artale_data_v*.py` to scrape MapleStory data (requires `playwright install chromium`)
 
 #### Deployment Features:
 
@@ -397,5 +400,13 @@ docker build -t discordbot . && docker run -d discordbot
 - Development container configuration
 - Comprehensive CI/CD pipeline with testing and code quality checks
 - Documentation generation with MkDocs
+
+### Maintenance Scripts
+
+- `uv run update`: installs Playwright Chromium (first run) and refreshes `./data/monsters.json` via `scripts/artale_data_v2.py`.
+
+### Environment
+
+- Optional (YouTube lottery): set `YOUTUBE_DATA_API_KEY` and provide `./data/client_secret.json` (Desktop app). First use opens a localhost:8080 OAuth flow and saves `./data/token.pickle`.
 
 This Discord Bot represents a comprehensive AI-powered Discord enhancement that provides intelligent conversation assistance, content processing, and utility capabilities with enterprise-grade logging and monitoring.

@@ -60,6 +60,7 @@ _Suggestions and contributions are always welcome!_
 | Command           | Description                       | Features                                                                                                                                                                                                                                                                                       |
 | ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                                                                                                                                                                                                         |
+| `/clear_memory`   | Clear conversation memory         | Resets per-user memory used to continue conversations                                                                                                                                                                                                                                          |
 | `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                                                                                                                               |
 | `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                                                                                                                               |
 | `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                                                                                                                                   |
@@ -128,6 +129,16 @@ docker build -t discordbot .
 docker run -d discordbot
 ```
 
+### Optional: Update MapleStory database
+
+```bash
+# Install Playwright Chromium (first time only)
+uv run playwright install chromium
+
+# Fetch latest MapleStory monsters/items to ./data/monsters.json
+uv run update
+```
+
 ## ⚙️ Configuration
 
 ### Required Environment Variables
@@ -147,6 +158,29 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 
 
 ```
+
+### Optional Environment Variables
+
+```env
+# OpenAI (Azure) API version
+OPENAI_API_VERSION=2025-04-01-preview
+
+# Local message logging (SQLite)
+SQLITE_FILE_PATH=sqlite:///data/messages.db
+
+# Optional external services
+POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
+REDIS_URL=redis://redis:6379/0
+
+# YouTube Data API key (required for YouTube lottery mode)
+YOUTUBE_DATA_API_KEY=your_youtube_data_api_key
+```
+
+### YouTube Lottery mode setup (optional)
+
+- Provide a Google OAuth client file at `./data/client_secret.json` (Desktop app credentials).
+- Ensure `YOUTUBE_DATA_API_KEY` is set.
+- On first use of YouTube mode, the bot opens a browser on port 8080 to complete OAuth and saves a token to `./data/token.pickle`.
 
 ## 📁 Project Structure
 
@@ -249,8 +283,8 @@ Users may opt out of interactions via commands like `!optout` (planned) or by mu
 ## 🔐 Data Security
 
 - All API requests are made via secure HTTPS connections.
-- Data is processed only temporarily in memory and never stored on disk or external databases.
-- No long-term logs or analytics based on message or user content are maintained.
+- No data is persisted to any external service. If local message logging is enabled, messages are stored on your disk in SQLite (`./data/messages.db`) and never leave your server. You can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/sdk/log_message.py`.
+- No long-term analytics based on message or user content are performed.
 
 ## 📬 Contact and Compliance
 
@@ -261,7 +295,7 @@ If you have privacy concerns or questions about this policy, feel free to:
 
 This bot is designed using **privacy-by-design principles** with a strict minimal-data-handling approach to protect all users.
 
-_Last updated: 2025/08/11_
+_Last updated: 2025/08/14_
 
 ## Contributors
 

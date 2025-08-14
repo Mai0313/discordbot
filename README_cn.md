@@ -57,9 +57,10 @@ _歡迎提供建議和貢獻!_
 
 ## 🎯 核心指令
 
-| 指令   | 功能說明         | 特色功能                                            |
-| ------ | ---------------- | --------------------------------------------------- |
-| `/oai` | 生成 AI 文字回應 | 多模型支援（GPT-5、Claude）、圖像輸入、自動網路搜尋 |
+| 指令            | 功能說明         | 特色功能                                            |
+| --------------- | ---------------- | --------------------------------------------------- |
+| `/oai`          | 生成 AI 文字回應 | 多模型支援（GPT-5、Claude）、圖像輸入、自動網路搜尋 |
+| `/clear_memory` | 清除對話記憶     | 重置用戶的對話記憶，讓下次對話從頭開始              |
 
 | `/sum` | 互動式訊息摘要 | 用戶篩選、5/10/20/50 則訊息選項 |
 | `/download_video` | 多平台影片下載器 | 最佳/高/中/低品質；若超過 25MB 自動降為低畫質 |
@@ -129,6 +130,16 @@ docker build -t discordbot .
 docker run -d discordbot
 ```
 
+### 可選：更新楓之谷資料庫
+
+```bash
+# 安裝 Playwright Chromium（首次）
+uv run playwright install chromium
+
+# 抓取最新怪物/物品資料到 ./data/monsters.json
+uv run update
+```
+
 ## ⚙️ 配置設定
 
 ### 必要環境變數
@@ -161,7 +172,16 @@ SQLITE_FILE_PATH=sqlite:///data/messages.db
 # 其他服務（如有使用）
 POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
 REDIS_URL=redis://redis:6379/0
+
+# YouTube Data API 金鑰（YouTube 抽獎模式需要）
+YOUTUBE_DATA_API_KEY=你的_youtube_data_api_金鑰
 ```
+
+### YouTube 抽獎模式設定（可選）
+
+- 在 `./data/client_secret.json` 放置 Google OAuth 憑證（桌面應用）。
+- 設定 `YOUTUBE_DATA_API_KEY`。
+- 第一次使用 YouTube 模式時會在 8080 端口開啟瀏覽器進行授權，完成後憑證會儲存至 `./data/token.pickle`。
 
 ## 📁 專案結構
 
@@ -383,8 +403,8 @@ grep ERROR logs/bot.log
 ### 資料安全
 
 - 所有 API 通訊使用加密的 HTTPS 連接
-- 臨時資料處理在安全的短暫環境中進行
-- 沒有用戶資料會在即時請求-回應週期之外持續存在
+- 不會將資料發送至任何外部服務。若啟用本地訊息記錄，訊息僅儲存在你的磁碟（SQLite：`./data/messages.db`），不會外傳。你可以在 `src/discordbot/cli.py` 移除記錄呼叫或調整 `src/discordbot/sdk/log_message.py` 以停用。
+- 不進行基於用戶內容的長期分析。
 
 ### 聯絡與合規
 
