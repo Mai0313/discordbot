@@ -2,12 +2,12 @@ from io import BytesIO
 import base64
 import datetime
 
-from openai import BadRequestError
+from openai import AsyncStream, BadRequestError
 import logfire
 import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
-from openai.types.responses import Response
+from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ImageGeneration
 from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
@@ -21,6 +21,11 @@ available_models = [
 ]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
+_TOOLS = [
+    WebSearchToolParam(type="web_search_preview"),
+    ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
+]
+
 
 class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -32,19 +37,6 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         # 儲存每個用戶的上一個 response ID，用於對話記憶
         self.user_last_response_id: dict[int, str] = {}
-
-    def extract_image(self, responses: Response) -> bytes | None:
-        image_data: list[str] = []
-        for output in responses.output:
-            if output.type == "image_generation_call":
-                result = output.result
-                if isinstance(output.result, str):
-                    image_data.append(result)
-
-        image_bytes = None
-        if image_data:
-            image_bytes = base64.b64decode(image_data[0])
-        return image_bytes
 
     async def _get_attachment_list(
         self, messages: list[nextcord.Message] | None = None
@@ -79,11 +71,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="oai",
-        description="Generate a reply based on the given prompt.",
+        description="Generate a reply based on the given prompt (default streaming).",
         name_localizations={Locale.zh_TW: "生成文字", Locale.ja: "テキストを生成"},
         description_localizations={
-            Locale.zh_TW: "根據提供的提示生成回覆。",
-            Locale.ja: "指定されたプロンプトに基づいて応答を生成します。",
+            Locale.zh_TW: "根據提供的提示生成回覆（預設串流模式）。",
+            Locale.ja: "指定されたプロンプトに基づいて応答を生成します（デフォルトストリーミング）。",
         },
         dm_permission=True,
         nsfw=False,
@@ -133,65 +125,117 @@ class ReplyGeneratorCogs(commands.Cog):
         if model not in ["o1", "o1-mini"] and image:
             attachments.append(image.url)
 
-        await interaction.followup.send(content="Thinking...")
+        # 初始狀態訊息
+        await interaction.followup.send(content="🤔 思考中...")
 
         try:
             llm_sdk = LLMSDK(model=model)
             content = await llm_sdk.prepare_response_content(
                 prompt=prompt, attachments=attachments
             )
+            # 準備 streaming 請求
             try:
                 # 獲取用戶的最新 response ID
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
-                responses = await llm_sdk.client.responses.create(
+                stream = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[
-                        WebSearchToolParam(type="web_search_preview"),
-                        ImageGeneration(type="image_generation"),
-                    ],
+                    tools=_TOOLS,
                     input=[{"role": "user", "content": content}],
+                    stream=True,
                     previous_response_id=previous_response_id,
                 )
             except BadRequestError:
                 # 如果 API 回傳錯誤（response ID 無效），清理該用戶記錄並重新嘗試
                 self.user_last_response_id.pop(interaction.user.id, None)
-                responses = await llm_sdk.client.responses.create(
+                stream = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[
-                        WebSearchToolParam(type="web_search_preview"),
-                        ImageGeneration(type="image_generation"),
-                    ],
+                    tools=_TOOLS,
                     input=[{"role": "user", "content": content}],
+                    stream=True,
                 )
 
-            # 儲存新的 response ID
-            self.user_last_response_id[interaction.user.id] = responses.id
-
-            await interaction.edit_original_message(
-                content=f"{interaction.user.mention}\n{responses.output_text}"
+            await self._handle_streaming_response(
+                interaction=interaction, stream=stream, prompt=prompt, update_per_words=10
             )
 
-            image_bytes = self.extract_image(responses)
-            if image_bytes:
-                filename = "generated_image.png"
-                file_obj = nextcord.File(BytesIO(image_bytes), filename=filename)
-                embed_obj = nextcord.Embed(
-                    color=nextcord.Color.blurple(),
-                    title="🖼️ 生成的圖片",
-                    description=f"提示詞: {prompt}",
-                    timestamp=datetime.datetime.now(),
-                )
-                embed_obj.set_image(url=f"attachment://{filename}")
-                embed_obj.set_footer(text="Images generated via Responses API")
-                await interaction.edit_original_message(
-                    content=f"{interaction.user.mention}\n{responses.output_text}",
-                    file=file_obj,
-                    embed=embed_obj,
+        except Exception as e:
+            await interaction.edit_original_message(
+                content=f"{interaction.user.mention}\n❌ 錯誤:\n{e}"
+            )
+            logfire.error("Error in oai", _exc_info=True)
+
+    async def _handle_streaming_response(
+        self,
+        interaction: Interaction,
+        stream: AsyncStream[ResponseStreamEvent],
+        prompt: str,
+        update_per_words: int = 10,
+    ) -> None:
+        """處理 streaming 回應，每 10 個字更新一次訊息。"""
+        accumulated_text = ""
+        accumulated_image = ""
+
+        char_count = 0
+        async for event in stream:
+            # 處理完成事件，獲取 response ID
+            if event.type == "response.completed":
+                self.user_last_response_id[interaction.user.id] = event.response.id
+                continue
+
+            # 處理文字串流
+            if event.type == "response.output_text.delta":
+                accumulated_text += event.delta
+                char_count += len(event.delta)
+                # 每 X 個字更新一次訊息
+                if char_count >= update_per_words:
+                    await interaction.edit_original_message(
+                        content=f"{interaction.user.mention}\n{accumulated_text}"
+                    )
+                    char_count = 0
+
+            # 處理圖片生成串流
+            if event.type == "response.image_generation_call.partial_image":
+                accumulated_image += event.partial_image_b64
+                await self._display_image(
+                    interaction=interaction,
+                    text=accumulated_text,
+                    image_base64=event.partial_image_b64,
+                    prompt=prompt,
                 )
 
+        await interaction.edit_original_message(
+            content=f"{interaction.user.mention}\n{accumulated_text}"
+        )
+        # 文字一定會有 圖片不一定
+        if accumulated_image:
+            await self._display_image(
+                interaction=interaction,
+                text=accumulated_text,
+                image_base64=accumulated_image,
+                prompt=prompt,
+            )
+
+    async def _display_image(
+        self, interaction: Interaction, text: str, image_base64: str, prompt: str
+    ) -> None:
+        """顯示最終完整圖片。"""
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            filename = "generated_image.png"
+            file_obj = nextcord.File(BytesIO(image_bytes), filename=filename)
+            embed_obj = nextcord.Embed(
+                color=nextcord.Color.green(),
+                title="🖼️ 生成完成",
+                description=f"提示詞: {prompt}",
+                timestamp=datetime.datetime.now(),
+            )
+            embed_obj.set_image(url=f"attachment://{filename}")
+            embed_obj.set_footer(text="Images generated via Responses API")
+            await interaction.edit_original_message(
+                content=f"{interaction.user.mention}\n{text}", file=file_obj, embed=embed_obj
+            )
         except Exception as e:
-            await interaction.edit_original_message(content=f"{e}")
-            logfire.error("Error in oai", _exc_info=True)
+            logfire.warning(f"Failed to display final image: {e}")
 
     @nextcord.slash_command(
         name="clear_memory",
