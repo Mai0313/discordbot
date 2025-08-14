@@ -25,9 +25,10 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search and a **Regenerate button**
+- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search
 - **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
+- **Image Generation**: Integrated via Responses API tools; generated images are delivered as Discord attachments with rich embeds
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
 ### 📊 Content Processing
@@ -38,7 +39,7 @@ _Suggestions and contributions are always welcome!_
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
 - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate"). Uses "discord" naming (no legacy "reaction" terminology). The participant list is displayed as a single unified field.
     - Implementation note: Join/Cancel buttons are implemented as subclasses of `nextcord.ui.Button` (`JoinLotteryButton`, `CancelJoinLotteryButton`) for better maintainability and potential persistent view support. Winner checks and duplicate prevention are centralized in the core add/remove functions to keep UI flows simple.
-- **Image Generation**: Framework ready (placeholder implementation)
+- **Image Generation**: Integrated in `/oai` via the image_generation tool (Responses API). The standalone `/graph` command remains a placeholder for future expansion.
 
 ### 🌍 Multi-Language Support
 
@@ -60,7 +61,7 @@ _Suggestions and contributions are always welcome!_
 
 | Command           | Description                       | Features                                                                                                                                                                                                                                                                                       |
 | ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search, **Regenerate button**, per-user memory                                                                                                                                                                 |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image input, integrated web search and image generation (Responses API tools), per-user memory                                                                                                                                       |
 | `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                                                                                                                                     |
 | `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                                                                                                                               |
 | `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                                                                                                                               |
@@ -218,6 +219,7 @@ data/
 
 - Text and image input processing
 - Automatic image-to-base64 conversion
+- Image generation via Responses API tools; outputs are sent as Discord file attachments with embeds for a polished preview
 - Model-specific constraint handling
 - Integrated web search for real-time information
 
