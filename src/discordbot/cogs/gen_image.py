@@ -31,7 +31,7 @@ class ImageGeneratorCogs(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         await interaction.followup.send(content="圖片生成中...")
-        await interaction.edit_original_message(content="這功能沒寫完...")
+        await interaction.edit_original_message(content="請直接使用 /生成 來產生圖片")
         # try:
         #     llm_sdk = LLMSDK(model="dall-e-3")
         #     image = await llm_sdk.client.images.generate(
