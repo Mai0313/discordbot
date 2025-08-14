@@ -13,7 +13,12 @@ from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = ["openai/gpt-5-mini", "openai/gpt-5-nano"]
+available_models = [
+    "openai/gpt-4o",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "claude-3-5-haiku-20241022",
+]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 _TOOLS = [
@@ -138,7 +143,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     input=[{"role": "user", "content": content}],
                     stream=True,
                     previous_response_id=previous_response_id,
-                    reasoning={"effort": "minimal"},
                 )
             except BadRequestError:
                 # 如果 API 回傳錯誤（response ID 無效），清理該用戶記錄並重新嘗試
@@ -148,7 +152,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     tools=_TOOLS,
                     input=[{"role": "user", "content": content}],
                     stream=True,
-                    reasoning={"effort": "minimal"},
                 )
 
             await self._handle_streaming_response(
