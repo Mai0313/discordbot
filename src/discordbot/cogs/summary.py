@@ -131,7 +131,7 @@ class MessageFetcher(commands.Cog):
 
         llm_sdk = LLMSDK(model="openai/gpt-5-mini")
         content = await llm_sdk.prepare_response_content(
-            prompt=final_prompt, image_urls=attachments
+            prompt=final_prompt, attachments=attachments
         )
         responses = await llm_sdk.client.responses.create(
             model=llm_sdk.model,

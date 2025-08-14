@@ -59,25 +59,25 @@ class LLMSDK(BaseSettings):
         return client
 
     async def prepare_completion_content(
-        self, prompt: str, image_urls: list[str] | None = None
+        self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        if not image_urls:
+        if not attachments:
             return content
-        for image_url in image_urls:
-            image = get_pil_image(image_file=image_url)
+        for attachment in attachments:
+            image = get_pil_image(image_file=attachment)
             image_base64 = pil_to_data_uri(image=image)
             content.append({"type": "image_url", "image_url": {"url": image_base64}})
         return content
 
     async def prepare_response_content(
-        self, prompt: str, image_urls: list[str] | None = None
+        self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
-        if not image_urls:
+        if not attachments:
             return content
-        for image_url in image_urls:
-            image = get_pil_image(image_file=image_url)
+        for attachment in attachments:
+            image = get_pil_image(image_file=attachment)
             image_base64 = pil_to_data_uri(image=image)
             content.append({"type": "input_image", "image_url": image_base64})
         return content
