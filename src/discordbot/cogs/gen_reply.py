@@ -1,3 +1,5 @@
+from typing import Any
+
 from openai import BadRequestError
 import logfire
 import nextcord
@@ -112,13 +114,15 @@ class ReplyGeneratorCogs(commands.Cog):
 
         try:
             llm_sdk = LLMSDK(model=model)
-            content = await llm_sdk.prepare_response_content(prompt=prompt, attachments=attachments)
+            content = await llm_sdk.prepare_response_content(
+                prompt=prompt, attachments=attachments
+            )
             try:
                 # 獲取用戶的最新 response ID
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[{"type": "web_search_preview"}],
+                    tools=[{"type": "web_search_preview"}, {"type": "image_generation"}],
                     input=[{"role": "user", "content": content}],
                     previous_response_id=previous_response_id,
                 )
@@ -127,16 +131,27 @@ class ReplyGeneratorCogs(commands.Cog):
                 self.user_last_response_id.pop(interaction.user.id, None)
                 responses = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=[{"type": "web_search_preview"}],
+                    tools=[{"type": "web_search_preview"}, {"type": "image_generation"}],
                     input=[{"role": "user", "content": content}],
                 )
 
             # 儲存新的 response ID
             self.user_last_response_id[interaction.user.id] = responses.id
 
-            await interaction.edit_original_message(
-                content=f"{interaction.user.mention}\n{responses.output_text}"
+            # 附上「重新生成」按鈕
+            view = OAIRegenerateView(
+                cog=self,
+                requester_id=interaction.user.id,
+                user_id=interaction.user.id,
+                model=model,
+                content=content,
             )
+
+            edit_kwargs: dict[str, Any] = {
+                "content": f"{interaction.user.mention}\n{responses.output_text}",
+                "view": view,
+            }
+            await interaction.edit_original_message(**edit_kwargs)
 
         except Exception as e:
             await interaction.edit_original_message(content=f"{e}")
@@ -179,3 +194,54 @@ async def setup(bot: commands.Bot) -> None:
         bot (commands.Bot): The bot instance to which the cog will be added.
     """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)
+
+
+class OAIRegenerateView(nextcord.ui.View):
+    def __init__(
+        self,
+        cog: ReplyGeneratorCogs,
+        requester_id: int,
+        user_id: int,
+        model: str,
+        content: list[dict[str, Any]],
+        timeout: float = 600,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.requester_id = requester_id
+        self.user_id = user_id
+        self.model = model
+        self.content = content
+
+    @nextcord.ui.button(label="重新生成", emoji="🔁", style=nextcord.ButtonStyle.blurple)
+    async def regenerate(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("此按鈕僅限原請求者使用。", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        try:
+            llm_sdk = LLMSDK(model=self.model)
+            previous_id = self.cog.user_last_response_id.get(self.user_id, None)
+            responses = await llm_sdk.client.responses.create(
+                model=self.model,
+                tools=[{"type": "web_search_preview"}],
+                input=[{"role": "user", "content": self.content}],
+                previous_response_id=previous_id,
+            )
+
+            # 更新對話最新 ID（依作用域）
+            self.cog.user_last_response_id[self.user_id] = responses.id
+
+            edit_kwargs: dict[str, Any] = {
+                "content": f"{interaction.user.mention}\n{responses.output_text}",
+                "view": self,
+            }
+
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id, **edit_kwargs
+            )
+
+        except Exception as e:
+            await interaction.followup.send(content=f"重新生成失敗：{e}", ephemeral=True)

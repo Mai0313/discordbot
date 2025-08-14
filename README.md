@@ -25,7 +25,8 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search
+- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search and a **Regenerate button**
+- **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
@@ -59,8 +60,8 @@ _Suggestions and contributions are always welcome!_
 
 | Command           | Description                       | Features                                                                                                                                                                                                                                                                                       |
 | ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search                                                                                                                                                                                                         |
-| `/clear_memory`   | Clear conversation memory         | Resets per-user memory used to continue conversations                                                                                                                                                                                                                                          |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image, integrated web search, **Regenerate button**, per-user memory                                                                                                                                                                 |
+| `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                                                                                                                                     |
 | `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                                                                                                                               |
 | `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                                                                                                                               |
 | `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                                                                                                                                   |
