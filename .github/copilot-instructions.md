@@ -18,35 +18,41 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 
 **Commands:**
 
-- `/oai` - Generate AI response with integrated web search capabilities
+- `/oai` - Generate AI response with **default streaming** (updates about every 10 characters) and integrated web search capabilities
 - `/clear_memory` - Clear per-user conversation memory (resets `previous_response_id`)
 
 **Implementation Details:**
 
-- **Model Support**: Multiple AI models (openai/gpt-5-mini, openai/gpt-5-nano, claude-3-5-haiku-20241022)
+- **Streaming Response**: Default streaming mode that updates message content about every 10 characters for real-time user feedback
+- **Progressive Image Rendering**: Image generation shows partial updates using `response.image_generation_call.partial_image` events for smooth visual progression
+- **Model Support**: Multiple AI models (openai/gpt-4o [default], openai/gpt-5-mini, openai/gpt-5-nano, claude-3-5-haiku-20241022)
 - **Multi-API Support**: Both OpenAI and Azure OpenAI APIs via `src/discordbot/sdk/llm.py`
-- **Image Processing**: Supports image uploads with vision models using `autogen.agentchat.contrib.img_utils`
-- **Integrated Web Search & Image Generation**: Uses the new Responses API tools, e.g. `{"type": "web_search_preview"}` and `{"type": "image_generation"}`. The cog extracts `image_generation_call` results (base64 or data URI) and posts images as Discord attachments with embeds.
+- **Image Processing**: Supports image uploads via Discord attachments; `LLMSDK.prepare_response_content()` handles conversion/preparation
+- **Integrated Web Search & Image Generation**: Uses the new Responses API tools with streaming support, e.g. `{"type": "web_search_preview"}` and `{"type": "image_generation"}`. The cog receives `image_generation_call` partial results (base64 via `partial_image_b64`) and posts images as Discord attachments with embeds.
 - **Content Preparation**: Automatic conversion of images to base64 data URIs via `prepare_response_content()` method
 - **Error Handling**: Model-specific constraints (e.g., o1 models don't support images)
-- **Response Format**: Automatically mentions the user in responses
-- **Architecture**: Uses the new OpenAI responses API instead of chat completions, enabling tool use for web search
+- **Response Format**: Automatically mentions the user in responses with streaming updates
+- **Architecture**: Uses the new OpenAI responses API with streaming support instead of chat completions, enabling tool use for web search
 - **Memory Handling**: Conversation memory is tracked per user; `/clear_memory` clears the requesting user's memory
 
 **Image Handling Details:**
 
-- After receiving `responses`, images are extracted from `responses.output` entries where `type == "image_generation_call"`.
-- Supports both pure base64 strings and data URIs (`data:image/png;base64,...`).
-- Decoded content is sent as up to 10 attachments per message with corresponding embeds linking each attachment using `attachment://filename`.
-- The regenerate flow also includes the image tool to allow alternate images.
+- **Streaming Image Generation**: Handles `response.image_generation_call.partial_image` events for progressive image display during generation
+- **Final Image Display**: Displays completed images as Discord attachments with green-colored embed indicating completion
+- After receiving streaming `responses`, partial images are received via `partial_image_b64`; the accumulated final image is posted after completion
+- Decoded content is sent as Discord attachments with corresponding embeds for visual feedback
+- The regenerate flow also includes the image tool to allow alternate images with streaming support
 
 **Technical Features:**
 
-- Async OpenAI client with responses API for tool usage
+- **Real-time Streaming**: Async OpenAI client with streaming responses API for immediate user feedback
+- **Progressive Image Display**: Handles `response.image_generation_call.partial_image` events to show image generation progress
+- **Character-based Updates**: Text streaming updates message content about every 10 characters (hardcoded for simplicity)
+- **Unified Display Method**: Uses a single display method for both partial and final images; final embed uses a green color theme
 - Pydantic configuration with model mapping for Azure deployments
 - Content type detection and preparation for multi-modal inputs
-- Proper error handling for API rate limits and model constraints
-- Automatic web search integration through tool usage
+- Proper error handling for API rate limits and model constraints with streaming context
+- Automatic web search integration through tool usage with streaming support
 
 #### 2. Web Search Integration
 
@@ -359,7 +365,7 @@ The comprehensive auction system allows users to create item auctions and partic
 #### Project Structure:
 
 - **Cogs**: Modular command implementations in `src/discordbot/cogs/`
-    - `gen_reply.py` - AI text generation with multiple AI models (GPT-5, Claude) and integrated web search
+    - `gen_reply.py` - AI text generation with multiple AI models (GPT-4o default, GPT-5 mini/nano, Claude) and integrated web search
     - `summary.py` - Message summarization with interactive UI (5/10/20/50 message options)
     - `video.py` - Multi-platform video downloading with quality options
     - `maplestory.py` - MapleStory database queries and drop searches

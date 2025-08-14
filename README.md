@@ -25,10 +25,10 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple AI models (GPT-5, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with integrated web search
+- **Text Generation**: Support for multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with **default streaming** (updates about every 10 characters) and integrated web search
 - **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
-- **Image Generation**: Integrated via Responses API tools; generated images are delivered as Discord attachments with rich embeds
+- **Image Generation**: Integrated via Responses API tools with **progressive streaming rendering**; generated images are delivered as Discord attachments with rich embeds showing partial progress
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
 ### 📊 Content Processing
@@ -61,7 +61,7 @@ _Suggestions and contributions are always welcome!_
 
 | Command           | Description                       | Features                                                                                                                                                                                                                                                                                       |
 | ----------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-5 mini/nano, Claude 3.5 Haiku), optional image input, integrated web search and image generation (Responses API tools), per-user memory                                                                                                                                       |
+| `/oai`            | Generate AI text response         | Multi-model (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), optional image input, integrated web search and **progressive image generation** (Responses API tools), per-user memory                                                |
 | `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                                                                                                                                     |
 | `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                                                                                                                               |
 | `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                                                                                                                               |
@@ -217,6 +217,8 @@ data/
 
 ### Multi-Modal AI Support
 
+- **Real-time Streaming**: Text responses stream in real-time, updating every 10 characters for immediate feedback
+- **Progressive Image Rendering**: Image generation shows partial progress updates for a smooth visual experience
 - Text and image input processing
 - Automatic image-to-base64 conversion
 - Image generation via Responses API tools; outputs are sent as Discord file attachments with embeds for a polished preview

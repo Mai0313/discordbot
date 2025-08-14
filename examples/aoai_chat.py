@@ -1,37 +1,51 @@
 import dotenv
-from openai import OpenAI, AzureOpenAI
+from openai import OpenAI, Stream, AzureOpenAI
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.responses import Response, ResponseStreamEvent
+from openai.types.responses.tool_param import ImageGeneration
+from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
 dotenv.load_dotenv()
 
 
-def get_aoai_reply(model: str, question: str) -> str:
+def get_aoai_reply(
+    model: str, question: str, stream: bool
+) -> ChatCompletion | Stream[ChatCompletionChunk]:
     client = AzureOpenAI(
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         api_version=os.getenv("OPENAI_API_VERSION"),
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     )
     response = client.chat.completions.create(
-        model=model, messages=[{"role": "user", "content": question}]
+        model=model, messages=[{"role": "user", "content": question}], stream=stream
     )
-    return response.choices[0].message
+    return response
 
 
-def get_oai_reply(model: str, question: str) -> str:
+def get_oai_reply(
+    model: str, question: str, stream: bool
+) -> ChatCompletion | Stream[ChatCompletionChunk]:
     client = OpenAI(base_url=os.getenv("OPENAI_BASE_URL"), api_key=os.getenv("OPENAI_API_KEY"))
     response = client.chat.completions.create(
-        model=model, messages=[{"role": "user", "content": question}]
+        model=model, messages=[{"role": "user", "content": question}], stream=stream
     )
-    return response.choices[0].message
+    return response
 
 
-def get_oai_response(model: str, question: str) -> str:
+def get_oai_response(
+    model: str, question: str, stream: bool
+) -> Response | Stream[ResponseStreamEvent]:
     client = OpenAI(base_url=os.getenv("OPENAI_BASE_URL"), api_key=os.getenv("OPENAI_API_KEY"))
-    response = client.responses.create(
+    responses = client.responses.create(
         model=model,
-        tools=[{"type": "web_search_preview"}],
+        tools=[
+            WebSearchToolParam(type="web_search_preview"),
+            ImageGeneration(type="image_generation"),
+        ],
         input=[{"role": "user", "content": question}],
+        stream=stream,
     )
-    return response.output_text
+    return responses
 
 
 if __name__ == "__main__":
@@ -42,7 +56,11 @@ if __name__ == "__main__":
 
     console = Console()
     dotenv.load_dotenv()
-    model = "openai/gpt-5-mini"
-    question = "幫我搜一下新竹美食"
-    response = get_oai_response(model=model, question=question)
-    console.print(response)
+    model = "openai/gpt-4.1"
+    question = "幫我畫一隻貓"
+    responses = get_oai_response(model=model, question=question, stream=True)
+    if isinstance(responses, (Response, ChatCompletion)):
+        console.print(responses)
+    else:
+        for response in responses:
+            console.print(response)
