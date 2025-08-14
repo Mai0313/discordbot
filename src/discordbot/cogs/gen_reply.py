@@ -66,11 +66,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="oai",
-        description="Based on the provided hints, I can generate a reply. You can also ask me to search the web or create a drawing.",
+        description="I can reply from hints, search the web, or draw.",
         name_localizations={Locale.zh_TW: "生成", Locale.ja: "生成"},
         description_localizations={
-            Locale.zh_TW: "根據提供的提示生成回覆，你也可以讓我上網搜尋或畫圖。",
-            Locale.ja: "提供されたヒントに基づいて返信を生成できます。また、インターネット検索やイラスト作成も依頼できます。",
+            Locale.zh_TW: "我可以回答問題, 上網搜尋, 也可以畫圖",
+            Locale.ja: "提示に基づいて返答を生成し、検索や描画もできます。",
         },
         dm_permission=True,
         nsfw=False,
