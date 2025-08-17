@@ -402,6 +402,8 @@ docker-compose up -d
 docker build -t discordbot . && docker run -d discordbot
 ```
 
+Note: The Docker image installs `ffmpeg` so `yt-dlp` can merge separate audio/video streams.
+
 #### Key Dependencies:
 
 - `nextcord` - Discord API wrapper

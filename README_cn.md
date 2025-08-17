@@ -134,6 +134,8 @@ docker build -t discordbot .
 docker run -d discordbot
 ```
 
+注意：Docker 映像已安裝 `ffmpeg`，以便 yt-dlp 可合併視訊/音訊串流。
+
 ### 可選：更新楓之谷資料庫
 
 ```bash
