@@ -113,6 +113,10 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
     - Error handling with user-facing messages
 - **Progress Tracking**: Informational status updates during download process
 
+**Reliability**:
+
+- Wrapper-level configurable retry with linear backoff (defaults: `max_retries=3`, `retry_backoff_seconds=1.0`).
+
 **Technical Features:**
 
 - Dynamic filename generation with timestamp and URL parsing
