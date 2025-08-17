@@ -35,8 +35,8 @@ _Suggestions and contributions are always welcome!_
 
 - **Message Summarization**: Smart channel conversation summaries with user filtering (5, 10, 20, 50 messages)
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
-  - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
-  - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
+    - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
+    - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
 - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate"). Uses "discord" naming (no legacy "reaction" terminology). The participant list is displayed as a single unified field.
@@ -237,6 +237,7 @@ data/
 - Progress tracking and error handling
 
 #### Bilibili notes
+
 - Referer is applied only for Bilibili; other sites (e.g., Facebook) use minimal headers.
 - Ensure your `yt-dlp` is up-to-date.
 - `ffmpeg` is required for merging separate video/audio streams. Install it via your package manager.
@@ -245,6 +246,7 @@ data/
 - For geo/age/login-gated videos, you may need to provide cookies to yt-dlp (not wired in by default).
 
 #### Facebook notes
+
 - We do not force a Referer for Facebook; minimal headers are used to avoid extractor conflicts.
 - Keep `yt-dlp` up-to-date and ensure `ffmpeg` is installed.
 - If downloads fail, try a lower quality; private/login/region-limited links may require cookies passed to yt-dlp.
