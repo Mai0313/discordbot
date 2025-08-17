@@ -133,6 +133,8 @@ docker build -t discordbot .
 docker run -d discordbot
 ```
 
+Note: The Docker image installs `ffmpeg` so yt-dlp can merge separate audio/video streams.
+
 ### Optional: Update MapleStory database
 
 ```bash

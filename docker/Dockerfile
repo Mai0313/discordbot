@@ -13,6 +13,10 @@ LABEL maintainer="Wei Lee <mai@mai0313.com>" \
 FROM builder AS prod
 WORKDIR /app
 COPY . .
+# System dependencies for media processing (yt-dlp merging requires ffmpeg)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 # RUN uv sync --frozen --no-dev && uv cache clean
 RUN uv sync --no-dev && \
     # uv run playwright install chromium && \
