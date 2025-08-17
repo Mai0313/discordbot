@@ -103,6 +103,10 @@ This is a comprehensive Discord Bot built with **nextcord** (Discord.py fork) th
 - **Platform Support**: YouTube, Facebook Reels, Instagram, X (Twitter), TikTok, and more
 - **Quality Options**: Best, High (1080p), Medium (720p), Low (480p)
 - **Backend**: `yt-dlp` library via `VideoDownloader` class in `src/discordbot/utils/downloader.py`
+    - Bilibili specifics: We set `Referer: https://www.bilibili.com`, enable `geo_bypass`, prefer `bestvideo*+bestaudio` with safe fallbacks, and force `merge_output_format=mp4`.
+    - Headers are site-specific: Referer is applied only for Bilibili; other sites use minimal headers to avoid issues (e.g., Facebook).
+    - API note: `VideoDownloader.get_params(quality, dry_run, url=None)` conditionally sets headers based on the URL; `download(url, quality, dry_run)` passes the URL through.
+    - If a format error occurs, try a lower `quality` or pass cookies when needed (not wired by default).
 - **File Management**:
     - Downloads to `./data/downloads/` under daily YYYYMMDD folders
     - Automatic file size checking against Discord's 25MB limit; auto low-quality re-download if exceeded
