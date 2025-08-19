@@ -235,6 +235,7 @@ data/
 - Quality selection (4K to audio-only)
 - File size validation for Discord limits
 - Progress tracking and error handling
+- Retry mechanism powered by Tenacity: 5 attempts with 1s wait between retries (hard-coded)
 
 #### Bilibili notes
 
