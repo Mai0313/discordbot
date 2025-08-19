@@ -1,4 +1,3 @@
-import time
 from typing import Any
 from pathlib import Path
 import datetime
@@ -6,8 +5,19 @@ import datetime
 from yt_dlp import YoutubeDL
 import logfire
 from pydantic import Field, BaseModel, computed_field
+from tenacity import RetryCallState, retry, wait_fixed, stop_after_attempt, retry_if_exception_type
 
 logfire.configure(send_to_logfire=False, scrubbing=False)
+
+
+# Tenacity retry configuration (hard-coded as requested)
+_TENACITY_MAX_ATTEMPTS = 5
+_TENACITY_WAIT_SECONDS = 1
+
+
+def _before_sleep_log(retry_state: RetryCallState) -> None:
+    attempt_number = getattr(retry_state, "attempt_number", 0)
+    logfire.warning(f"[Retry {attempt_number}/{_TENACITY_MAX_ATTEMPTS}], retrying...")
 
 
 class VideoDownloader(BaseModel):
@@ -71,25 +81,20 @@ class VideoDownloader(BaseModel):
             })
         return params
 
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(_TENACITY_MAX_ATTEMPTS),
+        wait=wait_fixed(_TENACITY_WAIT_SECONDS),
+        retry=retry_if_exception_type(Exception),
+        before_sleep=_before_sleep_log,
+    )
     def download(self, url: str, quality: str = "best", dry_run: bool = False) -> tuple[str, Path]:
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
         with YoutubeDL(params=params) as ydl:
-            last_error: Exception | None = None
-            for attempt in range(1, self.max_retries + 1):
-                try:
-                    info = ydl.extract_info(url, download=True)
-                    title = info.get("title", "")
-                    filename = Path(ydl.prepare_filename(info))
-                    return title, filename
-                except Exception as exc:  # noqa: PERF203
-                    last_error = exc
-                    if attempt < self.max_retries:
-                        logfire.warning(f"[Retry {attempt}/{self.max_retries}], retrying...")
-                        time.sleep(1)
-        logfire.error(f"[Failed after {self.max_retries} attempts]")
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Download failed with unknown error")
+            info = ydl.extract_info(url, download=True)
+            title = info.get("title", "")
+            filename = Path(ydl.prepare_filename(info))
+            return title, filename
 
 
 if __name__ == "__main__":
@@ -99,5 +104,5 @@ if __name__ == "__main__":
     # url = "https://www.instagram.com/reels/DFUuxmMPz4n/"
     # url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
     # url = "https://v.douyin.com/LuXDmRrZvWs"
-    url = "https://www.bilibili.com/video/BV1BHtozkEvc"
+    url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
     result = downloader.download(url, "best", False)

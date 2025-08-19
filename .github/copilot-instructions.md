@@ -1,3 +1,40 @@
+## Developer Instructions
+
+### Video Downloader Retry Policy
+
+- The retry mechanism for `VideoDownloader.download` (in `src/discordbot/utils/downloader.py`) is implemented using Tenacity as a decorator.
+- Settings are intentionally hard-coded:
+    - Attempts: 5
+    - Wait between attempts: 1 second
+    - Retry condition: any `Exception`
+- The manual retry loop was removed in favor of Tenacity's `@retry` with `reraise=True`, `stop_after_attempt`, and `wait_fixed`.
+- A `before_sleep` hook logs a warning with the current attempt number via `logfire`.
+
+Code reference:
+
+```python
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+
+_TENACITY_MAX_ATTEMPTS = 5
+_TENACITY_WAIT_SECONDS = 1
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(_TENACITY_MAX_ATTEMPTS),
+    wait=wait_fixed(_TENACITY_WAIT_SECONDS),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=_before_sleep_log,
+)
+def download(self, url: str, quality: str = "best", dry_run: bool = False) -> tuple[str, Path]: ...
+```
+
+Notes:
+
+- Keep Tenacity configuration colocated with the downloader for now; do not externalize into settings unless requirements change.
+- `pyproject.toml` already lists `tenacity>=9.1.2` as a dependency.
+- `max_retries` field remains on the model for backward compatibility but is not used by Tenacity.
+
 <!-- Use this file to provide workspace-specific custom instructions to Copilot. For more details, visit https://code.visualstudio.com/docs/copilot/copilot-customization#_use-a-githubcopilotinstructionsmd-file -->
 
 ## Discord Bot Project Overview
