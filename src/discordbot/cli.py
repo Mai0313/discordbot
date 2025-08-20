@@ -141,7 +141,9 @@ class DiscordBot(commands.Bot):
         | commands.NotOwner
         | commands.MissingPermissions
         | commands.BotMissingPermissions
-        | commands.MissingRequiredArgument,
+        | commands.MissingRequiredArgument
+        | commands.CommandNotFound
+        | Exception,
     ) -> None:
         """The code in this event is executed every time a normal valid command catches an error.
 
@@ -192,8 +194,15 @@ class DiscordBot(commands.Bot):
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
+        elif isinstance(error, commands.CommandNotFound):
+            embed = nextcord.Embed(
+                title="Error!",
+                description=f"Command {error.command_name} not found",
+                color=0xE02B2B,
+            )
+            await context.send(embed=embed)
         else:
-            raise error
+            pass
 
 
 def main() -> None:
