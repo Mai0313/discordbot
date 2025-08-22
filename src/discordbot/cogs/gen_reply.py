@@ -13,12 +13,7 @@ from openai.types.responses.web_search_tool_param import WebSearchToolParam
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = [
-    "openai/gpt-4o",
-    "openai/gpt-5-mini",
-    "openai/gpt-5-nano",
-    "claude-3-5-haiku-20241022",
-]
+available_models = ["chatgpt-4o-latest", "gpt-4o", "gpt-5-mini", "gpt-5-nano"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
 _TOOLS = [
