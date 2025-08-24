@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
     console = Console()
     dotenv.load_dotenv()
-    model = "chatgpt-4o-latest"
+    model = "gpt-4.1"
     question = "Hi"
     responses = get_oai_response(model=model, question=question, stream=True)
     if isinstance(responses, (Response, ChatCompletion)):
