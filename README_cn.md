@@ -297,7 +297,8 @@ data/
 uv sync --dev
 
 # 執行測試
-uv run pytest
+uv sync --group test
+uv run pytest -q
 
 # 程式碼品質檢查
 uv run ruff check
@@ -305,6 +306,24 @@ uv run ruff format
 
 # 建立文檔
 uv run mkdocs serve
+```
+
+### 🧪 測試說明
+
+- 測試框架：`pytest`（含 `xdist` 平行化、`pytest-asyncio` 非同步測試、覆蓋率設定在 `pyproject.toml`）。
+- 測試路徑：所有測試位於 `tests/`，涵蓋各個 cog 與核心工具。
+- 新增的 Cog 單元測試包含：
+    - `TemplateCogs`：訊息反應與 `/ping` 延遲 Embed
+    - `MessageFetcher`（摘要）：`_format_messages()` 與 `do_summarize()`（模擬 LLM）
+    - `ReplyGeneratorCogs`：`_get_attachment_list()` 與 `/clear_memory`
+    - `ImageGeneratorCogs`：`/graph`（預留流程）
+    - `VideoCogs`：`/download_video` 樂觀流程（模擬下載器）
+
+執行完整測試並產生報表：
+
+```bash
+uv run pytest -q
+# 覆蓋率報表位置：./.github/reports 與 ./.github/coverage_html_report
 ```
 
 ### 貢獻指南
