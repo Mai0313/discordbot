@@ -322,6 +322,29 @@ This bot is designed using **privacy-by-design principles** with a strict minima
 
 _Last updated: 2025/08/14_
 
+## 🧪 Testing
+
+- Install test dependencies and run tests:
+
+```bash
+uv sync --group test
+uv run pytest -q
+```
+
+- Coverage outputs:
+
+    - JUnit XML: `./.github/reports/pytest.xml`
+    - Coverage XML: `./.github/reports/coverage.xml`
+    - Coverage HTML: `./.github/coverage_html_report/index.html`
+
+- Cog unit tests included:
+
+    - TemplateCogs: message reaction and `/ping` embed
+    - MessageFetcher: `_format_messages()` and `do_summarize()` (LLM mocked)
+    - ReplyGeneratorCogs: `_get_attachment_list()` and `/clear_memory`
+    - ImageGeneratorCogs: `/graph` placeholder flow
+    - VideoCogs: `/download_video` happy path (downloader mocked)
+
 ## Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=Mai0313/discordbot)](https://github.com/Mai0313/discordbot/graphs/contributors)

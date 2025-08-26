@@ -435,6 +435,36 @@ uv run discordbot
 # or: uv run python -m discordbot.cli
 ```
 
+#### Testing Guidance
+
+- We use `pytest` with `pytest-xdist`, `pytest-asyncio`, and `pytest-cov`. Config lives under `[tool.pytest.ini_options]` in `pyproject.toml`.
+- To install and run tests locally:
+
+```bash
+uv sync --group test
+uv run pytest -q
+```
+
+- Reports are written to:
+
+    - `./.github/reports/pytest.xml` (JUnit)
+    - `./.github/reports/coverage.xml` (coverage)
+    - `./.github/coverage_html_report/index.html` (HTML coverage)
+
+- Recently added cog unit tests cover:
+
+    - `TemplateCogs` (`src/discordbot/cogs/template.py`): message listener reaction and `/ping` embed building
+    - `MessageFetcher` (`src/discordbot/cogs/summary.py`): `_format_messages()` and `do_summarize()`; mocks `LLMSDK` and Discord channel history
+    - `ReplyGeneratorCogs` (`src/discordbot/cogs/gen_reply.py`): `_get_attachment_list()` and `/clear_memory`
+    - `ImageGeneratorCogs` (`src/discordbot/cogs/gen_image.py`): `/graph` flow (placeholder)
+    - `VideoCogs` (`src/discordbot/cogs/video.py`): `/download_video` happy path; mocks `VideoDownloader`
+
+- Test style tips:
+
+    - Prefer `AsyncMock` for awaited Discord APIs (e.g., `interaction.response.defer`, `interaction.followup.send`).
+    - For attributes like `bot.latency`, set a float (seconds) instead of a `Mock()` to avoid type errors.
+    - Keep tests hermetic; avoid network access by mocking SDK and I/O.
+
 #### Docker
 
 ```bash
