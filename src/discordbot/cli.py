@@ -90,8 +90,8 @@ class DiscordBot(commands.Bot):
         guild_id = None
         if self.discord_config.discord_test_server_id:
             guild_id = self.get_guild(self.discord_config.discord_test_server_id)
-        if isinstance(guild_id, nextcord.Guild):
-            await self.sync_application_commands(guild_id=guild_id.id)
+            if isinstance(guild_id, nextcord.Guild):
+                await self.sync_application_commands(guild_id=guild_id.id)
         await self.sync_all_application_commands()
         self.status_task.start()
 
