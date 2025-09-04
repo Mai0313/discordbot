@@ -3,6 +3,7 @@ name: Tests
 on:
   pull_request:
     branches:
+      - main
       - master
       - release/*
     paths-ignore:
@@ -35,18 +36,6 @@ jobs:
       # - name: Setup MTK Certification
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
-      # - name: Setup SSH Key
-      #   uses: shimataro/ssh-key-action@v2.7.0
-      #   with:
-      #     key: ${{ secrets.SSH_KEY }}
-      #     name: id_rsa
-      #     known_hosts: unnecessary
-      #     config: |
-      #       Host *
-      #         StrictHostKeyChecking no
-      #         UserKnownHostsFile=/dev/null
-      #     if_key_exists: replace
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -77,12 +66,7 @@ jobs:
           fi
 
       - name: Run pytest
-        if: steps.check_tests.outputs.has_tests == 'true'
-        env:
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_VERSION: ${{ secrets.OPENAI_API_VERSION }}
-          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        if: ${{ steps.check_tests.outputs.has_tests == 'true' }}
         run: |
           uv run pytest -vv
 

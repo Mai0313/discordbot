@@ -14,7 +14,7 @@ addopts = [
     "--cache-clear",
     "-n=auto",
     "--no-header",
-    "--cov-fail-under=5",
+    "--cov-fail-under=80",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -94,18 +94,14 @@ readme = "README.md"
 requires-python = ">= 3.10"
 license = { text = "MIT" }
 
-[project.scripts]
-cli = "discordbot.cli:main"
-discordbot = "discordbot.cli:main"
-update = "discordbot.cli:update"
-
 [project.urls]
 Homepage = "https://github.com/Mai0313/discordbot"
 Repository = "https://github.com/Mai0313/discordbot"
 
-[build-system]
-requires = ["hatchling", "hatch-fancy-pypi-readme"]
-build-backend = "hatchling.build"
+[project.scripts]
+cli = "discordbot.cli:main"
+discordbot = "discordbot.cli:main"
+update = "discordbot.cli:update"
 
 [dependency-groups]
 dev = [
@@ -135,6 +131,10 @@ docs = [
     "ruff",
     "tabulate",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -181,12 +181,6 @@ exclude = [
     "/.docker-compose",
     "/.cache",
 ]
-
-[tool.hatch.metadata.hooks.fancy-pypi-readme]
-content-type = "text/markdown"
-
-[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
-path = "README.md"
 
 [tool.poe.tasks]
 api = "python ./src/discordbot/cli.py"
@@ -401,7 +395,7 @@ ignore = [
     "PERF401",
     # Use `list` or `list.copy` to create a copy of a list
     "PERF402",
-    ]
+]
 
 [tool.ruff.lint.pycodestyle]
 # Ignore long comments for TODO, FIXME, XXX
@@ -519,7 +513,7 @@ skip = "pyproject.toml,poetry.lock,notebook/.*,uv.lock"
 count = false
 quiet-level = 3
 # the correct one is Amoeba, but we use pronunciation in Chinese to name it.
-ignore-words-list = ["ameba", "mke", "useable"]
+ignore-words-list = ["useable"]
 
 
 # ================== #

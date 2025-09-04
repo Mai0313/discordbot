@@ -17,8 +17,6 @@ jobs:
       matrix:
         python-version:
           - "3.10"
-          - "3.11"
-          - "3.12"
 
     steps:
       - name: Disable SSL Verify
@@ -26,18 +24,6 @@ jobs:
 
       # - name: Setup MTK Certification
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
-
-      # - name: Setup SSH Key
-      #   uses: shimataro/ssh-key-action@v2.7.0
-      #   with:
-      #     key: ${{ secrets.SSH_KEY }}
-      #     name: id_rsa
-      #     known_hosts: unnecessary
-      #     config: |
-      #       Host *
-      #         StrictHostKeyChecking no
-      #         UserKnownHostsFile=/dev/null
-      #     if_key_exists: replace
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,18 +47,6 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # - name: Set tags
-      #   id: version
-      #   run: |
-      #     if [[ $GITHUB_REF == refs/tags/* ]]; then
-      #       VERSION=${GITHUB_REF#refs/tags/}
-      #       echo "VERSION=${VERSION}" >> $GITHUB_ENV
-      #       echo "version=${VERSION}" >> $GITHUB_OUTPUT
-      #     else
-      #       echo "VERSION=latest" >> $GITHUB_ENV
-      #       echo "version=latest" >> $GITHUB_OUTPUT
-      #     fi
-
       - name: Build Package
         run: |
           uv build
@@ -84,31 +58,38 @@ jobs:
       #   run: |
       #     uv publish
 
-      - name: Generate a changelog
-        uses: orhun/git-cliff-action@v4
-        id: git-cliff
-        env:
-          OUTPUT: CHANGELOG.md
-        with:
-          config: pyproject.toml
-          args: --unreleased --tag ${{ steps.version.outputs.version }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload Artifact
+        if: ${{ contains(github.server_url, 'github') }}
         uses: actions/upload-artifact@v4.6.2
         with:
           path: ./dist/*
-          name: ${{ github.event.repository.name }}-py${{ matrix.python-version }}
+          name: ${{ github.event.repository.name }}
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 6
           overwrite: true
 
       - name: Upload Release Assets
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ contains(github.server_url, 'github') }}
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: |
+          files: |-
+            ./dist/*
+
+      - name: Upload Artifact
+        if: ${{ contains(github.server_url, 'gitea') }}
+        uses: christopherhx/gitea-upload-artifact@v4
+        with:
+          path: ./dist/*
+          name: ${{ github.event.repository.name }}
+          if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 6
+          overwrite: true
+
+      - name: Upload Release Assets
+        if: ${{ contains(github.server_url, 'gitea') }}
+        uses: akkuman/gitea-release-action@v1
+        with:
+          files: |-
             ./dist/*
