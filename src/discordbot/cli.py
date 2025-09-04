@@ -17,14 +17,12 @@ from discordbot.sdk.log_message import MessageLogger
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
+        # intents=nextcord.Intents.default() 只啟用必要的 Intents
         intents = nextcord.Intents.all()
         intents.members = False
         intents.presences = False
         super().__init__(
             command_prefix=commands.when_mentioned_or("!"),
-            # intents=nextcord.Intents.default(),
-            # 啟用所有 Intents
-            # intents=nextcord.Intents.all(),
             intents=intents,
             help_command=None,
             description="A Discord bot made with Nextcord.",
@@ -61,11 +59,8 @@ class DiscordBot(commands.Bot):
         #     parts = ["src", "cogs", *list(relative_path.parts)]
         #     cog_files.append(".".join(parts))
         cog_path = Path("./src/discordbot/cogs")
-        cog_files = [
-            f"discordbot.cogs.{f.stem}"
-            for f in cog_path.glob("*.py")
-            if not f.stem.startswith("__")
-        ]
+        all_cogs = [f.stem for f in list(cog_path.rglob("*.py")) if not f.stem.startswith("__")]
+        cog_files = [f"discordbot.cogs.{f}" for f in all_cogs]
         return cog_files
 
     async def load_cogs(self) -> None:
