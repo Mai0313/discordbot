@@ -19,18 +19,6 @@ jobs:
       # - name: Setup MTK Certification
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
-      # - name: Setup SSH Key
-      #   uses: shimataro/ssh-key-action@v2.7.0
-      #   with:
-      #     key: ${{ secrets.SSH_KEY }}
-      #     name: id_rsa
-      #     known_hosts: unnecessary
-      #     config: |
-      #       Host *
-      #         StrictHostKeyChecking no
-      #         UserKnownHostsFile=/dev/null
-      #     if_key_exists: replace
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -89,11 +77,6 @@ jobs:
           compression-level: 6
           overwrite: true
 
-      - name: List files
-        shell: pwsh
-        run: |
-          Get-ChildItem -Path .
-
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
@@ -107,9 +90,15 @@ jobs:
           ls -Force
 
       - name: Upload Release Assets
+        if: ${{ contains(github.server_url, 'github') }}
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: |
+          files: |-
+            ${{ github.event.repository.name }}_${{ steps.version.outputs.version }}.zip
+
+      - name: Upload Release Assets
+        if: ${{ contains(github.server_url, 'gitea') }}
+        uses: akkuman/gitea-release-action@v1
+        with:
+          files: |-
             ${{ github.event.repository.name }}_${{ steps.version.outputs.version }}.zip
