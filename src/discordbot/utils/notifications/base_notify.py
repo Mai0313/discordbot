@@ -30,7 +30,7 @@ class BaseNotify(BaseSettings):
     )
 
     async def _send_notify(self) -> None:
-        pass
+        raise NotImplementedError("Subclasses must implement this method")
 
     async def send_notify(self) -> None:
         try:
