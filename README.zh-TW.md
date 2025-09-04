@@ -13,7 +13,7 @@
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Mai0313/discordbot/pulls)
 [![contributors](https://img.shields.io/github/contributors/Mai0313/discordbot.svg)](https://github.com/Mai0313/discordbot/graphs/contributors)
 
-[**English**](./README.md) | **繁體中文**
+[**English**](./README.md) | **繁體中文** | [**简体中文**](./README.zh-CN.md)
 
 </center>
 
@@ -38,7 +38,7 @@ _歡迎提供建議和貢獻!_
     - Bilibili 相容性改善：加入正確 Referer 標頭、更安全的格式回退、與更穩健的錯誤處理
     - 網站專屬標頭：Referer 僅在 Bilibili 套用，以避免影響 Facebook 連結
 - **楓之谷資料庫**：查詢怪物和物品詳細掉落資訊
-- **競標系統**：完整的拍賣平台與競標功能，支援多貨幣類型（楓幣/雪花/台幣）
+- **競標系統**：完整的拍賣平台與競標功能，支援多貨幣類型（楓幣/雪花/台幣） - **已重構為模組化架構**，提升維護性
 - **抽獎系統**：多平台抽獎功能，支援 Discord「按鈕報名」或 YouTube 聊天室整合（完全不使用表情反應），可設定每次抽出人數並支援重新建立。已中獎者在同一活動期間會被自動排除，直到你使用「重新建立」開新活動。已統一採用 `discord` 命名，不再使用舊的 `reaction` 名稱。參與者名單統一以單一欄位顯示。
     - 實作說明：報名/取消按鈕以 `nextcord.ui.Button` 的子類別形式實現（`JoinLotteryButton`、`CancelJoinLotteryButton`），UI 僅處理互動；中獎與重複檢查集中在核心新增/移除函式中以保持邏輯簡潔。
 - **圖像生成**：已整合至 `/oai` 指令（使用 image_generation 工具）。獨立的 `/graph` 仍為未來擴充的預留指令。
@@ -199,7 +199,11 @@ src/discordbot/
 │   ├── summary.py      # 訊息摘要 (/sum)
 │   ├── video.py        # 影片下載 (/download_video)
 │   ├── maplestory.py   # 楓之谷資料庫查詢
-│   ├── auction.py      # 競標系統
+│   ├── auction.py      # 競標系統（重構模組化）
+│   │   ├── models.py   # Pydantic 資料模型
+│   │   ├── database.py # 資料庫操作
+│   │   ├── views.py    # UI 元件（Views, Modals, Buttons）
+│   │   └── utils.py    # 工具函數與輔助功能
 │   ├── lottery.py      # 多平台抽獎系統
 │   ├── gen_image.py    # 圖像生成（預留）
 │   └── template.py     # 系統工具與延遲測試
@@ -264,6 +268,12 @@ data/
 
 ### 競標系統
 
+- **重構模組化架構**：
+    - **models.py**：Auction 和 Bid 實體的 Pydantic 資料模型，具備完整驗證
+    - **database.py**：AuctionDatabase 類別，提供完整 CRUD 操作、遷移支援和伺服器隔離
+    - **views.py**：UI 元件，包含 Views、Modals 和 Buttons 用於互動式拍賣管理
+    - **utils.py**：工具函數，用於 embed 創建、驗證和輔助操作
+    - **auction.py**：主要 cog 實現，使用模組化元件
 - **完整拍賣平台**：
     - 創建物品拍賣，可自訂持續時間、競標增額和貨幣類型選擇（楓幣/雪花/台幣）
     - 多貨幣支援，預設為「楓幣」，另提供「雪花」和「台幣」選項

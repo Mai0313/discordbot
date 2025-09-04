@@ -2,7 +2,7 @@
 
 # AI-Powered Discord Bot 🤖
 
-**English** | [**繁體中文**](./README_cn.md)
+**English** | [**繁體中文**](./README.zh-TW.md) | [**简体中文**](./README.zh-CN.md)
 
 [![python](https://img.shields.io/badge/-Python_3.10_%7C_3.11_%7C_3.12-blue?logo=python&logoColor=white)](https://python.org)
 [![nextcord](https://img.shields.io/badge/-Nextcord-5865F2?logo=discord&logoColor=white)](https://github.com/nextcord/nextcord)
@@ -38,7 +38,7 @@ _Suggestions and contributions are always welcome!_
     - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
     - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
-- **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣)
+- **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣) - **Refactored into modular architecture** for better maintainability
 - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate"). Uses "discord" naming (no legacy "reaction" terminology). The participant list is displayed as a single unified field.
     - Implementation note: Join/Cancel buttons are implemented as subclasses of `nextcord.ui.Button` (`JoinLotteryButton`, `CancelJoinLotteryButton`) for better maintainability and potential persistent view support. Winner checks and duplicate prevention are centralized in the core add/remove functions to keep UI flows simple.
 - **Image Generation**: Integrated in `/oai` via the image_generation tool (Responses API). The standalone `/graph` command remains a placeholder for future expansion.
@@ -198,7 +198,11 @@ src/discordbot/
 │   ├── summary.py      # Message summarization (/sum)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
-│   ├── auction.py      # Auction system with bidding
+│   ├── auction.py      # Auction system with bidding (refactored modular)
+│   │   ├── models.py   # Pydantic data models
+│   │   ├── database.py # Database operations
+│   │   ├── views.py    # UI components (Views, Modals, Buttons)
+│   │   └── utils.py    # Utility functions and helpers
 │   ├── lottery.py      # Multi-platform lottery system
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # Utilities & /ping
@@ -260,7 +264,12 @@ data/
 - Detailed monster statistics and drop information
 - Item source tracking with visual displays
 - Cached search results for optimal performance
-- **Separate Auction System Module**:
+- **Refactored Auction System Module** (Modular Architecture):
+    - **models.py**: Pydantic data models for Auction and Bid entities with comprehensive validation
+    - **database.py**: AuctionDatabase class with full CRUD operations, migration support, and guild isolation
+    - **views.py**: UI components including Views, Modals, and Buttons for interactive auction management
+    - **utils.py**: Utility functions for embed creation, validation, and helper operations
+    - **auction.py**: Main cog implementation using the modular components
     - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
     - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
     - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
