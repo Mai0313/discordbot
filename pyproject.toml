@@ -218,8 +218,8 @@ preview = true
 # https://docs.astral.sh/uv/reference/settings/#index
 [[tool.uv.index]]
 name = "default"
-# url = "https://pypi.org/simple"
-url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+url = "https://pypi.org/simple"
+# url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
 
 # [[tool.uv.index]]
