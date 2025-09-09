@@ -6,4 +6,5 @@ src/discordbot/cogs/auction.py 這部分的代碼實在是太長了
 我覺得應該把功能切開放到不同的文件中
 
 請幫我將功能切開以後 放到 src/discordbot/cogs/_auction 資料夾中
-不要做任何修改 單純將功能分門別類歸類到不同python file中即可
+不要做任何修改 單純將功能分門別類歸類到不同檔案即可
+主要的 `setup` 和 `AuctionCogs` 依然放在 `src/discordbot/cogs/auction.py` 但其他東西幫我分類放進 `_auction`
