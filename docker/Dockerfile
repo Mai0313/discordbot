@@ -14,8 +14,8 @@ FROM builder AS prod
 WORKDIR /app
 COPY . .
 # System dependencies for media processing (yt-dlp merging requires ffmpeg)
-# RUN apt-get update \
-#     && apt-get install -y --no-install-recommends ffmpeg \
-#     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 RUN uv sync --no-dev && \
     uv cache clean
