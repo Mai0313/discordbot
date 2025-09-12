@@ -16,10 +16,11 @@ from discordbot.sdk.llm import LLMSDK
 available_models = ["gpt-4o", "gpt-5-mini", "gpt-5-nano"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
-_TOOLS = [
+__TOOLS = [
     WebSearchToolParam(type="web_search_preview"),
     ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
 ]
+_TOOLS = []
 
 
 class ReplyGeneratorCogs(commands.Cog):
