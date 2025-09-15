@@ -39,8 +39,8 @@ def get_oai_response(
     responses = client.responses.create(
         model=model,
         tools=[
-            WebSearchToolParam(type="web_search_preview"),
-            ImageGeneration(type="image_generation"),
+            # WebSearchToolParam(type="web_search_preview"),
+            # ImageGeneration(type="image_generation"),
         ],
         input=[{"role": "user", "content": question}],
         stream=stream,
@@ -55,8 +55,9 @@ if __name__ == "__main__":
     from rich.console import Console
 
     console = Console()
+
     dotenv.load_dotenv()
-    model = "gpt-4.1"
+    model = "gpt-4.1-mini"
     question = "Hi"
     responses = get_oai_response(model=model, question=question, stream=True)
     if isinstance(responses, (Response, ChatCompletion)):

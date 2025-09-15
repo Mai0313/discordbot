@@ -1,5 +1,6 @@
 from io import BytesIO
 import base64
+from typing import Any
 import datetime
 
 from openai import AsyncStream, BadRequestError
@@ -8,19 +9,18 @@ import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
-from openai.types.responses.tool_param import ImageGeneration
-from openai.types.responses.web_search_tool_param import WebSearchToolParam
+from openai.types.responses.tool_param import ImageGeneration  # noqa: F401
+from openai.types.responses.web_search_tool_param import WebSearchToolParam  # noqa: F401
 
 from discordbot.sdk.llm import LLMSDK
 
 available_models = ["gpt-4o", "gpt-5-mini", "gpt-5-nano"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
 
-__TOOLS = [
-    WebSearchToolParam(type="web_search_preview"),
-    ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
+_TOOLS: list[Any] = [
+    # WebSearchToolParam(type="web_search_preview"),
+    # ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
 ]
-_TOOLS: list = []
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -168,10 +168,8 @@ class ReplyGeneratorCogs(commands.Cog):
         update_per_words: int = 10,
     ) -> None:
         """處理 streaming 回應，每 10 個字更新一次訊息。"""
-        accumulated_text = ""
-        accumulated_image = ""
-
-        char_count = 0
+        accumulated_text, accumulated_image = "", ""
+        char_count, image_count = 0, 0
         async for event in stream:
             # 處理完成事件，獲取 response ID
             if event.type == "response.completed":
@@ -192,12 +190,16 @@ class ReplyGeneratorCogs(commands.Cog):
             # 處理圖片生成串流
             if event.type == "response.image_generation_call.partial_image":
                 accumulated_image += event.partial_image_b64
-                await self._display_image(
-                    interaction=interaction,
-                    text=accumulated_text,
-                    image_base64=event.partial_image_b64,
-                    prompt=prompt,
-                )
+                image_count += len(event.partial_image_b64)
+                # 每 1000 個 base64 字元更新一次訊息（大約是一張圖片）
+                if image_count >= 1000:
+                    await self._display_image(
+                        interaction=interaction,
+                        text=accumulated_text,
+                        image_base64=event.partial_image_b64,
+                        prompt=prompt,
+                    )
+                    image_count = 0
 
         await interaction.edit_original_message(
             content=f"{interaction.user.mention}\n{accumulated_text}"
