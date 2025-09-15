@@ -1,6 +1,7 @@
 from typing import Any
 from pathlib import Path
 import datetime
+from functools import cached_property
 
 from yt_dlp import YoutubeDL
 import logfire
@@ -25,7 +26,7 @@ class VideoDownloader(BaseModel):
     max_retries: int = Field(default=5)
 
     @computed_field
-    @property
+    @cached_property
     def quality_formats(self) -> dict[str, str]:
         quality_formats = {
             # Prefer separate video+audio with safe fallbacks to muxed or video-only streams

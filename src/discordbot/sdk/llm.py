@@ -1,4 +1,5 @@
 from typing import Any
+from functools import cached_property
 
 import dotenv
 from openai import AsyncOpenAI, AsyncAzureOpenAI
@@ -44,7 +45,7 @@ class LLMSDK(BaseSettings):
     )
 
     @computed_field
-    @property
+    @cached_property
     def client(self) -> AsyncOpenAI | AsyncAzureOpenAI:
         if self.api_version:
             model = self.model.split("/")[1] if "/" in self.model else self.model

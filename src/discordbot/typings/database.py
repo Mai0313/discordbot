@@ -1,4 +1,5 @@
 from typing import Any
+from functools import cached_property
 
 from redis import Redis
 import dotenv
@@ -83,7 +84,7 @@ class RedisConfig(BaseSettings):
     )
 
     @computed_field
-    @property
+    @cached_property
     def redis_instance(self) -> Redis:
         return Redis.from_url(url=self.redis_url)
 

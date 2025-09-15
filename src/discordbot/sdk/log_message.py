@@ -1,4 +1,5 @@
 from functools import cached_property
+
 import pandas as pd
 import logfire
 import nextcord
