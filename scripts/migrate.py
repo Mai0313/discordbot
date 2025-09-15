@@ -3,7 +3,6 @@ import sqlite3
 import pandas as pd
 from pydantic import Field, BaseModel
 from sqlalchemy import create_engine
-import autorootcwd  # noqa: F401
 
 from discordbot.typings.database import DatabaseConfig
 
@@ -49,6 +48,6 @@ class DatabaseMigration(BaseModel):
 
 if __name__ == "__main__":
     db_migration = DatabaseMigration()
-    # db_migration.migrate(path_or_data="./data/messages.csv")
-    db_migration.migrate_to_postgresql(path="./data/messages.db")
+    # db_migration.migrate(path_or_data="../data/messages.csv")
+    db_migration.migrate_to_postgresql(path="../data/messages.db")
     # db_migration.split(name="messages")
