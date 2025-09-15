@@ -19,14 +19,14 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.0.0
         with:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Labeler
         id: labeler
-        uses: actions/labeler@v5
+        uses: actions/labeler@v6.0.1
         with:
           sync-labels: true
           configuration-path: .github/labeler.yml

@@ -254,7 +254,9 @@ class DocsGenerator(BaseModel):
             >>> import asyncio
             >>> pair_list = {"./src": "./docs/Reference"}
             >>> for key, value in pair_list.items():
-            ...     docs_generator = DocsGenerator(source=key, output=value, exclude=".venv", mode="class")
+            ...     docs_generator = DocsGenerator(
+            ...         source=key, output=value, exclude=".venv", mode="class"
+            ...     )
             ...     asyncio.run(docs_generator())
         """
         await self.gen_docs()

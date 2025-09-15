@@ -3,15 +3,6 @@ name: Semantic Pull Request
 on:
   pull_request:
 
-  pull_request_target:
-    # A pull request's head branch was updated. For example, the head branch was updated from the base branch or new commits were pushed to the head branch.
-    # See: https://docs.github.com/en/webhooks/webhook-events-and-payloads?actionType=synchronize#pull_request
-    types:
-      - opened
-      - reopened
-      - edited
-      - synchronize
-
 permissions: write-all
 
 jobs:
@@ -23,7 +14,7 @@ jobs:
     steps:
       - name: Validate PR title
         id: lint_pr_title
-        uses: amannn/action-semantic-pull-request@v5
+        uses: amannn/action-semantic-pull-request@v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

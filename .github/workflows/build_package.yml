@@ -26,13 +26,13 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.0.0
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v6.6.1
         with:
           version: "latest"
           python-version: ${{ matrix.python-version }}
@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           VERSION=$(uvx dunamai from git --bump --no-metadata --style pep440)
-          uv version $VERSION
+          uv version $VERSION --frozen
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -71,7 +71,7 @@ jobs:
 
       - name: Upload Release Assets
         if: ${{ contains(github.server_url, 'github') }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.3.3
         with:
           files: |-
             ./dist/*

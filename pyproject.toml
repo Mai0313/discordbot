@@ -8,9 +8,8 @@ addopts = [
     "--quiet",
     "--cov=src",
     "--cov-report=term-missing:skip-covered",
-    "--junitxml=./.github/reports/pytest.xml",
     "--cov-report=xml:./.github/reports/coverage.xml",
-    "--cov-report=html:./.github/coverage_html_report",
+    "--junitxml=./.github/reports/.coverage.pytest.xml",
     "--cache-clear",
     "-n=auto",
     "--no-header",
@@ -219,7 +218,6 @@ preview = true
 [[tool.uv.index]]
 name = "default"
 url = "https://pypi.org/simple"
-# url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
 
 # [[tool.uv.index]]
@@ -251,18 +249,11 @@ show-fixes = true
 
 # In addition to the standard set of exclusions, omit all tests, plus a specific file.
 extend-exclude = [
-    ".venv",
     "logs",
     "data",
-    ".git",
     "*.svg",
     "*.sql",
-    ".cache",
     "__init__.py",
-    "__pycache__",
-    ".mypy_cache",
-    ".ruff_cache",
-    "__pypackages__",
 ]
 
 # In addition to the standard set of inclusions, include `.pyw` files.
@@ -270,9 +261,6 @@ extend-include = ["**/*.ipynb", "*.sh"]
 
 # Allow imports relative to the "src" and "test" directories.
 src = ["src", "tests"]
-
-# Assume Python 3.10.*
-target-version = "py310"
 
 # Set the cache directory to `logs/ruff_cache`.
 cache-dir = "./.cache/ruff"  # default: ".ruff_cache", now it is not allowed to create cache dir in logs
@@ -439,7 +427,7 @@ force-single-line = false
 force-sort-within-sections = true
 force-to-top = []
 force-wrap-aliases = false
-forced-separate = []
+forced-separate = ["tests"]
 from-first = false
 known-first-party = ["src", "tests"]
 known-local-folder = []
@@ -448,7 +436,7 @@ length-sort = true
 length-sort-straight = true
 lines-after-imports = -1
 lines-between-types = 0
-no-lines-before = ["future", "standard-library"]
+no-lines-before = ["future"]
 no-sections = false
 order-by-type = true
 relative-imports-order = "furthest-to-closest"
@@ -474,7 +462,7 @@ preview = true
 # Enable reformatting of code snippets in docstrings.
 docstring-code-format = true
 # Format all docstring code snippets with a line length of 60.
-docstring-code-line-length = 99
+docstring-code-line-length = "dynamic"
 exclude = ["generated"]
 indent-style = "space"
 line-ending = "auto"
@@ -502,7 +490,7 @@ data_dir = "./.cache/.logfire"
 # base_url = ""
 collect_system_metrics = false
 id_generator = true
-fast_shutdown=true
+fast_shutdown = true
 
 
 # ================== #
@@ -524,25 +512,18 @@ ignore-words-list = ["useable"]
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 # strict = true
-python_version = "3.10"
 explicit_package_bases = true
 cache_dir = "./.cache/.mypy_cache"
 exclude = ["^tests/"]
 ignore_missing_imports = true
-# install_types = true
-# non_interactive = true
-
 warn_unused_configs = true
 warn_return_any = false
 warn_redundant_casts = true
 warn_unused_ignores = true
 disable_error_code = ["attr-defined", "prop-decorator"]
-
-# remove after all files in the repo are fixed
 follow_imports = "silent"
 
 # from https://blog.wolt.com/engineering/2021/09/30/professional-grade-mypy-configuration/
-
 # no_implicit_reexport = true
 # no_implicit_optional = true
 # check_untyped_defs = true

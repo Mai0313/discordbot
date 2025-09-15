@@ -26,6 +26,7 @@ jobs:
           - "3.10"
           - "3.11"
           - "3.12"
+          - "3.13"
 
     timeout-minutes: 20
 
@@ -37,13 +38,13 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.0.0
         with:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v6.6.1
         with:
           version: "latest"
           python-version: ${{ matrix.python-version }}
@@ -68,16 +69,11 @@ jobs:
       - name: Run pytest
         if: ${{ steps.check_tests.outputs.has_tests == 'true' }}
         run: |
-          uv run pytest -vv
+          uv run pytest -vv | tee .coverage.txt
 
       - name: Pytest coverage comment
         uses: MishaKav/pytest-coverage-comment@main
-        env:
-          NODE_TLS_REJECT_UNAUTHORIZED: 0
         with:
-          pytest-coverage-path: ./.github/reports/coverage.xml
-          junitxml-path: ./.github/reports/pytest.xml
-          report-only-changed-files: true
-          title: Pytest Coverage
-          remove-link-from-badge: true
-          junitxml-title: Pytest Coverage Summary 👮
+          pytest-coverage-path: ./.coverage.txt
+          junitxml-path: ./.github/reports/.coverage.pytest.xml
+          pytest-xml-coverage-path: ./.github/reports/coverage.xml
