@@ -20,7 +20,7 @@ __TOOLS = [
     WebSearchToolParam(type="web_search_preview"),
     ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
 ]
-_TOOLS = []
+_TOOLS: list = []
 
 
 class ReplyGeneratorCogs(commands.Cog):

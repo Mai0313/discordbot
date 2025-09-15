@@ -5,7 +5,9 @@ import tempfile
 
 import pytest
 
-from discordbot.cogs.auction import Bid, Auction, AuctionDatabase, get_currency_display
+from discordbot.cogs._auction.utils import get_currency_display
+from discordbot.cogs._auction.models import Bid, Auction
+from discordbot.cogs._auction.database import AuctionDatabase
 
 
 def test_auction_model_creation():
