@@ -63,10 +63,10 @@ class MessageLogger(BaseModel):
         message_df = pd.DataFrame([data_dict])
         message_df = message_df.astype(str)
 
-        engine = create_engine(self.database.sqlite.sqlite_file_path)
-        message_df.to_sql(name=f"{self.table_name}", con=engine, if_exists="append", index=False)
-        # pengine = create_engine(self.database.postgres.postgres_url)
-        # message_df.to_sql(name=f"{self.table_name}", con=pengine, if_exists="append", index=False)
+        sql_engine = create_engine(self.database.sqlite.sqlite_file_path)
+        message_df.to_sql(name=f"{self.table_name}", con=sql_engine, if_exists="append", index=False)
+        # psg_engine = create_engine(self.database.postgres.postgres_url)
+        # message_df.to_sql(name=f"{self.table_name}", con=psg_engine, if_exists="append", index=False)
 
     async def log(self) -> None:
         try:
