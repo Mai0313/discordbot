@@ -1,8 +1,9 @@
+from functools import cached_property
 import pandas as pd
 import logfire
 import nextcord
 from pydantic import Field, BaseModel, ConfigDict, computed_field
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 
 from discordbot.typings.database import DatabaseConfig
 
@@ -11,6 +12,18 @@ class MessageLogger(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: nextcord.Message
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+
+    @computed_field
+    @cached_property
+    def sql_engine(self) -> Engine:
+        sql_engine = create_engine(self.database.sqlite.sqlite_file_path)
+        return sql_engine
+
+    @computed_field
+    @cached_property
+    def psg_engine(self) -> Engine:
+        psg_engine = create_engine(self.database.postgres.postgres_url)
+        return psg_engine
 
     @computed_field
     @property
@@ -56,17 +69,17 @@ class MessageLogger(BaseModel):
             "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "channel_name": self.channel_name_or_author_name,
             "channel_id": self.channel_id_or_author_id,
-            "attachments": ";".join(attachment_paths)[:30],
-            "stickers": ";".join(sticker_paths)[:30],
+            "attachments": ";".join(attachment_paths),
+            "stickers": ";".join(sticker_paths),
         }
-        # logfire.info("Message data", **data_dict)
-        message_df = pd.DataFrame([data_dict])
-        message_df = message_df.astype(str)
+        messages = pd.DataFrame([data_dict]).astype(str)
 
-        sql_engine = create_engine(self.database.sqlite.sqlite_file_path)
-        message_df.to_sql(name=f"{self.table_name}", con=sql_engine, if_exists="append", index=False)
-        # psg_engine = create_engine(self.database.postgres.postgres_url)
-        # message_df.to_sql(name=f"{self.table_name}", con=psg_engine, if_exists="append", index=False)
+        messages.to_sql(
+            name=f"{self.table_name}", con=self.sql_engine, if_exists="append", index=False
+        )
+        # messages.to_sql(
+        #     name=f"{self.table_name}", con=self.psg_engine, if_exists="append", index=False
+        # )
 
     async def log(self) -> None:
         try:
