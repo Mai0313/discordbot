@@ -32,20 +32,6 @@ class ImageGeneratorCogs(commands.Cog):
         await interaction.response.defer()
         await interaction.followup.send(content="圖片生成中...")
         await interaction.edit_original_message(content="請直接使用 /生成 來產生圖片")
-        # try:
-        #     llm_sdk = LLMSDK(model="dall-e-3")
-        #     image = await llm_sdk.client.images.generate(
-        #         model=llm_sdk.model, prompt=prompt, n=1, size="1024x1024"
-        #     )
-        #     embed = nextcord.Embed(
-        #         title="生成的圖片", description=f"提示詞: {prompt}", color=nextcord.Color.blue()
-        #     )
-        #     embed.set_image(url=image.data[0].url)
-        #     embed.set_footer(text="圖片由 OpenAI 生成")
-        #     await interaction.edit_original_message(embed=embed)
-        # except Exception as e:
-        #     await interaction.edit_original_message(content=f"生成圖片時發生錯誤: {e!s}")
-        #     logfire.error("Error generating image", _exc_info=True)
 
 
 # 註冊 Cog
