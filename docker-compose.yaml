@@ -16,5 +16,6 @@ services:
     volumes:
       - ./data:/app/data
       - /mnt/share/downloaded_videos:/app/data/downloads
+    network_mode: host
     restart: always
     pull_policy: always
