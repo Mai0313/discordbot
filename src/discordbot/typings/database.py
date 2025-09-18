@@ -14,7 +14,7 @@ dotenv.load_dotenv()
 
 class PostgreSQLConfig(BaseSettings):
     postgres_url: str = Field(
-        default="postgresql://postgres:postgres@postgres:5432/discordbot",
+        default="postgresql://postgres:postgres@localhost:5432/messages",
         validation_alias=AliasChoices("POSTGRES_URL"),
         title="PostgreSQL Url",
         description="The URL to connect to the PostgreSQL database.",
@@ -60,14 +60,6 @@ class SQLiteConfig(BaseSettings):
         validation_alias=AliasChoices("SQLITE_FILE_PATH"),
         title="SQLite File Path",
         description="The file path to the SQLite database file.",
-        frozen=False,
-        deprecated=False,
-    )
-    sqlite_timeout: int = Field(
-        default=30,
-        validation_alias=AliasChoices("SQLITE_TIMEOUT"),
-        title="SQLite Timeout",
-        description="The timeout duration (in seconds) for SQLite operations. Defaults to 30 seconds.",
         frozen=False,
         deprecated=False,
     )
