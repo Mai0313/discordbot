@@ -85,10 +85,20 @@ class MessageLogger(BaseModel):
         messages = pd.DataFrame([data_dict]).astype(str)
 
         messages.to_sql(
-            name=f"{self.table_name}", con=self.sql_engine, if_exists="append", index=False
+            name=f"{self.table_name}",
+            con=self.sql_engine,
+            if_exists="append",
+            index=False,
+            chunksize=10_000,
+            method="multi",
         )
         messages.to_sql(
-            name=f"{self.table_name}", con=self.psg_engine, if_exists="append", index=False
+            name=f"{self.table_name}",
+            con=self.psg_engine,
+            if_exists="append",
+            index=False,
+            chunksize=10_000,
+            method="multi",
         )
 
     async def log(self) -> None:
