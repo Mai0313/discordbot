@@ -14,7 +14,7 @@ dotenv.load_dotenv()
 
 class PostgreSQLConfig(BaseSettings):
     postgres_url: str = Field(
-        default="postgresql://postgres:postgres@postgres:5432/postgres",
+        default="postgresql://postgres:postgres@postgres:5432/discordbot",
         validation_alias=AliasChoices("POSTGRES_URL"),
         title="PostgreSQL Url",
         description="The URL to connect to the PostgreSQL database.",
