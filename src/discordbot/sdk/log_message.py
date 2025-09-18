@@ -1,3 +1,4 @@
+import re
 from functools import cached_property
 
 import pandas as pd
@@ -8,11 +9,19 @@ from sqlalchemy import Engine, create_engine
 
 from discordbot.typings.database import DatabaseConfig
 
+CONTROL_CHARS_RE = re.compile(r"\x00")
+
 
 class MessageLogger(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: nextcord.Message
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+
+    @staticmethod
+    def sanitize_text(s: str | None) -> str:
+        if s is None:
+            return ""
+        return CONTROL_CHARS_RE.sub("", s)
 
     @computed_field
     @cached_property
@@ -64,9 +73,9 @@ class MessageLogger(BaseModel):
         attachment_paths = await self._save_attachments()
         sticker_paths = await self._save_stickers()
         data_dict = {
-            "author": self.message.author.name,
+            "author": self.sanitize_text(self.message.author.name),
             "author_id": self.channel_id_or_author_id,
-            "content": self.message.content,
+            "content": self.sanitize_text(self.message.content),
             "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "channel_name": self.channel_name_or_author_name,
             "channel_id": self.channel_id_or_author_id,
@@ -78,9 +87,9 @@ class MessageLogger(BaseModel):
         messages.to_sql(
             name=f"{self.table_name}", con=self.sql_engine, if_exists="append", index=False
         )
-        # messages.to_sql(
-        #     name=f"{self.table_name}", con=self.psg_engine, if_exists="append", index=False
-        # )
+        messages.to_sql(
+            name=f"{self.table_name}", con=self.psg_engine, if_exists="append", index=False
+        )
 
     async def log(self) -> None:
         try:
