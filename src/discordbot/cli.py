@@ -22,7 +22,7 @@ class DiscordBot(commands.Bot):
         intents.members = False
         intents.presences = False
         super().__init__(
-            command_prefix=commands.when_mentioned_or("!"),
+            # command_prefix=commands.when_mentioned_or("!"),
             intents=intents,
             help_command=None,
             description="A Discord bot made with Nextcord.",
