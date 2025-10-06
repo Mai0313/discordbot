@@ -1,4 +1,4 @@
-name: Build Package
+name: Build and Release Package
 
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -59,37 +59,32 @@ jobs:
       #     uv publish
 
       - name: Upload Artifact
-        if: ${{ contains(github.server_url, 'github') }}
         uses: actions/upload-artifact@v4.6.2
         with:
           path: ./dist/*
-          name: ${{ github.event.repository.name }}
+          name: ${{ github.event.repository.name }}-py${{ matrix.python-version }}
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 6
           overwrite: true
 
-      - name: Upload Release Assets
-        if: ${{ contains(github.server_url, 'github') }}
-        uses: softprops/action-gh-release@v2.3.3
-        with:
-          files: |-
-            ./dist/*
+  release_package:
+    name: Create GitHub Release
+    needs: build_package
+    runs-on: ubuntu-latest
 
-      - name: Upload Artifact
-        if: ${{ contains(github.server_url, 'gitea') }}
-        uses: christopherhx/gitea-upload-artifact@v4
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
-          path: ./dist/*
-          name: ${{ github.event.repository.name }}
-          if-no-files-found: ignore
-          retention-days: 7
-          compression-level: 6
-          overwrite: true
+          path: dist
+          merge-multiple: true
+
+      - name: List packaged files
+        run: ls -R dist/ | cat
 
       - name: Upload Release Assets
-        if: ${{ contains(github.server_url, 'gitea') }}
-        uses: akkuman/gitea-release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: |-
-            ./dist/*
+          files: |
+            ./dist/*.whl

@@ -1,6 +1,13 @@
 name: Tests
 
 on:
+  push:
+    branches:
+      - main
+      - master
+      - release/*
+    paths-ignore:
+      - "**/*.md"
   pull_request:
     branches:
       - main
@@ -38,7 +45,7 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -72,6 +79,7 @@ jobs:
           uv run pytest -vv | tee .coverage.txt
 
       - name: Pytest coverage comment
+        if: ${{ steps.check_tests.outputs.has_tests == 'true' }}
         uses: MishaKav/pytest-coverage-comment@main
         with:
           pytest-coverage-path: ./.coverage.txt
