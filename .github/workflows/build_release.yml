@@ -20,7 +20,7 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -82,15 +82,7 @@ jobs:
           ls -Force
 
       - name: Upload Release Assets
-        if: ${{ contains(github.server_url, 'github') }}
         uses: softprops/action-gh-release@v2.3.3
         with:
-          files: |-
-            ${{ github.event.repository.name }}_${{ steps.version.outputs.version }}.zip
-
-      - name: Upload Release Assets
-        if: ${{ contains(github.server_url, 'gitea') }}
-        uses: akkuman/gitea-release-action@v1
-        with:
-          files: |-
+          files: |
             ${{ github.event.repository.name }}_${{ steps.version.outputs.version }}.zip
