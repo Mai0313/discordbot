@@ -1,7 +1,6 @@
 name: Pull Request Labeler
 
 on:
-  push:
   pull_request:
 
 permissions: write-all
@@ -19,7 +18,7 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5.0.0
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
