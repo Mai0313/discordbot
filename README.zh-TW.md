@@ -37,12 +37,12 @@ _歡迎提供建議和貢獻!_
 
 - **訊息摘要**：智能頻道對話摘要，支援用戶篩選（5、10、20、50 則訊息）
 - **影片下載**：多平台支援（YouTube、TikTok、Instagram、X、Facebook），提供品質選項
-    - Bilibili 相容性改善：加入正確 Referer 標頭、更安全的格式回退、與更穩健的錯誤處理
-    - 網站專屬標頭：Referer 僅在 Bilibili 套用，以避免影響 Facebook 連結
+  - Bilibili 相容性改善：加入正確 Referer 標頭、更安全的格式回退、與更穩健的錯誤處理
+  - 網站專屬標頭：Referer 僅在 Bilibili 套用，以避免影響 Facebook 連結
 - **楓之谷資料庫**：查詢怪物和物品詳細掉落資訊
 - **競標系統**：完整的拍賣平台與競標功能，支援多貨幣類型（楓幣/雪花/台幣） - **已重構為模組化架構**，提升維護性
 - **抽獎系統**：多平台抽獎功能，支援 Discord「按鈕報名」或 YouTube 聊天室整合（完全不使用表情反應），可設定每次抽出人數並支援重新建立。已中獎者在同一活動期間會被自動排除，直到你使用「重新建立」開新活動。已統一採用 `discord` 命名，不再使用舊的 `reaction` 名稱。參與者名單統一以單一欄位顯示。
-    - 實作說明：報名/取消按鈕以 `nextcord.ui.Button` 的子類別形式實現（`JoinLotteryButton`、`CancelJoinLotteryButton`），UI 僅處理互動；中獎與重複檢查集中在核心新增/移除函式中以保持邏輯簡潔。
+  - 實作說明：報名/取消按鈕以 `nextcord.ui.Button` 的子類別形式實現（`JoinLotteryButton`、`CancelJoinLotteryButton`），UI 僅處理互動；中獎與重複檢查集中在核心新增/移除函式中以保持邏輯簡潔。
 - **圖像生成**：已整合至 `/oai` 指令（使用 image_generation 工具）。獨立的 `/graph` 仍為未來擴充的預留指令。
 
 ### 🌍 多語言支援
@@ -93,37 +93,37 @@ _歡迎提供建議和貢獻!_
 
 1. **克隆專案**
 
-    ```bash
-    git clone https://github.com/Mai0313/discordbot.git
-    cd discordbot
-    ```
+   ```bash
+   git clone https://github.com/Mai0313/discordbot.git
+   cd discordbot
+   ```
 
 2. **使用 uv 安裝依賴**
 
-    ```bash
-    # 如果尚未安裝 uv
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```bash
+   # 如果尚未安裝 uv
+   curl -LsSf https://astral.sh/uv/install.sh | sh
 
-    # 安裝專案依賴
-    uv sync
-    ```
+   # 安裝專案依賴
+   uv sync
+   ```
 
 3. **設定環境變數**
 
-    ```bash
-    cp .env.example .env
-    # 編輯 .env 檔案，填入你的 API 金鑰和設定
-    ```
+   ```bash
+   cp .env.example .env
+   # 編輯 .env 檔案，填入你的 API 金鑰和設定
+   ```
 
 4. **啟動機器人**
 
-    ```bash
-    # 推薦（透過 entry point）
-    uv run discordbot
+   ```bash
+   # 推薦（透過 entry point）
+   uv run discordbot
 
-    # 或
-    uv run python -m discordbot.cli
-    ```
+   # 或
+   uv run python -m discordbot.cli
+   ```
 
 ### Docker 部署
 
@@ -271,18 +271,18 @@ data/
 ### 競標系統
 
 - **重構模組化架構**：
-    - **models.py**：Auction 和 Bid 實體的 Pydantic 資料模型，具備完整驗證
-    - **database.py**：AuctionDatabase 類別，提供完整 CRUD 操作、遷移支援和伺服器隔離
-    - **views.py**：UI 元件，包含 Views、Modals 和 Buttons 用於互動式拍賣管理
-    - **utils.py**：工具函數，用於 embed 創建、驗證和輔助操作
-    - **auction.py**：主要 cog 實現，使用模組化元件
+  - **models.py**：Auction 和 Bid 實體的 Pydantic 資料模型，具備完整驗證
+  - **database.py**：AuctionDatabase 類別，提供完整 CRUD 操作、遷移支援和伺服器隔離
+  - **views.py**：UI 元件，包含 Views、Modals 和 Buttons 用於互動式拍賣管理
+  - **utils.py**：工具函數，用於 embed 創建、驗證和輔助操作
+  - **auction.py**：主要 cog 實現，使用模組化元件
 - **完整拍賣平台**：
-    - 創建物品拍賣，可自訂持續時間、競標增額和貨幣類型選擇（楓幣/雪花/台幣）
-    - 多貨幣支援，預設為「楓幣」，另提供「雪花」和「台幣」選項
-    - 即時競標與互動介面（💰 出價、📊 查看記錄、🔄 刷新）
-    - 個人拍賣管理與競標追蹤，包含貨幣類型顯示
-    - 防止自我競標和重複出價的安全機制
-    - SQLite 資料庫儲存，具備 ACID 合規性和向後相容性
+  - 創建物品拍賣，可自訂持續時間、競標增額和貨幣類型選擇（楓幣/雪花/台幣）
+  - 多貨幣支援，預設為「楓幣」，另提供「雪花」和「台幣」選項
+  - 即時競標與互動介面（💰 出價、📊 查看記錄、🔄 刷新）
+  - 個人拍賣管理與競標追蹤，包含貨幣類型顯示
+  - 防止自我競標和重複出價的安全機制
+  - SQLite 資料庫儲存，具備 ACID 合規性和向後相容性
 
 ### 抽獎系統
 
@@ -325,11 +325,11 @@ uv run mkdocs serve
 - 測試框架：`pytest`（含 `xdist` 平行化、`pytest-asyncio` 非同步測試、覆蓋率設定在 `pyproject.toml`）。
 - 測試路徑：所有測試位於 `tests/`，涵蓋各個 cog 與核心工具。
 - 新增的 Cog 單元測試包含：
-    - `TemplateCogs`：訊息反應與 `/ping` 延遲 Embed
-    - `MessageFetcher`（摘要）：`_format_messages()` 與 `do_summarize()`（模擬 LLM）
-    - `ReplyGeneratorCogs`：`_get_attachment_list()` 與 `/clear_memory`
-    - `ImageGeneratorCogs`：`/graph`（預留流程）
-    - `VideoCogs`：`/download_video` 樂觀流程（模擬下載器）
+  - `TemplateCogs`：訊息反應與 `/ping` 延遲 Embed
+  - `MessageFetcher`（摘要）：`_format_messages()` 與 `do_summarize()`（模擬 LLM）
+  - `ReplyGeneratorCogs`：`_get_attachment_list()` 與 `/clear_memory`
+  - `ImageGeneratorCogs`：`/graph`（預留流程）
+  - `VideoCogs`：`/download_video` 樂觀流程（模擬下載器）
 
 執行完整測試並產生報表：
 
@@ -377,23 +377,23 @@ uv run pytest -q
 
 1. **環境準備**
 
-    ```bash
-    # 設定生產環境變數
-    export DISCORD_BOT_TOKEN="生產環境token"
-    export OPENAI_API_KEY="生產環境金鑰"
-    ```
+   ```bash
+   # 設定生產環境變數
+   export DISCORD_BOT_TOKEN="生產環境token"
+   export OPENAI_API_KEY="生產環境金鑰"
+   ```
 
 2. **Docker 部署**
 
-    ```bash
-    docker-compose -f docker-compose.yaml up -d
-    ```
+   ```bash
+   docker-compose -f docker-compose.yaml up -d
+   ```
 
 3. **監控設定**
 
-    - 使用 Logfire 進行日誌監控
-    - 設定健康檢查端點
-    - 配置錯誤通知
+   - 使用 Logfire 進行日誌監控
+   - 設定健康檢查端點
+   - 配置錯誤通知
 
 ## 🔧 疑難排解
 
