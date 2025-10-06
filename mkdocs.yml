@@ -1,10 +1,10 @@
 site_name: LLM Discord Bot
-site_url: https://mai0313.github.io/discordbot/
+site_url: https://mai0313.github.io/discordbot
 site_author: Wei Lee
 
 repo_name: Mai0313/discordbot
 repo_url: https://github.com/Mai0313/discordbot
-edit_uri: edit/master/docs/
+edit_uri: edit/main/docs/
 
 docs_dir: docs
 site_dir: site

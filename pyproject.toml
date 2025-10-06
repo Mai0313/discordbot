@@ -94,7 +94,7 @@ requires-python = ">= 3.10"
 license = { text = "MIT" }
 
 [project.urls]
-Homepage = "https://github.com/Mai0313/discordbot"
+Homepage = "https://mai0313.github.io/discordbot"
 Repository = "https://github.com/Mai0313/discordbot"
 
 [project.scripts]
