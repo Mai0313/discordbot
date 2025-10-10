@@ -2,30 +2,29 @@
 # package ecosystems to update and where the package manifests are located.
 # Please see the documentation for more information:
 # https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
-# https://containers.dev/guide/dependabot
 
 version: 2
 updates:
   # pip (Python)
-  - package-ecosystem: pip
-    directory: /
+  - package-ecosystem: "pip"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
 
   # uv (Python)
-  - package-ecosystem: uv
-    directory: /
+  - package-ecosystem: "uv"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
 
   # Devcontainers
-  - package-ecosystem: devcontainers
-    directory: /
+  - package-ecosystem: "devcontainers"
+    directory: ".devcontainer"
     schedule:
-      interval: weekly
+      interval: "weekly"
 
   # GitHub Actions
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: "github-actions"
+    directory: ".github/workflows"
     schedule:
-      interval: weekly
+      interval: "weekly"
