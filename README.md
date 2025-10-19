@@ -1,4 +1,4 @@
-<center>
+<div align="center" markdown="1">
 
 # AI-Powered Discord Bot 🤖
 
@@ -17,7 +17,7 @@
 
 **English** | [**繁體中文**](./README.zh-TW.md) | [**简体中文**](./README.zh-CN.md)
 
-</center>
+</div>
 
 A comprehensive Discord Bot built with **nextcord** that provides AI-powered interactions, content processing, and utility features. Features multi-language support and integrated web search capabilities. 🚀⚡🔥
 

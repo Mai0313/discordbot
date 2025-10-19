@@ -1,4 +1,4 @@
-<center>
+<div align="center" markdown="1">
 
 # AI 智能 Discord 機器人 🤖
 
@@ -17,7 +17,7 @@
 
 [**English**](./README.md) | **繁體中文** | [**简体中文**](./README.zh-CN.md)
 
-</center>
+</div>
 
 基於 **nextcord** 框架開發的全功能 Discord 機器人，提供 AI 智能對話、內容處理和實用工具功能。支援多語言介面與整合式網路搜尋功能。🚀⚡🔥
 
