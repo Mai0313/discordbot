@@ -2,6 +2,7 @@ from typing import Any
 from pathlib import Path
 import datetime
 from functools import cached_property
+from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
 import logfire
@@ -36,6 +37,26 @@ class VideoDownloader(BaseModel):
             "low": "bestvideo[height<=480]+bestaudio/best[height<=480]/best[height<=480]",
         }
         return quality_formats
+
+    def _convert_facebook_url(self, url: str) -> str:
+        """Convert Facebook watch URL to reel URL format.
+
+        Example:
+            https://www.facebook.com/watch?v=828357636228730
+            -> https://www.facebook.com/reel/828357636228730
+        """
+        parsed = urlparse(url)
+
+        # Check if it's a Facebook watch URL
+        if "facebook.com" in parsed.netloc and parsed.path == "/watch":
+            query_params = parse_qs(parsed.query)
+            video_id = query_params.get("v", [None])[0]
+
+            if video_id:
+                logfire.info(f"Converting Facebook watch URL to reel format: {video_id}")
+                return f"https://www.facebook.com/reel/{video_id}"
+
+        return url
 
     def get_params(self, quality: str, dry_run: bool, url: str | None = None) -> dict[str, Any]:
         today = datetime.datetime.now().strftime("%Y%m%d")
@@ -90,6 +111,9 @@ class VideoDownloader(BaseModel):
         before_sleep=_before_sleep_log,
     )
     def download(self, url: str, quality: str = "best", dry_run: bool = False) -> tuple[str, Path]:
+        # Convert Facebook watch URLs to reel format
+        url = self._convert_facebook_url(url)
+
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -101,9 +125,10 @@ class VideoDownloader(BaseModel):
 if __name__ == "__main__":
     downloader = VideoDownloader()
     # url = "https://x.com/reissuerecords/status/1917171960255058421"
+    # url = "https://www.facebook.com/watch?v=828357636228730"  # Will be converted to reel format
     url = "https://www.facebook.com/share/r/17h4SsC2p1/"
     # url = "https://www.instagram.com/reels/DFUuxmMPz4n/"
     # url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
     # url = "https://v.douyin.com/LuXDmRrZvWs"
-    url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
+    # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
     result = downloader.download(url, "best", False)
