@@ -76,7 +76,7 @@ repos:
           - mdformat-tables
           - mdformat-footnote
           - mdformat-wikilink
-          - mdformat-beautysh
+          # - mdformat-beautysh
           - mdformat-pyproject
           - mdformat_frontmatter
           - mdformat-simple-breaks
