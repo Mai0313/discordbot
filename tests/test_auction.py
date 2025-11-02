@@ -1,16 +1,18 @@
 import os
+import time
 import sqlite3
 from datetime import datetime, timedelta
 import tempfile
 
 import pytest
+from pydantic import ValidationError
 
 from discordbot.cogs._auction.utils import get_currency_display
 from discordbot.cogs._auction.models import Bid, Auction
 from discordbot.cogs._auction.database import AuctionDatabase
 
 
-def test_auction_model_creation():
+def test_auction_model_creation() -> None:
     """測試 Auction 模型創建"""
     end_time = datetime.now() + timedelta(hours=24)
 
@@ -36,7 +38,7 @@ def test_auction_model_creation():
     assert auction.is_active is True
 
 
-def test_bid_model_creation():
+def test_bid_model_creation() -> None:
     """測試 Bid 模型創建"""
     bid = Bid(
         auction_id=1, guild_id=123456789, bidder_id=987654321, bidder_name="出價者", amount=150000
@@ -50,7 +52,7 @@ def test_bid_model_creation():
     assert isinstance(bid.timestamp, datetime)
 
 
-def test_auction_database_initialization():
+def test_auction_database_initialization() -> None:
     """測試競標資料庫初始化"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -64,7 +66,7 @@ def test_auction_database_initialization():
             os.remove(temp_db_path)
 
 
-def test_create_and_get_auction():
+def test_create_and_get_auction() -> None:
     """測試創建和獲取競標"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -106,7 +108,7 @@ def test_create_and_get_auction():
             os.remove(temp_db_path)
 
 
-def test_place_bid():
+def test_place_bid() -> None:
     """測試出價功能"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -147,7 +149,7 @@ def test_place_bid():
             os.remove(temp_db_path)
 
 
-def test_invalid_bid():
+def test_invalid_bid() -> None:
     """測試無效出價"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -185,7 +187,7 @@ def test_invalid_bid():
             os.remove(temp_db_path)
 
 
-def test_get_auction_bids():
+def test_get_auction_bids() -> None:
     """測試獲取出價記錄"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -230,7 +232,7 @@ def test_get_auction_bids():
             os.remove(temp_db_path)
 
 
-def test_get_active_auctions():
+def test_get_active_auctions() -> None:
     """測試獲取活躍競標"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -269,7 +271,7 @@ def test_get_active_auctions():
             os.remove(temp_db_path)
 
 
-def test_end_auction():
+def test_end_auction() -> None:
     """測試結束競標"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -308,7 +310,7 @@ def test_end_auction():
             os.remove(temp_db_path)
 
 
-def test_expired_auction_bid():
+def test_expired_auction_bid() -> None:
     """測試對已過期競標出價"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -343,13 +345,11 @@ def test_expired_auction_bid():
             os.remove(temp_db_path)
 
 
-def test_claim_auction_to_guild():
+def test_claim_auction_to_guild() -> None:
     """測試將未歸屬拍賣歸屬到伺服器"""
     db = AuctionDatabase()
 
     # 創建一個未歸屬的拍賣 (guild_id=0)
-    from datetime import datetime, timedelta
-
     end_time = datetime.now() + timedelta(hours=24)
 
     auction = Auction(
@@ -394,7 +394,7 @@ def test_claim_auction_to_guild():
     assert success is False  # 因為已經不是guild_id=0了
 
 
-def test_get_currency_display():
+def test_get_currency_display() -> None:
     """測試貨幣顯示函數"""
     # 測試已知的貨幣類型
     assert get_currency_display("楓幣") == "楓幣"
@@ -407,7 +407,7 @@ def test_get_currency_display():
     assert get_currency_display(None) == "楓幣"
 
 
-def test_auction_with_currency_type():
+def test_auction_with_currency_type() -> None:
     """測試具有不同貨幣類型的競標模型"""
     end_time = datetime.now() + timedelta(hours=24)
 
@@ -458,7 +458,7 @@ def test_auction_with_currency_type():
     assert auction_default.currency_type == "楓幣"
 
 
-def test_float_price_validation():
+def test_float_price_validation() -> None:
     """測試浮點數價格驗證"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -498,7 +498,7 @@ def test_float_price_validation():
             os.remove(temp_db_path)
 
 
-def test_auction_with_guild_isolation():
+def test_auction_with_guild_isolation() -> None:
     """測試伺服器隔離功能"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -559,7 +559,7 @@ def test_auction_with_guild_isolation():
             os.remove(temp_db_path)
 
 
-def test_bid_with_guild_isolation():
+def test_bid_with_guild_isolation() -> None:
     """測試出價的伺服器隔離功能"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -596,7 +596,7 @@ def test_bid_with_guild_isolation():
             os.remove(temp_db_path)
 
 
-def test_database_migration_guild_id():
+def test_database_migration_guild_id() -> None:
     """測試資料庫遷移：添加 guild_id 欄位"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -670,7 +670,7 @@ def test_database_migration_guild_id():
             os.remove(temp_db_path)
 
 
-def test_database_migration_real_prices():
+def test_database_migration_real_prices() -> None:
     """測試資料庫遷移：從 INTEGER 到 REAL 價格欄位"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -766,7 +766,7 @@ def test_database_migration_real_prices():
             os.remove(temp_db_path)
 
 
-def test_auction_expiration_handling():
+def test_auction_expiration_handling() -> None:
     """測試競標過期處理"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -792,8 +792,6 @@ def test_auction_expiration_handling():
         assert auction_id is not None
 
         # 等待過期
-        import time
-
         time.sleep(2)
 
         # 測試對過期競標出價應該失敗
@@ -814,7 +812,7 @@ def test_auction_expiration_handling():
             os.remove(temp_db_path)
 
 
-def test_bid_validation_edge_cases():
+def test_bid_validation_edge_cases() -> None:
     """測試出價驗證的邊緣情況"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -859,7 +857,7 @@ def test_bid_validation_edge_cases():
             os.remove(temp_db_path)
 
 
-def test_multiple_auctions_different_currencies():
+def test_multiple_auctions_different_currencies() -> None:
     """測試不同貨幣類型的多個競標"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -905,7 +903,7 @@ def test_multiple_auctions_different_currencies():
             os.remove(temp_db_path)
 
 
-def test_claim_auction_invalid_scenarios():
+def test_claim_auction_invalid_scenarios() -> None:
     """測試認領拍賣的無效情況"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -942,7 +940,7 @@ def test_claim_auction_invalid_scenarios():
             os.remove(temp_db_path)
 
 
-def test_bid_history_ordering():
+def test_bid_history_ordering() -> None:
     """測試出價記錄的排序"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as temp_file:
         temp_db_path = temp_file.name
@@ -991,7 +989,7 @@ def test_bid_history_ordering():
             os.remove(temp_db_path)
 
 
-def test_auction_database_error_handling():
+def test_auction_database_error_handling() -> None:
     """測試資料庫錯誤處理"""
     # 測試無效的資料庫路徑
     invalid_path = "/invalid/path/that/does/not/exist/test.db"
@@ -1001,10 +999,8 @@ def test_auction_database_error_handling():
         AuctionDatabase(invalid_path)
 
 
-def test_auction_model_field_validation():
+def test_auction_model_field_validation() -> None:
     """測試 Auction 模型欄位驗證"""
-    from pydantic import ValidationError
-
     end_time = datetime.now() + timedelta(hours=24)
 
     # 測試必填欄位
@@ -1036,10 +1032,8 @@ def test_auction_model_field_validation():
     assert valid_auction.guild_id == 123456789
 
 
-def test_bid_model_field_validation():
+def test_bid_model_field_validation() -> None:
     """測試 Bid 模型欄位驗證"""
-    from pydantic import ValidationError
-
     # 測試必填欄位
     with pytest.raises(ValidationError, match="Field required"):
         Bid(

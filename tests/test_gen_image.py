@@ -7,7 +7,7 @@ from discordbot.cogs.gen_image import ImageGeneratorCogs
 
 
 @pytest.mark.asyncio
-async def test_graph_flow_defer_and_edit_message():
+async def test_graph_flow_defer_and_edit_message() -> None:
     cog = ImageGeneratorCogs(bot=Mock())
 
     interaction = Mock(spec=nextcord.Interaction)

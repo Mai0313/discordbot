@@ -7,7 +7,7 @@ import nextcord
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 
 
-def test_get_attachment_list_collects_all_types():
+def test_get_attachment_list_collects_all_types() -> None:
     cog = ReplyGeneratorCogs(bot=Mock())
 
     # Build fake messages
@@ -30,7 +30,7 @@ def test_get_attachment_list_collects_all_types():
 
 
 @pytest.mark.asyncio
-async def test_clear_memory_behavior():
+async def test_clear_memory_behavior() -> None:
     cog = ReplyGeneratorCogs(bot=Mock())
 
     # Prepare user memory

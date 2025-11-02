@@ -58,7 +58,7 @@ def test_load_monsters_data_with_patch(mock_load_data: Mock) -> None:
     assert "drops" in monster, "怪物應該有掉落物品資訊"
 
 
-def test_load_monsters_data_with_context_manager():
+def test_load_monsters_data_with_context_manager() -> None:
     # 創建模擬的 bot 物件
     mock_bot = Mock()
 
@@ -73,7 +73,7 @@ def test_load_monsters_data_with_context_manager():
         assert maple_cog.monsters_data[0]["name"] == "嫩寶", "應該載入測試資料"
 
 
-def test_load_monsters_data_direct_assignment():
+def test_load_monsters_data_direct_assignment() -> None:
     # 創建模擬的 bot 物件
     mock_bot = Mock()
 
@@ -94,7 +94,7 @@ def test_load_monsters_data_direct_assignment():
         assert "drops" in monster, "怪物應該有掉落物品資訊"
 
 
-def test_load_monsters_data():
+def test_load_monsters_data() -> None:
     # 創建模擬的 bot 物件
     mock_bot = Mock()
 
@@ -197,7 +197,7 @@ def test_embed_creation(mock_load_data: Mock) -> None:
         assert monsters_with_item[0]["name"] == "嫩寶", "應該找到嫩寶"
 
 
-def test_edge_cases():
+def test_edge_cases() -> None:
     """測試邊緣情況"""
     mock_bot = Mock()
 
@@ -216,7 +216,7 @@ def test_edge_cases():
         assert monsters_with_item == [], "空資料時搜尋物品來源應該返回空列表"
 
 
-def test_file_not_found_scenario():
+def test_file_not_found_scenario() -> None:
     """測試檔案不存在的情況"""
     mock_bot = Mock()
 

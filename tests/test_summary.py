@@ -1,4 +1,5 @@
 from unittest.mock import Mock, AsyncMock, patch
+from collections.abc import AsyncGenerator
 
 import pytest
 import nextcord
@@ -7,7 +8,7 @@ from discordbot.cogs.summary import MessageFetcher
 
 
 @pytest.mark.asyncio
-async def test_format_messages_collects_embeds_and_attachments():
+async def test_format_messages_collects_embeds_and_attachments() -> None:
     mock_bot = Mock()
     cog = MessageFetcher(mock_bot)
 
@@ -49,7 +50,7 @@ async def test_format_messages_collects_embeds_and_attachments():
 
 @pytest.mark.asyncio
 @patch("discordbot.cogs.summary.LLMSDK")
-async def test_do_summarize_calls_llm(mock_llmsdk: Mock):
+async def test_do_summarize_calls_llm(mock_llmsdk: Mock) -> None:
     mock_bot = Mock()
     cog = MessageFetcher(mock_bot)
 
@@ -64,7 +65,7 @@ async def test_do_summarize_calls_llm(mock_llmsdk: Mock):
     msg.embeds = []
     msg.attachments = []
 
-    async def history_iter(limit=None):
+    async def history_iter(limit: int | None = None) -> AsyncGenerator[Mock, None]:
         yield msg
 
     channel.history = Mock(return_value=history_iter())

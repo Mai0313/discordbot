@@ -88,7 +88,8 @@ class LotteryCreateModal(nextcord.ui.Modal):
                 await interaction.followup.send("創建抽獎活動時發生錯誤。", ephemeral=True)
                 return
 
-            from .views import LotteryControlView  # Import locally to avoid circular dependency
+            # Import locally to avoid circular dependency
+            from .views import LotteryControlView  # noqa: PLC0415
 
             if lottery.registration_method == "youtube":
                 cog = interaction.client.get_cog("LotteryCog")

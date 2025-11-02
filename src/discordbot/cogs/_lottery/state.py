@@ -9,14 +9,31 @@ lotteries_by_id: dict[int, LotteryData] = {}
 lottery_participants: defaultdict[int, list[LotteryParticipant]] = defaultdict(list)
 lottery_winners: defaultdict[int, list[LotteryParticipant]] = defaultdict(list)
 message_to_lottery_id: dict[int, int] = {}
-_next_lottery_id = 1
+
+
+class _LotteryIdCounter:
+    """Counter for generating lottery IDs."""
+
+    def __init__(self) -> None:
+        self._next_id = 1
+
+    def get_next(self) -> int:
+        """Get the next lottery ID."""
+        current = self._next_id
+        self._next_id += 1
+        return current
+
+    def reset(self, value: int = 1) -> None:
+        """Reset the counter."""
+        self._next_id = value
+
+
+_lottery_id_counter = _LotteryIdCounter()
 
 
 def create_lottery(lottery_data: dict) -> int:
     """Create and register a new lottery entry."""
-    global _next_lottery_id
-    lottery_id = _next_lottery_id
-    _next_lottery_id += 1
+    lottery_id = _lottery_id_counter.get_next()
 
     lottery = LotteryData(
         lottery_id=lottery_id,

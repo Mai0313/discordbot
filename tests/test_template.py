@@ -7,7 +7,7 @@ from discordbot.cogs.template import TemplateCogs
 
 
 @pytest.mark.asyncio
-async def test_on_message_reacts_on_debug_word():
+async def test_on_message_reacts_on_debug_word() -> None:
     mock_bot = Mock()
     cog = TemplateCogs(mock_bot)
 
@@ -23,7 +23,7 @@ async def test_on_message_reacts_on_debug_word():
 
 
 @pytest.mark.asyncio
-async def test_on_message_ignores_bots():
+async def test_on_message_ignores_bots() -> None:
     mock_bot = Mock()
     cog = TemplateCogs(mock_bot)
 
@@ -38,7 +38,7 @@ async def test_on_message_ignores_bots():
 
 
 @pytest.mark.asyncio
-async def test_ping_command_builds_localized_embed():
+async def test_ping_command_builds_localized_embed() -> None:
     mock_bot = Mock()
     # bot.latency is used by the command; set as float seconds
     mock_bot.latency = 0.123

@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch
 
 import pytest
@@ -6,12 +7,17 @@ import nextcord
 from discordbot.cogs.video import VideoCogs
 
 
+class _StatResult:
+    """Mock stat result with st_size attribute."""
+
+    st_size = 10 * 1024 * 1024  # 10MB
+
+
 @pytest.mark.asyncio
 @patch("discordbot.cogs.video.VideoDownloader")
-async def test_download_video_happy_path(mock_downloader_cls: Mock):
+async def test_download_video_happy_path(mock_downloader_cls: Mock) -> None:
     # Prepare downloader mock
     instance = Mock()
-    from pathlib import Path
 
     # Use a relative path to avoid S108 temp path rule
     tmp = Path("data/downloads/test.mp4")
@@ -20,11 +26,8 @@ async def test_download_video_happy_path(mock_downloader_cls: Mock):
         def __init__(self, p: Path) -> None:
             self._p = p
 
-        def stat(self):
-            class S:
-                st_size = 10 * 1024 * 1024  # 10MB
-
-            return S()
+        def stat(self) -> _StatResult:
+            return _StatResult()
 
         @property
         def name(self) -> str:
