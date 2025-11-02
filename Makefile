@@ -28,5 +28,5 @@ submodule-update:  # Update all submodules
 	git submodule update --recursive --remote
 
 gen-docs:  ## Generate documentation
-	python ./scripts/gen_docs.py --source ./src --output ./docs/Reference gen_docs
-	python ./scripts/gen_docs.py --source ./scripts --output ./docs/Scripts gen_docs
+	uv run ./scripts/gen_docs.py --source ./src --output ./docs/Reference gen_docs
+	uv run ./scripts/gen_docs.py --source ./scripts --output ./docs/Scripts gen_docs

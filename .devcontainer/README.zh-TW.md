@@ -4,7 +4,7 @@
 
 ## 內容說明
 
-- **Dockerfile**：以 Python 3.10 + Node.js 20 為基礎，安裝 zsh、oh-my-zsh、powerlevel10k 及常用插件/字型，提供現代化終端體驗。
+- **Dockerfile**：以 Python 3.11 + Node.js 20 為基礎，安裝 zsh、oh-my-zsh、powerlevel10k 及常用插件/字型，提供現代化終端體驗。
 - **devcontainer.json**：VS Code 容器設定，包括：
   - 推薦安裝的擴充套件（Python、Jupyter、Docker、TOML、YAML、Git 等）。
   - 掛載本機 `.gitconfig`、`.ssh`、`.p10k.zsh`。

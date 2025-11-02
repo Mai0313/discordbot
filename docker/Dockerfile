@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.11
 FROM nikolaik/python-nodejs:python${PYTHON_VERSION}-nodejs22 AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
