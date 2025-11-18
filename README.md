@@ -39,6 +39,7 @@ _Suggestions and contributions are always welcome!_
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
   - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
   - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
+  - Facebook share links (e.g., `facebook.com/share/r/...`) are automatically expanded before downloading, so you can paste whatever the app gives you
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 - **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣) - **Refactored into modular architecture** for better maintainability
 - **Lottery System**: Multi-platform lottery with Discord button-based join or YouTube chat integration (no reactions); supports per-draw winner count and recreate. Winners are automatically excluded from re-joining the same lottery (until you use "Recreate"). Uses "discord" naming (no legacy "reaction" terminology). The participant list is displayed as a single unified field.
@@ -255,6 +256,7 @@ data/
 #### Facebook notes
 
 - We do not force a Referer for Facebook; minimal headers are used to avoid extractor conflicts.
+- Short `facebook.com/share/...` links are auto-expanded and converted to the right reel/watch URL, so you can download directly from the share link.
 - Keep `yt-dlp` up-to-date and ensure `ffmpeg` is installed.
 - If downloads fail, try a lower quality; private/login/region-limited links may require cookies passed to yt-dlp.
 

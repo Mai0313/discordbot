@@ -7,6 +7,8 @@ from urllib.parse import parse_qs, urlparse
 from yt_dlp import YoutubeDL
 import logfire
 from pydantic import Field, BaseModel, computed_field
+from requests import Session
+from requests.exceptions import RequestException
 
 logfire.configure(send_to_logfire=False, scrubbing=False)
 
@@ -14,6 +16,9 @@ logfire.configure(send_to_logfire=False, scrubbing=False)
 class VideoDownloader(BaseModel):
     output_folder: str = Field(default="./data/downloads", description="Download folder")
     max_retries: int = Field(default=5)
+    share_resolve_timeout: int = Field(
+        default=10, description="Timeout (seconds) for resolving Facebook share URLs"
+    )
 
     @computed_field
     @cached_property
@@ -27,6 +32,39 @@ class VideoDownloader(BaseModel):
         }
         return quality_formats
 
+    def _default_http_headers(self) -> dict[str, str]:
+        return {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
+        }
+
+    def _resolve_facebook_share_url(self, url: str) -> str:
+        """Follow redirects for facebook.com/share/... links to obtain the real target."""
+        headers = self._default_http_headers()
+        with Session() as session:
+            for method_name in ("head", "get"):
+                request_method = getattr(session, method_name)
+                try:
+                    response = request_method(
+                        url,
+                        allow_redirects=True,
+                        headers=headers,
+                        timeout=self.share_resolve_timeout,
+                    )
+                except RequestException as exc:
+                    logfire.warning(
+                        "Failed to resolve Facebook share URL", error=str(exc), method=method_name
+                    )
+                    continue
+
+                final_url = response.url
+                response.close()
+                if final_url and final_url != url:
+                    logfire.info(f"Resolved Facebook share URL to: {final_url}")
+                    return final_url
+
+        return url
+
     def _convert_facebook_url(self, url: str) -> str:
         """Convert Facebook watch URL to reel URL format.
 
@@ -36,8 +74,17 @@ class VideoDownloader(BaseModel):
         """
         parsed = urlparse(url)
 
+        if "facebook.com" not in parsed.netloc:
+            return url
+
+        if parsed.path.startswith("/share/"):
+            resolved_url = self._resolve_facebook_share_url(url)
+            if resolved_url != url:
+                return self._convert_facebook_url(resolved_url)
+            return url
+
         # Check if it's a Facebook watch URL
-        if "facebook.com" in parsed.netloc and parsed.path == "/watch":
+        if parsed.path == "/watch":
             query_params = parse_qs(parsed.query)
             video_id = query_params.get("v", [None])[0]
 
@@ -54,10 +101,7 @@ class VideoDownloader(BaseModel):
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Base headers safe for most sites; site-specific headers added conditionally below
-        http_headers: dict[str, str] = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
-        }
+        http_headers = self._default_http_headers()
         if url and "bilibili.com" in url:
             http_headers["Referer"] = "https://www.bilibili.com"
 
@@ -113,4 +157,5 @@ if __name__ == "__main__":
     # url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
     # url = "https://v.douyin.com/LuXDmRrZvWs"
     # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
+    url = "https://www.facebook.com/share/r/1BcvhJkeMg/?mibextid=wwXIfr"
     result = downloader.download(url, "best", False)
