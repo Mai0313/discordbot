@@ -47,7 +47,7 @@ class VideoCogs(commands.Cog):
         try:
             await interaction.edit_original_message(content="⏳ 正在下載...")
             downloader = VideoDownloader(output_folder="./data/downloads")
-            title, filename = downloader.download(url=url, quality=quality)
+            _title, filename = downloader.download(url=url, quality=quality)
 
             # 檢查檔案大小是否超過 Discord 限制 (25MB)
             file_size_mb = filename.stat().st_size / 1024 / 1024
@@ -61,27 +61,27 @@ class VideoCogs(commands.Cog):
                     filename.unlink(missing_ok=True)
 
                     # 重新下載低畫質版本
-                    title, filename = downloader.download(url=url, quality="low")
+                    _, filename = downloader.download(url=url, quality="low")
 
                     # 再次檢查檔案大小
                     file_size_mb = filename.stat().st_size / 1024 / 1024
                     if filename.stat().st_size > 25 * 1024 * 1024:
                         await interaction.edit_original_message(
-                            content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB\n{title}"
+                            content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                         )
                     else:
                         await interaction.edit_original_message(
-                            content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
+                            content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
                             file=nextcord.File(str(filename), filename=filename.name),
                         )
                 else:
                     # 已經是低畫質但仍然過大
                     await interaction.edit_original_message(
-                        content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB\n{title}"
+                        content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                     )
             else:
                 await interaction.edit_original_message(
-                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB\n{title}",
+                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
                     file=nextcord.File(str(filename), filename=filename.name),
                 )
         except Exception:
