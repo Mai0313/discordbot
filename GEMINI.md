@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project is an AI-powered Discord Bot built with **nextcord** (a fork of discord.py). It features multi-modal AI interactions (OpenAI, Claude), video downloading capabilities, a MapleStory database search, and a comprehensive auction system.
+This project is an AI-powered Discord Bot built with **nextcord** (a fork of discord.py). It features multi-modal AI interactions (OpenAI, Claude), video downloading capabilities, and a MapleStory database search.
 
 **Tech Stack:**
 
@@ -23,12 +23,11 @@ The project follows a modular "Cog" based architecture.
     - `gen_reply.py`: AI text generation (`/oai`).
     - `video.py`: Video downloader (`/download_video`).
     - `maplestory.py`: MapleStory DB search.
-    - `auction.py`: Auction system (refactored into `_auction` submodule).
     - `summary.py`: Message summarization (`/sum`).
 - **SDK (`src/discordbot/sdk/`):**
     - `llm.py`: Logic for interacting with LLMs (OpenAI/Azure).
     - `log_message.py`: Message logging to SQLite.
-- **Data (`data/`):** Stores persistent data like `monsters.json` and `auctions.db`.
+- **Data (`data/`):** Stores persistent data like `monsters.json`.
 - **Configuration:**
     - `pyproject.toml`: Dependencies and tool configs (Ruff, Pytest, Mypy).
     - `.env`: Environment variables (API keys, tokens).

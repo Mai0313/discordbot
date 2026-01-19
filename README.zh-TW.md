@@ -43,8 +43,6 @@ _歡迎提供建議和貢獻!_
 
 - **楓之谷資料庫**：查詢怪物和物品詳細掉落資訊
 
-- **競標系統**：完整的拍賣平台與競標功能，支援多貨幣類型（楓幣/雪花/台幣） - **已重構為模組化架構**，提升維護性
-
 - **圖像生成**：已整合至 `/oai` 指令（使用 image_generation 工具）。獨立的 `/graph` 仍為未來擴充的預留指令。
 
 ### 🌍 多語言支援
@@ -75,10 +73,6 @@ _歡迎提供建議和貢獻!_
 | `/maple_monster` | 搜尋楓之谷怪物掉落 | 詳細怪物資訊 |
 | `/maple_item` | 搜尋楓之谷物品來源 | 掉落來源追蹤 |
 | `/maple_stats` | 楓之谷資料庫統計 | 資料概覽和熱門物品 |
-| `/auction_create` | 創建物品拍賣 | 互動表單、貨幣類型選擇 |
-| `/auction_list` | 瀏覽進行中拍賣 | 即時更新、下拉選單 |
-| `/auction_info` | 查看拍賣詳情 | 當前競標、競標歷史 |
-| `/auction_my` | 查看個人拍賣 | 我的拍賣與領先競標 |
 
 | `/graph` | 生成圖像（預留） | 框架已準備實現 |
 | `/ping` | 機器人效能測試 | 延遲測量 |
@@ -196,12 +190,6 @@ src/discordbot/
 │   ├── summary.py      # 訊息摘要 (/sum)
 │   ├── video.py        # 影片下載 (/download_video)
 │   ├── maplestory.py   # 楓之谷資料庫查詢
-│   ├── auction.py      # 競標系統（重構模組化）
-│   │   ├── models.py   # Pydantic 資料模型
-│   │   ├── database.py # 資料庫操作
-│   │   ├── views.py    # UI 元件（Views, Modals, Buttons）
-│   │   └── utils.py    # 工具函數與輔助功能
-
 │   ├── gen_image.py    # 圖像生成（預留）
 │   └── template.py     # 系統工具與延遲測試
 ├── sdk/                # 核心業務邏輯
@@ -215,7 +203,6 @@ src/discordbot/
     └── downloader.py   # yt-dlp 包裝
 data/
 ├── monsters.json       # 楓之谷怪物與掉落資料庫
-├── auctions.db         # 競標系統 SQLite 資料庫
 └── downloads/          # 影片下載儲存
 ```
 
@@ -263,22 +250,6 @@ data/
 - 詳細的怪物屬性和掉落資訊
 - 物品來源追蹤與視覺化顯示
 - 快取搜尋結果以優化效能
-
-### 競標系統
-
-- **重構模組化架構**：
-    - **models.py**：Auction 和 Bid 實體的 Pydantic 資料模型，具備完整驗證
-    - **database.py**：AuctionDatabase 類別，提供完整 CRUD 操作、遷移支援和伺服器隔離
-    - **views.py**：UI 元件，包含 Views、Modals 和 Buttons 用於互動式拍賣管理
-    - **utils.py**：工具函數，用於 embed 創建、驗證和輔助操作
-    - **auction.py**：主要 cog 實現，使用模組化元件
-- **完整拍賣平台**：
-    - 創建物品拍賣，可自訂持續時間、競標增額和貨幣類型選擇（楓幣/雪花/台幣）
-    - 多貨幣支援，預設為「楓幣」，另提供「雪花」和「台幣」選項
-    - 即時競標與互動介面（💰 出價、📊 查看記錄、🔄 刷新）
-    - 個人拍賣管理與競標追蹤，包含貨幣類型顯示
-    - 防止自我競標和重複出價的安全機制
-    - SQLite 資料庫儲存，具備 ACID 合規性和向後相容性
 
 ## 🛠️ 開發指南
 

@@ -43,8 +43,6 @@ _欢迎提供建议和贡献!_
 
 - **枫之谷数据库**：查询怪物和物品详细掉落信息
 
-- **竞标系统**：完整的拍卖平台与竞标功能，支持多货币类型（枫币/雪花/台币） - **已重构为模块化架构**，提升维护性
-
 - **图像生成**：已整合至 `/oai` 指令（使用 image_generation 工具）。独立的 `/graph` 仍为未来扩充的预留指令。
 
 ### 🌍 多语言支持
@@ -75,10 +73,6 @@ _欢迎提供建议和贡献!_
 | `/maple_monster` | 搜索枫之谷怪物掉落 | 详细怪物信息 |
 | `/maple_item` | 搜索枫之谷物品来源 | 掉落来源追踪 |
 | `/maple_stats` | 枫之谷数据库统计 | 数据概览和热门物品 |
-| `/auction_create` | 创建物品拍卖 | 互动表单、货币类型选择 |
-| `/auction_list` | 浏览进行中拍卖 | 实时更新、下拉选单 |
-| `/auction_info` | 查看拍卖详情 | 当前竞标、竞标历史 |
-| `/auction_my` | 查看个人拍卖 | 我的拍卖与领先竞标 |
 
 | `/graph` | 生成图像（预留） | 框架已准备实现 |
 | `/ping` | 机器人效能测试 | 延迟测量 |
@@ -196,12 +190,6 @@ src/discordbot/
 │   ├── summary.py      # 消息摘要 (/sum)
 │   ├── video.py        # 视频下载 (/download_video)
 │   ├── maplestory.py   # 枫之谷数据库查询
-│   ├── auction.py      # 竞标系统（重构模块化）
-│   │   ├── models.py   # Pydantic 数据模型
-│   │   ├── database.py # 数据库操作
-│   │   ├── views.py    # UI 组件（Views, Modals, Buttons）
-│   │   └── utils.py    # 工具函数与辅助功能
-
 │   ├── gen_image.py    # 图像生成（预留）
 │   └── template.py     # 系统工具与延迟测试
 ├── sdk/                # 核心业务逻辑
@@ -215,7 +203,6 @@ src/discordbot/
     └── downloader.py   # yt-dlp 包装
 data/
 ├── monsters.json       # 枫之谷怪物与掉落数据库
-├── auctions.db         # 竞标系统 SQLite 数据库
 └── downloads/          # 视频下载储存
 ```
 
@@ -263,22 +250,6 @@ data/
 - 详细的怪物属性和掉落信息
 - 物品来源追踪与可视化显示
 - 缓存搜索结果以优化效能
-
-### 竞标系统
-
-- **重构模块化架构**：
-    - **models.py**：Auction 和 Bid 实体的 Pydantic 数据模型，具备完整验证
-    - **database.py**：AuctionDatabase 类别，提供完整 CRUD 操作、迁移支持和服务器隔离
-    - **views.py**：UI 组件，包含 Views、Modals 和 Buttons 用于互动式拍卖管理
-    - **utils.py**：工具函数，用于 embed 创建、验证和辅助操作
-    - **auction.py**：主要 cog 实现，使用模块化组件
-- **完整拍卖平台**：
-    - 创建物品拍卖，可自订持续时间、竞标增额和货币类型选择（枫币/雪花/台币）
-    - 多货币支持，默认为「枫币」，另提供「雪花」和「台币」选项
-    - 实时竞标与互动界面（💰 出价、📊 查看记录、🔄 刷新）
-    - 个人拍卖管理与竞标追踪，包含货币类型显示
-    - 防止自我竞标和重复出价的安全机制
-    - SQLite 数据库储存，具备 ACID 合规性和向后兼容性
 
 ## 🛠️ 开发指南
 

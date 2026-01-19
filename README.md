@@ -45,8 +45,6 @@ _Suggestions and contributions are always welcome!_
 
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 
-- **Auction System**: Complete auction platform with bidding functionality and multi-currency support (楓幣/雪花/台幣) - **Refactored into modular architecture** for better maintainability
-
 - **Image Generation**: Integrated in `/oai` via the image_generation tool (Responses API). The standalone `/graph` command remains a placeholder for future expansion.
 
 ### 🌍 Multi-Language Support
@@ -76,10 +74,6 @@ _Suggestions and contributions are always welcome!_
 | `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                                                                                   |
 | `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                                                                                            |
 | `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                                                                                                      |
-| `/auction_create` | Create new item auction           | Currency selection (楓幣/雪花/台幣), float prices                                                                                                                                                                                              |
-| `/auction_list`   | Browse active auctions            | Dropdown selection, preview                                                                                                                                                                                                                    |
-| `/auction_info`   | View auction details              | Current bid, end time, history button                                                                                                                                                                                                          |
-| `/auction_my`     | View personal auctions            | Created & leading                                                                                                                                                                                                                              |
 
 | `/graph` | Generate images (placeholder) | Framework ready for implementation |
 | `/ping` | Bot performance testing | Latency measurement |
@@ -197,12 +191,6 @@ src/discordbot/
 │   ├── summary.py      # Message summarization (/sum)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
-│   ├── auction.py      # Auction system with bidding (refactored modular)
-│   │   ├── models.py   # Pydantic data models
-│   │   ├── database.py # Database operations
-│   │   ├── views.py    # UI components (Views, Modals, Buttons)
-│   │   └── utils.py    # Utility functions and helpers
-
 │   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # Utilities & /ping
 ├── sdk/                # Core business logic
@@ -216,7 +204,6 @@ src/discordbot/
     └── downloader.py   # yt-dlp wrapper
 data/
 ├── monsters.json       # MapleStory monster and drop database
-├── auctions.db         # SQLite database for auction system
 └── downloads/          # Video download storage
 ```
 
@@ -256,7 +243,7 @@ data/
 - Keep `yt-dlp` up-to-date and ensure `ffmpeg` is installed.
 - If downloads fail, try a lower quality; private/login/region-limited links may require cookies passed to yt-dlp.
 
-### MapleStory Database & Auction System
+### MapleStory Database
 
 - Comprehensive monster and item database (192+ monsters)
 - Interactive search with fuzzy matching
@@ -264,18 +251,6 @@ data/
 - Detailed monster statistics and drop information
 - Item source tracking with visual displays
 - Cached search results for optimal performance
-- **Refactored Auction System Module** (Modular Architecture):
-    - **models.py**: Pydantic data models for Auction and Bid entities with comprehensive validation
-    - **database.py**: AuctionDatabase class with full CRUD operations, migration support, and guild isolation
-    - **views.py**: UI components including Views, Modals, and Buttons for interactive auction management
-    - **utils.py**: Utility functions for embed creation, validation, and helper operations
-    - **auction.py**: Main cog implementation using the modular components
-    - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
-    - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
-    - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
-    - Personal auction management and bid tracking with currency type display
-    - Security features preventing self-bidding and duplicate bids
-    - SQLite database storage with ACID compliance and backward compatibility
 
 # 🔒 Privacy & Data
 
