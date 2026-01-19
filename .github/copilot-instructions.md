@@ -1,1 +1,1 @@
-Please read `./CLAUDE.md` for instructions.
+Please read `./GEMINI.md` for instructions.
