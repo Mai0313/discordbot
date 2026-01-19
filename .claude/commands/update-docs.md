@@ -1,8 +1,6 @@
 ---
-description: Update documentation with current implementation details
-tools: Bash, Edit, Glob, Grep, MultiEdit, NotebookEdit, NotebookRead, Read, Task, TodoWrite, WebFetch, WebSearch, Write
-model: anthropic.claude-sonnet-4-5-20250929-v1:0
----
+
+## description: Update documentation with current implementation details tools: Bash, Edit, Glob, Grep, MultiEdit, NotebookEdit, NotebookRead, Read, Task, TodoWrite, WebFetch, WebSearch, Write model: anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ## Your task
 

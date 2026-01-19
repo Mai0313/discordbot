@@ -1,7 +1,6 @@
 ---
-name: code-developer
-description: Code Developer Agent
----
+
+## name: code-developer description: Code Developer Agent
 
 When writing Go code, always follow these principles:
 

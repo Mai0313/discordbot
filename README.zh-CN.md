@@ -37,9 +37,9 @@ _欢迎提供建议和贡献!_
 
 - **视频下载**：多平台支持（YouTube、TikTok、Instagram、X、Facebook），提供质量选项
 
-  - Bilibili 兼容性改善：加入正确 Referer 标头、更安全的格式回退、与更稳健的错误处理
-  - 网站专属标头：Referer 仅在 Bilibili 套用，以避免影响 Facebook 链接
-  - Facebook 分享短链接（例如 `facebook.com/share/r/...`）会在下载前自动展开，你可以直接贴上 App 里复制的链接
+    - Bilibili 兼容性改善：加入正确 Referer 标头、更安全的格式回退、与更稳健的错误处理
+    - 网站专属标头：Referer 仅在 Bilibili 套用，以避免影响 Facebook 链接
+    - Facebook 分享短链接（例如 `facebook.com/share/r/...`）会在下载前自动展开，你可以直接贴上 App 里复制的链接
 
 - **枫之谷数据库**：查询怪物和物品详细掉落信息
 
@@ -95,37 +95,37 @@ _欢迎提供建议和贡献!_
 
 1. **克隆项目**
 
-   ```bash
-   git clone https://github.com/Mai0313/discordbot.git
-   cd discordbot
-   ```
+    ```bash
+    git clone https://github.com/Mai0313/discordbot.git
+    cd discordbot
+    ```
 
 2. **使用 uv 安装依赖**
 
-   ```bash
-   # 如果尚未安装 uv
-   curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```bash
+    # 如果尚未安装 uv
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 
-   # 安装项目依赖
-   uv sync
-   ```
+    # 安装项目依赖
+    uv sync
+    ```
 
 3. **设定环境变量**
 
-   ```bash
-   cp .env.example .env
-   # 编辑 .env 文件，填入你的 API 密钥和设定
-   ```
+    ```bash
+    cp .env.example .env
+    # 编辑 .env 文件，填入你的 API 密钥和设定
+    ```
 
 4. **启动机器人**
 
-   ```bash
-   # 推荐（通过 entry point）
-   uv run discordbot
+    ```bash
+    # 推荐（通过 entry point）
+    uv run discordbot
 
-   # 或
-   uv run python -m discordbot.cli
-   ```
+    # 或
+    uv run python -m discordbot.cli
+    ```
 
 ### Docker 部署
 
@@ -267,18 +267,18 @@ data/
 ### 竞标系统
 
 - **重构模块化架构**：
-  - **models.py**：Auction 和 Bid 实体的 Pydantic 数据模型，具备完整验证
-  - **database.py**：AuctionDatabase 类别，提供完整 CRUD 操作、迁移支持和服务器隔离
-  - **views.py**：UI 组件，包含 Views、Modals 和 Buttons 用于互动式拍卖管理
-  - **utils.py**：工具函数，用于 embed 创建、验证和辅助操作
-  - **auction.py**：主要 cog 实现，使用模块化组件
+    - **models.py**：Auction 和 Bid 实体的 Pydantic 数据模型，具备完整验证
+    - **database.py**：AuctionDatabase 类别，提供完整 CRUD 操作、迁移支持和服务器隔离
+    - **views.py**：UI 组件，包含 Views、Modals 和 Buttons 用于互动式拍卖管理
+    - **utils.py**：工具函数，用于 embed 创建、验证和辅助操作
+    - **auction.py**：主要 cog 实现，使用模块化组件
 - **完整拍卖平台**：
-  - 创建物品拍卖，可自订持续时间、竞标增额和货币类型选择（枫币/雪花/台币）
-  - 多货币支持，默认为「枫币」，另提供「雪花」和「台币」选项
-  - 实时竞标与互动界面（💰 出价、📊 查看记录、🔄 刷新）
-  - 个人拍卖管理与竞标追踪，包含货币类型显示
-  - 防止自我竞标和重复出价的安全机制
-  - SQLite 数据库储存，具备 ACID 合规性和向后兼容性
+    - 创建物品拍卖，可自订持续时间、竞标增额和货币类型选择（枫币/雪花/台币）
+    - 多货币支持，默认为「枫币」，另提供「雪花」和「台币」选项
+    - 实时竞标与互动界面（💰 出价、📊 查看记录、🔄 刷新）
+    - 个人拍卖管理与竞标追踪，包含货币类型显示
+    - 防止自我竞标和重复出价的安全机制
+    - SQLite 数据库储存，具备 ACID 合规性和向后兼容性
 
 ## 🛠️ 开发指南
 
@@ -305,11 +305,11 @@ uv run mkdocs serve
 - 测试框架：`pytest`（含 `xdist` 并行化、`pytest-asyncio` 异步测试、覆盖率设定在 `pyproject.toml`）。
 - 测试路径：所有测试位于 `tests/`，涵盖各个 cog 与核心工具。
 - 新增的 Cog 单元测试包含：
-  - `TemplateCogs`：消息反应与 `/ping` 延迟 Embed
-  - `MessageFetcher`（摘要）：`_format_messages()` 与 `do_summarize()`（模拟 LLM）
-  - `ReplyGeneratorCogs`：`_get_attachment_list()` 与 `/clear_memory`
-  - `ImageGeneratorCogs`：`/graph`（预留流程）
-  - `VideoCogs`：`/download_video` 乐观流程（模拟下载器）
+    - `TemplateCogs`：消息反应与 `/ping` 延迟 Embed
+    - `MessageFetcher`（摘要）：`_format_messages()` 与 `do_summarize()`（模拟 LLM）
+    - `ReplyGeneratorCogs`：`_get_attachment_list()` 与 `/clear_memory`
+    - `ImageGeneratorCogs`：`/graph`（预留流程）
+    - `VideoCogs`：`/download_video` 乐观流程（模拟下载器）
 
 执行完整测试并产生报表：
 
@@ -357,23 +357,23 @@ uv run pytest -q
 
 1. **环境准备**
 
-   ```bash
-   # 设定生产环境变量
-   export DISCORD_BOT_TOKEN="生产环境token"
-   export OPENAI_API_KEY="生产环境密钥"
-   ```
+    ```bash
+    # 设定生产环境变量
+    export DISCORD_BOT_TOKEN="生产环境token"
+    export OPENAI_API_KEY="生产环境密钥"
+    ```
 
 2. **Docker 部署**
 
-   ```bash
-   docker-compose -f docker-compose.yaml up -d
-   ```
+    ```bash
+    docker-compose -f docker-compose.yaml up -d
+    ```
 
 3. **监控设定**
 
-   - 使用 Logfire 进行日志监控
-   - 设定健康检查端点
-   - 配置错误通知
+    - 使用 Logfire 进行日志监控
+    - 设定健康检查端点
+    - 配置错误通知
 
 ## 🔧 疑难排解
 

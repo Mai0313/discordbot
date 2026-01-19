@@ -1,9 +1,6 @@
 ---
-argument-hint: [language]
-description: Review staged changes
-tools: Bash, Edit, Glob, Grep, MultiEdit, NotebookEdit, NotebookRead, Read, Task, TodoWrite, WebFetch, WebSearch, Write
-model: anthropic.claude-sonnet-4-5-20250929-v1:0
----
+
+## argument-hint: [language] description: Review staged changes tools: Bash, Edit, Glob, Grep, MultiEdit, NotebookEdit, NotebookRead, Read, Task, TodoWrite, WebFetch, WebSearch, Write model: anthropic.claude-sonnet-4-5-20250929-v1:0
 
 ## Your task
 

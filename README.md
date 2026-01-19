@@ -39,9 +39,9 @@ _Suggestions and contributions are always welcome!_
 
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 
-  - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
-  - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
-  - Facebook share links (e.g., `facebook.com/share/r/...`) are automatically expanded before downloading, so you can paste whatever the app gives you
+    - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
+    - Site-specific headers: Referer is applied only for Bilibili to avoid breaking Facebook links
+    - Facebook share links (e.g., `facebook.com/share/r/...`) are automatically expanded before downloading, so you can paste whatever the app gives you
 
 - **MapleStory Database**: Search monsters and items with comprehensive drop information
 
@@ -96,37 +96,37 @@ _Suggestions and contributions are always welcome!_
 
 1. **Clone the repository**
 
-   ```bash
-   git clone https://github.com/Mai0313/discordbot.git
-   cd discordbot
-   ```
+    ```bash
+    git clone https://github.com/Mai0313/discordbot.git
+    cd discordbot
+    ```
 
 2. **Install dependencies using uv**
 
-   ```bash
-   # Install uv if you haven't already
-   curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```bash
+    # Install uv if you haven't already
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 
-   # Install dependencies
-   uv sync
-   ```
+    # Install dependencies
+    uv sync
+    ```
 
 3. **Set up environment variables**
 
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys and configuration
-   ```
+    ```bash
+    cp .env.example .env
+    # Edit .env with your API keys and configuration
+    ```
 
 4. **Run the bot**
 
-   ```bash
-   # Recommended (via entry point)
-   uv run discordbot
+    ```bash
+    # Recommended (via entry point)
+    uv run discordbot
 
-   # Or
-   uv run python -m discordbot.cli
-   ```
+    # Or
+    uv run python -m discordbot.cli
+    ```
 
 ### Docker Setup
 
@@ -265,17 +265,17 @@ data/
 - Item source tracking with visual displays
 - Cached search results for optimal performance
 - **Refactored Auction System Module** (Modular Architecture):
-  - **models.py**: Pydantic data models for Auction and Bid entities with comprehensive validation
-  - **database.py**: AuctionDatabase class with full CRUD operations, migration support, and guild isolation
-  - **views.py**: UI components including Views, Modals, and Buttons for interactive auction management
-  - **utils.py**: Utility functions for embed creation, validation, and helper operations
-  - **auction.py**: Main cog implementation using the modular components
-  - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
-  - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
-  - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
-  - Personal auction management and bid tracking with currency type display
-  - Security features preventing self-bidding and duplicate bids
-  - SQLite database storage with ACID compliance and backward compatibility
+    - **models.py**: Pydantic data models for Auction and Bid entities with comprehensive validation
+    - **database.py**: AuctionDatabase class with full CRUD operations, migration support, and guild isolation
+    - **views.py**: UI components including Views, Modals, and Buttons for interactive auction management
+    - **utils.py**: Utility functions for embed creation, validation, and helper operations
+    - **auction.py**: Main cog implementation using the modular components
+    - Create item auctions with customizable duration, bidding increments, and currency type selection (楓幣/雪花/台幣)
+    - Multi-currency support with "楓幣" (Mesos) as default, "雪花" (Snowflake), and "台幣" (Taiwan Dollar) as alternatives
+    - Real-time bidding with interactive UI (💰 Bid, 📊 View Records, 🔄 Refresh)
+    - Personal auction management and bid tracking with currency type display
+    - Security features preventing self-bidding and duplicate bids
+    - SQLite database storage with ACID compliance and backward compatibility
 
 # 🔒 Privacy & Data
 
@@ -326,17 +326,17 @@ uv run pytest -q
 
 - Coverage outputs:
 
-  - JUnit XML: `./.github/reports/pytest.xml`
-  - Coverage XML: `./.github/reports/coverage.xml`
-  - Coverage HTML: `./.github/coverage_html_report/index.html`
+    - JUnit XML: `./.github/reports/pytest.xml`
+    - Coverage XML: `./.github/reports/coverage.xml`
+    - Coverage HTML: `./.github/coverage_html_report/index.html`
 
 - Cog unit tests included:
 
-  - TemplateCogs: message reaction and `/ping` embed
-  - MessageFetcher: `_format_messages()` and `do_summarize()` (LLM mocked)
-  - ReplyGeneratorCogs: `_get_attachment_list()` and `/clear_memory`
-  - ImageGeneratorCogs: `/graph` placeholder flow
-  - VideoCogs: `/download_video` happy path (downloader mocked)
+    - TemplateCogs: message reaction and `/ping` embed
+    - MessageFetcher: `_format_messages()` and `do_summarize()` (LLM mocked)
+    - ReplyGeneratorCogs: `_get_attachment_list()` and `/clear_memory`
+    - ImageGeneratorCogs: `/graph` placeholder flow
+    - VideoCogs: `/download_video` happy path (downloader mocked)
 
 ## Contributors
 
