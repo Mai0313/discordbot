@@ -12,6 +12,7 @@ from discordbot.sdk.llm import LLMSDK
 
 available_models = ["openrouter/x-ai/grok-4.1-fast"]
 MODEL_CHOICES = {"grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
+DEFAULT_MODEL = available_models[0]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -225,6 +226,128 @@ class ReplyGeneratorCogs(commands.Cog):
             await interaction.response.send_message(
                 content="你目前沒有對話記憶需要清除。", ephemeral=True
             )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: nextcord.Message) -> None:
+        """Handle messages that mention the bot.
+
+        This listener allows users to chat with the bot by mentioning it,
+        without needing to use slash commands.
+
+        Args:
+            message (nextcord.Message): The message object.
+        """
+        # Ignore messages from bots (including self)
+        if message.author.bot:
+            return
+
+        # Check if bot is mentioned
+        if self.bot.user not in message.mentions:
+            return
+
+        # Extract message content without mentions
+        content = message.content
+        for mention in message.mentions:
+            content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+        content = content.strip()
+
+        # If content is empty or only whitespace, reply with "?"
+        if not content:
+            await message.reply("?")
+            return
+
+        # Get attachments from the message
+        attachments = await self._get_attachment_list([message])
+
+        # Start typing indicator
+        async with message.channel.typing():
+            try:
+                llm_sdk = LLMSDK(model=DEFAULT_MODEL)
+                # Prepare completion content
+                completion_content = await llm_sdk.prepare_completion_content(
+                    prompt=content, attachments=attachments
+                )
+                completion_content = f"You are not allowed to use Simplified Chinese in your response.\n{completion_content}"
+
+                user_id = message.author.id
+                if user_id not in self.user_memory:
+                    self.user_memory[user_id] = []
+
+                # Add user message to memory
+                self.user_memory[user_id].append({"role": "user", "content": completion_content})
+
+                try:
+                    stream = await llm_sdk.client.chat.completions.create(
+                        model=DEFAULT_MODEL, messages=self.user_memory[user_id], stream=True
+                    )
+                except Exception as e:
+                    logfire.error("Error creating chat completion for mention", _exc_info=True)
+                    await message.reply(f"❌ 錯誤: {e}")
+                    return
+
+                # Send initial thinking message
+                reply_message = await message.reply("🤔 思考中...")
+
+                # Handle streaming response
+                response_text = await self._handle_streaming_response_for_message(
+                    reply_message=reply_message, stream=stream, update_per_words=10
+                )
+
+                # Add AI response to memory
+                if response_text:
+                    self.user_memory[user_id].append({
+                        "role": "assistant",
+                        "content": response_text,
+                    })
+
+            except Exception as e:
+                logfire.error("Error in on_message mention handler", _exc_info=True)
+                await message.reply(f"❌ 錯誤: {e}")
+
+    async def _handle_streaming_response_for_message(
+        self,
+        reply_message: nextcord.Message,
+        stream: AsyncStream[ChatCompletionChunk],
+        update_per_words: int = 10,
+    ) -> str:
+        """Handle streaming response for regular message replies.
+
+        Args:
+            reply_message (nextcord.Message): The message to edit with streaming content.
+            stream (AsyncStream[ChatCompletionChunk]): The streaming response from LLM.
+            update_per_words (int): Update message every N characters.
+
+        Returns:
+            str: The complete generated text.
+        """
+        accumulated_text = ""
+        char_count = 0
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+            if delta.content:
+                accumulated_text += delta.content
+                char_count += len(delta.content)
+
+                # Update message every X characters
+                if char_count >= update_per_words:
+                    try:
+                        await reply_message.edit(content=accumulated_text)
+                        char_count = 0
+                    except nextcord.errors.NotFound:
+                        # Message might have been deleted
+                        break
+                    except Exception as e:
+                        logfire.warning(f"Failed to update message: {e}")
+
+        # Final update to ensure complete message is displayed
+        with contextlib.suppress(Exception):
+            await reply_message.edit(content=accumulated_text)
+
+        return accumulated_text
 
 
 async def setup(bot: commands.Bot) -> None:

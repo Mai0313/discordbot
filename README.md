@@ -28,6 +28,7 @@ _Suggestions and contributions are always welcome!_
 ### 🤖 AI-Powered Interactions
 
 - **Text Generation**: Support for multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with **default streaming** (updates about every 10 characters) and integrated web search
+- **Mention to Chat**: Simply mention the bot (@bot) to start a conversation without using commands — supports text and image inputs
 - **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
@@ -65,6 +66,7 @@ _Suggestions and contributions are always welcome!_
 | Command           | Description                       | Features                                                                                                                                                                            |
 | ----------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/oai`            | Generate AI text response         | Multi-model (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), optional image input, integrated web search, per-user memory |
+| `@mention`        | Chat by mentioning the bot        | Same features as `/oai` — just mention the bot with your message or images to start chatting naturally                                                                              |
 | `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                          |
 | `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                    |
 | `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                    |
