@@ -1,6 +1,5 @@
 from io import BytesIO
 import base64
-from typing import Any
 import datetime
 
 from openai import AsyncStream, BadRequestError
@@ -9,18 +8,11 @@ import nextcord
 from nextcord import Locale, Interaction, SlashOption
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
-from openai.types.responses.tool_param import ImageGeneration  # noqa: F401
-from openai.types.responses.web_search_tool_param import WebSearchToolParam  # noqa: F401
 
 from discordbot.sdk.llm import LLMSDK
 
 available_models = ["gpt-5-chat"]
 MODEL_CHOICES = {available_model: available_model for available_model in available_models}
-
-_TOOLS: list[Any] = [
-    # WebSearchToolParam(type="web_search_preview"),
-    # ImageGeneration(type="image_generation"),  # 圖片可能很貴 看情況解決
-]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -135,7 +127,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 previous_response_id = self.user_last_response_id.get(interaction.user.id, None)
                 stream = await llm_sdk.client.responses.create(
                     model=model,
-                    tools=_TOOLS,
                     input=[{"role": "user", "content": content}],
                     stream=True,
                     previous_response_id=previous_response_id,
@@ -144,10 +135,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # 如果 API 回傳錯誤（response ID 無效），清理該用戶記錄並重新嘗試
                 self.user_last_response_id.pop(interaction.user.id, None)
                 stream = await llm_sdk.client.responses.create(
-                    model=model,
-                    tools=_TOOLS,
-                    input=[{"role": "user", "content": content}],
-                    stream=True,
+                    model=model, input=[{"role": "user", "content": content}], stream=True
                 )
 
             await self._handle_streaming_response(
