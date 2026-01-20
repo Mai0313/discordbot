@@ -73,7 +73,7 @@ async def test_do_summarize_calls_llm(mock_llmsdk: Mock) -> None:
     # Mock LLM SDK and its methods
     instance = Mock()
     instance.model = "openai/gpt-5-mini"
-    instance.prepare_response_content = AsyncMock(
+    instance.get_response_content = AsyncMock(
         return_value=[{"type": "input_text", "text": "prepared"}]
     )
 
@@ -88,5 +88,5 @@ async def test_do_summarize_calls_llm(mock_llmsdk: Mock) -> None:
 
     result = await cog.do_summarize(channel, history_count=1, target_user=None)
     assert result == "summary"
-    instance.prepare_response_content.assert_awaited()
+    instance.get_response_content.assert_awaited()
     instance.client.responses.create.assert_awaited()

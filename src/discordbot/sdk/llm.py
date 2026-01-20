@@ -59,7 +59,7 @@ class LLMSDK(BaseSettings):
             client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
         return client
 
-    async def prepare_completion_content(
+    async def get_completion_content(
         self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [
@@ -76,7 +76,7 @@ class LLMSDK(BaseSettings):
             content.append({"type": "image_url", "image_url": {"url": image_base64}})
         return content
 
-    async def prepare_response_content(
+    async def get_response_content(
         self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
         content: list[dict[str, Any]] = [

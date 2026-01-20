@@ -130,7 +130,7 @@ class ReplyGeneratorCogs(commands.Cog):
         async with message.channel.typing():
             try:
                 attachments = await self._get_attachment_list([message])
-                completion_content = await self.llm_sdk.prepare_completion_content(
+                completion_content = await self.llm_sdk.get_completion_content(
                     prompt=content, attachments=attachments
                 )
 
@@ -145,19 +145,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
 
                 # Send initial thinking message
-                reply_message = await message.reply("🤔 思考中...")
+                reply_message = await message.reply("🤔")
 
                 # Handle streaming response
                 response_text = await self._handle_streaming(
                     target=reply_message, stream=stream, user_mention=message.author.mention
                 )
 
-                # Add AI response to memory
-                if response_text:
-                    self.user_memory[message.author.id].append({
-                        "role": "assistant",
-                        "content": response_text,
-                    })
+                self.user_memory[message.author.id].append({
+                    "role": "assistant",
+                    "content": response_text,
+                })
 
             except Exception as e:
                 logfire.error("Error in on_message mention handler", _exc_info=True)
