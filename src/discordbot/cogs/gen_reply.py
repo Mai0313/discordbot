@@ -111,8 +111,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def on_message(self, message: nextcord.Message) -> None:
         """Handle messages that mention the bot.
 
-        This listener allows users to chat with the bot by mentioning it,
-        without needing to use slash commands.
+        This listener allows users to chat with the bot by mentioning it, without needing to use slash commands.
 
         Args:
             message (nextcord.Message): The message object.
