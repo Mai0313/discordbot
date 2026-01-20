@@ -89,6 +89,7 @@ class SummarizeMenuView(nextcord.ui.View):
 class MessageFetcher(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.llm_sdk = LLMSDK(model="openai/gpt-5-mini")
 
     @nextcord.slash_command(
         name="sum",
@@ -129,10 +130,11 @@ class MessageFetcher(commands.Cog):
 
         final_prompt, attachments = self._format_messages(messages)
 
-        llm_sdk = LLMSDK(model="openai/gpt-5-mini")
-        content = await llm_sdk.get_response_content(prompt=final_prompt, attachments=attachments)
-        responses = await llm_sdk.client.responses.create(
-            model=llm_sdk.model,
+        content = await self.llm_sdk.get_response_content(
+            prompt=final_prompt, attachments=attachments
+        )
+        responses = await self.llm_sdk.client.responses.create(
+            model=self.llm_sdk.model,
             tools=[{"type": "web_search_preview"}],
             input=[
                 {"role": "assistant", "content": SUMMARY_PROMPT},
