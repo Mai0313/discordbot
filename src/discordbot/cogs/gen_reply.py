@@ -140,7 +140,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 logfire.error("Error creating chat completion", _exc_info=True)
                 raise e
 
-            response_text = await self._handle_streaming(interaction=interaction, stream=stream)
+            response_text = await self._handle_streaming(
+                target=interaction, stream=stream, user_mention=interaction.user.mention
+            )
 
             # 將 AI 回應加入記憶
             if response_text:
@@ -153,8 +155,21 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.error("Error in oai", _exc_info=True)
 
     async def _handle_streaming(
-        self, interaction: Interaction, stream: AsyncStream[ChatCompletionChunk]
+        self,
+        target: Interaction | nextcord.Message,
+        stream: AsyncStream[ChatCompletionChunk],
+        user_mention: str,
     ) -> str:
+        """Handle streaming LLM response for both Interaction and Message.
+
+        Args:
+            target: Either an Interaction or Message object to edit
+            stream: The streaming response from LLM
+            user_mention: The user mention string to prefix the response with
+
+        Returns:
+            The complete accumulated response text
+        """
         accumulated_text = ""
         char_count = 0
 
@@ -165,49 +180,26 @@ class ReplyGeneratorCogs(commands.Cog):
 
                 if char_count >= 10:
                     try:
-                        await interaction.edit_original_message(
-                            content=f"{interaction.user.mention}\n{accumulated_text}"
-                        )
+                        content = f"{user_mention}\n{accumulated_text}"
+                        # Edit based on target type
+                        if isinstance(target, Interaction):
+                            await target.edit_original_message(content=content)
+                        else:  # nextcord.Message
+                            await target.edit(content=content)
                         char_count = 0
                     except nextcord.errors.NotFound:
-                        # 訊息可能被刪除
-                        break
-                    except Exception as e:
-                        logfire.warning(f"Failed to update message: {e}")
-
-        # 最終更新確保顯示完整訊息
-        with contextlib.suppress(Exception):
-            await interaction.edit_original_message(
-                content=f"{interaction.user.mention}\n{accumulated_text}"
-            )
-
-        return accumulated_text
-
-    async def _handle_streaming_for_message(
-        self, reply_message: nextcord.Message, stream: AsyncStream[ChatCompletionChunk]
-    ) -> str:
-        accumulated_text = ""
-        char_count = 0
-
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                accumulated_text += chunk.choices[0].delta.content
-                char_count += len(chunk.choices[0].delta.content)
-
-                if char_count >= 10:
-                    try:
-                        await reply_message.edit(
-                            content=f"{reply_message.author.mention}\n{accumulated_text}"
-                        )
-                        char_count = 0
-                    except nextcord.errors.NotFound:
+                        # Message may have been deleted
                         break
                     except Exception as e:
                         logfire.warning(f"Failed to update message: {e}")
 
         # Final update to ensure complete message is displayed
         with contextlib.suppress(Exception):
-            await reply_message.edit(content=f"{reply_message.author.mention}\n{accumulated_text}")
+            content = f"{user_mention}\n{accumulated_text}"
+            if isinstance(target, Interaction):
+                await target.edit_original_message(content=content)
+            else:  # nextcord.Message
+                await target.edit(content=content)
 
         return accumulated_text
 
@@ -302,8 +294,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 reply_message = await message.reply("🤔 思考中...")
 
                 # Handle streaming response
-                response_text = await self._handle_streaming_for_message(
-                    reply_message=reply_message, stream=stream
+                response_text = await self._handle_streaming(
+                    target=reply_message, stream=stream, user_mention=message.author.mention
                 )
 
                 # Add AI response to memory
