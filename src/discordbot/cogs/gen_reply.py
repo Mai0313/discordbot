@@ -183,6 +183,34 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return accumulated_text
 
+    async def _handle_streaming_for_message(
+        self, reply_message: nextcord.Message, stream: AsyncStream[ChatCompletionChunk]
+    ) -> str:
+        accumulated_text = ""
+        char_count = 0
+
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                accumulated_text += chunk.choices[0].delta.content
+                char_count += len(chunk.choices[0].delta.content)
+
+                if char_count >= 10:
+                    try:
+                        await reply_message.edit(
+                            content=f"{reply_message.author.mention}\n{accumulated_text}"
+                        )
+                        char_count = 0
+                    except nextcord.errors.NotFound:
+                        break
+                    except Exception as e:
+                        logfire.warning(f"Failed to update message: {e}")
+
+        # Final update to ensure complete message is displayed
+        with contextlib.suppress(Exception):
+            await reply_message.edit(content=f"{reply_message.author.mention}\n{accumulated_text}")
+
+        return accumulated_text
+
     @nextcord.slash_command(
         name="clear_memory",
         description="Clear your conversation memory with the bot.",
@@ -288,41 +316,6 @@ class ReplyGeneratorCogs(commands.Cog):
             except Exception as e:
                 logfire.error("Error in on_message mention handler", _exc_info=True)
                 await message.reply(f"❌ 錯誤: {e}")
-
-    async def _handle_streaming_for_message(
-        self, reply_message: nextcord.Message, stream: AsyncStream[ChatCompletionChunk]
-    ) -> str:
-        """Handle streaming response for regular message replies.
-
-        Args:
-            reply_message (nextcord.Message): The message to edit with streaming content.
-            stream (AsyncStream[ChatCompletionChunk]): The streaming response from LLM.
-
-        Returns:
-            str: The complete generated text.
-        """
-        accumulated_text = ""
-        char_count = 0
-
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                accumulated_text += chunk.choices[0].delta.content
-                char_count += len(chunk.choices[0].delta.content)
-
-                if char_count >= 10:
-                    try:
-                        await reply_message.edit(content=accumulated_text)
-                        char_count = 0
-                    except nextcord.errors.NotFound:
-                        break
-                    except Exception as e:
-                        logfire.warning(f"Failed to update message: {e}")
-
-        # Final update to ensure complete message is displayed
-        with contextlib.suppress(Exception):
-            await reply_message.edit(content=accumulated_text)
-
-        return accumulated_text
 
 
 async def setup(bot: commands.Bot) -> None:
