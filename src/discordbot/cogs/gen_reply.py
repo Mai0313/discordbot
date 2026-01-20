@@ -58,6 +58,55 @@ class ReplyGeneratorCogs(commands.Cog):
                     attachments.extend(_attach)
         return attachments
 
+    async def _handle_streaming(
+        self,
+        target: Interaction | nextcord.Message,
+        stream: AsyncStream[ChatCompletionChunk],
+        user_mention: str,
+    ) -> str:
+        """Handle streaming LLM response for both Interaction and Message.
+
+        Args:
+            target: Either an Interaction or Message object to edit
+            stream: The streaming response from LLM
+            user_mention: The user mention string to prefix the response with
+
+        Returns:
+            The complete accumulated response text
+        """
+        accumulated_text = ""
+        char_count = 0
+
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                accumulated_text += chunk.choices[0].delta.content
+                char_count += len(chunk.choices[0].delta.content)
+
+                if char_count >= 10:
+                    try:
+                        content = f"{user_mention}\n{accumulated_text}"
+                        # Edit based on target type
+                        if isinstance(target, Interaction):
+                            await target.edit_original_message(content=content)
+                        else:  # nextcord.Message
+                            await target.edit(content=content)
+                        char_count = 0
+                    except nextcord.errors.NotFound:
+                        # Message may have been deleted
+                        break
+                    except Exception as e:
+                        logfire.warning(f"Failed to update message: {e}")
+
+        # Final update to ensure complete message is displayed
+        with contextlib.suppress(Exception):
+            content = f"{user_mention}\n{accumulated_text}"
+            if isinstance(target, Interaction):
+                await target.edit_original_message(content=content)
+            else:  # nextcord.Message
+                await target.edit(content=content)
+
+        return accumulated_text
+
     @nextcord.slash_command(
         name="oai",
         description="I can reply from hints, search the web.",
@@ -154,84 +203,6 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             logfire.error("Error in oai", _exc_info=True)
 
-    async def _handle_streaming(
-        self,
-        target: Interaction | nextcord.Message,
-        stream: AsyncStream[ChatCompletionChunk],
-        user_mention: str,
-    ) -> str:
-        """Handle streaming LLM response for both Interaction and Message.
-
-        Args:
-            target: Either an Interaction or Message object to edit
-            stream: The streaming response from LLM
-            user_mention: The user mention string to prefix the response with
-
-        Returns:
-            The complete accumulated response text
-        """
-        accumulated_text = ""
-        char_count = 0
-
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                accumulated_text += chunk.choices[0].delta.content
-                char_count += len(chunk.choices[0].delta.content)
-
-                if char_count >= 10:
-                    try:
-                        content = f"{user_mention}\n{accumulated_text}"
-                        # Edit based on target type
-                        if isinstance(target, Interaction):
-                            await target.edit_original_message(content=content)
-                        else:  # nextcord.Message
-                            await target.edit(content=content)
-                        char_count = 0
-                    except nextcord.errors.NotFound:
-                        # Message may have been deleted
-                        break
-                    except Exception as e:
-                        logfire.warning(f"Failed to update message: {e}")
-
-        # Final update to ensure complete message is displayed
-        with contextlib.suppress(Exception):
-            content = f"{user_mention}\n{accumulated_text}"
-            if isinstance(target, Interaction):
-                await target.edit_original_message(content=content)
-            else:  # nextcord.Message
-                await target.edit(content=content)
-
-        return accumulated_text
-
-    @nextcord.slash_command(
-        name="clear_memory",
-        description="Clear your conversation memory with the bot.",
-        name_localizations={Locale.zh_TW: "清除記憶", Locale.ja: "メモリをクリア"},
-        description_localizations={
-            Locale.zh_TW: "清除你與機器人的對話記憶。",
-            Locale.ja: "ボットとの会話メモリをクリアします。",
-        },
-        dm_permission=True,
-        nsfw=False,
-    )
-    async def clear_memory(self, interaction: Interaction) -> None:
-        """清除用戶的對話記憶。
-
-        Args:
-            interaction (Interaction): The interaction object for the command.
-        """
-        user_id = interaction.user.id
-        had_memory = self.user_memory.pop(user_id, None) is not None
-
-        if had_memory:
-            await interaction.response.send_message(
-                content="對話記憶已清除! 下次對話將重新開始。", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                content="你目前沒有對話記憶需要清除。", ephemeral=True
-            )
-
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message) -> None:
         """Handle messages that mention the bot.
@@ -308,6 +279,35 @@ class ReplyGeneratorCogs(commands.Cog):
             except Exception as e:
                 logfire.error("Error in on_message mention handler", _exc_info=True)
                 await message.reply(f"❌ 錯誤: {e}")
+
+    @nextcord.slash_command(
+        name="clear_memory",
+        description="Clear your conversation memory with the bot.",
+        name_localizations={Locale.zh_TW: "清除記憶", Locale.ja: "メモリをクリア"},
+        description_localizations={
+            Locale.zh_TW: "清除你與機器人的對話記憶。",
+            Locale.ja: "ボットとの会話メモリをクリアします。",
+        },
+        dm_permission=True,
+        nsfw=False,
+    )
+    async def clear_memory(self, interaction: Interaction) -> None:
+        """清除用戶的對話記憶。
+
+        Args:
+            interaction (Interaction): The interaction object for the command.
+        """
+        user_id = interaction.user.id
+        had_memory = self.user_memory.pop(user_id, None) is not None
+
+        if had_memory:
+            await interaction.response.send_message(
+                content="對話記憶已清除! 下次對話將重新開始。", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                content="你目前沒有對話記憶需要清除。", ephemeral=True
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
