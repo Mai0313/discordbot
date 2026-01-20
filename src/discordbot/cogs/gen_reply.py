@@ -26,6 +26,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # 儲存每個用戶的對話紀錄
         # key: user_id, value: list of message dicts
         self.user_memory: dict[int, list[dict[str, Any]]] = {}
+        self.llm_sdk: LLMSDK = LLMSDK(model=DEFAULT_MODEL)
 
     async def _get_attachment_list(
         self, messages: list[nextcord.Message] | None = None
@@ -74,29 +75,29 @@ class ReplyGeneratorCogs(commands.Cog):
         Returns:
             The complete accumulated response text
         """
-        accumulated_text = f"{user_mention} "
-        char_count = 0
+        stored_content = f"{user_mention} "
+        counted_content = 0
 
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
-                accumulated_text += chunk.choices[0].delta.content
-                char_count += len(chunk.choices[0].delta.content)
+                stored_content += chunk.choices[0].delta.content
+                counted_content += len(chunk.choices[0].delta.content)
 
-                if char_count >= 15:
+                if counted_content >= 15:
                     if isinstance(target, Interaction):
-                        await target.edit_original_message(content=accumulated_text)
-                    elif isinstance(target, nextcord.Message):
-                        await target.edit(content=accumulated_text)
-                    char_count = 0
+                        await target.edit_original_message(content=stored_content)
+                    else:
+                        await target.edit(content=stored_content)
+                    counted_content = 0
 
         # Final update to ensure complete message is displayed
         with contextlib.suppress(Exception):
             if isinstance(target, Interaction):
-                await target.edit_original_message(content=accumulated_text)
-            else:  # nextcord.Message
-                await target.edit(content=accumulated_text)
+                await target.edit_original_message(content=stored_content)
+            else:
+                await target.edit(content=stored_content)
 
-        return accumulated_text
+        return stored_content
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message) -> None:
@@ -107,12 +108,8 @@ class ReplyGeneratorCogs(commands.Cog):
         Args:
             message (nextcord.Message): The message object.
         """
-        # Ignore messages from bots (including self)
-        if message.author.bot:
-            return
-
-        # Check if bot is mentioned
-        if self.bot.user not in message.mentions:
+        # Ignore messages from bots and skip if not mentioned
+        if message.author.bot or self.bot.user not in message.mentions:
             return
 
         # Extract message content without mentions
@@ -132,9 +129,8 @@ class ReplyGeneratorCogs(commands.Cog):
         # Start typing indicator
         async with message.channel.typing():
             try:
-                llm_sdk = LLMSDK(model=DEFAULT_MODEL)
                 attachments = await self._get_attachment_list([message])
-                completion_content = await llm_sdk.prepare_completion_content(
+                completion_content = await self.llm_sdk.prepare_completion_content(
                     prompt=content, attachments=attachments
                 )
 
@@ -144,10 +140,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     "content": completion_content,
                 })
 
-                stream = await llm_sdk.client.chat.completions.create(
-                    model=DEFAULT_MODEL,
-                    messages=self.user_memory[message.author.id],
-                    stream=True,
+                stream = await self.llm_sdk.client.chat.completions.create(
+                    model=DEFAULT_MODEL, messages=self.user_memory[message.author.id], stream=True
                 )
 
                 # Send initial thinking message
@@ -167,7 +161,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
             except Exception as e:
                 logfire.error("Error in on_message mention handler", _exc_info=True)
-                await message.reply(f"❌ 錯誤: {e}")
+                await message.reply(f"{e}")
 
     @nextcord.slash_command(
         name="clear_memory",
