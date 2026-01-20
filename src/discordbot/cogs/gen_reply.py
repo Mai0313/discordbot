@@ -64,7 +64,8 @@ class ReplyGeneratorCogs(commands.Cog):
         content = message.content
         for mention in message.mentions:
             content = content.replace(f"<@{mention.id}>", "").strip()
-        content = f"{message.author.name}: {content}"
+        author_name = message.author.nick if message.author.nick else message.author.name
+        content = f"{author_name}: {content}"
         return content
 
     async def _process_single_message(
@@ -193,9 +194,6 @@ class ReplyGeneratorCogs(commands.Cog):
         # Add current message
         current_msg = await self._process_single_message(message, role="user")
         messages.append(current_msg)
-
-        print(messages)
-
         return messages
 
     async def _handle_streaming(
