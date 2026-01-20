@@ -6,6 +6,7 @@ import logfire
 from nextcord import Message, Interaction
 from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
+from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.sdk.llm import LLMSDK
 
@@ -29,6 +30,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Args:
             message: The Discord message to extract attachments from.
+            validate_urls: Whether to validate that URLs are accessible (HEAD request).
 
         Returns:
             A list of base64 data URI strings.
@@ -38,7 +40,17 @@ class ReplyGeneratorCogs(commands.Cog):
             attachments = [attachment.url for attachment in message.attachments]
         if message.stickers:
             attachments.extend([sticker.url for sticker in message.stickers])
-        return attachments
+
+        converted_attachments: list[str] = []
+        for attachment in attachments:
+            try:
+                downloaded_attachment = get_pil_image(image_file=attachment)
+                converted_attachment = pil_to_data_uri(image=downloaded_attachment)
+                converted_attachments.append(converted_attachment)
+            except Exception:
+                logfire.warn("Filed to download the attachment")
+
+        return converted_attachments
 
     async def _get_cleaned_content(self, message: Message) -> str:
         """Clean message content by replacing user mentions with readable names.
@@ -56,7 +68,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return content
 
     async def _process_single_message(
-        self, message: Message, role: str = "user"
+        self, message: Message, role: str = "user", include_images: bool = True
     ) -> dict[str, Any]:
         """Process a single message into LLM message format.
 
@@ -67,77 +79,120 @@ class ReplyGeneratorCogs(commands.Cog):
         Args:
             message: The Discord message to process.
             role: The role of the message sender (default: "user").
+            include_images: Whether to include images in the message. For historical messages, this should be False to avoid 404 errors.
 
         Returns:
             A dictionary in LLM message format with role and content.
         """
         content = await self._get_cleaned_content(message=message)
-        attachments = await self._get_attachments(message=message)
 
-        # Build content parts
+        # Build content parts - start with text
         content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
-        for attachment in attachments:
-            content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
+
+        # Only include images for current/recent messages, not historical ones
+        if include_images:
+            attachments = await self._get_attachments(message=message)
+            for attachment in attachments:
+                content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
 
         return {"role": role, "content": content_parts}
 
     async def _build_message_chain(self, message: Message) -> list[dict[str, Any]]:
-        """Build a chain of messages including references and current message.
-
-        This method handles the message chain construction, including:
-        - Referenced messages (if any)
-        - Current message
-        - (Future) Historical messages from conversation context
-
-        Args:
-            message: The current Discord message.
-
-        Returns:
-            A list of LLM messages in chronological order.
-        """
         messages: list[dict[str, Any]] = []
 
-        # Handle referenced message
+        # 1. 處理引用的訊息（如果有的話）
+        referenced_message = None
         if message.reference and isinstance(message.reference.resolved, Message):
-            ref_msg = message.reference.resolved
+            referenced_message = message.reference.resolved
 
+        # 2. 獲取歷史記錄
+        try:
+            # 如果有引用訊息，從引用訊息之前開始獲取歷史記錄
+            if referenced_message:
+                hist_messages = await message.channel.history(
+                    limit=20, before=referenced_message
+                ).flatten()
+                hist_messages.reverse()
+            else:
+                # 否則維持原來的邏輯
+                hist_messages = await message.channel.history(limit=20).flatten()
+                hist_messages.reverse()
+
+            if hist_messages:
+                # Add separator for history
+                messages.append({
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The following messages are the recent conversation history",
+                        }
+                    ],
+                })
+
+                # Add historical messages in chronological order (oldest first)
+                # Skip images for historical messages to avoid 404 errors
+                for hist_msg in hist_messages:
+                    # Determine role based on author
+                    role = "assistant" if hist_msg.author.bot else "user"
+                    hist_message = await self._process_single_message(
+                        hist_msg, role=role, include_images=False
+                    )
+                    messages.append(hist_message)
+        except Exception:
+            logfire.warning("Failed to retrieve chat history")
+
+        # Add separator to indicate end of history
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "The following messages are the current conversation"}
+            ],
+        })
+
+        # 3. 處理引用的訊息（如果有的話）
+        if referenced_message:
             # Add separator to indicate referenced message
             messages.append({
-                "role": "user",
+                "role": "assistant",
                 "content": [
-                    {"type": "text", "text": f"The following message is the referenced message from {ref_msg.author.name}"}
+                    {
+                        "type": "text",
+                        "text": f"The following message is the referenced message from {referenced_message.author.name}",
+                    }
                 ],
             })
 
             # Process referenced message
-            if ref_msg.author.bot:
+            if referenced_message.author.bot:
                 # Bot's previous response
-                reference_msg = await self._process_single_message(ref_msg, role="assistant")
+                reference_msg = await self._process_single_message(
+                    message=referenced_message, role="assistant"
+                )
             else:
                 # Another user's message
-                reference_msg = await self._process_single_message(ref_msg, role="user")
+                reference_msg = await self._process_single_message(
+                    message=referenced_message, role="user"
+                )
 
             messages.append(reference_msg)
 
-            # Add separator to indicate current user's reply
+        # 4. 添加當前輸入訊息
+        # Add separator to indicate current user's reply (only if there was a referenced message)
+        if referenced_message:
             messages.append({
-                "role": "user",
-                "content": [{"type": "text", "text": f"The following message is the new message from {message.author.name}"}],
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"The following message is the new message from {message.author.name}",
+                    }
+                ],
             })
 
-            # Then add current message
-            current_msg = await self._process_single_message(message, role="user")
-            messages.append(current_msg)
-        else:
-            # No reference, just process current message
-            current_msg = await self._process_single_message(message, role="user")
-            messages.append(current_msg)
-
-        # TODO: Add historical messages from conversation context here in the future
-        # When adding history, make sure to:
-        # - Determine correct role for each message (user vs assistant)
-        # - Maintain chronological order
-        # - Handle message deduplication if reference is in history
+        # Add current message
+        current_msg = await self._process_single_message(message, role="user")
+        messages.append(current_msg)
 
         print(messages)
 
