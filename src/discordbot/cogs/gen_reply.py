@@ -128,16 +128,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 Locale.ja: "プロンプトを入力してください。",
             },
         ),
-        model: str = SlashOption(
-            description="Choose a model (default: GPT-5).",
-            description_localizations={
-                Locale.zh_TW: "選擇模型 (預設為 GPT-5)",
-                Locale.ja: "モデルを選択してください（デフォルトは GPT-5）",
-            },
-            choices=MODEL_CHOICES,
-            required=False,
-            default=available_models[0],
-        ),
         image: nextcord.Attachment | None = SlashOption(  # noqa: B008
             description="(Optional) Upload an image.",
             description_localizations={
@@ -152,7 +142,6 @@ class ReplyGeneratorCogs(commands.Cog):
         Args:
             interaction (Interaction): The interaction object for the command.
             prompt (str): The prompt text provided by the user.
-            model (str): The selected model, defaults to "gpt-5" if not specified.
             image (Optional[nextcord.Attachment]): An optional image attachment uploaded by the user.
         """
         await interaction.response.defer()
@@ -164,7 +153,7 @@ class ReplyGeneratorCogs(commands.Cog):
         await interaction.followup.send(content="🤔 思考中...")
 
         try:
-            llm_sdk = LLMSDK(model=model)
+            llm_sdk = LLMSDK(model=DEFAULT_MODEL)
             # 使用 completion content 格式 (ChatCompletion)
             content = await llm_sdk.prepare_completion_content(
                 prompt=prompt, attachments=attachments
@@ -180,7 +169,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
             try:
                 stream = await llm_sdk.client.chat.completions.create(
-                    model=model, messages=self.user_memory[user_id], stream=True
+                    model=DEFAULT_MODEL, messages=self.user_memory[user_id], stream=True
                 )
             except Exception as e:
                 # 若發生錯誤，可能是 content filter 或其他問題，不清除記憶但報錯
@@ -224,7 +213,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # Extract message content without mentions
         content = message.content
         for mention in message.mentions:
-            content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
+            content = content.replace(f"<@{mention.id}>", "")
         content = content.strip()
 
         # If content is empty or only whitespace, reply with "?"
