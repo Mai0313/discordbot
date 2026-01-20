@@ -173,22 +173,8 @@ class ReplyGeneratorCogs(commands.Cog):
         nsfw=False,
     )
     async def clear_memory(self, interaction: Interaction) -> None:
-        """清除用戶的對話記憶。
-
-        Args:
-            interaction (Interaction): The interaction object for the command.
-        """
-        user_id = interaction.user.id
-        had_memory = self.user_memory.pop(user_id, None) is not None
-
-        if had_memory:
-            await interaction.response.send_message(
-                content="對話記憶已清除! 下次對話將重新開始。", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                content="你目前沒有對話記憶需要清除。", ephemeral=True
-            )
+        self.user_memory.pop(interaction.user.id, None)
+        await interaction.response.send_message(content=":ok_hand:", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
