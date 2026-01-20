@@ -140,9 +140,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 logfire.error("Error creating chat completion", _exc_info=True)
                 raise e
 
-            response_text = await self._handle_streaming_response(
-                interaction=interaction, stream=stream, update_per_words=10
-            )
+            response_text = await self._handle_streaming(interaction=interaction, stream=stream)
 
             # 將 AI 回應加入記憶
             if response_text:
@@ -154,31 +152,18 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             logfire.error("Error in oai", _exc_info=True)
 
-    async def _handle_streaming_response(
-        self,
-        interaction: Interaction,
-        stream: AsyncStream[ChatCompletionChunk],
-        update_per_words: int = 10,
+    async def _handle_streaming(
+        self, interaction: Interaction, stream: AsyncStream[ChatCompletionChunk]
     ) -> str:
-        """處理 streaming 回應，每 10 個字更新一次訊息。
-
-        Returns:
-            str: 完整的生成文字
-        """
         accumulated_text = ""
         char_count = 0
 
         async for chunk in stream:
-            if not chunk.choices:
-                continue
+            if chunk.choices and chunk.choices[0].delta.content:
+                accumulated_text += chunk.choices[0].delta.content
+                char_count += len(chunk.choices[0].delta.content)
 
-            delta = chunk.choices[0].delta
-            if delta.content:
-                accumulated_text += delta.content
-                char_count += len(delta.content)
-
-                # 每 X 個字更新一次訊息
-                if char_count >= update_per_words:
+                if char_count >= 10:
                     try:
                         await interaction.edit_original_message(
                             content=f"{interaction.user.mention}\n{accumulated_text}"
@@ -289,8 +274,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 reply_message = await message.reply("🤔 思考中...")
 
                 # Handle streaming response
-                response_text = await self._handle_streaming_response_for_message(
-                    reply_message=reply_message, stream=stream, update_per_words=10
+                response_text = await self._handle_streaming_for_message(
+                    reply_message=reply_message, stream=stream
                 )
 
                 # Add AI response to memory
@@ -304,18 +289,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 logfire.error("Error in on_message mention handler", _exc_info=True)
                 await message.reply(f"❌ 錯誤: {e}")
 
-    async def _handle_streaming_response_for_message(
-        self,
-        reply_message: nextcord.Message,
-        stream: AsyncStream[ChatCompletionChunk],
-        update_per_words: int = 10,
+    async def _handle_streaming_for_message(
+        self, reply_message: nextcord.Message, stream: AsyncStream[ChatCompletionChunk]
     ) -> str:
         """Handle streaming response for regular message replies.
 
         Args:
             reply_message (nextcord.Message): The message to edit with streaming content.
             stream (AsyncStream[ChatCompletionChunk]): The streaming response from LLM.
-            update_per_words (int): Update message every N characters.
 
         Returns:
             str: The complete generated text.
@@ -324,21 +305,15 @@ class ReplyGeneratorCogs(commands.Cog):
         char_count = 0
 
         async for chunk in stream:
-            if not chunk.choices:
-                continue
+            if chunk.choices and chunk.choices[0].delta.content:
+                accumulated_text += chunk.choices[0].delta.content
+                char_count += len(chunk.choices[0].delta.content)
 
-            delta = chunk.choices[0].delta
-            if delta.content:
-                accumulated_text += delta.content
-                char_count += len(delta.content)
-
-                # Update message every X characters
-                if char_count >= update_per_words:
+                if char_count >= 10:
                     try:
                         await reply_message.edit(content=accumulated_text)
                         char_count = 0
                     except nextcord.errors.NotFound:
-                        # Message might have been deleted
                         break
                     except Exception as e:
                         logfire.warning(f"Failed to update message: {e}")
