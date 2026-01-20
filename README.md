@@ -33,8 +33,6 @@ _Suggestions and contributions are always welcome!_
 
 ### 📊 Content Processing
 
-- **Message Summarization**: Smart channel conversation summaries with user filtering (5, 10, 20, 50 messages)
-
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 
     - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
@@ -61,14 +59,13 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                                                                                                                                     |
-| ----------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@mention`        | Chat by mentioning the bot        | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search |
-| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                             |
-| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                             |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                 |
-| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                          |
-| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                    |
+| Command           | Description                     | Features                                                                                                                                                     |
+| ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@mention`        | Chat by mentioning the bot      | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search |
+| `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                             |
+| `/maple_monster`  | Search MapleStory monster drops | Detailed stats, images, maps                                                                                                                                 |
+| `/maple_item`     | Search MapleStory item sources  | Drop source mapping                                                                                                                                          |
+| `/maple_stats`    | MapleStory DB statistics        | Totals, level distribution, popular items                                                                                                                    |
 
 | `/graph` | Generate images (placeholder) | Framework ready for implementation |
 | `/ping` | Bot performance testing | Latency measurement |
@@ -183,7 +180,6 @@ src/discordbot/
 ├── cli.py              # Main bot entry point
 ├── cogs/               # Command modules
 │   ├── gen_reply.py    # AI text generation (@mention)
-│   ├── summary.py      # Message summarization (/sum)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
 │   ├── gen_image.py    # Image generation (placeholder)
@@ -301,7 +297,6 @@ uv run pytest -q
 - Cog unit tests included:
 
     - TemplateCogs: message reaction and `/ping` embed
-    - MessageFetcher: `_format_messages()` and `do_summarize()` (LLM mocked)
     - ReplyGeneratorCogs: `_get_attachment_list()` and message processing
     - ImageGeneratorCogs: `/graph` placeholder flow
     - VideoCogs: `/download_video` happy path (downloader mocked)
