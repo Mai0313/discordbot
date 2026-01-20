@@ -74,7 +74,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Returns:
             The complete accumulated response text
         """
-        accumulated_text = ""
+        accumulated_text = f"{user_mention} "
         char_count = 0
 
         async for chunk in stream:
@@ -82,28 +82,19 @@ class ReplyGeneratorCogs(commands.Cog):
                 accumulated_text += chunk.choices[0].delta.content
                 char_count += len(chunk.choices[0].delta.content)
 
-                if char_count >= 10:
-                    try:
-                        content = f"{user_mention}\n{accumulated_text}"
-                        # Edit based on target type
-                        if isinstance(target, Interaction):
-                            await target.edit_original_message(content=content)
-                        else:  # nextcord.Message
-                            await target.edit(content=content)
-                        char_count = 0
-                    except nextcord.errors.NotFound:
-                        # Message may have been deleted
-                        break
-                    except Exception as e:
-                        logfire.warning(f"Failed to update message: {e}")
+                if char_count >= 15:
+                    if isinstance(target, Interaction):
+                        await target.edit_original_message(content=accumulated_text)
+                    elif isinstance(target, nextcord.Message):
+                        await target.edit(content=accumulated_text)
+                    char_count = 0
 
         # Final update to ensure complete message is displayed
         with contextlib.suppress(Exception):
-            content = f"{user_mention}\n{accumulated_text}"
             if isinstance(target, Interaction):
-                await target.edit_original_message(content=content)
+                await target.edit_original_message(content=accumulated_text)
             else:  # nextcord.Message
-                await target.edit(content=content)
+                await target.edit(content=accumulated_text)
 
         return accumulated_text
 
@@ -135,34 +126,29 @@ class ReplyGeneratorCogs(commands.Cog):
             await message.reply("?")
             return
 
-        # Get attachments from the message
-        attachments = await self._get_attachment_list([message])
+        if message.author.id not in self.user_memory:
+            self.user_memory[message.author.id] = []
 
         # Start typing indicator
         async with message.channel.typing():
             try:
                 llm_sdk = LLMSDK(model=DEFAULT_MODEL)
-                # Prepare completion content
+                attachments = await self._get_attachment_list([message])
                 completion_content = await llm_sdk.prepare_completion_content(
                     prompt=content, attachments=attachments
                 )
-                completion_content = f"You are not allowed to use Simplified Chinese in your response.\n{completion_content}"
-
-                user_id = message.author.id
-                if user_id not in self.user_memory:
-                    self.user_memory[user_id] = []
 
                 # Add user message to memory
-                self.user_memory[user_id].append({"role": "user", "content": completion_content})
+                self.user_memory[message.author.id].append({
+                    "role": "user",
+                    "content": completion_content,
+                })
 
-                try:
-                    stream = await llm_sdk.client.chat.completions.create(
-                        model=DEFAULT_MODEL, messages=self.user_memory[user_id], stream=True
-                    )
-                except Exception as e:
-                    logfire.error("Error creating chat completion for mention", _exc_info=True)
-                    await message.reply(f"❌ 錯誤: {e}")
-                    return
+                stream = await llm_sdk.client.chat.completions.create(
+                    model=DEFAULT_MODEL,
+                    messages=self.user_memory[message.author.id],
+                    stream=True,
+                )
 
                 # Send initial thinking message
                 reply_message = await message.reply("🤔 思考中...")
@@ -174,7 +160,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
                 # Add AI response to memory
                 if response_text:
-                    self.user_memory[user_id].append({
+                    self.user_memory[message.author.id].append({
                         "role": "assistant",
                         "content": response_text,
                     })

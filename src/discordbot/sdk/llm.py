@@ -62,7 +62,12 @@ class LLMSDK(BaseSettings):
     async def prepare_completion_content(
         self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": f"You MUST respond in the same language as the user. If you encounter Simplified Chinese, please respond in Traditional Chinese.\n{prompt}",
+            }
+        ]
         if not attachments:
             return content
         for attachment in attachments:
@@ -74,7 +79,12 @@ class LLMSDK(BaseSettings):
     async def prepare_response_content(
         self, prompt: str, attachments: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        content: list[dict[str, Any]] = [
+            {
+                "type": "input_text",
+                "text": f"You MUST respond in the same language as the user. If you encounter Simplified Chinese, please respond in Traditional Chinese.\n{prompt}",
+            }
+        ]
         if not attachments:
             return content
         for attachment in attachments:
