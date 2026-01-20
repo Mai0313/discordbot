@@ -28,7 +28,6 @@ _Suggestions and contributions are always welcome!_
 ### 🤖 AI-Powered Interactions
 
 - **Mention to Chat**: Simply mention the bot (@bot) to start a conversation — supports text and image inputs with multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) and **default streaming** (updates about every 10 characters)
-- **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
@@ -62,15 +61,14 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                                                                                                                                                      |
-| ----------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@mention`        | Chat by mentioning the bot        | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search, per-user memory |
-| `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                    |
-| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                              |
-| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                              |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                  |
-| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                           |
-| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                                     |
+| Command           | Description                       | Features                                                                                                                                                     |
+| ----------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@mention`        | Chat by mentioning the bot        | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search |
+| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                             |
+| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                             |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                 |
+| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                          |
+| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                    |
 
 | `/graph` | Generate images (placeholder) | Framework ready for implementation |
 | `/ping` | Bot performance testing | Latency measurement |
@@ -304,7 +302,7 @@ uv run pytest -q
 
     - TemplateCogs: message reaction and `/ping` embed
     - MessageFetcher: `_format_messages()` and `do_summarize()` (LLM mocked)
-    - ReplyGeneratorCogs: `_get_attachment_list()` and `/clear_memory`
+    - ReplyGeneratorCogs: `_get_attachment_list()` and message processing
     - ImageGeneratorCogs: `/graph` placeholder flow
     - VideoCogs: `/download_video` happy path (downloader mocked)
 
