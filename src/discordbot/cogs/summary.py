@@ -35,7 +35,6 @@ MODEL_CHOICES = {"grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
 DEFAULT_MODEL = available_models[0]
 
 
-# --- 定義選單視窗 ---
 class SummarizeMenuView(nextcord.ui.View):
     def __init__(self, bot: commands.Bot, original_interaction: Interaction, timeout: float = 60):
         super().__init__(timeout=timeout)
@@ -56,9 +55,7 @@ class SummarizeMenuView(nextcord.ui.View):
     async def select_history_count(
         self, select: nextcord.ui.Select, interaction: Interaction
     ) -> None:
-        # 儲存選擇的訊息數量
         self.history_count = int(select.values[0])
-        # 簡單回應以確認選擇（不會產生新訊息）
         await interaction.response.defer()
 
     @nextcord.ui.user_select(placeholder="選擇要總結的使用者 (可選)", min_values=0, max_values=1)
@@ -102,10 +99,6 @@ class MessageFetcher(commands.Cog):
         nsfw=False,
     )
     async def sum(self, interaction: Interaction) -> None:
-        """呼叫此指令後，會彈出一個選單視窗讓你選擇
-        - 要總結的訊息數量
-        - 是否僅總結某個使用者的訊息（可選）
-        """
         view = SummarizeMenuView(self.bot, interaction)
         await interaction.response.defer(ephemeral=bool(interaction.guild))
         await interaction.followup.send(
@@ -115,12 +108,6 @@ class MessageFetcher(commands.Cog):
     async def do_summarize(
         self, channel: nextcord.TextChannel, history_count: int, target_user: Member | None
     ) -> str:
-        """根據頻道、訊息數量與目標使用者，抓取並整理訊息，
-        接著呼叫 LLM 來產生總結內容。
-
-        Returns:
-            str: 總結的結果。
-        """
         messages = await self._fetch_messages(channel, history_count, target_user)
         if not messages:
             if target_user:
