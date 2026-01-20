@@ -20,7 +20,7 @@ The project follows a modular "Cog" based architecture.
 
 - **Entry Point:** `src/discordbot/cli.py` - Main bot class (`DiscordBot`) and startup logic.
 - **Cogs (`src/discordbot/cogs/`):**
-    - `gen_reply.py`: AI text generation (`/oai`).
+    - `gen_reply.py`: AI text generation (`@mention`).
     - `video.py`: Video downloader (`/download_video`).
     - `maplestory.py`: MapleStory DB search.
     - `summary.py`: Message summarization (`/sum`).

@@ -27,8 +27,7 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Text Generation**: Support for multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) with **default streaming** (updates about every 10 characters) and integrated web search
-- **Mention to Chat**: Simply mention the bot (@bot) to start a conversation without using commands — supports text and image inputs
+- **Mention to Chat**: Simply mention the bot (@bot) to start a conversation — supports text and image inputs with multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) and **default streaming** (updates about every 10 characters)
 - **Per-User Memory**: Conversation memory is tracked per user; `/clear_memory` clears your memory
 - **Image Processing**: Vision model support with automatic image conversion
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
@@ -63,16 +62,15 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                       | Features                                                                                                                                                                            |
-| ----------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/oai`            | Generate AI text response         | Multi-model (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), optional image input, integrated web search, per-user memory |
-| `@mention`        | Chat by mentioning the bot        | Same features as `/oai` — just mention the bot with your message or images to start chatting naturally                                                                              |
-| `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                          |
-| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                                    |
-| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                                    |
-| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                        |
-| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                                 |
-| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                                           |
+| Command           | Description                       | Features                                                                                                                                                                      |
+| ----------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@mention`        | Chat by mentioning the bot        | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search, per-user memory |
+| `/clear_memory`   | Clear conversation memory         | Resets your per-user memory used to continue conversations                                                                                                                    |
+| `/sum`            | Interactive message summarization | User filter, 5/10/20/50 messages                                                                                                                                              |
+| `/download_video` | Multi-platform video downloader   | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                                              |
+| `/maple_monster`  | Search MapleStory monster drops   | Detailed stats, images, maps                                                                                                                                                  |
+| `/maple_item`     | Search MapleStory item sources    | Drop source mapping                                                                                                                                                           |
+| `/maple_stats`    | MapleStory DB statistics          | Totals, level distribution, popular items                                                                                                                                     |
 
 | `/graph` | Generate images (placeholder) | Framework ready for implementation |
 | `/ping` | Bot performance testing | Latency measurement |
@@ -186,7 +184,7 @@ REDIS_URL=redis://redis:6379/0
 src/discordbot/
 ├── cli.py              # Main bot entry point
 ├── cogs/               # Command modules
-│   ├── gen_reply.py    # AI text generation (/oai)
+│   ├── gen_reply.py    # AI text generation (@mention)
 │   ├── summary.py      # Message summarization (/sum)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
