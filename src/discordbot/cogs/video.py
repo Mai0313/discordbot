@@ -67,7 +67,7 @@ class VideoCogs(commands.Cog):
                     file_size_mb = filename.stat().st_size / 1024 / 1024
                     if filename.stat().st_size > 25 * 1024 * 1024:
                         await interaction.edit_original_message(
-                            content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
+                            content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                         )
                     else:
                         await interaction.edit_original_message(
@@ -77,7 +77,7 @@ class VideoCogs(commands.Cog):
                 else:
                     # 已經是低畫質但仍然過大
                     await interaction.edit_original_message(
-                        content=f"❌ 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
+                        content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                     )
             else:
                 await interaction.edit_original_message(
@@ -85,7 +85,7 @@ class VideoCogs(commands.Cog):
                     file=nextcord.File(str(filename), filename=filename.name),
                 )
         except Exception:
-            await interaction.edit_original_message(content="❌ 下載失敗 \n檔案無法下載")
+            await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")
 
 
 # 註冊 Cog

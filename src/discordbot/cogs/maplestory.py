@@ -52,7 +52,7 @@ class MapleStoryCogs(commands.Cog):
 
         if not self._ensure_data_loaded():
             embed = Embed(
-                title="❌ 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
+                title=":x: 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
             )
             await interaction.followup.send(embed=embed)
             return
@@ -60,7 +60,7 @@ class MapleStoryCogs(commands.Cog):
         monsters_found = self.service.search_monsters_by_name(monster_name)
         if not monsters_found:
             embed = Embed(
-                title="🔍 搜尋結果",
+                title=":mag: 搜尋結果",
                 description=f"找不到名稱包含「{monster_name}」的怪物。",
                 color=0xFFAA00,
             )
@@ -73,7 +73,7 @@ class MapleStoryCogs(commands.Cog):
             return
 
         embed = Embed(
-            title="🔍 搜尋結果",
+            title=":mag: 搜尋結果",
             description=f"找到 {len(monsters_found)} 個相關怪物，請選擇：",
             color=0x00AAFF,
         )
@@ -118,7 +118,7 @@ class MapleStoryCogs(commands.Cog):
 
         if not self._ensure_data_loaded():
             embed = Embed(
-                title="❌ 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
+                title=":x: 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
             )
             await interaction.followup.send(embed=embed)
             return
@@ -126,7 +126,7 @@ class MapleStoryCogs(commands.Cog):
         items_found = self.service.search_items_by_name(item_name)
         if not items_found:
             embed = Embed(
-                title="🔍 搜尋結果",
+                title=":mag: 搜尋結果",
                 description=f"找不到名稱包含「{item_name}」的物品。",
                 color=0xFFAA00,
             )
@@ -141,7 +141,7 @@ class MapleStoryCogs(commands.Cog):
             return
 
         embed = Embed(
-            title="🔍 搜尋結果",
+            title=":mag: 搜尋結果",
             description=f"找到 {len(items_found)} 個相關物品，請選擇：",
             color=0x00AAFF,
         )
@@ -169,7 +169,7 @@ class MapleStoryCogs(commands.Cog):
 
         if not self._ensure_data_loaded():
             embed = Embed(
-                title="❌ 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
+                title=":x: 錯誤", description="無法載入怪物資料，請聯絡管理員。", color=0xFF0000
             )
             await interaction.followup.send(embed=embed)
             return

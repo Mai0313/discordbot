@@ -15,7 +15,7 @@ class TemplateCogs(commands.Cog):
 
         # 如果訊息內容是 "debug"，對該訊息按讚
         if message.content.lower() == "debug":
-            await message.add_reaction("🤬")
+            await message.add_reaction(":face_with_symbols_over_mouth:")
 
     @nextcord.slash_command(
         name="ping",
@@ -33,7 +33,7 @@ class TemplateCogs(commands.Cog):
         bot_latency = round(self.bot.latency * 1000, 2)  # 取得 API 延遲
 
         embed = nextcord.Embed(
-            title="🏓 Pong!",
+            title=":ping_pong: Pong!",
             color=0x00FF00,  # 綠色
             timestamp=nextcord.utils.utcnow(),
         )
