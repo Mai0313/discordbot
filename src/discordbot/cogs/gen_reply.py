@@ -140,7 +140,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     "content": completion_content,
                 })
 
-                stream = await self.llm_sdk.client.chat.completions.create(
+                stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
                     model=DEFAULT_MODEL, messages=self.user_memory[message.author.id], stream=True
                 )
 

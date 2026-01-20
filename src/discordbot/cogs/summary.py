@@ -1,8 +1,13 @@
+from typing import TYPE_CHECKING
+
 import nextcord
 from nextcord import Locale, Member, Interaction
 from nextcord.ext import commands
 
 from discordbot.sdk.llm import LLMSDK
+
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletion
 
 SUMMARY_PROMPT = """
 請將總結的部分以發送者當作主要分類，並將他在這段期間內發送的內容總結。
@@ -24,6 +29,10 @@ SUMMARY_MESSAGE = """
 總結以下消息：
 {chat_history_string}
 """
+
+available_models = ["openrouter/x-ai/grok-4.1-fast"]
+MODEL_CHOICES = {"grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
+DEFAULT_MODEL = available_models[0]
 
 
 # --- 定義選單視窗 ---
@@ -65,21 +74,11 @@ class SummarizeMenuView(nextcord.ui.View):
 
     @nextcord.ui.button(label="提交", style=nextcord.ButtonStyle.primary)
     async def submit(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
-        # 如果使用者未選擇訊息數量，則採用預設 20
         if self.history_count is None:
             self.history_count = 20
 
-        # 取得負責訊息總結的 Cog
         cog: MessageFetcher = self.bot.get_cog("MessageFetcher")
-        if cog is None:
-            await interaction.response.send_message("找不到訊息總結的處理器。", ephemeral=True)
-            self.stop()
-            return
-
-        # 回應「處理中…」（避免互動逾時）
         await interaction.response.defer(ephemeral=True)
-
-        # 執行總結流程
         summary = await cog.do_summarize(interaction.channel, self.history_count, self.target_user)
         await interaction.followup.send(summary, ephemeral=True)
         self.stop()
@@ -130,18 +129,18 @@ class MessageFetcher(commands.Cog):
 
         final_prompt, attachments = self._format_messages(messages)
 
-        content = await self.llm_sdk.get_response_content(
+        content = await self.llm_sdk.get_completion_content(
             prompt=final_prompt, attachments=attachments
         )
-        responses = await self.llm_sdk.client.responses.create(
-            model=self.llm_sdk.model,
-            tools=[{"type": "web_search_preview"}],
-            input=[
+        responses: ChatCompletion = await self.llm_sdk.client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[
                 {"role": "assistant", "content": SUMMARY_PROMPT},
                 {"role": "user", "content": content},
             ],
+            stream=False,
         )
-        return responses.output_text
+        return responses.choices[0].message.content
 
     async def _fetch_messages(
         self, channel: nextcord.TextChannel, history_count: int, target_user: Member | None
