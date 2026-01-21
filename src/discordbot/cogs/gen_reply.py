@@ -8,7 +8,7 @@ from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from discordbot.sdk.llm import LLMSDK
+from discordbot.utils.llm import LLMSDK
 
 available_models = ["deepseek-reasoner"]
 MODEL_CHOICES = {"deepseek-reasoner": "deepseek-reasoner"}
