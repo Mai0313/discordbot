@@ -1,4 +1,5 @@
 import re
+import asyncio
 from functools import cached_property
 
 import pandas as pd
@@ -6,6 +7,7 @@ import logfire
 import nextcord
 from pydantic import Field, BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, create_engine
+from nextcord.ext import commands
 
 from discordbot.typings.database import DatabaseConfig
 
@@ -108,3 +110,22 @@ class MessageLogger(BaseModel):
             await self._save_messages()
         except Exception:
             logfire.error("Failed to log message", _exc_info=True)
+
+
+class LogMessageCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_message(self, message: nextcord.Message) -> None:
+        if message.author.bot:
+            return
+        asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
+
+    @commands.Cog.listener()
+    async def on_command_completion(self, context: commands.Context) -> None:
+        asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
+
+
+async def setup(bot: commands.Bot) -> None:
+    bot.add_cog(LogMessageCog(bot))

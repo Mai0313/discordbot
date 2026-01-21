@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 from pathlib import Path
 import secrets
@@ -11,7 +10,6 @@ import nextcord
 from nextcord.ext import tasks, commands
 
 from discordbot.typings.config import DiscordConfig
-from discordbot.sdk.log_message import MessageLogger
 
 
 class DiscordBot(commands.Bot):
@@ -101,7 +99,7 @@ class DiscordBot(commands.Bot):
         """
         if message.author == self.user or message.author.bot:
             return
-        asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
+
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:
@@ -109,7 +107,6 @@ class DiscordBot(commands.Bot):
 
         :param context: The context of the command that has been executed.
         """
-        asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
