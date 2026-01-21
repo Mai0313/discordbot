@@ -189,8 +189,7 @@ src/discordbot/
 │   └── template.py     # 系统工具与延迟测试
 ├── sdk/                # 核心业务逻辑
 │   ├── llm.py          # LLM 整合（OpenAI/Azure）
-│   ├── log_message.py  # 消息记录（写入 SQLite）
-│   └── yt_chat.py      # YouTube 聊天辅助
+│   └── log_message.py  # 消息记录（写入 SQLite）
 ├── typings/            # 配置模型
 │   ├── config.py       # Discord 设定
 │   └── database.py     # DB 设定（SQLite/Postgres/Redis）

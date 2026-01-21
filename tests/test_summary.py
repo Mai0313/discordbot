@@ -3,7 +3,6 @@ from collections.abc import AsyncGenerator
 
 import pytest
 import nextcord
-
 from discordbot.cogs.summary import MessageFetcher
 
 

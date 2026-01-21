@@ -186,8 +186,7 @@ src/discordbot/
 │   └── template.py     # Utilities & /ping
 ├── sdk/                # Core business logic
 │   ├── llm.py          # LLM integration (OpenAI/Azure)
-│   ├── log_message.py  # Message logging to SQLite
-│   └── yt_chat.py      # YouTube chat helper
+│   └── log_message.py  # Message logging to SQLite
 ├── typings/            # Configuration models
 │   ├── config.py       # Discord config
 │   └── database.py     # DB configs (SQLite/Postgres/Redis)
