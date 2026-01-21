@@ -3,15 +3,15 @@ import contextlib
 
 from openai import AsyncStream
 import logfire
-from nextcord import Message, Interaction
+from nextcord import User, Message, Interaction
 from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.sdk.llm import LLMSDK
 
-available_models = ["openrouter/x-ai/grok-4.1-fast"]
-MODEL_CHOICES = {"grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
+available_models = ["deepseek-reasoner"]
+MODEL_CHOICES = {"deepseek-reasoner": "deepseek-reasoner"}
 DEFAULT_MODEL = available_models[0]
 
 
@@ -64,7 +64,10 @@ class ReplyGeneratorCogs(commands.Cog):
         content = message.content
         for mention in message.mentions:
             content = content.replace(f"<@{mention.id}>", "").strip()
-        author_name = message.author.nick if message.author.nick else message.author.name
+        if isinstance(message.author, User):
+            author_name = message.author.name
+        else:
+            author_name = message.author.nick if message.author.nick else message.author.name
         content = f"{author_name}: {content}"
         return content
 
@@ -107,41 +110,38 @@ class ReplyGeneratorCogs(commands.Cog):
             referenced_message = message.reference.resolved
 
         # 2. 獲取歷史記錄
-        try:
-            # 如果有引用訊息，從引用訊息之前開始獲取歷史記錄
-            if referenced_message:
-                hist_messages = await message.channel.history(
-                    limit=20, before=referenced_message
-                ).flatten()
-                hist_messages.reverse()
-            else:
-                # 否則維持原來的邏輯
-                hist_messages = await message.channel.history(limit=20).flatten()
-                hist_messages.reverse()
+        # 如果有引用訊息，從引用訊息之前開始獲取歷史記錄
+        if referenced_message:
+            hist_messages = await message.channel.history(
+                limit=20, before=referenced_message
+            ).flatten()
+            hist_messages.reverse()
+        else:
+            # 否則維持原來的邏輯
+            hist_messages = await message.channel.history(limit=20).flatten()
+            hist_messages.reverse()
 
-            if hist_messages:
-                # Add separator for history
-                messages.append({
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "The following messages are the recent conversation history",
-                        }
-                    ],
-                })
+        if hist_messages:
+            # Add separator for history
+            messages.append({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "The following messages are the recent conversation history",
+                    }
+                ],
+            })
 
-                # Add historical messages in chronological order (oldest first)
-                # Skip images for historical messages to avoid 404 errors
-                for hist_msg in hist_messages:
-                    # Determine role based on author
-                    role = "assistant" if hist_msg.author.bot else "user"
-                    hist_message = await self._process_single_message(
-                        hist_msg, role=role, include_images=False
-                    )
-                    messages.append(hist_message)
-        except Exception:
-            logfire.warning("Failed to retrieve chat history")
+            # Add historical messages in chronological order (oldest first)
+            # Skip images for historical messages to avoid 404 errors
+            for hist_msg in hist_messages:
+                # Determine role based on author
+                role = "assistant" if hist_msg.author.bot else "user"
+                hist_message = await self._process_single_message(
+                    hist_msg, role=role, include_images=False
+                )
+                messages.append(hist_message)
 
         # Add separator to indicate end of history
         messages.append({
