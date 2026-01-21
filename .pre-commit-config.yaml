@@ -1,5 +1,5 @@
 default_language_version:
-  python: python3
+  python: python3.11
 
 default_install_hook_types:
   - pre-commit
@@ -15,7 +15,7 @@ default_stages:
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.11
+    rev: v0.14.13
     hooks:
       - id: ruff-check
         types_or: [ python, pyi, jupyter ]
@@ -62,7 +62,7 @@ repos:
 
   # md formatting
   - repo: https://github.com/executablebooks/mdformat
-    rev: 0.7.22
+    rev: 1.0.0
     hooks:
       - id: mdformat
         args:
@@ -74,18 +74,18 @@ repos:
           - mdformat-beautysh  # bash, sh
           # - mdformat-black  # python
           - mdformat-config  # json, toml, yaml
-          - mdformat-gofmt  # go
+          # - mdformat-gofmt  # go
           - mdformat-ruff  # python
-          - mdformat-rustfmt  # rust
-          - mdformat-shfmt  # bash, sh
+          # - mdformat-rustfmt  # rust
+          # - mdformat-shfmt  # bash, sh
           # - mdformat-web  # javascript, js, css, html, xml
           # Parser extension plugins
           # - mdformat-admon  # admonitions
           # - mdformat-deflist  # definition lists
-          - mdformat-footnote>=0.1.2  # footnotes
+          - mdformat-footnote  # footnotes
           # - mdformat-frontmatter  # front matter
           - mdformat-gfm  # GitHub Flavored Markdown (includes tables)
-          - mdformat-gfm-alerts  # GFM alerts
+          # - mdformat-gfm-alerts  # GFM alerts
           - mdformat-mkdocs  # MKDocs
           # - mdformat-myst  # MyST
           # - mdformat-toc  # table of contents
@@ -98,7 +98,7 @@ repos:
 
   # jupyter notebook cell output clearing
   - repo: https://github.com/kynan/nbstripout
-    rev: 0.8.2
+    rev: 0.9.0
     hooks:
       - id: nbstripout
 
@@ -142,7 +142,7 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.25
+    rev: 0.9.26
     hooks:
       - id: uv-sync
       - id: uv-lock
