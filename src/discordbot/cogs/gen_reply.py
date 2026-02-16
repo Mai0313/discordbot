@@ -10,9 +10,8 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.utils.llm import LLMSDK
 
-MODEL_CHOICES = {"gemini-3-pro-preview": "gemini-3-pro-preview"}
 DEFAULT_MODEL = "gemini-3-pro-preview"
-HISTORY_LIMIT = 0  # 歷史訊息數量限制
+HISTORY_LIMIT = 0
 SYSTEM_PROMPT = """
 1. Your response should be clearly and shortly; give me a straight answer.
 2. The response should not be too long.
