@@ -266,13 +266,13 @@ class ReplyGeneratorCogs(commands.Cog):
         # Start typing indicator
         async with message.channel.typing():
             try:
+                # Send initial thinking message
+                reply_message = await message.reply(":thinking:")
+
                 # Get LLM response using the message chain
                 stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
                     model=DEFAULT_MODEL, messages=message_chain, stream=True
                 )
-
-                # Send initial thinking message
-                reply_message = await message.reply(":thinking:")
 
                 # Handle streaming response
                 await self._handle_streaming(
