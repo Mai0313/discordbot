@@ -10,9 +10,8 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.utils.llm import LLMSDK
 
-available_models = ["deepseek-reasoner"]
-MODEL_CHOICES = {"deepseek-reasoner": "deepseek-reasoner"}
-DEFAULT_MODEL = available_models[0]
+MODEL_CHOICES = {"gemini-3-pro-preview": "gemini-3-pro-preview"}
+DEFAULT_MODEL = "gemini-3-pro-preview"
 
 
 class ReplyGeneratorCogs(commands.Cog):
