@@ -109,22 +109,36 @@ class ReplyGeneratorCogs(commands.Cog):
         return {"role": role, "content": content_parts}
 
     async def _build_message_chain(self, message: Message) -> list[dict[str, Any]]:
+        """Build a message chain including history and referenced messages.
+
+        This method constructs a complete conversation context by gathering:
+        1. Historical messages from the channel
+        2. Referenced/replied-to message (if any)
+        3. System prompts and separators
+        4. Current user message
+
+        Args:
+            message: The current Discord message to process.
+
+        Returns:
+            A list of message dictionaries formatted for LLM consumption.
+        """
         messages: list[dict[str, Any]] = []
 
-        # 1. 處理引用的訊息（如果有的話）
+        # 1. Handle referenced message if present
         referenced_message = None
         if message.reference and isinstance(message.reference.resolved, Message):
             referenced_message = message.reference.resolved
 
-        # 2. 獲取歷史記錄
-        # 如果有引用訊息，從引用訊息之前開始獲取歷史記錄
+        # 2. Get conversation history
+        # If there's a referenced message, get history before that message
         if referenced_message:
             hist_messages = await message.channel.history(
                 limit=HISTORY_LIMIT, before=referenced_message
             ).flatten()
             hist_messages.reverse()
         else:
-            # 否則維持原來的邏輯
+            # Otherwise, use standard history retrieval
             hist_messages = await message.channel.history(limit=HISTORY_LIMIT).flatten()
             hist_messages.reverse()
 
@@ -158,7 +172,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
         })
 
-        # 3. 處理引用的訊息（如果有的話）
+        # 3. Process the referenced message if it exists
         if referenced_message:
             # Add separator to indicate referenced message
             messages.append({
@@ -185,7 +199,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
             messages.append(reference_msg)
 
-        # 4. 添加當前輸入訊息
+        # 4. Add context separator for current message
         # Add separator to indicate current user's reply (only if there was a referenced message)
         if referenced_message:
             messages.append({
@@ -198,7 +212,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
-        # 5. 加入一些基本指導
+        # 5. Add system prompt with basic instructions
         messages.append({
             "role": "assistant",
             "content": [{"type": "text", "text": SYSTEM_PROMPT}],
