@@ -10,8 +10,9 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.utils.llm import LLMSDK
 
-MODEL_CHOICES = {"gemini-3-pro-preview": "gemini-3-pro-preview"}
-DEFAULT_MODEL = "gemini-3-pro-preview"
+MODEL_CHOICES = {"openrouter/x-ai/grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
+DEFAULT_MODEL = "openrouter/x-ai/grok-4.1-fast"
+HISTORY_LIMIT = 0  # 歷史訊息數量限制
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -112,12 +113,12 @@ class ReplyGeneratorCogs(commands.Cog):
         # 如果有引用訊息，從引用訊息之前開始獲取歷史記錄
         if referenced_message:
             hist_messages = await message.channel.history(
-                limit=20, before=referenced_message
+                limit=HISTORY_LIMIT, before=referenced_message
             ).flatten()
             hist_messages.reverse()
         else:
             # 否則維持原來的邏輯
-            hist_messages = await message.channel.history(limit=20).flatten()
+            hist_messages = await message.channel.history(limit=HISTORY_LIMIT).flatten()
             hist_messages.reverse()
 
         if hist_messages:
