@@ -13,6 +13,14 @@ from discordbot.utils.llm import LLMSDK
 MODEL_CHOICES = {"gemini-3-pro-preview": "gemini-3-pro-preview"}
 DEFAULT_MODEL = "gemini-3-pro-preview"
 HISTORY_LIMIT = 0  # 歷史訊息數量限制
+SYSTEM_PROMPT = """
+1. Your response should be clearly and shortly; give me a straight answer.
+2. The response should not be too long.
+3. Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable.
+4. If the question contains images, you can also give your answer based on the image content.
+5. If you don't know the answer, just say you don't know. Don't try to make up an answer.
+6. Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
+"""
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -194,12 +202,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # 5. 加入一些基本指導
         messages.append({
             "role": "assistant",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Your response should be clearly and shortly. Give me a straight answer. The response should not be too long.",
-                }
-            ],
+            "content": [{"type": "text", "text": SYSTEM_PROMPT}],
         })
 
         # Add current message
