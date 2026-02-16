@@ -10,8 +10,8 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.utils.llm import LLMSDK
 
-MODEL_CHOICES = {"openrouter/x-ai/grok-4.1-fast": "openrouter/x-ai/grok-4.1-fast"}
-DEFAULT_MODEL = "openrouter/x-ai/grok-4.1-fast"
+MODEL_CHOICES = {"gemini-3-pro-preview": "gemini-3-pro-preview"}
+DEFAULT_MODEL = "gemini-3-pro-preview"
 HISTORY_LIMIT = 0  # 歷史訊息數量限制
 
 
