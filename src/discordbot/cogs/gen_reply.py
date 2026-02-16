@@ -191,6 +191,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
+        # 5. 加入一些基本指導
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Your response should be clearly and shortly. Give me a straight answer. The response should not be too long.",
+                }
+            ],
+        })
+
         # Add current message
         current_msg = await self._process_single_message(message, role="user")
         messages.append(current_msg)
