@@ -182,15 +182,14 @@ src/discordbot/
 │   ├── gen_reply.py    # AI text generation (@mention)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
+│   ├── log_msg.py      # Message logging to SQLite
 │   └── template.py     # Utilities & /ping
-├── sdk/                # Core business logic
-│   ├── llm.py          # LLM integration (OpenAI/Azure)
-│   └── log_message.py  # Message logging to SQLite
 ├── typings/            # Configuration models
 │   ├── config.py       # Discord config
 │   └── database.py     # DB configs (SQLite/Postgres/Redis)
 └── utils/              # Utility functions
-    └── downloader.py   # yt-dlp wrapper
+    ├── downloader.py   # yt-dlp wrapper
+    └── llm.py          # LLM integration (OpenAI/Azure)
 data/
 ├── monsters.json       # MapleStory monster and drop database
 └── downloads/          # Video download storage
@@ -247,7 +246,7 @@ This Discord bot complies with Discord’s Terms of Service and Developer Policy
 
 - **Local Message Logging**: By default, messages in channels where the bot is present are logged to a local SQLite database at `./data/messages.db` (author, content, timestamps, attachments/stickers). This remains on your server and is not shared externally.
 - **No Third-Party Sharing**: Aside from calling trusted APIs (e.g., OpenAI) to fulfill requests, data is not shared with third parties.
-- **Opt-out**: Server owners can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/sdk/log_message.py`.
+- **Opt-out**: Server owners can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/cogs/log_msg.py`.
 
 ## ⚙️ Bot Permissions and Intents
 
@@ -263,7 +262,7 @@ Users may opt out of interactions via commands like `!optout` (planned) or by mu
 ## 🔐 Data Security
 
 - All API requests are made via secure HTTPS connections.
-- No data is persisted to any external service. If local message logging is enabled, messages are stored on your disk in SQLite (`./data/messages.db`) and never leave your server. You can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/sdk/log_message.py`.
+- No data is persisted to any external service. If local message logging is enabled, messages are stored on your disk in SQLite (`./data/messages.db`) and never leave your server. You can disable logging by removing the logging calls in `src/discordbot/cli.py` or adapting `src/discordbot/cogs/log_msg.py`.
 - No long-term analytics based on message or user content are performed.
 
 ## 📬 Contact and Compliance

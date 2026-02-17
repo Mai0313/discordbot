@@ -5,6 +5,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/swebenchv2.svg)](https://pypi.org/project/swebenchv2/)
 [![python](https://img.shields.io/badge/-Python_%7C_3.11%7C_3.12%7C_3.13%7C_3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/source/)
 [![uv](https://img.shields.io/badge/-uv_dependency_management-2C5F2D?logo=python&logoColor=white)](https://docs.astral.sh/uv/)
+[![nextcord](https://img.shields.io/badge/-Nextcord-5865F2?logo=discord&logoColor=white)](https://github.com/nextcord/nextcord)
+[![openai](https://img.shields.io/badge/-OpenAI-412991?logo=openai&logoColor=white)](https://openai.com)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Pydantic v2](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/pydantic/pydantic/main/docs/badge/v2.json)](https://docs.pydantic.dev/latest/contributing/#badges)
 [![tests](https://github.com/Mai0313/discordbot/actions/workflows/test.yml/badge.svg)](https://github.com/Mai0313/discordbot/actions/workflows/test.yml)
@@ -185,15 +187,14 @@ src/discordbot/
 │   ├── gen_reply.py    # AI 文字生成 (@標記)
 │   ├── video.py        # 影片下載 (/download_video)
 │   ├── maplestory.py   # 楓之谷資料庫查詢
+│   ├── log_msg.py      # 訊息記錄（寫入 SQLite）
 │   └── template.py     # 系統工具與延遲測試
-├── sdk/                # 核心業務邏輯
-│   ├── llm.py          # LLM 整合（OpenAI/Azure）
-│   └── log_message.py  # 訊息記錄（寫入 SQLite）
 ├── typings/            # 配置模型
 │   ├── config.py       # Discord 設定
 │   └── database.py     # DB 設定（SQLite/Postgres/Redis）
 └── utils/              # 工具函數
-    └── downloader.py   # yt-dlp 包裝
+    ├── downloader.py   # yt-dlp 包裝
+    └── llm.py          # LLM 整合（OpenAI/Azure）
 data/
 ├── monsters.json       # 楓之谷怪物與掉落資料庫
 └── downloads/          # 影片下載儲存
@@ -298,7 +299,7 @@ uv run pytest -q
 
 ### 主要 SDK 模組
 
-#### `src/sdk/llm.py`
+#### `src/discordbot/utils/llm.py`
 
 ```python
 # AI 文字生成（範例代碼已更新為新架構）
@@ -385,7 +386,7 @@ grep ERROR logs/bot.log
 
 - **本地訊息記錄**：預設情況下，機器人在所在頻道的訊息會記錄到本機 SQLite（`./data/messages.db`），包含作者、內容、時間戳與附件/貼圖連結。資料僅存在你的伺服器，不會外傳。
 - **不與第三方分享**：除了為完成請求所需的受信任 API（例如 OpenAI）之外，不會與第三方分享資料。
-- **如何停用**：伺服器擁有者可在 `src/discordbot/cli.py` 移除記錄呼叫，或依需求調整 `src/discordbot/sdk/log_message.py`。
+- **如何停用**：伺服器擁有者可在 `src/discordbot/cli.py` 移除記錄呼叫，或依需求調整 `src/discordbot/cogs/log_msg.py`。
 
 ### 機器人權限與意圖
 
@@ -399,7 +400,7 @@ grep ERROR logs/bot.log
 ### 資料安全
 
 - 所有 API 通訊使用加密的 HTTPS 連接
-- 不會將資料發送至任何外部服務。若啟用本地訊息記錄，訊息僅儲存在你的磁碟（SQLite：`./data/messages.db`），不會外傳。你可以在 `src/discordbot/cli.py` 移除記錄呼叫或調整 `src/discordbot/sdk/log_message.py` 以停用。
+- 不會將資料發送至任何外部服務。若啟用本地訊息記錄，訊息僅儲存在你的磁碟（SQLite：`./data/messages.db`），不會外傳。你可以在 `src/discordbot/cli.py` 移除記錄呼叫或調整 `src/discordbot/cogs/log_msg.py` 以停用。
 - 不進行基於用戶內容的長期分析。
 
 ### 聯絡與合規
