@@ -4,6 +4,7 @@ from pathlib import Path
 import secrets
 import platform
 
+import anyio
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
@@ -47,10 +48,10 @@ class DiscordBot(commands.Bot):
         return await super().on_guild_available(guild)
 
     async def get_cogs_names(self) -> list[str]:
-        cog_path = Path("./src/discordbot/cogs")
+        cog_path = anyio.Path("./src/discordbot/cogs")
         cog_files = [
             f"discordbot.cogs.{f.stem}"
-            for f in cog_path.glob("*.py")
+            async for f in cog_path.glob("*.py")
             if not f.stem.startswith("__")
         ]
         return cog_files
