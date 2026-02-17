@@ -185,7 +185,6 @@ src/discordbot/
 │   ├── gen_reply.py    # AI 文字生成 (@标记)
 │   ├── video.py        # 视频下载 (/download_video)
 │   ├── maplestory.py   # 枫之谷数据库查询
-│   ├── gen_image.py    # 图像生成（预留）
 │   └── template.py     # 系统工具与延迟测试
 ├── sdk/                # 核心业务逻辑
 │   ├── llm.py          # LLM 整合（OpenAI/Azure）
@@ -270,7 +269,6 @@ uv run mkdocs serve
 - 新增的 Cog 单元测试包含：
     - `TemplateCogs`：消息反应与 `/ping` 延迟 Embed
     - `ReplyGeneratorCogs`：`_get_attachment_list()` 与消息处理
-    - `ImageGeneratorCogs`：`/graph`（预留流程）
     - `VideoCogs`：`/download_video` 乐观流程（模拟下载器）
 
 执行完整测试并产生报表：

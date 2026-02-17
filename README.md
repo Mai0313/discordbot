@@ -182,7 +182,6 @@ src/discordbot/
 │   ├── gen_reply.py    # AI text generation (@mention)
 │   ├── video.py        # Video downloading (/download_video)
 │   ├── maplestory.py   # MapleStory database queries
-│   ├── gen_image.py    # Image generation (placeholder)
 │   └── template.py     # Utilities & /ping
 ├── sdk/                # Core business logic
 │   ├── llm.py          # LLM integration (OpenAI/Azure)
@@ -297,7 +296,6 @@ uv run pytest -q
 
     - TemplateCogs: message reaction and `/ping` embed
     - ReplyGeneratorCogs: `_get_attachment_list()` and message processing
-    - ImageGeneratorCogs: `/graph` placeholder flow
     - VideoCogs: `/download_video` happy path (downloader mocked)
 
 ## Contributors
