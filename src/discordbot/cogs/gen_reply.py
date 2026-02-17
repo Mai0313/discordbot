@@ -297,7 +297,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
             # Get LLM response using the message chain
             stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
-                model=DEFAULT_MODEL, messages=message_chain, reasoning_effort="none", stream=True
+                model=DEFAULT_MODEL,
+                messages=message_chain,
+                reasoning_effort="none",
+                stream=True,
+                tools=[{"googleSearch": {}, "urlContext": {}}],
             )
 
             # Handle streaming response
