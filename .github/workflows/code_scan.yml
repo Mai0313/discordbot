@@ -23,7 +23,7 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -34,7 +34,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trufflehog Scanning
-        uses: trufflesecurity/trufflehog@v3.91.1
+        uses: trufflesecurity/trufflehog@v3.93.0
         with:
           extra_args: --results=verified,unknown
 
@@ -51,13 +51,13 @@ jobs:
       #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: CodeQL Initialize
-        uses: github/codeql-action/init@v4.31.5
+        uses: github/codeql-action/init@v4.32.1
 
       - name: CodeQL Analyze
-        uses: github/codeql-action/analyze@v4.31.5
+        uses: github/codeql-action/analyze@v4.32.1

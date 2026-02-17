@@ -216,9 +216,3 @@ __marimo__/
 .streamlit/secrets.toml
 
 /data/
-
-/.github/reports/
-
-# Generated Docs
-/docs/Reference
-/docs/Scripts

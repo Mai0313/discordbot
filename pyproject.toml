@@ -186,7 +186,7 @@ cli = "python ./src/discordbot/cli.py"
 api = "python ./src/discordbot/cli.py"
 main = "python ./src/discordbot/cli.py"
 install_chrome = "playwright install chromium"
-update_data = "python ./scripts/artale_data_v2.py"
+update_data = "python ./scripts/artale_data.py"
 update = ["install_chrome", "update_data"]
 
 # Documentation
