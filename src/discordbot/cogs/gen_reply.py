@@ -292,23 +292,18 @@ class ReplyGeneratorCogs(commands.Cog):
 
         # Start typing indicator
         async with message.channel.typing():
-            try:
-                # Send initial thinking message
-                reply_message = await message.reply(":thinking:")
+            # Send initial thinking message
+            reply_message = await message.reply(":thinking:")
 
-                # Get LLM response using the message chain
-                stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
-                    model=DEFAULT_MODEL, messages=message_chain, stream=True
-                )
+            # Get LLM response using the message chain
+            stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
+                model=DEFAULT_MODEL, messages=message_chain, reasoning_effort="none", stream=True
+            )
 
-                # Handle streaming response
-                await self._handle_streaming(
-                    target=reply_message, stream=stream, user_mention=message.author.mention
-                )
-
-            except Exception as e:
-                logfire.error("Error in on_message mention handler", _exc_info=True)
-                await message.reply(f"{e}")
+            # Handle streaming response
+            await self._handle_streaming(
+                target=reply_message, stream=stream, user_mention=message.author.mention
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
