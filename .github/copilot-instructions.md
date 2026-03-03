@@ -87,3 +87,12 @@ logfire.error("Something failed", _exc_info=True)
 ## Code Quality
 
 Ruff is the sole linter/formatter (configured in `pyproject.toml`). Run via `make format` or pre-commit. CI enforces both `ruff check` and `ruff format`.
+
+## GitHub Actions Formatting Conventions
+
+When editing or creating GitHub Actions workflow files, follow these rules:
+
+- **Do not** include `container` fields or `Setup MTK Certification` steps.
+- **Job attribute order**: `name`, `needs`, `runs-on`, `if` (followed by other attributes such as `strategy`, `steps`, etc.)
+- **Step attribute order**: `name`, `id`, `continue-on-error`, `if`, `uses`, `with`, `env`, `shell`, `run`
+- **Avoid redundant environment variables**: Do not define env vars (e.g., `PR_URL: ${{ github.event.pull_request.html_url }}`) that are only used once in a `run` command. Use the expression directly in the command instead.
