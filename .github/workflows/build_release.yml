@@ -46,9 +46,6 @@ jobs:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
 
-      # - name: Setup MTK Certification
-      #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
-
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -83,8 +80,8 @@ jobs:
           mv "dist/${bin}" "${dest}/${bin}"
 
       - name: Create .zip (Windows)
-        shell: powershell
         if: ${{ startsWith(matrix.runner, 'windows') }}
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           $dest = "dist/${{ matrix.target }}"
@@ -94,8 +91,8 @@ jobs:
           Compress-Archive -Path "$dest\$bin" -DestinationPath "$dest\$zip" -Force
 
       - name: Create .tar.gz (all platforms)
-        shell: bash
         if: ${{ !startsWith(matrix.runner, 'windows') }}
+        shell: bash
         run: |
           set -euo pipefail
           dest="dist/${{ matrix.target }}"
@@ -130,9 +127,6 @@ jobs:
     steps:
       - name: Disable SSL Verify
         run: git config --global http.sslVerify false
-
-      # - name: Setup MTK Certification
-      #   uses: https://gitea.mediatek.inc/actions/mtk-cert-action@v1.2.0
 
       - name: Checkout
         uses: actions/checkout@v6
