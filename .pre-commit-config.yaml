@@ -15,7 +15,7 @@ default_stages:
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.0
+    rev: v0.15.4
     hooks:
       - id: ruff-check
         types_or: [ python, pyi, jupyter ]
@@ -98,7 +98,7 @@ repos:
 
   # jupyter notebook cell output clearing
   - repo: https://github.com/kynan/nbstripout
-    rev: 0.9.0
+    rev: 0.9.1
     hooks:
       - id: nbstripout
 
@@ -142,9 +142,10 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.30
+    rev: 0.10.7
     hooks:
       - id: uv-sync
+        args: ["--all-groups"]
       - id: uv-lock
       # - id: uv-export
       #   args: ["--no-dev", "--no-hashes", "--frozen", "--output-file", "./requirements.txt"]
