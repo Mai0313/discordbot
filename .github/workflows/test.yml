@@ -20,6 +20,7 @@ permissions: write-all
 
 jobs:
   run_tests:
+    name: Run Tests
     runs-on: ubuntu-latest
     if: ${{ !(startsWith(github.head_ref, 'chore/') || startsWith(github.head_ref, 'ci/') || startsWith(github.head_ref, 'docs/')) }}
 
@@ -80,3 +81,6 @@ jobs:
           pytest-coverage-path: ./.coverage.txt
           junitxml-path: ./.github/reports/.coverage.pytest.xml
           pytest-xml-coverage-path: ./.github/reports/coverage.xml
+          unique-id-for-comment: ${{ matrix.python-version }}-${{ matrix.os }}
+          title: Coverage for Python ${{ matrix.python-version }} on ${{ matrix.os }}
+          hide-emoji: true
