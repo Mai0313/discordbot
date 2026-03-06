@@ -131,18 +131,11 @@ class ReplyGeneratorCogs(commands.Cog):
             referenced_message = message.reference.resolved
 
         # 2. Get conversation history
-        # If there's a referenced message, get history before that message
-        if referenced_message:
-            hist_messages = []
-            async for m in message.channel.history(limit=HISTORY_LIMIT, before=referenced_message):
-                hist_messages.append(m)
-            hist_messages.reverse()
-        else:
-            # Otherwise, use standard history retrieval
-            hist_messages = []
-            async for m in message.channel.history(limit=HISTORY_LIMIT):
-                hist_messages.append(m)
-            hist_messages.reverse()
+        # Get history before the referenced message (if any), otherwise standard history retrieval
+        hist_messages: list[Message] = []
+        async for m in message.channel.history(limit=HISTORY_LIMIT, before=referenced_message):
+            hist_messages.append(m)
+        hist_messages.reverse()
 
         if hist_messages:
             # Add separator for history
@@ -187,23 +180,15 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
-            # Process referenced message
-            if referenced_message.author.bot:
-                # Bot's previous response
-                reference_msg = await self._process_single_message(
-                    message=referenced_message, role="assistant"
-                )
-            else:
-                # Another user's message
-                reference_msg = await self._process_single_message(
-                    message=referenced_message, role="user"
-                )
-
+            # Process referenced message based on author (bot or user)
+            role = "assistant" if referenced_message.author.bot else "user"
+            reference_msg = await self._process_single_message(
+                message=referenced_message, role=role
+            )
             messages.append(reference_msg)
 
-        # 4. Add context separator for current message
-        # Add separator to indicate current user's reply (only if there was a referenced message)
-        if referenced_message:
+            # 4. Add context separator for current message
+            # Add separator to indicate current user's reply
             messages.append({
                 "role": "assistant",
                 "content": [
