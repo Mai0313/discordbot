@@ -17,7 +17,6 @@ class VideoCogs(commands.Cog):
             Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)。",
             Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
         },
-        dm_permission=True,
         nsfw=False,
     )
     async def download_video(

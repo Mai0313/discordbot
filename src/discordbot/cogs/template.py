@@ -25,7 +25,6 @@ class TemplateCogs(commands.Cog):
             Locale.zh_TW: "測試機器人的回應時間。",
             Locale.ja: "ボットの応答速度をテストします。",
         },
-        dm_permission=True,
         nsfw=False,
     )
     async def ping(self, interaction: Interaction) -> None:

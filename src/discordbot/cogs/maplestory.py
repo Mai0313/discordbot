@@ -31,7 +31,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷怪物的掉落資訊",
             Locale.ja: "メイプルストーリーのモンスタードロップ情報を検索",
         },
-        dm_permission=True,
         nsfw=False,
     )
     async def maple_monster(
@@ -97,7 +96,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷物品的掉落來源",
             Locale.ja: "メイプルストーリーのアイテムドロップ元を検索",
         },
-        dm_permission=True,
         nsfw=False,
     )
     async def maple_item(
@@ -161,7 +159,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "顯示楓之谷資料庫統計資訊",
             Locale.ja: "メイプルストーリーデータベース統計を表示",
         },
-        dm_permission=True,
         nsfw=False,
     )
     async def maple_stats(self, interaction: Interaction) -> None:
