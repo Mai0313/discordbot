@@ -8,7 +8,7 @@ from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
-from discordbot.utils.llm import LLMSDK
+from discordbot.typings.llm import LLMSDK
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 HISTORY_LIMIT = 0
