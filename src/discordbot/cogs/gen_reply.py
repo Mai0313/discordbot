@@ -10,7 +10,7 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 
 from discordbot.utils.llm import LLMSDK
 
-DEFAULT_MODEL = "gemini-3-pro-preview"
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
 HISTORY_LIMIT = 0
 SYSTEM_PROMPT = """
 1. Your response should be clearly and shortly; give me a straight answer.
