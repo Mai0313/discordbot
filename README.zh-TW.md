@@ -154,28 +154,17 @@ DISCORD_TEST_SERVER_ID=你的_測試_伺服器_id  # 可選
 # OpenAI 設定
 OPENAI_API_KEY=你的_openai_api_金鑰
 OPENAI_BASE_URL=https://api.openai.com/v1
-
-# Azure OpenAI（如果使用 Azure）
-AZURE_OPENAI_API_KEY=你的_azure_金鑰
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-
-
 ```
 
 ### 可選環境變數
 
 ```env
-# 如果使用 Azure OpenAI
-OPENAI_API_VERSION=2025-04-01-preview
-
 # 訊息記錄（SQLite）
 SQLITE_FILE_PATH=sqlite:///data/messages.db
 
 # 其他服務（如有使用）
 POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
 REDIS_URL=redis://redis:6379/0
-
-
 ```
 
 ## 📁 專案結構
@@ -194,7 +183,7 @@ src/discordbot/
 │   └── database.py     # DB 設定（SQLite/Postgres/Redis）
 └── utils/              # 工具函數
     ├── downloader.py   # yt-dlp 包裝
-    └── llm.py          # LLM 整合（OpenAI/Azure）
+    └── llm.py          # LLM 整合（OpenAI）
 data/
 ├── monsters.json       # 楓之谷怪物與掉落資料庫
 └── downloads/          # 影片下載儲存

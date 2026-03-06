@@ -144,7 +144,7 @@ uv run update
 
 ## ⚙️ 配置设定
 
-### 必要环境变量
+# 必需环境变量
 
 ```env
 # Discord 设定
@@ -154,28 +154,17 @@ DISCORD_TEST_SERVER_ID=你的_测试_服务器_id  # 可选
 # OpenAI 设定
 OPENAI_API_KEY=你的_openai_api_密钥
 OPENAI_BASE_URL=https://api.openai.com/v1
-
-# Azure OpenAI（如果使用 Azure）
-AZURE_OPENAI_API_KEY=你的_azure_密钥
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-
-
 ```
 
 ### 可选环境变量
 
 ```env
-# 如果使用 Azure OpenAI
-OPENAI_API_VERSION=2025-04-01-preview
-
 # 消息记录（SQLite）
 SQLITE_FILE_PATH=sqlite:///data/messages.db
 
 # 其他服务（如有使用）
 POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
 REDIS_URL=redis://redis:6379/0
-
-
 ```
 
 ## 📁 项目结构
@@ -194,7 +183,7 @@ src/discordbot/
 │   └── database.py     # DB 设定（SQLite/Postgres/Redis）
 └── utils/              # 工具函数
     ├── downloader.py   # yt-dlp 包装
-    └── llm.py          # LLM 整合（OpenAI/Azure）
+    └── llm.py          # LLM 整合（OpenAI）
 data/
 ├── monsters.json       # 枫之谷怪物与掉落数据库
 └── downloads/          # 视频下载储存

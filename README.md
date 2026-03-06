@@ -149,28 +149,17 @@ DISCORD_TEST_SERVER_ID=your_test_server_id  # Optional
 # OpenAI Configuration
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
-
-# Azure OpenAI (if using Azure)
-AZURE_OPENAI_API_KEY=your_azure_key
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-
-
 ```
 
 ### Optional Environment Variables
 
 ```env
-# OpenAI (Azure) API version
-OPENAI_API_VERSION=2025-04-01-preview
-
 # Local message logging (SQLite)
 SQLITE_FILE_PATH=sqlite:///data/messages.db
 
 # Optional external services
 POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
 REDIS_URL=redis://redis:6379/0
-
-
 ```
 
 ## 📁 Project Structure
@@ -189,7 +178,7 @@ src/discordbot/
 │   └── database.py     # DB configs (SQLite/Postgres/Redis)
 └── utils/              # Utility functions
     ├── downloader.py   # yt-dlp wrapper
-    └── llm.py          # LLM integration (OpenAI/Azure)
+    └── llm.py          # LLM integration (OpenAI)
 data/
 ├── monsters.json       # MapleStory monster and drop database
 └── downloads/          # Video download storage
