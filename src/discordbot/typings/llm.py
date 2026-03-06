@@ -26,13 +26,6 @@ class LLMSDK(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-    model: str = Field(
-        ...,
-        title="LLM Model Selection",
-        description="This model should be OpenAI Model.",
-        frozen=False,
-        deprecated=False,
-    )
 
     @computed_field
     @cached_property

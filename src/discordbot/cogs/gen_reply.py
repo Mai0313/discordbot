@@ -30,7 +30,7 @@ class ReplyGeneratorCogs(commands.Cog):
             bot (commands.Bot): The bot instance.
         """
         self.bot = bot
-        self.llm_sdk: LLMSDK = LLMSDK(model=DEFAULT_MODEL)
+        self.llm_sdk: LLMSDK = LLMSDK()
 
     async def _get_attachments(self, message: Message) -> list[str]:
         """Get all attachments from a message and convert to base64 data URIs.
@@ -133,13 +133,15 @@ class ReplyGeneratorCogs(commands.Cog):
         # 2. Get conversation history
         # If there's a referenced message, get history before that message
         if referenced_message:
-            hist_messages = await message.channel.history(
-                limit=HISTORY_LIMIT, before=referenced_message
-            ).flatten()
+            hist_messages = []
+            async for m in message.channel.history(limit=HISTORY_LIMIT, before=referenced_message):
+                hist_messages.append(m)
             hist_messages.reverse()
         else:
             # Otherwise, use standard history retrieval
-            hist_messages = await message.channel.history(limit=HISTORY_LIMIT).flatten()
+            hist_messages = []
+            async for m in message.channel.history(limit=HISTORY_LIMIT):
+                hist_messages.append(m)
             hist_messages.reverse()
 
         if hist_messages:
