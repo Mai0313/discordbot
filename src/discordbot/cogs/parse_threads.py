@@ -31,12 +31,14 @@ class ThreadsCogs(commands.Cog):
                 name=f"@{result.author_name}", icon_url=result.author_icon_url, url=result.url
             )
 
-        main_embed.add_field(name="❤️", value=f"{result.like_count:,}", inline=True)
-        main_embed.add_field(name="💬", value=f"{result.reply_count:,}", inline=True)
-        main_embed.add_field(name="🔁", value=f"{result.repost_count:,}", inline=True)
-        main_embed.add_field(name="🔗", value=f"{result.quote_count:,}", inline=True)
-        main_embed.add_field(name="↗️", value=f"{result.reshare_count:,}", inline=True)
-        main_embed.add_field(name="🌐", value=f"[Threads]({result.url})", inline=True)
+        footer_parts = [
+            f"❤️ {result.like_count:,}",
+            f"💬 {result.reply_count:,}",
+            f"🔁 {result.repost_count:,}",
+            f"🔗 {result.quote_count:,}",
+            f"↗️ {result.reshare_count:,}",
+        ]
+        main_embed.set_footer(text=" | ".join(footer_parts))
 
         if result.image_urls:
             main_embed.set_image(url=result.image_urls[0])
