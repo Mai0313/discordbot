@@ -4,8 +4,11 @@ import types
 from pathlib import Path
 from urllib.parse import urlparse
 
+from rich import get_console
 from pydantic import Field, BaseModel
 import requests
+
+console = get_console()
 
 
 class ThreadsOutput(BaseModel):
@@ -17,6 +20,11 @@ class ThreadsOutput(BaseModel):
     video_paths: list[Path] = Field(default=[], description="List of downloaded video file paths")
     author_name: str = Field(default="", description="The username of the post author")
     author_icon_url: str = Field(default="", description="The profile icon URL of the post author")
+    like_count: int = Field(default=0, description="The number of likes the post received")
+    reply_count: int = Field(default=0, description="The number of replies the post received")
+    repost_count: int = Field(default=0, description="The number of reposts the post received")
+    quote_count: int = Field(default=0, description="The number of quotes the post received")
+    reshare_count: int = Field(default=0, description="The number of reshares the post received")
 
     def unlink(self) -> None:
         """Unlink (delete) the downloaded video files."""
@@ -49,6 +57,50 @@ class User(BaseModel):
     )
 
 
+class VideoVersion(BaseModel):
+    url: str = Field(default="")
+
+
+class ImageCandidate(BaseModel):
+    url: str = Field(default="")
+
+
+class ImageVersions2(BaseModel):
+    candidates: list[ImageCandidate] = Field(default_factory=list)
+
+
+class CarouselMedia(BaseModel):
+    video_versions: list[VideoVersion] | None = Field(default=None)
+    image_versions2: ImageVersions2 | None = Field(default=None)
+
+
+class Fragment(BaseModel):
+    plaintext: str = Field(default="")
+
+
+class TextFragments(BaseModel):
+    fragments: list[Fragment] = Field(default_factory=list)
+
+
+class TextPostAppInfo(BaseModel):
+    direct_reply_count: int = Field(default=0)
+    repost_count: int = Field(default=0)
+    quote_count: int = Field(default=0)
+    reshare_count: int = Field(default=0)
+    text_fragments: TextFragments | None = Field(default=None)
+
+
+class Post(BaseModel):
+    code: str = Field(default="")
+    caption: Caption | None = Field(default=None)
+    user: User | None = Field(default=None)
+    like_count: int = Field(default=0, description="The number of likes the post received")
+    carousel_media: list[CarouselMedia] | None = Field(default=None)
+    video_versions: list[VideoVersion] | None = Field(default=None)
+    image_versions2: ImageVersions2 | None = Field(default=None)
+    text_post_app_info: TextPostAppInfo | None = Field(default=None)
+
+
 class ThreadsDownloader(BaseModel):
     """A downloader for extracting text and media from Threads.net posts."""
 
@@ -79,7 +131,7 @@ class ThreadsDownloader(BaseModel):
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to fetch HTML from {clean_url}: {e}") from e
 
-    def _parse_post_from_html(self, html: str, post_code: str) -> dict | None:
+    def _parse_post_from_html(self, html: str, post_code: str) -> Post | None:
         for match in re.finditer(
             r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', html, re.DOTALL
         ):
@@ -96,15 +148,17 @@ class ThreadsDownloader(BaseModel):
                     for item in item_list:
                         if not isinstance(item, dict):
                             continue
-                        post = item.get("post", {})
-                        if isinstance(post, dict) and post.get("code") == post_code:
-                            return post
-            except json.JSONDecodeError:
+                        post_data = item.get("post")
+                        if not post_data or not isinstance(post_data, dict):
+                            continue
+                        if post_data.get("code") == post_code:
+                            return Post.model_validate(post_data)
+            except (json.JSONDecodeError, ValueError):
                 continue
 
         return None
 
-    def extract_post_data(self, url: str) -> dict | None:
+    def extract_post_data(self, url: str) -> Post | None:
         """Extracts the post JSON data from the given Threads URL."""
         parsed_url = urlparse(url)
         netloc = parsed_url.netloc
@@ -137,34 +191,29 @@ class ThreadsDownloader(BaseModel):
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to download media from {url}: {e}") from e
 
-    def _extract_media_urls(self, post: dict) -> list[str]:
+    def _extract_media_urls(self, post: Post) -> list[str]:
         media_urls: list[str] = []
-        carousel_media = post.get("carousel_media")
 
-        if carousel_media and isinstance(carousel_media, list):
-            for c in carousel_media:
-                if not isinstance(c, dict):
-                    continue
-                c_video_versions = c.get("video_versions")
-                if c_video_versions and isinstance(c_video_versions, list):
-                    media_urls.append(c_video_versions[0].get("url", ""))
+        if post.carousel_media:
+            for c in post.carousel_media:
+                if c.video_versions and len(c.video_versions) > 0:
+                    media_urls.append(c.video_versions[0].url)
                     continue
 
-                c_image_versions2 = c.get("image_versions2")
-                if c_image_versions2 and isinstance(c_image_versions2, dict):
-                    c_candidates = c_image_versions2.get("candidates", [])
-                    if c_candidates and isinstance(c_candidates, list):
-                        media_urls.append(c_candidates[0].get("url", ""))
-        else:
-            video_versions = post.get("video_versions")
-            if video_versions and isinstance(video_versions, list):
-                media_urls.append(video_versions[0].get("url", ""))
-            else:
-                image_versions2 = post.get("image_versions2")
-                if image_versions2 and isinstance(image_versions2, dict):
-                    candidates = image_versions2.get("candidates", [])
-                    if candidates and isinstance(candidates, list):
-                        media_urls.append(candidates[0].get("url", ""))
+                if (
+                    c.image_versions2
+                    and c.image_versions2.candidates
+                    and len(c.image_versions2.candidates) > 0
+                ):
+                    media_urls.append(c.image_versions2.candidates[0].url)
+        elif post.video_versions and len(post.video_versions) > 0:
+            media_urls.append(post.video_versions[0].url)
+        elif (
+            post.image_versions2
+            and post.image_versions2.candidates
+            and len(post.image_versions2.candidates) > 0
+        ):
+            media_urls.append(post.image_versions2.candidates[0].url)
 
         return [url for url in media_urls if url]
 
@@ -191,10 +240,28 @@ class ThreadsDownloader(BaseModel):
         if not post:
             return ThreadsOutput()
 
-        caption: Caption = Caption(**post.get("caption", {}))
+        caption_text = post.caption.text if post.caption else ""
+        if post.text_post_app_info and post.text_post_app_info.text_fragments:
+            fragments_text = "".join(
+                f.plaintext for f in post.text_post_app_info.text_fragments.fragments
+            )
+            if fragments_text:
+                caption_text = fragments_text
 
-        post_code = post.get("code", "unknown")
-        user = User(**post.get("user", {}))
+        post_code = post.code or "unknown"
+        author_name = post.user.username if post.user else ""
+        author_icon_url = post.user.profile_pic_url if post.user else ""
+        like_count = post.like_count
+
+        reply_count = 0
+        repost_count = 0
+        quote_count = 0
+        reshare_count = 0
+        if post.text_post_app_info:
+            reply_count = post.text_post_app_info.direct_reply_count
+            repost_count = post.text_post_app_info.repost_count
+            quote_count = post.text_post_app_info.quote_count
+            reshare_count = post.text_post_app_info.reshare_count
 
         media_urls = self._extract_media_urls(post)
 
@@ -211,12 +278,17 @@ class ThreadsDownloader(BaseModel):
                 image_urls.append(media_url)
 
         return ThreadsOutput(
-            text=caption.text,
+            text=caption_text,
             url=url,
             image_urls=image_urls,
             video_paths=video_paths,
-            author_name=user.username,
-            author_icon_url=user.profile_pic_url,
+            author_name=author_name,
+            author_icon_url=author_icon_url,
+            like_count=like_count,
+            reply_count=reply_count,
+            repost_count=repost_count,
+            quote_count=quote_count,
+            reshare_count=reshare_count,
         )
 
 
@@ -225,4 +297,4 @@ if __name__ == "__main__":
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(test_url) as result:
-        print(result)  # noqa: T201
+        console.print(result)

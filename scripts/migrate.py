@@ -1,10 +1,13 @@
 import sqlite3
 
+from rich import get_console
 import pandas as pd
 from pydantic import Field, BaseModel
 from sqlalchemy import create_engine
 
 from discordbot.typings.database import DatabaseConfig
+
+console = get_console()
 
 
 class DatabaseMigration(BaseModel):
@@ -24,7 +27,7 @@ class DatabaseMigration(BaseModel):
         tables: list[str] = [row[0] for row in cursor.fetchall()]
 
         for table_name in tables:
-            print(f"Migrating table: {table_name}")  # noqa: T201
+            console.print(f"Migrating table: {table_name}")
             data = pd.read_sql_query(f"SELECT * FROM `{table_name}`", sqlite_conn)  # noqa: S608
             data = self.sanitize_dataframe(data)
             data.to_sql(

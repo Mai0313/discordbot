@@ -5,10 +5,13 @@ import datetime
 from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
+from rich import get_console
 from yt_dlp import YoutubeDL
 from pydantic import Field, BaseModel, computed_field
 from requests import Session
 from requests.exceptions import RequestException
+
+console = get_console()
 
 
 class DownloadResult(BaseModel):
@@ -174,4 +177,4 @@ if __name__ == "__main__":
     # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
     url = "https://www.facebook.com/share/r/1BcvhJkeMg/?mibextid=wwXIfr"
     with downloader.download(url, "best", False) as result:
-        print(f"Downloaded: {result.title} to {result.filename}")  # noqa: T201
+        console.print(f"Downloaded: {result.title} to {result.filename}")
