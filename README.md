@@ -27,7 +27,7 @@ _Suggestions and contributions are always welcome!_
 
 ### 🤖 AI-Powered Interactions
 
-- **Mention to Chat**: Simply mention the bot (@bot) to start a conversation — supports text and image inputs with multiple AI models (OpenAI GPT-4o — default, GPT-5-mini, GPT-5-nano, Claude-3.5-Haiku) and **default streaming** (updates about every 10 characters)
+- **Mention to Chat**: Simply mention the bot (@bot) to start a conversation — supports text and image inputs powered by Google Gemini 3.1 Pro Preview (via OpenAI compatible endpoint) with **default streaming** (updates about every 15 characters)
 - **Image Processing**: Vision model support with automatic image conversion
 - **Smart Web Access**: LLM can automatically search the web when needed to provide up-to-date information
 
@@ -59,16 +59,14 @@ _Suggestions and contributions are always welcome!_
 
 ## 🎯 Core Commands
 
-| Command           | Description                     | Features                                                                                                                                                     |
-| ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@mention`        | Chat by mentioning the bot      | Multi-model AI (GPT-4o default, GPT-5 mini/nano, Claude 3.5 Haiku), **default streaming** (updates ~every 10 characters), image input, integrated web search |
-| `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                                             |
-| `/maple_monster`  | Search MapleStory monster drops | Detailed stats, images, maps                                                                                                                                 |
-| `/maple_item`     | Search MapleStory item sources  | Drop source mapping                                                                                                                                          |
-| `/maple_stats`    | MapleStory DB statistics        | Totals, level distribution, popular items                                                                                                                    |
-
-| `/graph` | Generate images (placeholder) | Framework ready for implementation |
-| `/ping` | Bot performance testing | Latency measurement |
+| Command           | Description                     | Features                                                                                                                              |
+| ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `@mention`        | Chat by mentioning the bot      | AI powered by Google Gemini 3.1 Pro Preview, **default streaming** (updates ~every 15 characters), image input, integrated web search |
+| `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                      |
+| `/maple_monster`  | Search MapleStory monster drops | Detailed stats, images, maps                                                                                                          |
+| `/maple_item`     | Search MapleStory item sources  | Drop source mapping                                                                                                                   |
+| `/maple_stats`    | MapleStory DB statistics        | Totals, level distribution, popular items                                                                                             |
+| `/ping`           | Bot performance testing         | Latency measurement                                                                                                                   |
 
 ## 🚀 Quick Start
 
@@ -175,10 +173,10 @@ src/discordbot/
 │   └── template.py     # Utilities & /ping
 ├── typings/            # Configuration models
 │   ├── config.py       # Discord config
-│   └── database.py     # DB configs (SQLite/Postgres/Redis)
+│   ├── database.py     # DB configs (SQLite/Postgres/Redis)
+│   └── llm.py          # LLM integration (OpenAI compatible)
 └── utils/              # Utility functions
-    ├── downloader.py   # yt-dlp wrapper
-    └── llm.py          # LLM integration (OpenAI)
+    └── downloader.py   # yt-dlp wrapper
 data/
 ├── monsters.json       # MapleStory monster and drop database
 └── downloads/          # Video download storage
@@ -188,7 +186,7 @@ data/
 
 ### Multi-Modal AI Support
 
-- **Real-time Streaming**: Text responses stream in real-time, updating every 10 characters for immediate feedback
+- **Real-time Streaming**: Text responses stream in real-time, updating every 15 characters for immediate feedback
 - Text and image input processing
 - Automatic image-to-base64 conversion
 - Model-specific constraint handling
