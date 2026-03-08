@@ -23,8 +23,9 @@ class ThreadsDownloader(BaseModel):
     """A downloader for extracting text and media from Threads.net posts."""
 
     output_folder: str = Field(default="./data/threads", description="Download folder")
-    headers: dict[str, str] = Field(default={"User-Agent": "Mozilla/5.0", "Accept": "text/html"})
-    timeout: int = Field(default=15, description="Timeout for requests")
+
+    def _default_http_headers(self) -> dict[str, str]:
+        return {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
 
     def _find_keys(self, obj: dict | list | str | float | None, key: str) -> list[dict]:
         results: list[dict] = []
@@ -40,8 +41,9 @@ class ThreadsDownloader(BaseModel):
         return results
 
     def _fetch_html(self, clean_url: str) -> str | None:
+        headers = self._default_http_headers()
         try:
-            response = requests.get(clean_url, headers=self.headers, timeout=self.timeout)
+            response = requests.get(clean_url, headers=headers, timeout=15)
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
@@ -93,7 +95,7 @@ class ThreadsDownloader(BaseModel):
     def download_media(self, url: str, filename: str) -> Path | None:
         """Downloads a media file from the given URL and saves it to the output folder."""
         try:
-            response = requests.get(url, stream=True, timeout=self.timeout)
+            response = requests.get(url, stream=True, timeout=15)
             response.raise_for_status()
 
             filepath = Path(self.output_folder) / filename
@@ -153,7 +155,7 @@ class ThreadsDownloader(BaseModel):
             ext = "jpg"
         return ext
 
-    def process_url(self, url: str) -> ThreadsOutput:
+    def parse(self, url: str) -> ThreadsOutput:
         """Main method to extract text and download all media from a Threads URL."""
         post = self.extract_post_data(url)
         if not post:
@@ -175,14 +177,9 @@ class ThreadsDownloader(BaseModel):
         return ThreadsOutput(text=caption.text, media_urls=media_urls, media_paths=media_paths)
 
 
-def download_threads_post(url: str) -> ThreadsOutput:
-    """Helper function to download Threads post text and media."""
-    downloader = ThreadsDownloader()
-    return downloader.process_url(url)
-
-
 if __name__ == "__main__":
     test_url = "https://www.threads.com/@myun.60761/post/DVnP0ATET7d?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
     test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
-    result = download_threads_post(test_url)
+    downloader = ThreadsDownloader()
+    result = downloader.parse(test_url)
     print(result)  # noqa: T201
