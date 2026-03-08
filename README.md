@@ -33,6 +33,8 @@ _Suggestions and contributions are always welcome!_
 
 ### 📊 Content Processing
 
+- **Threads Parsing**: Automatically expand and display content, images, and download videos from Threads links.
+
 - **Video Downloading**: Multi-platform support (YouTube, TikTok, Instagram, X, Facebook) with quality options
 
     - Bilibili compatibility improvements: proper Referer header, safer format fallbacks, and robust error handling
@@ -62,6 +64,7 @@ _Suggestions and contributions are always welcome!_
 | Command           | Description                     | Features                                                                                                                              |
 | ----------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `@mention`        | Chat by mentioning the bot      | AI powered by Google Gemini 3.1 Pro Preview, **default streaming** (updates ~every 15 characters), image input, integrated web search |
+| `Threads link`    | Auto-parse Threads posts        | Displays text, images, stats, and downloads video from threads.net links automatically                                                |
 | `/download_video` | Multi-platform video downloader | Best/High/Medium/Low quality, auto low-quality fallback if >25MB                                                                      |
 | `/maple_monster`  | Search MapleStory monster drops | Detailed stats, images, maps                                                                                                          |
 | `/maple_item`     | Search MapleStory item sources  | Drop source mapping                                                                                                                   |
