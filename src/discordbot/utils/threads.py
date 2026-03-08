@@ -97,7 +97,6 @@ class ThreadsDownloader(BaseModel):
                         if not isinstance(item, dict):
                             continue
                         post = item.get("post", {})
-                        print(post)
                         if isinstance(post, dict) and post.get("code") == post_code:
                             return post
             except json.JSONDecodeError:
@@ -222,7 +221,7 @@ class ThreadsDownloader(BaseModel):
 
 
 if __name__ == "__main__":
-    test_url = "https://www.threads.com/@myun.60761/post/DVnP0ATET7d?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
+    test_url = "https://www.threads.com/@c32971/post/DVnt6dciSRc?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(test_url) as result:
