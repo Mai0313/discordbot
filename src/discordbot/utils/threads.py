@@ -252,6 +252,16 @@ class ThreadsDownloader(BaseModel):
         author_name = post.user.username if post.user else ""
         author_icon_url = post.user.profile_pic_url if post.user else ""
 
+        reply_count = 0
+        repost_count = 0
+        quote_count = 0
+        reshare_count = 0
+        if post.text_post_app_info:
+            reply_count = post.text_post_app_info.direct_reply_count
+            repost_count = post.text_post_app_info.repost_count
+            quote_count = post.text_post_app_info.quote_count
+            reshare_count = post.text_post_app_info.reshare_count
+
         media_urls = self._extract_media_urls(post)
 
         image_urls: list[str] = []
@@ -274,10 +284,10 @@ class ThreadsDownloader(BaseModel):
             author_name=author_name,
             author_icon_url=author_icon_url,
             like_count=post.like_count,
-            reply_count=post.text_post_app_info.direct_reply_count,
-            repost_count=post.text_post_app_info.repost_count,
-            quote_count=post.text_post_app_info.quote_count,
-            reshare_count=post.text_post_app_info.reshare_count,
+            reply_count=reply_count,
+            repost_count=repost_count,
+            quote_count=quote_count,
+            reshare_count=reshare_count,
         )
 
 
