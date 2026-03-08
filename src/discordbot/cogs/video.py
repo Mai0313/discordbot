@@ -46,43 +46,40 @@ class VideoCogs(commands.Cog):
         try:
             await interaction.edit_original_message(content="⏳ 正在下載...")
             downloader = VideoDownloader(output_folder="./data/downloads")
-            _title, filename = downloader.download(url=url, quality=quality)
-
-            # 檢查檔案大小是否超過 Discord 限制 (25MB)
-            file_size_mb = filename.stat().st_size / 1024 / 1024
-            if filename.stat().st_size > 25 * 1024 * 1024:
-                # 如果檔案過大且不是已經是低畫質，則重新下載低畫質版本
-                if quality != "low":
-                    await interaction.edit_original_message(
-                        content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
-                    )
-                    # 刪除原始檔案
-                    filename.unlink(missing_ok=True)
-
-                    # 重新下載低畫質版本
-                    _, filename = downloader.download(url=url, quality="low")
-
-                    # 再次檢查檔案大小
-                    file_size_mb = filename.stat().st_size / 1024 / 1024
-                    if filename.stat().st_size > 25 * 1024 * 1024:
+            with downloader.download(url=url, quality=quality) as result:
+                # 檢查檔案大小是否超過 Discord 限制 (25MB)
+                file_size_mb = result.filename.stat().st_size / 1024 / 1024
+                if result.filename.stat().st_size > 25 * 1024 * 1024:
+                    # 如果檔案過大且不是已經是低畫質，則重新下載低畫質版本
+                    if quality != "low":
+                        await interaction.edit_original_message(
+                            content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
+                        )
+                        # 重新下載低畫質版本
+                        with downloader.download(url=url, quality="low") as low_result:
+                            # 再次檢查檔案大小
+                            file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
+                            if low_result.filename.stat().st_size > 25 * 1024 * 1024:
+                                await interaction.edit_original_message(
+                                    content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
+                                )
+                            else:
+                                await interaction.edit_original_message(
+                                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
+                                    file=File(
+                                        str(low_result.filename), filename=low_result.filename.name
+                                    ),
+                                )
+                    else:
+                        # 已經是低畫質但仍然過大
                         await interaction.edit_original_message(
                             content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                         )
-                    else:
-                        await interaction.edit_original_message(
-                            content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                            file=File(str(filename), filename=filename.name),
-                        )
                 else:
-                    # 已經是低畫質但仍然過大
                     await interaction.edit_original_message(
-                        content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
+                        content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
+                        file=File(str(result.filename), filename=result.filename.name),
                     )
-            else:
-                await interaction.edit_original_message(
-                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                    file=File(str(filename), filename=filename.name),
-                )
         except Exception:
             await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")
 

@@ -16,6 +16,6 @@ from discordbot.utils.downloader import VideoDownloader
 )
 def test_download(url: str) -> None:
     downloader = VideoDownloader(output_folder="./data/downloads")
-    title, filename = downloader.download(url=url, quality="best", dry_run=True)
-    assert isinstance(title, str)
-    assert isinstance(filename, Path)
+    with downloader.download(url=url, quality="best", dry_run=True) as result:
+        assert isinstance(result.title, str)
+        assert isinstance(result.filename, Path)

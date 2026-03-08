@@ -1,3 +1,4 @@
+import types
 from typing import Any
 from pathlib import Path
 import datetime
@@ -11,6 +12,30 @@ from requests import Session
 from requests.exceptions import RequestException
 
 logfire.configure(send_to_logfire=False, scrubbing=False)
+
+
+class DownloadResult(BaseModel):
+    title: str
+    filename: Path
+
+    def unlink(self) -> None:
+        """Unlink (delete) the downloaded file."""
+        if self.filename.exists():
+            logfire.info(f"Unlinking file: {self.filename}")
+            self.filename.unlink()
+
+    def __enter__(self):
+        """Enter the context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ):
+        """Exit the context manager and cleanup."""
+        self.unlink()
 
 
 class VideoDownloader(BaseModel):
@@ -136,7 +161,7 @@ class VideoDownloader(BaseModel):
             })
         return params
 
-    def download(self, url: str, quality: str = "best", dry_run: bool = False) -> tuple[str, Path]:
+    def download(self, url: str, quality: str = "best", dry_run: bool = False) -> DownloadResult:
         # Convert Facebook watch URLs to reel format
         url = self._convert_facebook_url(url)
 
@@ -145,7 +170,7 @@ class VideoDownloader(BaseModel):
             info = ydl.extract_info(url, download=True)
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
-            return title, filename
+            return DownloadResult(title=title, filename=filename)
 
 
 if __name__ == "__main__":
@@ -158,4 +183,5 @@ if __name__ == "__main__":
     # url = "https://v.douyin.com/LuXDmRrZvWs"
     # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
     url = "https://www.facebook.com/share/r/1BcvhJkeMg/?mibextid=wwXIfr"
-    result = downloader.download(url, "best", False)
+    with downloader.download(url, "best", False) as result:
+        logfire.info(f"Downloaded: {result.title} to {result.filename}")
