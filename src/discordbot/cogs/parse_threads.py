@@ -6,7 +6,7 @@ import logfire
 import nextcord
 from nextcord.ext import commands
 
-from discordbot.utils.threads import ThreadsDownloader
+from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 
 URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s]+")
 
@@ -17,6 +17,28 @@ class ThreadsCogs(commands.Cog):
         self.output_folder = Path("./data/threads")
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
+
+    def _build_embeds(self, result: ThreadsOutput) -> list[nextcord.Embed]:
+        embeds = []
+        main_embed = nextcord.Embed(
+            description=result.text, url=result.url, color=nextcord.Color.default()
+        )
+        if result.author_name:
+            main_embed.set_author(
+                name=f"@{result.author_name}", icon_url=result.author_icon_url, url=result.url
+            )
+
+        if result.image_urls:
+            main_embed.set_image(url=result.image_urls[0])
+            embeds.append(main_embed)
+            # Add subsequent images as their own embeds with the same URL to visually group them
+            for img_url in result.image_urls[1:10]:
+                embed = nextcord.Embed(url=result.url)
+                embed.set_image(url=img_url)
+                embeds.append(embed)
+        else:
+            embeds.append(main_embed)
+        return embeds
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message) -> None:
@@ -34,45 +56,42 @@ class ThreadsCogs(commands.Cog):
             try:
                 # Run parsing logic
                 result = self.downloader.parse(url)
-            except Exception as e:
-                logfire.error(f"Failed to parse Threads URL: {e}")
+            except Exception:
                 return
 
-            if not result.text and not result.media_paths and not result.media_urls:
+            if not result.text and not result.video_paths and not result.image_urls:
                 return
 
             try:
                 # Compute total size of all downloaded media
-                total_size = sum(f.stat().st_size for f in result.media_paths if f.exists())
+                total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
                 max_size = 25 * 1024 * 1024  # 25 MB limit
 
                 # If limits are exceeded, just ignore the message
                 if (
                     total_size > max_size
-                    or len(result.media_paths) > 10
-                    or len(result.text) > 2000
+                    or len(result.video_paths) + len(result.image_urls) > 10
+                    or len(result.text) > 4096
                 ):
                     return
 
                 files = [
                     nextcord.File(str(path), filename=path.name)
-                    for path in result.media_paths
+                    for path in result.video_paths
                     if path.exists()
                 ]
 
-                # Optionally suppress the original embed to keep the chat clean
+                embeds = self._build_embeds(result)
+
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
-                await message.reply(content=result.text, files=files, mention_author=False)
+                await message.reply(embeds=embeds, files=files, mention_author=False)
             except Exception as e:
                 logfire.error(f"Failed to send Threads message: {e}")
             finally:
-                # Clean up downloaded files
-                for path in result.media_paths:
-                    with contextlib.suppress(Exception):
-                        if path.exists():
-                            path.unlink()
+                for path in result.video_paths:
+                    path.unlink(missing_ok=True)
 
 
 async def setup(bot: commands.Bot) -> None:

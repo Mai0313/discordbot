@@ -14,5 +14,5 @@ def test_parse(url: str) -> None:
     downloader = ThreadsDownloader(output_folder="./data/threads")
     output = downloader.parse(url=url)
     assert isinstance(output.text, str)
-    assert isinstance(output.media_urls, list)
-    assert isinstance(output.media_paths, list)
+    assert isinstance(output.image_urls, list)
+    assert isinstance(output.video_paths, list)

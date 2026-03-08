@@ -12,8 +12,8 @@ class ThreadsOutput(BaseModel):
 
     text: str = Field(default="找不到貼文", description="The text content of the post")
     url: str = Field(default="", description="The original post URL")
-    media_urls: list[str] = Field(default=[], description="List of media URLs")
-    media_paths: list[Path] = Field(default=[], description="List of downloaded media file paths")
+    image_urls: list[str] = Field(default=[], description="List of image URLs")
+    video_paths: list[Path] = Field(default=[], description="List of downloaded video file paths")
     author_name: str = Field(default="", description="The username of the post author")
     author_icon_url: str = Field(default="", description="The profile icon URL of the post author")
 
@@ -179,19 +179,23 @@ class ThreadsDownloader(BaseModel):
 
         media_urls = self._extract_media_urls(post)
 
-        media_paths: list[Path] = []
+        image_urls: list[str] = []
+        video_paths: list[Path] = []
         for i, media_url in enumerate(media_urls):
             ext = self._determine_extension(media_url)
-            filename = f"threads_{post_code}_{i}.{ext}"
-            filepath = self.download_media(media_url, filename)
-            if filepath:
-                media_paths.append(filepath)
+            if ext == "mp4":
+                filename = f"threads_{post_code}_{i}.{ext}"
+                filepath = self.download_media(media_url, filename)
+                if filepath:
+                    video_paths.append(filepath)
+            else:
+                image_urls.append(media_url)
 
         return ThreadsOutput(
             text=caption.text,
             url=url,
-            media_urls=media_urls,
-            media_paths=media_paths,
+            image_urls=image_urls,
+            video_paths=video_paths,
             author_name=user.username,
             author_icon_url=user.profile_pic_url,
         )
