@@ -11,12 +11,23 @@ class ThreadsOutput(BaseModel):
     """Output model for Threads downloader."""
 
     text: str = Field(default="找不到貼文", description="The text content of the post")
+    url: str = Field(default="", description="The original post URL")
     media_urls: list[str] = Field(default=[], description="List of media URLs")
     media_paths: list[Path] = Field(default=[], description="List of downloaded media file paths")
+    author_name: str = Field(default="", description="The username of the post author")
+    author_icon_url: str = Field(default="", description="The profile icon URL of the post author")
 
 
 class Caption(BaseModel):
     text: str = Field(default="", description="The caption text of the post")
+
+
+class User(BaseModel):
+    username: str = Field(default="", description="The username of the post author")
+    full_name: str = Field(default="", description="The full name of the post author")
+    profile_pic_url: str = Field(
+        default="", description="The profile picture URL of the post author"
+    )
 
 
 class ThreadsDownloader(BaseModel):
@@ -164,6 +175,8 @@ class ThreadsDownloader(BaseModel):
         caption: Caption = Caption(**post.get("caption", {}))
 
         post_code = post.get("code", "unknown")
+        user = User(**post.get("user", {}))
+
         media_urls = self._extract_media_urls(post)
 
         media_paths: list[Path] = []
@@ -174,12 +187,19 @@ class ThreadsDownloader(BaseModel):
             if filepath:
                 media_paths.append(filepath)
 
-        return ThreadsOutput(text=caption.text, media_urls=media_urls, media_paths=media_paths)
+        return ThreadsOutput(
+            text=caption.text,
+            url=url,
+            media_urls=media_urls,
+            media_paths=media_paths,
+            author_name=user.username,
+            author_icon_url=user.profile_pic_url,
+        )
 
 
 if __name__ == "__main__":
     test_url = "https://www.threads.com/@myun.60761/post/DVnP0ATET7d?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
-    test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
+    # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     result = downloader.parse(test_url)
     print(result)  # noqa: T201
