@@ -183,5 +183,6 @@ def download_threads_post(url: str) -> ThreadsOutput:
 
 if __name__ == "__main__":
     test_url = "https://www.threads.com/@myun.60761/post/DVnP0ATET7d?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
+    test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     result = download_threads_post(test_url)
     print(result)  # noqa: T201
