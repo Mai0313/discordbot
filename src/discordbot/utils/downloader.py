@@ -6,12 +6,9 @@ from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
-import logfire
 from pydantic import Field, BaseModel, computed_field
 from requests import Session
 from requests.exceptions import RequestException
-
-logfire.configure(send_to_logfire=False, scrubbing=False)
 
 
 class DownloadResult(BaseModel):
@@ -20,9 +17,7 @@ class DownloadResult(BaseModel):
 
     def unlink(self) -> None:
         """Unlink (delete) the downloaded file."""
-        if self.filename.exists():
-            logfire.info(f"Unlinking file: {self.filename}")
-            self.filename.unlink()
+        self.filename.unlink(missing_ok=True)
 
     def __enter__(self):
         """Enter the context manager."""
@@ -76,16 +71,12 @@ class VideoDownloader(BaseModel):
                         headers=headers,
                         timeout=self.share_resolve_timeout,
                     )
-                except RequestException as exc:
-                    logfire.warning(
-                        "Failed to resolve Facebook share URL", error=str(exc), method=method_name
-                    )
+                except RequestException:
                     continue
 
                 final_url = response.url
                 response.close()
                 if final_url and final_url != url:
-                    logfire.info(f"Resolved Facebook share URL to: {final_url}")
                     return final_url
 
         return url
@@ -114,7 +105,6 @@ class VideoDownloader(BaseModel):
             video_id = query_params.get("v", [None])[0]
 
             if video_id:
-                logfire.info(f"Converting Facebook watch URL to reel format: {video_id}")
                 return f"https://www.facebook.com/reel/{video_id}"
 
         return url
@@ -184,4 +174,4 @@ if __name__ == "__main__":
     # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
     url = "https://www.facebook.com/share/r/1BcvhJkeMg/?mibextid=wwXIfr"
     with downloader.download(url, "best", False) as result:
-        logfire.info(f"Downloaded: {result.title} to {result.filename}")
+        print(f"Downloaded: {result.title} to {result.filename}")  # noqa: T201

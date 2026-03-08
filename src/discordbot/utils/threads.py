@@ -4,7 +4,6 @@ import types
 from pathlib import Path
 from urllib.parse import urlparse
 
-import logfire
 from pydantic import Field, BaseModel
 import requests
 
@@ -22,9 +21,7 @@ class ThreadsOutput(BaseModel):
     def unlink(self) -> None:
         """Unlink (delete) the downloaded video files."""
         for path in self.video_paths:
-            if path.exists():
-                logfire.info(f"Unlinking file: {path}")
-                path.unlink()
+            path.unlink(missing_ok=True)
 
     def __enter__(self):
         """Enter the context manager."""
@@ -100,6 +97,7 @@ class ThreadsDownloader(BaseModel):
                         if not isinstance(item, dict):
                             continue
                         post = item.get("post", {})
+                        print(post)
                         if isinstance(post, dict) and post.get("code") == post_code:
                             return post
             except json.JSONDecodeError:
@@ -228,4 +226,4 @@ if __name__ == "__main__":
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(test_url) as result:
-        logfire.info(str(result))
+        print(result)  # noqa: T201
