@@ -11,9 +11,8 @@ class ThreadsOutput(BaseModel):
     """Output model for Threads downloader."""
 
     text: str = Field(default="找不到貼文", description="The text content of the post")
-    media_paths: list[Path] = Field(
-        default_factory=list, description="List of downloaded media file paths"
-    )
+    media_urls: list[str] = Field(default=[], description="List of media URLs")
+    media_paths: list[Path] = Field(default=[], description="List of downloaded media file paths")
 
 
 class Caption(BaseModel):
@@ -173,7 +172,7 @@ class ThreadsDownloader(BaseModel):
             if filepath:
                 media_paths.append(filepath)
 
-        return ThreadsOutput(text=caption.text, media_paths=media_paths)
+        return ThreadsOutput(text=caption.text, media_urls=media_urls, media_paths=media_paths)
 
 
 def download_threads_post(url: str) -> ThreadsOutput:
