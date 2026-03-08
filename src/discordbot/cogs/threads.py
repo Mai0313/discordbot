@@ -41,35 +41,30 @@ class ThreadsCogs(commands.Cog):
             if not result.text and not result.media_paths and not result.media_urls:
                 return
 
-            # Compute total size of all downloaded media
-            total_size = sum(f.stat().st_size for f in result.media_paths if f.exists())
-            max_size = 25 * 1024 * 1024  # 25 MB limit
-
-            files: list[nextcord.File] = []
-            use_urls = False
-
-            if total_size > max_size or len(result.media_paths) > 10:
-                use_urls = True
-            else:
-                for path in result.media_paths:
-                    if path.exists():
-                        files.append(nextcord.File(str(path), filename=path.name))
-
-            if use_urls and result.media_urls:
-                urls_text = "\n\n" + "\n".join(result.media_urls)
-                max_text_len = 2000 - len(urls_text) - 3
-                if len(result.text) > max_text_len:
-                    result.text = result.text[:max_text_len] + "..."
-                result.text = f"{result.text}{urls_text}"
-            elif len(result.text) > 2000:
-                result.text = result.text[:1997] + "..."
-
             try:
+                # Compute total size of all downloaded media
+                total_size = sum(f.stat().st_size for f in result.media_paths if f.exists())
+                max_size = 25 * 1024 * 1024  # 25 MB limit
+
+                # If limits are exceeded, just ignore the message
+                if (
+                    total_size > max_size
+                    or len(result.media_paths) > 10
+                    or len(result.text) > 2000
+                ):
+                    return
+
+                files = [
+                    nextcord.File(str(path), filename=path.name)
+                    for path in result.media_paths
+                    if path.exists()
+                ]
+
                 # Optionally suppress the original embed to keep the chat clean
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
-                await message.reply(content=result.text, files=files)
+                await message.reply(content=result.text, files=files, mention_author=False)
             except Exception as e:
                 logfire.error(f"Failed to send Threads message: {e}")
             finally:
