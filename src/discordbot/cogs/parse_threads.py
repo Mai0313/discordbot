@@ -18,13 +18,25 @@ class ThreadsCogs(commands.Cog):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
-    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
+    def _build_embeds(self, result: ThreadsOutput, message: Message) -> list[Embed]:
         embeds = []
-        main_embed = Embed(description=result.text, url=result.url, color=Color.default())
+        main_embed = Embed(
+            description=result.text,
+            url=result.url,
+            color=Color.default(),
+            timestamp=message.created_at,
+        )
         if result.author_name:
             main_embed.set_author(
                 name=f"@{result.author_name}", icon_url=result.author_icon_url, url=result.url
             )
+
+        main_embed.add_field(name="❤️", value=f"{result.like_count:,}", inline=True)
+        main_embed.add_field(name="💬", value=f"{result.reply_count:,}", inline=True)
+        main_embed.add_field(name="🔁", value=f"{result.repost_count:,}", inline=True)
+        main_embed.add_field(name="🔗", value=f"{result.quote_count:,}", inline=True)
+        main_embed.add_field(name="↗️", value=f"{result.reshare_count:,}", inline=True)
+        main_embed.add_field(name="🌐", value=f"[Threads]({result.url})", inline=True)
 
         if result.image_urls:
             main_embed.set_image(url=result.image_urls[0])
@@ -75,7 +87,7 @@ class ThreadsCogs(commands.Cog):
                         if path.exists()
                     ]
 
-                    embeds = self._build_embeds(result)
+                    embeds = self._build_embeds(result, message)
 
                     with contextlib.suppress(Exception):
                         await message.edit(suppress=True)
