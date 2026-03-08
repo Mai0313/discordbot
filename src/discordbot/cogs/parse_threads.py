@@ -53,43 +53,36 @@ class ThreadsCogs(commands.Cog):
         async with message.channel.typing():
             try:
                 # Run parsing logic
-                result = self.downloader.parse(url)
-            except Exception:
-                return
+                with self.downloader.parse(url) as result:
+                    if not result.text and not result.video_paths and not result.image_urls:
+                        return
 
-            if not result.text and not result.video_paths and not result.image_urls:
-                return
+                    # Compute total size of all downloaded media
+                    total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
+                    max_size = 25 * 1024 * 1024  # 25 MB limit
 
-            try:
-                # Compute total size of all downloaded media
-                total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
-                max_size = 25 * 1024 * 1024  # 25 MB limit
+                    # If limits are exceeded, just ignore the message
+                    if (
+                        total_size > max_size
+                        or len(result.video_paths) + len(result.image_urls) > 10
+                        or len(result.text) > 4096
+                    ):
+                        return
 
-                # If limits are exceeded, just ignore the message
-                if (
-                    total_size > max_size
-                    or len(result.video_paths) + len(result.image_urls) > 10
-                    or len(result.text) > 4096
-                ):
-                    return
+                    files = [
+                        File(str(path), filename=path.name)
+                        for path in result.video_paths
+                        if path.exists()
+                    ]
 
-                files = [
-                    File(str(path), filename=path.name)
-                    for path in result.video_paths
-                    if path.exists()
-                ]
+                    embeds = self._build_embeds(result)
 
-                embeds = self._build_embeds(result)
+                    with contextlib.suppress(Exception):
+                        await message.edit(suppress=True)
 
-                with contextlib.suppress(Exception):
-                    await message.edit(suppress=True)
-
-                await message.reply(embeds=embeds, files=files, mention_author=False)
+                    await message.reply(embeds=embeds, files=files, mention_author=False)
             except Exception as e:
                 logfire.error(f"Failed to send Threads message: {e}")
-            finally:
-                for path in result.video_paths:
-                    path.unlink(missing_ok=True)
 
 
 async def setup(bot: commands.Bot) -> None:

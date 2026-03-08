@@ -12,7 +12,7 @@ from discordbot.utils.threads import ThreadsDownloader
 )
 def test_parse(url: str) -> None:
     downloader = ThreadsDownloader(output_folder="./data/threads")
-    output = downloader.parse(url=url)
-    assert isinstance(output.text, str)
-    assert isinstance(output.image_urls, list)
-    assert isinstance(output.video_paths, list)
+    with downloader.parse(url=url) as output:
+        assert isinstance(output.text, str)
+        assert isinstance(output.image_urls, list)
+        assert isinstance(output.video_paths, list)
