@@ -10,7 +10,7 @@ import requests
 class ThreadsOutput(BaseModel):
     """Output model for Threads downloader."""
 
-    text: str = Field(default="", description="The text content of the post")
+    text: str = Field(default="找不到貼文", description="The text content of the post")
     media_paths: list[Path] = Field(
         default_factory=list, description="List of downloaded media file paths"
     )
@@ -154,11 +154,11 @@ class ThreadsDownloader(BaseModel):
             ext = "jpg"
         return ext
 
-    def process_url(self, url: str) -> ThreadsOutput | None:
+    def process_url(self, url: str) -> ThreadsOutput:
         """Main method to extract text and download all media from a Threads URL."""
         post = self.extract_post_data(url)
         if not post:
-            return None
+            return ThreadsOutput()
 
         caption: Caption = Caption(**post.get("caption", {}))
 
@@ -176,7 +176,7 @@ class ThreadsDownloader(BaseModel):
         return ThreadsOutput(text=caption.text, media_paths=media_paths)
 
 
-def download_threads_post(url: str) -> ThreadsOutput | None:
+def download_threads_post(url: str) -> ThreadsOutput:
     """Helper function to download Threads post text and media."""
     downloader = ThreadsDownloader()
     return downloader.process_url(url)
@@ -184,4 +184,5 @@ def download_threads_post(url: str) -> ThreadsOutput | None:
 
 if __name__ == "__main__":
     test_url = "https://www.threads.com/@myun.60761/post/DVnP0ATET7d?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
-    download_threads_post(test_url)
+    result = download_threads_post(test_url)
+    print(result)  # noqa: T201
