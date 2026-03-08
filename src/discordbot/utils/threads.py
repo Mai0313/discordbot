@@ -42,7 +42,7 @@ class ThreadsDownloader(BaseModel):
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
-            return None
+            raise RuntimeError(f"Failed to fetch HTML from {clean_url}: {e}")
 
     def _parse_post_from_html(self, html: str, post_code: str) -> dict | None:
         for match in re.finditer(
@@ -100,7 +100,7 @@ class ThreadsDownloader(BaseModel):
                         f.write(chunk)
             return filepath
         except requests.RequestException as e:
-            return None
+            raise RuntimeError(f"Failed to download media from {url}: {e}")
 
     def _extract_media_urls(self, post: dict) -> list[str]:
         media_urls: list[str] = []
