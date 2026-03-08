@@ -1,6 +1,6 @@
 import re
-import contextlib
 from pathlib import Path
+import contextlib
 
 import logfire
 import nextcord
@@ -9,6 +9,7 @@ from nextcord.ext import commands
 from discordbot.utils.threads import ThreadsDownloader
 
 URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s]+")
+
 
 class ThreadsCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -44,35 +45,31 @@ class ThreadsCogs(commands.Cog):
             total_size = sum(f.stat().st_size for f in result.media_paths if f.exists())
             max_size = 25 * 1024 * 1024  # 25 MB limit
 
-            # Basic text with the original user's mention
-            content = f"{message.author.mention}\n{result.text}"
-            
             files: list[nextcord.File] = []
             use_urls = False
-            
+
             if total_size > max_size or len(result.media_paths) > 10:
                 use_urls = True
             else:
                 for path in result.media_paths:
                     if path.exists():
                         files.append(nextcord.File(str(path), filename=path.name))
-            
+
             if use_urls and result.media_urls:
                 urls_text = "\n\n" + "\n".join(result.media_urls)
                 max_text_len = 2000 - len(urls_text) - 3
-                if len(content) > max_text_len:
-                    content = content[:max_text_len] + "..."
-                content = f"{content}{urls_text}"
-            else:
-                if len(content) > 2000:
-                    content = content[:1997] + "..."
+                if len(result.text) > max_text_len:
+                    result.text = result.text[:max_text_len] + "..."
+                result.text = f"{result.text}{urls_text}"
+            elif len(result.text) > 2000:
+                result.text = result.text[:1997] + "..."
 
             try:
                 # Optionally suppress the original embed to keep the chat clean
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
-                await message.reply(content=content, files=files)
+                await message.reply(content=result.text, files=files)
             except Exception as e:
                 logfire.error(f"Failed to send Threads message: {e}")
             finally:
@@ -81,6 +78,7 @@ class ThreadsCogs(commands.Cog):
                     with contextlib.suppress(Exception):
                         if path.exists():
                             path.unlink()
+
 
 async def setup(bot: commands.Bot) -> None:
     bot.add_cog(ThreadsCogs(bot), override=True)
