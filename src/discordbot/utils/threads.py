@@ -16,6 +16,10 @@ class ThreadsOutput(BaseModel):
     )
 
 
+class Caption(BaseModel):
+    text: str = Field(default="", description="The caption text of the post")
+
+
 class ThreadsDownloader(BaseModel):
     """A downloader for extracting text and media from Threads.net posts."""
 
@@ -156,8 +160,7 @@ class ThreadsDownloader(BaseModel):
         if not post:
             return None
 
-        caption = post.get("caption")
-        text = caption.get("text") if isinstance(caption, dict) else ""
+        caption: Caption = Caption(**post.get("caption", {}))
 
         post_code = post.get("code", "unknown")
         media_urls = self._extract_media_urls(post)
@@ -170,7 +173,7 @@ class ThreadsDownloader(BaseModel):
             if filepath:
                 media_paths.append(filepath)
 
-        return ThreadsOutput(text=text, media_paths=media_paths)
+        return ThreadsOutput(text=caption.text, media_paths=media_paths)
 
 
 def download_threads_post(url: str) -> ThreadsOutput | None:
