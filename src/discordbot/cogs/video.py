@@ -1,5 +1,5 @@
 import nextcord
-from nextcord import Locale, Interaction, SlashOption
+from nextcord import File, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
@@ -71,7 +71,7 @@ class VideoCogs(commands.Cog):
                     else:
                         await interaction.edit_original_message(
                             content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                            file=nextcord.File(str(filename), filename=filename.name),
+                            file=File(str(filename), filename=filename.name),
                         )
                 else:
                     # 已經是低畫質但仍然過大
@@ -81,7 +81,7 @@ class VideoCogs(commands.Cog):
             else:
                 await interaction.edit_original_message(
                     content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                    file=nextcord.File(str(filename), filename=filename.name),
+                    file=File(str(filename), filename=filename.name),
                 )
         except Exception:
             await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")

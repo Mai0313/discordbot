@@ -4,7 +4,7 @@ from functools import cached_property
 
 import pandas as pd
 import logfire
-import nextcord
+from nextcord import Message, DMChannel
 from pydantic import Field, BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, create_engine
 from nextcord.ext import commands
@@ -16,7 +16,7 @@ CONTROL_CHARS_RE = re.compile(r"\x00")
 
 class MessageLogger(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    message: nextcord.Message
+    message: Message
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     @staticmethod
@@ -40,14 +40,14 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def table_name(self) -> str:
-        if isinstance(self.message.channel, nextcord.DMChannel):
+        if isinstance(self.message.channel, DMChannel):
             return f"DM_{self.message.author.id}"
         return f"channel_{self.message.channel.id}"
 
     @computed_field
     @property
     def channel_name_or_author_name(self) -> str:
-        if isinstance(self.message.channel, nextcord.DMChannel):
+        if isinstance(self.message.channel, DMChannel):
             author_name = self.message.author.nick or self.message.author.name
             return f"DM_{author_name}_{self.message.author.id}"
         return f"channel_{self.message.channel.name}_{self.message.channel.id}"
@@ -55,7 +55,7 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def channel_id_or_author_id(self) -> str:
-        if isinstance(self.message.channel, nextcord.DMChannel):
+        if isinstance(self.message.channel, DMChannel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
@@ -117,7 +117,7 @@ class LogMessageCog(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_message(self, message: nextcord.Message) -> None:
+    async def on_message(self, message: Message) -> None:
         if message.author.bot:
             return
         asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006

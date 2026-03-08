@@ -1,15 +1,13 @@
 from collections.abc import Iterable
 
-import nextcord
+from nextcord import Embed
 
 from .models import Monster, MapleStats
 from .constants import BASIC_STATS_TEMPLATE, MONSTER_ATTR_TEMPLATE
 
 
-def create_monster_embed(monster: Monster) -> nextcord.Embed:
-    embed = nextcord.Embed(
-        title=f"🐲 {monster.get('name')}", description="怪物詳細資訊", color=0x00FF00
-    )
+def create_monster_embed(monster: Monster) -> Embed:
+    embed = Embed(title=f"🐲 {monster.get('name')}", description="怪物詳細資訊", color=0x00FF00)
 
     image = monster.get("image")
     if image:
@@ -50,9 +48,9 @@ def create_monster_embed(monster: Monster) -> nextcord.Embed:
     return embed
 
 
-def create_item_source_embed(item_name: str, monsters: Iterable[Monster]) -> nextcord.Embed:
+def create_item_source_embed(item_name: str, monsters: Iterable[Monster]) -> Embed:
     monsters_list = list(monsters)
-    embed = nextcord.Embed(title=f"🎁 {item_name}", description="物品掉落來源", color=0x0099FF)
+    embed = Embed(title=f"🎁 {item_name}", description="物品掉落來源", color=0x0099FF)
 
     item_img = None
     item_link = None
@@ -84,8 +82,8 @@ def create_item_source_embed(item_name: str, monsters: Iterable[Monster]) -> nex
     return embed
 
 
-def build_stats_embed(stats: MapleStats) -> nextcord.Embed:
-    embed = nextcord.Embed(
+def build_stats_embed(stats: MapleStats) -> Embed:
+    embed = Embed(
         title="📊 楓之谷資料庫統計", description="Artale 楓之谷資料庫概覽", color=0x00FF88
     )
 

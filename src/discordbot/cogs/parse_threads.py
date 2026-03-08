@@ -3,7 +3,7 @@ from pathlib import Path
 import contextlib
 
 import logfire
-import nextcord
+from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
@@ -18,11 +18,9 @@ class ThreadsCogs(commands.Cog):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
-    def _build_embeds(self, result: ThreadsOutput) -> list[nextcord.Embed]:
+    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
         embeds = []
-        main_embed = nextcord.Embed(
-            description=result.text, url=result.url, color=nextcord.Color.default()
-        )
+        main_embed = Embed(description=result.text, url=result.url, color=Color.default())
         if result.author_name:
             main_embed.set_author(
                 name=f"@{result.author_name}", icon_url=result.author_icon_url, url=result.url
@@ -33,7 +31,7 @@ class ThreadsCogs(commands.Cog):
             embeds.append(main_embed)
             # Add subsequent images as their own embeds with the same URL to visually group them
             for img_url in result.image_urls[1:10]:
-                embed = nextcord.Embed(url=result.url)
+                embed = Embed(url=result.url)
                 embed.set_image(url=img_url)
                 embeds.append(embed)
         else:
@@ -41,7 +39,7 @@ class ThreadsCogs(commands.Cog):
         return embeds
 
     @commands.Cog.listener()
-    async def on_message(self, message: nextcord.Message) -> None:
+    async def on_message(self, message: Message) -> None:
         if message.author.bot:
             return
 
@@ -76,7 +74,7 @@ class ThreadsCogs(commands.Cog):
                     return
 
                 files = [
-                    nextcord.File(str(path), filename=path.name)
+                    File(str(path), filename=path.name)
                     for path in result.video_paths
                     if path.exists()
                 ]

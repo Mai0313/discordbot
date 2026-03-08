@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import nextcord
-from nextcord import Embed, Locale, Interaction, SelectOption
+from nextcord import Embed, Locale, Interaction, SlashOption, SelectOption
 from nextcord.ext import commands
 
 from ._maplestory.views import MapleDropSearchView
@@ -36,7 +36,7 @@ class MapleStoryCogs(commands.Cog):
     async def maple_monster(
         self,
         interaction: Interaction,
-        monster_name: str = nextcord.SlashOption(
+        monster_name: str = SlashOption(
             name="monster_name",
             description="Name of the monster to search",
             name_localizations={Locale.zh_TW: "怪物名稱", Locale.ja: "モンスター名"},
@@ -101,7 +101,7 @@ class MapleStoryCogs(commands.Cog):
     async def maple_item(
         self,
         interaction: Interaction,
-        item_name: str = nextcord.SlashOption(
+        item_name: str = SlashOption(
             name="item_name",
             description="Name of the item to search",
             name_localizations={Locale.zh_TW: "物品名稱", Locale.ja: "アイテム名"},

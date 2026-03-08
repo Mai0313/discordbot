@@ -1,5 +1,5 @@
 import nextcord
-from nextcord import Locale, Interaction
+from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
 
@@ -8,7 +8,7 @@ class TemplateCogs(commands.Cog):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_message(self, message: nextcord.Message) -> None:
+    async def on_message(self, message: Message) -> None:
         # 忽略來自機器人的訊息
         if message.author.bot:
             return
@@ -31,7 +31,7 @@ class TemplateCogs(commands.Cog):
         await interaction.response.defer()
         bot_latency = round(self.bot.latency * 1000, 2)  # 取得 API 延遲
 
-        embed = nextcord.Embed(
+        embed = Embed(
             title=":ping_pong: Pong!",
             color=0x00FF00,  # 綠色
             timestamp=nextcord.utils.utcnow(),

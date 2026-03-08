@@ -8,6 +8,7 @@ import anyio
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
+from nextcord import Game, Embed, Guild, Intents, Message
 from nextcord.ext import tasks, commands
 
 from discordbot.typings.config import DiscordConfig
@@ -15,8 +16,8 @@ from discordbot.typings.config import DiscordConfig
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
-        # intents=nextcord.Intents.default() 只啟用必要的 Intents
-        intents = nextcord.Intents.all()
+        # intents=Intents.default() 只啟用必要的 Intents
+        intents = Intents.all()
         intents.members = False
         intents.presences = False
         super().__init__(
@@ -44,7 +45,7 @@ class DiscordBot(commands.Bot):
         logfire.info("Bot Started", bot_name=self.user.name, bot_id=self.user.id)
         logfire.info(f"Invite Link: {invite_url}")
 
-    async def on_guild_available(self, guild: nextcord.Guild) -> None:
+    async def on_guild_available(self, guild: Guild) -> None:
         return await super().on_guild_available(guild)
 
     async def get_cogs_names(self) -> list[str]:
@@ -67,7 +68,7 @@ class DiscordBot(commands.Bot):
         """Setup the game status task of the bot."""
         statuses = ["your mama"]
         random_status = secrets.choice(statuses)
-        await self.change_presence(activity=nextcord.Game(random_status))
+        await self.change_presence(activity=Game(random_status))
         logfire.info("Status Changed", new_status=self.activity.name)
 
     @status_task.before_loop
@@ -88,12 +89,12 @@ class DiscordBot(commands.Bot):
         guild_id = None
         if self.discord_config.discord_test_server_id:
             guild_id = self.get_guild(self.discord_config.discord_test_server_id)
-            if isinstance(guild_id, nextcord.Guild):
+            if isinstance(guild_id, Guild):
                 await self.sync_application_commands(guild_id=guild_id.id)
         await self.sync_all_application_commands()
         self.status_task.start()
 
-    async def on_message(self, message: nextcord.Message) -> None:
+    async def on_message(self, message: Message) -> None:
         """The code in this event is executed every time someone sends a message, with or without the prefix
 
         :param message: The message that was sent.
@@ -141,13 +142,13 @@ class DiscordBot(commands.Bot):
             minutes, seconds = divmod(error.retry_after, 60)
             hours, minutes = divmod(minutes, 60)
             hours = hours % 24
-            embed = nextcord.Embed(
+            embed = Embed(
                 description=f"**Please slow down** - You can use this command again in {f'{round(hours)} hours' if round(hours) > 0 else ''} {f'{round(minutes)} minutes' if round(minutes) > 0 else ''} {f'{round(seconds)} seconds' if round(seconds) > 0 else ''}.",
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
         elif isinstance(error, commands.NotOwner):
-            embed = nextcord.Embed(description="You are not the owner of the bot!", color=0xE02B2B)
+            embed = Embed(description="You are not the owner of the bot!", color=0xE02B2B)
             await context.send(embed=embed)
             if context.guild:
                 logfire.warn(
@@ -158,7 +159,7 @@ class DiscordBot(commands.Bot):
                     f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the bot's DMs, but the user is not an owner of the bot."
                 )
         elif isinstance(error, commands.MissingPermissions):
-            embed = nextcord.Embed(
+            embed = Embed(
                 description="You are missing the permission(s) `"
                 + ", ".join(error.missing_permissions)
                 + "` to execute this command!",
@@ -166,7 +167,7 @@ class DiscordBot(commands.Bot):
             )
             await context.send(embed=embed)
         elif isinstance(error, commands.BotMissingPermissions):
-            embed = nextcord.Embed(
+            embed = Embed(
                 description="I am missing the permission(s) `"
                 + ", ".join(error.missing_permissions)
                 + "` to fully perform this command!",
@@ -174,7 +175,7 @@ class DiscordBot(commands.Bot):
             )
             await context.send(embed=embed)
         elif isinstance(error, commands.MissingRequiredArgument):
-            embed = nextcord.Embed(
+            embed = Embed(
                 title="Error!",
                 # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
                 description=str(error).capitalize(),
@@ -182,7 +183,7 @@ class DiscordBot(commands.Bot):
             )
             await context.send(embed=embed)
         elif isinstance(error, commands.CommandNotFound):
-            embed = nextcord.Embed(
+            embed = Embed(
                 title="Error!",
                 description=f"Command {error.command_name} not found",
                 color=0xE02B2B,
