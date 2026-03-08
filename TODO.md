@@ -10,3 +10,6 @@
 基本上就是要嚴格遵守 type hint 等等規範, 完成一個function
 
 這個 function 會將貼文文字印出 並將 圖片 或 影片下載下來
+
+以上功能已完成 位置在 `src/discordbot/utils/threads.py`
+請幫我整合進去 discord bot 的 src/discordbot/cogs
