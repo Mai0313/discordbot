@@ -251,17 +251,6 @@ class ThreadsDownloader(BaseModel):
         post_code = post.code or "unknown"
         author_name = post.user.username if post.user else ""
         author_icon_url = post.user.profile_pic_url if post.user else ""
-        like_count = post.like_count
-
-        reply_count = 0
-        repost_count = 0
-        quote_count = 0
-        reshare_count = 0
-        if post.text_post_app_info:
-            reply_count = post.text_post_app_info.direct_reply_count
-            repost_count = post.text_post_app_info.repost_count
-            quote_count = post.text_post_app_info.quote_count
-            reshare_count = post.text_post_app_info.reshare_count
 
         media_urls = self._extract_media_urls(post)
 
@@ -284,11 +273,11 @@ class ThreadsDownloader(BaseModel):
             video_paths=video_paths,
             author_name=author_name,
             author_icon_url=author_icon_url,
-            like_count=like_count,
-            reply_count=reply_count,
-            repost_count=repost_count,
-            quote_count=quote_count,
-            reshare_count=reshare_count,
+            like_count=post.like_count,
+            reply_count=post.text_post_app_info.direct_reply_count,
+            repost_count=post.text_post_app_info.repost_count,
+            quote_count=post.text_post_app_info.quote_count,
+            reshare_count=post.text_post_app_info.reshare_count,
         )
 
 
