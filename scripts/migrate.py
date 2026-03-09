@@ -15,11 +15,12 @@ class DatabaseMigration(BaseModel):
 
     @staticmethod
     def sanitize_dataframe(data: pd.DataFrame) -> pd.DataFrame:
-        for col in data.select_dtypes(include=["object"]).columns:
+        for col in data.select_dtypes(include=["object", "str"]).columns:
             data[col] = data[col].astype(str).str.replace("\x00", "", regex=False)
         return data
 
     def migrate_to_postgresql(self, path: str) -> None:
+        self.database.postgres.init_db()
         sqlite_conn = sqlite3.connect(path)
         psg_engine = create_engine(self.database.postgres.postgres_url)
         cursor = sqlite_conn.cursor()
