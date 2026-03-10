@@ -1,4 +1,4 @@
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import contextlib
 
 from rich import get_console
@@ -11,6 +11,9 @@ from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
 from discordbot.typings.llm import LLMConfig
+
+if TYPE_CHECKING:
+    from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 SYSTEM_PROMPT = """
@@ -200,9 +203,18 @@ class ReplyGeneratorCogs(commands.Cog):
             reply_message = await message.reply(":thinking:")
 
             # Get LLM response using the message chain
+            tools: list[ChatCompletionToolUnionParam] = [
+                {"googleSearch": {}},
+                {"urlContext": {}},
+                {"codeExecution": {}},
+            ]
             client = AsyncOpenAI(base_url=self.llm_sdk.base_url, api_key=self.llm_sdk.api_key)
             stream = await client.chat.completions.create(
-                model=DEFAULT_MODEL, messages=message_chain, reasoning_effort="none", stream=True
+                model=DEFAULT_MODEL,
+                messages=message_chain,
+                reasoning_effort="none",
+                tools=tools,
+                stream=True,
             )
 
             # Handle streaming response
