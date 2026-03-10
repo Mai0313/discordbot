@@ -12,7 +12,6 @@ from openai.types.chat.chat_completion_message_param import ChatCompletionMessag
 from discordbot.typings.llm import LLMConfig
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
-HISTORY_LIMIT = 0
 SYSTEM_PROMPT = """
 1. Your response should be clearly and shortly; give me a straight answer.
 2. The response should not be too long.
@@ -73,15 +72,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return {"role": role, "content": content_parts}
 
-    async def _build_message_chain(self, message: Message) -> list[ChatCompletionMessageParam]:
+    async def _get_message_history(
+        self, message: Message, referenced_message: Message | None
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-
-        referenced_message = None
-        if message.reference and isinstance(message.reference.resolved, Message):
-            referenced_message = message.reference.resolved
-
         hist_messages: list[Message] = []
-        async for m in message.channel.history(limit=HISTORY_LIMIT, before=referenced_message):
+        async for m in message.channel.history(limit=10, before=referenced_message):
             hist_messages.append(m)
         hist_messages.reverse()
 
@@ -102,6 +98,19 @@ class ReplyGeneratorCogs(commands.Cog):
                     hist_msg, role=role, include_images=False
                 )
                 messages.append(hist_message)
+        # Maybe we can add a chat completion for this, summary the history.
+        return messages
+
+    async def _build_message_chain(self, message: Message) -> list[ChatCompletionMessageParam]:
+        messages: list[dict[str, Any]] = []
+
+        referenced_message = None
+        if message.reference and isinstance(message.reference.resolved, Message):
+            referenced_message = message.reference.resolved
+
+        history_messages = self._get_message_history(
+            message=message, referenced_message=referenced_message
+        )
 
         messages.append({
             "role": "assistant",
