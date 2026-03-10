@@ -15,7 +15,8 @@ from discordbot.typings.llm import LLMConfig
 if TYPE_CHECKING:
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
+COMPLETION_MODEL = "gemini-3.1-pro-preview"
+IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 SYSTEM_PROMPT = """
 1. Your response should be clearly and shortly; give me a straight answer.
 2. The response should not be too long.
@@ -214,7 +215,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 {"codeExecution": {}},
             ]
             stream = await self.client.chat.completions.create(
-                model=DEFAULT_MODEL,
+                model=COMPLETION_MODEL,
                 messages=message_chain,
                 reasoning_effort="none",
                 tools=tools,

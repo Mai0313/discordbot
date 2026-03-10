@@ -72,6 +72,7 @@ dependencies = [
     "google-api-python-client>=2.186.0",
     "google-auth>=2.42.1",
     "google-auth-oauthlib>=1.2.2",
+    "google-genai>=1.66.0",
     "logfire>=4.14.2",
     "nextcord[speed]>=2.6.0",
     "openai>=2.6.1",
