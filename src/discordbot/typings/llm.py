@@ -1,14 +1,11 @@
-from functools import cached_property
-
 import dotenv
-from openai import AsyncOpenAI
-from pydantic import Field, ConfigDict, AliasChoices, computed_field
+from pydantic import Field, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings
 
 dotenv.load_dotenv()
 
 
-class LLMSDK(BaseSettings):
+class LLMConfig(BaseSettings):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     base_url: str = Field(
         ...,
@@ -26,9 +23,3 @@ class LLMSDK(BaseSettings):
         frozen=False,
         deprecated=False,
     )
-
-    @computed_field
-    @cached_property
-    def client(self) -> AsyncOpenAI:
-        client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
-        return client

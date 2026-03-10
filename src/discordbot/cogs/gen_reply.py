@@ -1,14 +1,15 @@
 from typing import Any
 import contextlib
 
-from openai import AsyncStream
+from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import User, Message, Interaction
 from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
+from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
-from discordbot.typings.llm import LLMSDK
+from discordbot.typings.llm import LLMConfig
 
 DEFAULT_MODEL = "gemini-3.1-pro-preview"
 HISTORY_LIMIT = 0
@@ -24,24 +25,10 @@ SYSTEM_PROMPT = """
 
 class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialize the ReplyGeneratorCogs.
-
-        Args:
-            bot (commands.Bot): The bot instance.
-        """
         self.bot = bot
-        self.llm_sdk: LLMSDK = LLMSDK()
+        self.llm_sdk = LLMConfig()
 
     async def _get_attachments(self, message: Message) -> list[str]:
-        """Get all attachments from a message and convert to base64 data URIs.
-
-        Args:
-            message: The Discord message to extract attachments from.
-            validate_urls: Whether to validate that URLs are accessible (HEAD request).
-
-        Returns:
-            A list of base64 data URI strings.
-        """
         attachments: list[str] = []
         if message.attachments:
             attachments = [attachment.url for attachment in message.attachments]
@@ -60,14 +47,6 @@ class ReplyGeneratorCogs(commands.Cog):
         return converted_attachments
 
     async def _get_cleaned_content(self, message: Message) -> str:
-        """Clean message content by replacing user mentions with readable names.
-
-        Args:
-            message: The Discord message to clean.
-
-        Returns:
-            The cleaned message content.
-        """
         content = message.content
         for mention in message.mentions:
             content = content.replace(f"<@{mention.id}>", "").strip()
@@ -81,20 +60,6 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _process_single_message(
         self, message: Message, role: str = "user", include_images: bool = True
     ) -> dict[str, Any]:
-        """Process a single message into LLM message format.
-
-        This is the unified method to process any Discord message into the format
-        expected by LLM APIs. All message processing should go through this method
-        to ensure consistency.
-
-        Args:
-            message: The Discord message to process.
-            role: The role of the message sender (default: "user").
-            include_images: Whether to include images in the message. For historical messages, this should be False to avoid 404 errors.
-
-        Returns:
-            A dictionary in LLM message format with role and content.
-        """
         content = await self._get_cleaned_content(message=message)
 
         # Build content parts - start with text
@@ -108,21 +73,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return {"role": role, "content": content_parts}
 
-    async def _build_message_chain(self, message: Message) -> list[dict[str, Any]]:
-        """Build a message chain including history and referenced messages.
-
-        This method constructs a complete conversation context by gathering:
-        1. Historical messages from the channel
-        2. Referenced/replied-to message (if any)
-        3. System prompts and separators
-        4. Current user message
-
-        Args:
-            message: The current Discord message to process.
-
-        Returns:
-            A list of message dictionaries formatted for LLM consumption.
-        """
+    async def _build_message_chain(self, message: Message) -> list[ChatCompletionMessageParam]:
         messages: list[dict[str, Any]] = []
 
         # 1. Handle referenced message if present
@@ -216,16 +167,6 @@ class ReplyGeneratorCogs(commands.Cog):
         stream: AsyncStream[ChatCompletionChunk],
         user_mention: str,
     ) -> str:
-        """Handle streaming LLM response for both Interaction and Message.
-
-        Args:
-            target: Either an Interaction or Message object to edit
-            stream: The streaming response from LLM
-            user_mention: The user mention string to prefix the response with
-
-        Returns:
-            The complete accumulated response text
-        """
         stored_content = f"{user_mention} "
         counted_content = 0
 
@@ -252,13 +193,6 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Handle messages that mention the bot.
-
-        This listener allows users to chat with the bot by mentioning it, without needing to use slash commands.
-
-        Args:
-            message (Message): The message object.
-        """
         # Ignore messages from bots and skip if not mentioned
         if message.author.bot or self.bot.user not in message.mentions:
             return
@@ -283,12 +217,9 @@ class ReplyGeneratorCogs(commands.Cog):
             reply_message = await message.reply(":thinking:")
 
             # Get LLM response using the message chain
-            stream: ChatCompletionChunk = await self.llm_sdk.client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=message_chain,
-                reasoning_effort="none",
-                stream=True,
-                tools=[{"googleSearch": {}, "urlContext": {}}],
+            client = AsyncOpenAI(base_url=self.llm_sdk.base_url, api_key=self.llm_sdk.api_key)
+            stream = await client.chat.completions.create(
+                model=DEFAULT_MODEL, messages=message_chain, reasoning_effort="none", stream=True
             )
 
             # Handle streaming response
@@ -298,9 +229,4 @@ class ReplyGeneratorCogs(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    """Register the reply generation cog with the bot.
-
-    Args:
-        bot (commands.Bot): The bot instance to which the cog will be added.
-    """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)
