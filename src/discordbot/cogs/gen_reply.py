@@ -76,13 +76,10 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _build_message_chain(self, message: Message) -> list[ChatCompletionMessageParam]:
         messages: list[dict[str, Any]] = []
 
-        # 1. Handle referenced message if present
         referenced_message = None
         if message.reference and isinstance(message.reference.resolved, Message):
             referenced_message = message.reference.resolved
 
-        # 2. Get conversation history
-        # Get history before the referenced message (if any), otherwise standard history retrieval
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=HISTORY_LIMIT, before=referenced_message):
             hist_messages.append(m)
@@ -100,17 +97,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
-            # Add historical messages in chronological order (oldest first)
-            # Skip images for historical messages to avoid 404 errors
             for hist_msg in hist_messages:
-                # Determine role based on author
                 role = "assistant" if hist_msg.author.bot else "user"
                 hist_message = await self._process_single_message(
                     hist_msg, role=role, include_images=False
                 )
                 messages.append(hist_message)
 
-        # Add separator to indicate end of history
         messages.append({
             "role": "assistant",
             "content": [
@@ -118,9 +111,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
         })
 
-        # 3. Process the referenced message if it exists
         if referenced_message:
-            # Add separator to indicate referenced message
             messages.append({
                 "role": "assistant",
                 "content": [
@@ -131,15 +122,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
-            # Process referenced message based on author (bot or user)
             role = "assistant" if referenced_message.author.bot else "user"
             reference_msg = await self._process_single_message(
                 message=referenced_message, role=role
             )
             messages.append(reference_msg)
 
-            # 4. Add context separator for current message
-            # Add separator to indicate current user's reply
             messages.append({
                 "role": "assistant",
                 "content": [
@@ -150,13 +138,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             })
 
-        # 5. Add system prompt with basic instructions
         messages.append({
             "role": "assistant",
             "content": [{"type": "text", "text": SYSTEM_PROMPT}],
         })
 
-        # Add current message
         current_msg = await self._process_single_message(message, role="user")
         messages.append(current_msg)
         return messages
