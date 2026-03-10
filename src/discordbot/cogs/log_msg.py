@@ -94,14 +94,14 @@ class MessageLogger(BaseModel):
             chunksize=10_000,
             method="multi",
         )
-        messages.to_sql(
-            name=f"{self.table_name}",
-            con=self.psg_engine,
-            if_exists="append",
-            index=False,
-            chunksize=10_000,
-            method="multi",
-        )
+        # messages.to_sql(
+        #     name=f"{self.table_name}",
+        #     con=self.psg_engine,
+        #     if_exists="append",
+        #     index=False,
+        #     chunksize=10_000,
+        #     method="multi",
+        # )
 
     async def log(self) -> None:
         try:
