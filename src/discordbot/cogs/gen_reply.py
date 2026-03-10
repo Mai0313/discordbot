@@ -86,7 +86,6 @@ class ReplyGeneratorCogs(commands.Cog):
         hist_messages.reverse()
 
         if hist_messages:
-            # Add separator for history
             messages.append({
                 "role": "assistant",
                 "content": [
