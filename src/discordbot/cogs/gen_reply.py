@@ -31,7 +31,7 @@ console = get_console()
 class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.llm_sdk = LLMConfig()
+        self.config = LLMConfig()
 
     async def _get_cleaned_content(self, message: Message) -> str:
         content = message.content
@@ -203,7 +203,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reply_message = await message.reply(":thinking:")
 
             # Get LLM response using the message chain
-            client = AsyncOpenAI(base_url=self.llm_sdk.base_url, api_key=self.llm_sdk.api_key)
+            client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
             tools: list[ChatCompletionToolUnionParam] = [
                 {"googleSearch": {}},
                 {"urlContext": {}},
