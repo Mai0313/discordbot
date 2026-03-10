@@ -203,12 +203,12 @@ class ReplyGeneratorCogs(commands.Cog):
             reply_message = await message.reply(":thinking:")
 
             # Get LLM response using the message chain
+            client = AsyncOpenAI(base_url=self.llm_sdk.base_url, api_key=self.llm_sdk.api_key)
             tools: list[ChatCompletionToolUnionParam] = [
                 {"googleSearch": {}},
                 {"urlContext": {}},
                 {"codeExecution": {}},
             ]
-            client = AsyncOpenAI(base_url=self.llm_sdk.base_url, api_key=self.llm_sdk.api_key)
             stream = await client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=message_chain,
