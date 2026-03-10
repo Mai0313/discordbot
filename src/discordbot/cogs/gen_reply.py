@@ -1,10 +1,12 @@
-from typing import TYPE_CHECKING, Any
+from io import BytesIO
+import base64
+from typing import TYPE_CHECKING, Any, Literal
 import contextlib
 
 from rich import get_console
 from openai import AsyncOpenAI, AsyncStream
 import logfire
-from nextcord import User, Message, Interaction
+from nextcord import File, User, Message, Interaction
 from nextcord.ext import commands
 from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
@@ -25,6 +27,37 @@ SYSTEM_PROMPT = """
 5. If you don't know the answer, just say you don't know. Don't try to make up an answer.
 6. Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
 """
+ROUTE_PROMPT = """
+You are a routing classifier for a Discord bot.
+Decide whether the bot should answer normally or generate an image.
+
+Reply with exactly one word:
+- IMAGE
+- QA
+
+Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make an image.
+Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate an image.
+If you are not sure, reply QA.
+"""
+IMAGE_PROMPT = """
+You rewrite the user's latest request into a strong image-generation prompt.
+
+Rules:
+1. Output only the final prompt. No markdown, no explanations.
+2. Preserve the user's intent, important constraints, and requested style.
+3. If the conversation includes referenced or attached images, incorporate their important visual traits.
+4. Prefer concise, vivid English for the final prompt, but preserve any proper nouns and user-requested visible text exactly.
+5. Include concrete visual details when useful, such as subject, composition, lighting, mood, style, and background.
+"""
+IMAGE_DESCRIPTION_PROMPT = """
+You are writing a short Discord caption for a generated image.
+
+Rules:
+1. Describe the generated image briefly in 1 to 2 short sentences.
+2. Follow the user's language from the conversation.
+3. Mention the main subject, style, or mood when useful.
+4. No markdown, no bullet points, no preamble.
+"""
 
 console = get_console()
 
@@ -39,10 +72,14 @@ class ReplyGeneratorCogs(commands.Cog):
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
-    async def _get_cleaned_content(self, message: Message) -> str:
+    async def _get_user_prompt(self, message: Message) -> str:
         content = message.content
         for mention in message.mentions:
             content = content.replace(f"<@{mention.id}>", "").strip()
+        return content.strip()
+
+    async def _get_cleaned_content(self, message: Message) -> str:
+        content = await self._get_user_prompt(message=message)
         if isinstance(message.author, User):
             author_name = message.author.name
         else:
@@ -153,6 +190,88 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_messages)
         return message_list
 
+    async def _route_message(
+        self, message_chain: list[ChatCompletionMessageParam]
+    ) -> Literal["IMAGE", "QA"]:
+        response = await self.client.chat.completions.create(
+            model=COMPLETION_MODEL,
+            messages=[{"role": "system", "content": ROUTE_PROMPT}, *message_chain],
+            reasoning_effort="none",
+        )
+        decision = (response.choices[0].message.content or "").strip().upper()
+        if decision.startswith("IMAGE"):
+            return "IMAGE"
+        return "QA"
+
+    async def _refine_image_prompt(self, message_chain: list[ChatCompletionMessageParam]) -> str:
+        response = await self.client.chat.completions.create(
+            model=COMPLETION_MODEL,
+            messages=[{"role": "system", "content": IMAGE_PROMPT}, *message_chain],
+            reasoning_effort="none",
+        )
+        prompt = (response.choices[0].message.content or "").strip()
+        if not prompt:
+            raise ValueError("Image prompt refinement returned empty content")
+        return prompt
+
+    async def _describe_generated_image(
+        self, message_chain: list[ChatCompletionMessageParam], image_base64: str
+    ) -> str:
+        response = await self.client.chat.completions.create(
+            model=COMPLETION_MODEL,
+            messages=[
+                {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
+                *message_chain,
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Describe this generated image briefly for the Discord reply.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+                        },
+                    ],
+                },
+            ],
+            reasoning_effort="none",
+        )
+        description = (response.choices[0].message.content or "").strip()
+        if not description:
+            raise ValueError("Generated image description returned empty content")
+        return description
+
+    async def _handle_image_generation(
+        self,
+        message: Message,
+        reply_message: Message,
+        message_chain: list[ChatCompletionMessageParam],
+    ) -> None:
+        await reply_message.edit(content=":art:")
+        image_prompt = await self._refine_image_prompt(message_chain=message_chain)
+        image_result = await self.client.images.generate(
+            model=IMAGE_MODEL, prompt=image_prompt, n=1, size="1024x1024"
+        )
+        if not image_result.data or not image_result.data[0].b64_json:
+            raise ValueError("Image generation returned no base64 image data")
+
+        image_base64 = image_result.data[0].b64_json
+        image_description = await self._describe_generated_image(
+            message_chain=message_chain, image_base64=image_base64
+        )
+        image_bytes = base64.b64decode(image_base64)
+        image_file = File(BytesIO(image_bytes), filename="generated.png")
+
+        await message.reply(
+            content=f"{message.author.mention} {image_description}",
+            file=image_file,
+            mention_author=False,
+        )
+        with contextlib.suppress(Exception):
+            await reply_message.delete()
+
     async def _handle_streaming(
         self,
         target: Interaction | Message,
@@ -191,15 +310,13 @@ class ReplyGeneratorCogs(commands.Cog):
 
         # Build the message chain (includes current message and any references)
         message_chain = await self._build_message_list(message=message)
+        user_prompt = await self._get_user_prompt(message=message)
 
         # Check if the current message has any actual content
         current_message_content = message_chain[-1]["content"]
-        has_text = any(
-            part.get("type") == "text" and part.get("text").strip()
-            for part in current_message_content
-        )
+        has_image = any(part.get("type") == "image_url" for part in current_message_content)
 
-        if not has_text:
+        if not user_prompt and not has_image:
             await message.reply("?")
             return
 
@@ -207,25 +324,35 @@ class ReplyGeneratorCogs(commands.Cog):
         async with message.channel.typing():
             # Send initial thinking message
             reply_message = await message.reply(":thinking:")
+            try:
+                route = await self._route_message(message_chain=message_chain)
+                if route == "IMAGE":
+                    await self._handle_image_generation(
+                        message=message, reply_message=reply_message, message_chain=message_chain
+                    )
+                else:
+                    # Get LLM response using the message chain
+                    tools: list[ChatCompletionToolUnionParam] = [
+                        {"googleSearch": {}},
+                        {"urlContext": {}},
+                        {"codeExecution": {}},
+                    ]
+                    stream = await self.client.chat.completions.create(
+                        model=COMPLETION_MODEL,
+                        messages=message_chain,
+                        reasoning_effort="none",
+                        tools=tools,
+                        stream=True,
+                    )
 
-            # Get LLM response using the message chain
-            tools: list[ChatCompletionToolUnionParam] = [
-                {"googleSearch": {}},
-                {"urlContext": {}},
-                {"codeExecution": {}},
-            ]
-            stream = await self.client.chat.completions.create(
-                model=COMPLETION_MODEL,
-                messages=message_chain,
-                reasoning_effort="none",
-                tools=tools,
-                stream=True,
-            )
-
-            # Handle streaming response
-            await self._handle_streaming(
-                target=reply_message, stream=stream, user_mention=message.author.mention
-            )
+                    # Handle streaming response
+                    await self._handle_streaming(
+                        target=reply_message, stream=stream, user_mention=message.author.mention
+                    )
+            except Exception as e:
+                logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
+                with contextlib.suppress(Exception):
+                    await reply_message.edit(content=":x: failed to generate reply")
 
 
 async def setup(bot: commands.Bot) -> None:
