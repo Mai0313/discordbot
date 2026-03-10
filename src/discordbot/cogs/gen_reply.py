@@ -1,6 +1,7 @@
 from typing import Any
 import contextlib
 
+from rich import get_console
 from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import User, Message, Interaction
@@ -21,11 +22,24 @@ SYSTEM_PROMPT = """
 6. Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
 """
 
+console = get_console()
+
 
 class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.llm_sdk = LLMConfig()
+
+    async def _get_cleaned_content(self, message: Message) -> str:
+        content = message.content
+        for mention in message.mentions:
+            content = content.replace(f"<@{mention.id}>", "").strip()
+        if isinstance(message.author, User):
+            author_name = message.author.name
+        else:
+            author_name = message.author.nick if message.author.nick else message.author.name
+        content = f"{author_name}: {content}"
+        return content
 
     async def _get_attachments(self, message: Message) -> list[str]:
         attachments: list[str] = []
@@ -45,41 +59,26 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return converted_attachments
 
-    async def _get_cleaned_content(self, message: Message) -> str:
-        content = message.content
-        for mention in message.mentions:
-            content = content.replace(f"<@{mention.id}>", "").strip()
-        if isinstance(message.author, User):
-            author_name = message.author.name
-        else:
-            author_name = message.author.nick if message.author.nick else message.author.name
-        content = f"{author_name}: {content}"
-        return content
-
-    async def _process_single_message(
-        self, message: Message, role: str = "user", include_images: bool = True
-    ) -> dict[str, Any]:
+    async def _process_single_message(self, message: Message) -> dict[str, Any]:
         content = await self._get_cleaned_content(message=message)
+        role = "assistant" if message.author.bot else "user"
 
         # Build content parts - start with text
         content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
 
         # Only include images for current/recent messages, not historical ones
-        if include_images:
-            attachments = await self._get_attachments(message=message)
-            for attachment in attachments:
-                content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
-
+        attachments = await self._get_attachments(message=message)
+        for attachment in attachments:
+            content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
         return {"role": role, "content": content_parts}
 
-    async def _get_message_history(
-        self, message: Message, referenced_message: Message | None
-    ) -> list[dict[str, Any]]:
+    async def _get_history_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
-        async for m in message.channel.history(limit=10, before=referenced_message):
+        async for m in message.channel.history(
+            limit=10, before=message.reference, oldest_first=True
+        ):
             hist_messages.append(m)
-        hist_messages.reverse()
 
         if hist_messages:
             messages.append({
@@ -93,50 +92,31 @@ class ReplyGeneratorCogs(commands.Cog):
             })
 
             for hist_msg in hist_messages:
-                role = "assistant" if hist_msg.author.bot else "user"
-                hist_message = await self._process_single_message(
-                    hist_msg, role=role, include_images=False
-                )
+                hist_message = await self._process_single_message(message=hist_msg)
                 messages.append(hist_message)
         # Maybe we can add a chat completion for this, summary the history.
         return messages
 
-    async def _build_message_chain(self, message: Message) -> list[ChatCompletionMessageParam]:
+    async def _get_reference_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-
-        referenced_message = None
         if message.reference and isinstance(message.reference.resolved, Message):
-            referenced_message = message.reference.resolved
-
-        history_messages = self._get_message_history(
-            message=message, referenced_message=referenced_message
-        )
-
-        messages.append({
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "The following messages are the current conversation"}
-            ],
-        })
-
-        if referenced_message:
             messages.append({
                 "role": "assistant",
                 "content": [
                     {
                         "type": "text",
-                        "text": f"The following message is the referenced message from {referenced_message.author.name}",
+                        "text": f"The following message is the referenced message from {message.reference.resolved.author.name}",
                     }
                 ],
             })
-
-            role = "assistant" if referenced_message.author.bot else "user"
-            reference_msg = await self._process_single_message(
-                message=referenced_message, role=role
-            )
+            reference_msg = await self._process_single_message(message=message.reference.resolved)
             messages.append(reference_msg)
+        return messages
 
-            messages.append({
+    async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = [
+            {"role": "assistant", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+            {
                 "role": "assistant",
                 "content": [
                     {
@@ -144,16 +124,25 @@ class ReplyGeneratorCogs(commands.Cog):
                         "text": f"The following message is the new message from {message.author.name}",
                     }
                 ],
-            })
-
-        messages.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": SYSTEM_PROMPT}],
-        })
-
-        current_msg = await self._process_single_message(message, role="user")
+            },
+        ]
+        current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
         return messages
+
+    async def _build_message_list(self, message: Message) -> list[ChatCompletionMessageParam]:
+        message_list: list[dict[str, Any]] = []
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
+
+        # Temp disabled, LLM perform bad on long context.
+        # hist_messages = await self._get_history_message(message=message)
+        # message_list.extend(hist_messages)
+
+        current_messages = await self._get_current_message(message=message)
+        message_list.extend(current_messages)
+        return message_list
 
     async def _handle_streaming(
         self,
@@ -192,7 +181,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return
 
         # Build the message chain (includes current message and any references)
-        message_chain = await self._build_message_chain(message=message)
+        message_chain = await self._build_message_list(message=message)
 
         # Check if the current message has any actual content
         current_message_content = message_chain[-1]["content"]
