@@ -33,6 +33,11 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
 
+    @property
+    def client(self) -> AsyncOpenAI:
+        client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
+        return client
+
     async def _get_cleaned_content(self, message: Message) -> str:
         content = message.content
         for mention in message.mentions:
@@ -203,13 +208,12 @@ class ReplyGeneratorCogs(commands.Cog):
             reply_message = await message.reply(":thinking:")
 
             # Get LLM response using the message chain
-            client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
             tools: list[ChatCompletionToolUnionParam] = [
                 {"googleSearch": {}},
                 {"urlContext": {}},
                 {"codeExecution": {}},
             ]
-            stream = await client.chat.completions.create(
+            stream = await self.client.chat.completions.create(
                 model=DEFAULT_MODEL,
                 messages=message_chain,
                 reasoning_effort="none",
