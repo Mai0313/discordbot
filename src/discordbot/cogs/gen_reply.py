@@ -4,11 +4,10 @@ from typing import TYPE_CHECKING, Any, Literal
 import contextlib
 
 from rich import get_console
-from openai import AsyncOpenAI, AsyncStream
+from openai import AsyncOpenAI
 import logfire
 from nextcord import File, User, Message, Interaction
 from nextcord.ext import commands
-from openai.types.chat import ChatCompletionChunk
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
@@ -260,13 +259,26 @@ class ReplyGeneratorCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await reply_message.delete()
 
-    async def _handle_streaming(
+    async def _handle_message_reply(
         self,
-        target: Interaction | Message,
-        stream: AsyncStream[ChatCompletionChunk],
-        user_mention: str,
+        message: Message,
+        reply_message: Interaction | Message,
+        message_chain: list[ChatCompletionMessageParam],
     ) -> str:
-        stored_content = f"{user_mention} "
+        # Get LLM response using the message chain
+        tools: list[ChatCompletionToolUnionParam] = [
+            {"googleSearch": {}},
+            {"urlContext": {}},
+            {"codeExecution": {}},
+        ]
+        stream = await self.client.chat.completions.create(
+            model=COMPLETION_MODEL,
+            messages=message_chain,
+            reasoning_effort="none",
+            tools=tools,
+            stream=True,
+        )
+        stored_content = f"{message.author.mention} "
         counted_content = 0
 
         async for chunk in stream:
@@ -275,18 +287,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 counted_content += len(chunk.choices[0].delta.content)
 
                 if counted_content >= 15:
-                    if isinstance(target, Interaction):
-                        await target.edit_original_message(content=stored_content)
+                    if isinstance(reply_message, Interaction):
+                        await reply_message.edit_original_message(content=stored_content)
                     else:
-                        await target.edit(content=stored_content)
+                        await reply_message.edit(content=stored_content)
                     counted_content = 0
 
         # Final update to ensure complete message is displayed
         with contextlib.suppress(Exception):
-            if isinstance(target, Interaction):
-                await target.edit_original_message(content=stored_content)
+            if isinstance(reply_message, Interaction):
+                await reply_message.edit_original_message(content=stored_content)
             else:
-                await target.edit(content=stored_content)
+                await reply_message.edit(content=stored_content)
 
         return stored_content
 
@@ -319,23 +331,8 @@ class ReplyGeneratorCogs(commands.Cog):
                         message=message, reply_message=reply_message, message_chain=message_chain
                     )
                 else:
-                    # Get LLM response using the message chain
-                    tools: list[ChatCompletionToolUnionParam] = [
-                        {"googleSearch": {}},
-                        {"urlContext": {}},
-                        {"codeExecution": {}},
-                    ]
-                    stream = await self.client.chat.completions.create(
-                        model=COMPLETION_MODEL,
-                        messages=message_chain,
-                        reasoning_effort="none",
-                        tools=tools,
-                        stream=True,
-                    )
-
-                    # Handle streaming response
-                    await self._handle_streaming(
-                        target=reply_message, stream=stream, user_mention=message.author.mention
+                    await self._handle_message_reply(
+                        message=message, reply_message=reply_message, message_chain=message_chain
                     )
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
