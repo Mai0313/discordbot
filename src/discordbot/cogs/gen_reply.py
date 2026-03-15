@@ -203,17 +203,6 @@ class ReplyGeneratorCogs(commands.Cog):
             return "IMAGE"
         return "QA"
 
-    async def _refine_image_prompt(self, message_chain: list[ChatCompletionMessageParam]) -> str:
-        response = await self.client.chat.completions.create(
-            model=COMPLETION_MODEL,
-            messages=[{"role": "system", "content": IMAGE_PROMPT}, *message_chain],
-            reasoning_effort="none",
-        )
-        prompt = (response.choices[0].message.content or "").strip()
-        if not prompt:
-            raise ValueError("Image prompt refinement returned empty content")
-        return prompt
-
     async def _describe_generated_image(
         self, message_chain: list[ChatCompletionMessageParam], image_base64: str
     ) -> str:
@@ -250,9 +239,8 @@ class ReplyGeneratorCogs(commands.Cog):
         message_chain: list[ChatCompletionMessageParam],
     ) -> None:
         await reply_message.edit(content=":art:")
-        image_prompt = await self._refine_image_prompt(message_chain=message_chain)
         image_result = await self.client.images.generate(
-            model=IMAGE_MODEL, prompt=image_prompt, n=1, size="1024x1024"
+            model=IMAGE_MODEL, prompt=message_chain[-1]["content"], n=1, size="1024x1024"
         )
         if not image_result.data or not image_result.data[0].b64_json:
             raise ValueError("Image generation returned no base64 image data")
