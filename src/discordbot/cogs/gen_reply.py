@@ -6,7 +6,7 @@ import contextlib
 from rich import get_console
 from openai import AsyncOpenAI
 import logfire
-from nextcord import File, User, Message, Interaction
+from nextcord import File, Message, Interaction
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
