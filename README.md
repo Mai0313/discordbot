@@ -148,8 +148,8 @@ DISCORD_BOT_TOKEN=your_discord_bot_token
 DISCORD_TEST_SERVER_ID=your_test_server_id  # Optional
 
 # OpenAI Configuration
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_BASE_URL=https://api.openai.com/v1
+API_KEY=your_API_KEY
+BASE_URL=https://api.openai.com/v1
 ```
 
 ### Optional Environment Variables

@@ -148,8 +148,8 @@ DISCORD_BOT_TOKEN=你的_discord_机器人_token
 DISCORD_TEST_SERVER_ID=你的_测试_服务器_id  # 可选
 
 # OpenAI 设定
-OPENAI_API_KEY=你的_openai_api_密钥
-OPENAI_BASE_URL=https://api.openai.com/v1
+API_KEY=你的_openai_api_密钥
+BASE_URL=https://api.openai.com/v1
 ```
 
 ### 可选环境变量
@@ -306,7 +306,7 @@ uv run pytest -q
     ```bash
     # 设定生产环境变量
     export DISCORD_BOT_TOKEN="生产环境token"
-    export OPENAI_API_KEY="生产环境密钥"
+    export API_KEY="生产环境密钥"
     ```
 
 2. **Docker 部署**

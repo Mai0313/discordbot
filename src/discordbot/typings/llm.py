@@ -11,7 +11,7 @@ class LLMConfig(BaseSettings):
         ...,
         description="The base url from openai for calling models.",
         examples=["https://api.openai.com/v1"],
-        validation_alias=AliasChoices("OPENAI_BASE_URL"),
+        validation_alias=AliasChoices("BASE_URL"),
         frozen=False,
         deprecated=False,
     )
@@ -19,7 +19,7 @@ class LLMConfig(BaseSettings):
         ...,
         description="The api key from openai for calling models.",
         examples=["sk-proj-..."],
-        validation_alias=AliasChoices("OPENAI_API_KEY"),
+        validation_alias=AliasChoices("API_KEY"),
         frozen=False,
         deprecated=False,
     )
