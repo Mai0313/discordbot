@@ -79,6 +79,9 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _get_cleaned_content(self, message: Message) -> str:
         content = await self._get_user_prompt(message=message)
+        if not content and message.embeds:
+            embed_texts = [embed.description for embed in message.embeds if embed.description]
+            content = "\n".join(embed_texts)
         if isinstance(message.author, User):
             author_name = message.author.name
         else:
@@ -92,6 +95,9 @@ class ReplyGeneratorCogs(commands.Cog):
             attachments = [attachment.url for attachment in message.attachments]
         if message.stickers:
             attachments.extend([sticker.url for sticker in message.stickers])
+        for embed in message.embeds:
+            if embed.image and embed.image.url:
+                attachments.append(embed.image.url)
 
         converted_attachments: list[str] = []
         for attachment in attachments:
