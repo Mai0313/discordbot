@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 COMPLETION_MODEL = "gemini-3.1-pro-preview"
 IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+REASONING_EFFORT = "none"
 SYSTEM_PROMPT = """
 * 請用貼吧臭嘴老哥的口氣來回答所有問題
 * Your response should be clearly and shortly; give me a straight answer, the response should not be too long.
@@ -190,7 +191,7 @@ class ReplyGeneratorCogs(commands.Cog):
         response = await self.client.chat.completions.create(
             model=COMPLETION_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *message_chain],
-            reasoning_effort="none",
+            reasoning_effort=REASONING_EFFORT,
         )
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
@@ -219,7 +220,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     ],
                 },
             ],
-            reasoning_effort="none",
+            reasoning_effort=REASONING_EFFORT,
         )
         description = (response.choices[0].message.content or "").strip()
         if not description:
@@ -269,7 +270,7 @@ class ReplyGeneratorCogs(commands.Cog):
         stream = await self.client.chat.completions.create(
             model=COMPLETION_MODEL,
             messages=message_chain,
-            reasoning_effort="none",
+            reasoning_effort=REASONING_EFFORT,
             tools=tools,
             stream=True,
         )
