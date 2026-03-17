@@ -71,11 +71,11 @@ class ReplyGeneratorCogs(commands.Cog):
         if not content and message.embeds:
             embed_texts = [embed.description for embed in message.embeds if embed.description]
             content = "\n".join(embed_texts)
-        if isinstance(message.author, User):
-            author_name = message.author.name
-        else:
-            author_name = message.author.nick if message.author.nick else message.author.name
-        content = f"{author_name}: {content}"
+        # if isinstance(message.author, User):
+        #     author_name = message.author.name
+        # else:
+        #     author_name = message.author.nick if message.author.nick else message.author.name
+        content = f"{message.author.name}: {content}"
         return content
 
     async def _get_attachments(self, message: Message) -> list[str]:
