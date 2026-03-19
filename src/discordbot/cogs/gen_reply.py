@@ -70,12 +70,20 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_cleaned_content(self, message: Message) -> str:
         content = await self._get_user_prompt(message=message)
         if not content and message.embeds:
-            embed_texts = [embed.description for embed in message.embeds if embed.description]
-            content = "\n".join(embed_texts)
-        # if isinstance(message.author, User):
-        #     author_name = message.author.name
-        # else:
-        #     author_name = message.author.nick if message.author.nick else message.author.name
+            embed_parts: list[str] = []
+            for embed in message.embeds:
+                parts: list[str] = []
+                if embed.author and embed.author.name:
+                    parts.append(f"Author: {embed.author.name}")
+                if embed.title:
+                    parts.append(f"Title: {embed.title}")
+                if embed.description:
+                    parts.append(embed.description)
+                for field in embed.fields:
+                    parts.append(f"{field.name}: {field.value}")
+                if parts:
+                    embed_parts.append("\n".join(parts))
+            content = "\n\n".join(embed_parts)
         content = f"{message.author.name}: {content}"
         return content
 
@@ -88,6 +96,8 @@ class ReplyGeneratorCogs(commands.Cog):
         for embed in message.embeds:
             if embed.image and embed.image.url:
                 attachments.append(embed.image.url)
+            if embed.thumbnail and embed.thumbnail.url:
+                attachments.append(embed.thumbnail.url)
 
         converted_attachments: list[str] = []
         for attachment in attachments:
