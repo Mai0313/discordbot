@@ -310,8 +310,16 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        # Ignore messages from bots and skip if not mentioned
-        if message.author.bot or self.bot.user not in message.mentions:
+        # Ignore messages from bots.
+        if message.author.bot:
+            return
+
+        # Only respond when the bot is explicitly mentioned in the message text.
+        # A Discord reply-notification puts the bot in message.mentions without
+        # writing <@ID> into the content, so we check content to avoid
+        # triggering on messages that merely reply to a functional bot post
+        # (e.g. a Threads embed or a video download result).
+        if not self.bot.user or f"<@{self.bot.user.id}>" not in message.content:
             return
 
         # Build the message chain (includes current message and any references)
