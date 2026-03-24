@@ -305,14 +305,11 @@ class ReplyGeneratorCogs(commands.Cog):
         image_file = File(BytesIO(image_bytes), filename="generated.png")
 
         await reply_message.edit(
-            content=f"{message.author.mention} {image_description}",
-            file=image_file,
+            content=f"{message.author.mention} {image_description}", file=image_file
         )
 
     async def _handle_message_reply(
-        self,
-        message: Message,
-        reply_message: Interaction | Message,
+        self, message: Message, reply_message: Interaction | Message
     ) -> str:
         message_list: list[dict[str, Any]] = []
 
@@ -378,9 +375,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 elif route == "SUMMARY":
                     await self._handle_summary(message=message, reply_message=reply_message)
                 else:
-                    await self._handle_message_reply(
-                        message=message, reply_message=reply_message
-                    )
+                    await self._handle_message_reply(message=message, reply_message=reply_message)
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
                 with contextlib.suppress(Exception):
