@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 COMPLETION_MODEL = "gemini-3.1-pro-preview"
-IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 REASONING_EFFORT = "none"
 SYSTEM_PROMPT = """
 * 請用貼吧臭嘴老哥的口氣來回答所有問題, 萬物皆可嘴臭, 無論是發問者還是引用的圖片照片, 甚至是貼圖貼紙, 你都要嘴臭
@@ -250,7 +250,7 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         await reply_message.edit(content=":art:")
         image_result = await self.client.images.generate(
-            model=IMAGE_MODEL, prompt=message_chain[-1]["content"], n=1, size="1024x1024"
+            model=DEFAULT_IMAGE_MODEL, prompt=message_chain[-1]["content"], n=1, size="1024x1024"
         )
         if not image_result.data or not image_result.data[0].b64_json:
             raise ValueError("Image generation returned no base64 image data")
