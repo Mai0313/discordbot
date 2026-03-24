@@ -22,6 +22,7 @@ from discordbot.typings.llm import LLMConfig
 DEFAULT_FAST_MODEL = "gemini-3-flash-preview"  # "gemini-3.1-flash-lite-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 REASONING_EFFORT = "none"
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
@@ -296,6 +297,8 @@ class ReplyGeneratorCogs(commands.Cog):
         image_result = await self.client.images.generate(
             model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
         )
+        if not image_result.data:
+            raise ValueError("Image generation returned no results")
         image_base64 = image_result.data[0].b64_json
         image_description = await self._describe_generated_image(image_base64=image_base64)
         image_bytes = base64.b64decode(image_base64)
@@ -327,6 +330,8 @@ class ReplyGeneratorCogs(commands.Cog):
         edit_result = await self.client.images.edit(
             image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
         )
+        if not edit_result.data:
+            raise ValueError("Image edit returned no results")
         image_base64 = edit_result.data[0].b64_json
         image_description = await self._describe_generated_image(image_base64=image_base64)
         edited_bytes = base64.b64decode(image_base64)
