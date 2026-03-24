@@ -14,7 +14,7 @@ SYSTEM_PROMPT = """
 * Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
 """
 message_chain: list[ChatCompletionMessageParam] = [
-    {"role": "assistant", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+    {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
     {"role": "user", "content": [{"type": "text", "text": "請自我介紹"}]},
 ]
 
