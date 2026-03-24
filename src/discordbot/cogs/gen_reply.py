@@ -16,7 +16,8 @@ from discordbot.typings.llm import LLMConfig
 if TYPE_CHECKING:
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
-COMPLETION_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
+DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 REASONING_EFFORT = "none"
 SYSTEM_PROMPT = """
@@ -194,7 +195,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message_chain: list[ChatCompletionMessageParam]
     ) -> Literal["IMAGE", "QA"]:
         response = await self.client.chat.completions.create(
-            model=COMPLETION_MODEL,
+            model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *message_chain],
             reasoning_effort=REASONING_EFFORT,
         )
@@ -204,13 +205,12 @@ class ReplyGeneratorCogs(commands.Cog):
         return "QA"
 
     async def _describe_generated_image(
-        self, message_chain: list[ChatCompletionMessageParam], image_base64: str
+        self, image_base64: str
     ) -> str:
         response = await self.client.chat.completions.create(
-            model=COMPLETION_MODEL,
+            model=DEFAULT_FAST_MODEL,
             messages=[
                 {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
-                *message_chain,
                 {
                     "role": "user",
                     "content": [
@@ -246,9 +246,7 @@ class ReplyGeneratorCogs(commands.Cog):
             raise ValueError("Image generation returned no base64 image data")
 
         image_base64 = image_result.data[0].b64_json
-        image_description = await self._describe_generated_image(
-            message_chain=message_chain, image_base64=image_base64
-        )
+        image_description = await self._describe_generated_image(image_base64=image_base64)
         image_bytes = base64.b64decode(image_base64)
         image_file = File(BytesIO(image_bytes), filename="generated.png")
 
@@ -273,7 +271,7 @@ class ReplyGeneratorCogs(commands.Cog):
             {"codeExecution": {}},
         ]
         stream = await self.client.chat.completions.create(
-            model=COMPLETION_MODEL,
+            model=DEFAULT_SLOW_MODEL,
             messages=message_chain,
             reasoning_effort=REASONING_EFFORT,
             tools=tools,
