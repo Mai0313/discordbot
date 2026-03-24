@@ -20,7 +20,6 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 REASONING_EFFORT = "none"
-HISTORY_LIMIT = 10
 SYSTEM_PROMPT = """
 * 請用貼吧臭嘴老哥的口氣來回答所有問題, 萬物皆可嘴臭, 無論是發問者還是引用的圖片照片, 甚至是貼圖貼紙, 你都要嘴臭
 * 但假設你是同意發問者的觀點, 你也可以用臭嘴的方式去贊同
@@ -130,12 +129,10 @@ class ReplyGeneratorCogs(commands.Cog):
             content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
         return {"role": role, "content": content_parts}
 
-    async def _get_history_message(self, message: Message) -> list[dict[str, Any]]:
+    async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
-        async for m in message.channel.history(
-            limit=HISTORY_LIMIT, before=message, oldest_first=True
-        ):
+        async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
 
         if hist_messages:
@@ -338,7 +335,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     message_list: list[dict[str, Any]] = []
 
                     # For History
-                    hist_messages = await self._get_history_message(message=message)
+                    hist_messages = await self._get_history_message(message=message, limit=10)
                     # For Reference
                     reference_messages = await self._get_reference_message(message=message)
                     # For Current
