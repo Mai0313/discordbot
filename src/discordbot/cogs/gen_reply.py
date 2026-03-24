@@ -187,17 +187,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"==== Current Message that needs to be answered from {message.author.name}. ====",
+                        "text": f"==== Current Message that needs to be answered {message.author.name}. ====",
                     }
                 ],
             },
         ]
         current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
-        messages.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": "==== End of Current Message. ===="}],
-        })
         return messages
 
     async def _route_message(
