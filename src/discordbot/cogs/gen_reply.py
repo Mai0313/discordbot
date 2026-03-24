@@ -181,7 +181,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
-            {"role": "assistant", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
             {
                 "role": "assistant",
                 "content": [
