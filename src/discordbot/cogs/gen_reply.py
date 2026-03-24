@@ -1,4 +1,5 @@
 from io import BytesIO
+import time
 import base64
 from typing import Any, Literal
 import asyncio
@@ -24,6 +25,7 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"  # "gemini-3.1-flash-lite-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+VIDEO_COOLDOWN = 60  # minutes
 REASONING_EFFORT = "none"
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
@@ -83,6 +85,7 @@ class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = LLMConfig()
+        self._video_cooldowns: dict[int, float] = {}
 
     @property
     def client(self) -> AsyncOpenAI:
@@ -299,16 +302,30 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_video_generation(
         self, message: Message, reply_message: Message, user_prompt: str
     ) -> None:
+        user_id = message.author.id
+        if message.author.name != "mai9999":
+            last_used = self._video_cooldowns.get(user_id, 0)
+            cooldown_seconds = VIDEO_COOLDOWN * 60
+            if time.time() - last_used < cooldown_seconds:
+                remaining = int((cooldown_seconds - (time.time() - last_used)) / 60)
+                minutes = remaining // 60
+                await reply_message.edit(
+                    content=f"{message.author.mention} 影片生成每小時限用一次，還需等待 {minutes} 分鐘"
+                )
+                return
+
         client = self.client
         video = await client.videos.create(model=DEFAULT_VIDEO_MODEL, prompt=user_prompt)
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
+            await reply_message.edit(content=":hourglass:")
             video = await client.videos.retrieve(video.id)
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await client.videos.download_content(video.id)
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
         await reply_message.edit(content=f"{message.author.mention}", file=video_file)
+        self._video_cooldowns[user_id] = time.time()
 
     async def _handle_image_generation(
         self, message: Message, reply_message: Message, user_prompt: str
