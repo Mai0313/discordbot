@@ -261,13 +261,10 @@ class ReplyGeneratorCogs(commands.Cog):
         image_bytes = base64.b64decode(image_base64)
         image_file = File(BytesIO(image_bytes), filename="generated.png")
 
-        await message.reply(
+        await reply_message.edit(
             content=f"{message.author.mention} {image_description}",
             file=image_file,
-            mention_author=False,
         )
-        with contextlib.suppress(Exception):
-            await reply_message.delete()
 
     async def _handle_streaming(
         self,
