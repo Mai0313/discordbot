@@ -398,7 +398,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 current_message = await self._get_current_message(message=message)
                 await reply_message.edit(content=":twisted_rightwards_arrows:")
                 route = await self._route_message(current_message=current_message)
-                await reply_message.edit(content=":exclamation:")
                 if route == "IMAGE":
                     await reply_message.edit(content=":art:")
                     await self._handle_image_generation(
