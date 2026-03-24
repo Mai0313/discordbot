@@ -254,8 +254,6 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_effort=REASONING_EFFORT,
         )
         description = (response.choices[0].message.content or "").strip()
-        if not description:
-            raise ValueError("Generated image description returned empty content")
         return description
 
     async def _handle_streaming(
@@ -302,9 +300,6 @@ class ReplyGeneratorCogs(commands.Cog):
         image_result = await self.client.images.generate(
             model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
         )
-        if not image_result.data or not image_result.data[0].b64_json:
-            raise ValueError("Image generation returned no base64 image data")
-
         image_base64 = image_result.data[0].b64_json
         image_description = await self._describe_generated_image(image_base64=image_base64)
         image_bytes = base64.b64decode(image_base64)
@@ -336,9 +331,6 @@ class ReplyGeneratorCogs(commands.Cog):
         edit_result = await self.client.images.edit(
             image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
         )
-        if not edit_result.data or not edit_result.data[0].b64_json:
-            raise ValueError("Image edit returned no base64 image data")
-
         image_base64 = edit_result.data[0].b64_json
         image_description = await self._describe_generated_image(image_base64=image_base64)
         edited_bytes = base64.b64decode(image_base64)
