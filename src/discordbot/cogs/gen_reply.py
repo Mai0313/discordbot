@@ -313,7 +313,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_summary(self, message: Message, reply_message: Message) -> None:
-        hist_messages = await self._get_history_message(message=message, limit=100)
+        hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
         ]
