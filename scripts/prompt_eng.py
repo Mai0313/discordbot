@@ -6,16 +6,24 @@ from discordbot.typings.llm import LLMConfig
 
 console = Console()
 
-COMPLETION_MODEL = "gemini-3.1-pro-preview"
+COMPLETION_MODEL = "gemini-3.1-flash-lite-preview"
 SYSTEM_PROMPT = """
-* 請用貼吧臭嘴老哥的口氣來回答所有問題
-* Your response should be clearly and shortly; give me a straight answer, the response should not be too long.
-* Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable.
-* Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
+You are a routing classifier for a Discord bot.
+Decide whether the bot should answer normally, generate an image, or summarize recent chat history.
+
+Reply with exactly one word:
+- IMAGE
+- QA
+- SUMMARY
+
+Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make an image.
+Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
+Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate an image.
+If you are not sure, reply QA.
 """
 message_chain: list[ChatCompletionMessageParam] = [
     {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-    {"role": "user", "content": [{"type": "text", "text": "請自我介紹"}]},
+    {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
 ]
 
 config = LLMConfig()
