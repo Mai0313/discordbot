@@ -142,7 +142,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": "The following messages are the recent conversation history",
+                        "text": "==== Here is the Chat History for better understanding the context. ====",
                     }
                 ],
             })
@@ -150,6 +150,10 @@ class ReplyGeneratorCogs(commands.Cog):
             for hist_msg in hist_messages:
                 hist_message = await self._process_single_message(message=hist_msg)
                 messages.append(hist_message)
+            messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "==== End of Chat History. ===="}],
+            })
         # Maybe we can add a chat completion for this, summary the history.
         return messages
 
@@ -185,20 +189,6 @@ class ReplyGeneratorCogs(commands.Cog):
         current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
         return messages
-
-    async def _build_message_list(self, message: Message) -> list[ChatCompletionMessageParam]:
-        message_list: list[dict[str, Any]] = []
-
-        reference_messages = await self._get_reference_message(message=message)
-        message_list.extend(reference_messages)
-
-        # Temp disabled, LLM perform bad on long context.
-        # hist_messages = await self._get_history_message(message=message)
-        # message_list.extend(hist_messages)
-
-        current_messages = await self._get_current_message(message=message)
-        message_list.extend(current_messages)
-        return message_list
 
     async def _route_message(
         self, message_chain: list[ChatCompletionMessageParam]
@@ -312,6 +302,20 @@ class ReplyGeneratorCogs(commands.Cog):
                 await reply_message.edit(content=stored_content)
 
         return stored_content
+
+    async def _build_message_list(self, message: Message) -> list[ChatCompletionMessageParam]:
+        message_list: list[dict[str, Any]] = []
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
+
+        # Temp disabled, LLM perform bad on long context.
+        # hist_messages = await self._get_history_message(message=message)
+        # message_list.extend(hist_messages)
+
+        current_messages = await self._get_current_message(message=message)
+        message_list.extend(current_messages)
+        return message_list
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
