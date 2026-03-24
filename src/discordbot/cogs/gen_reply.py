@@ -204,9 +204,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return "IMAGE"
         return "QA"
 
-    async def _describe_generated_image(
-        self, image_base64: str
-    ) -> str:
+    async def _describe_generated_image(self, image_base64: str) -> str:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
@@ -233,14 +231,11 @@ class ReplyGeneratorCogs(commands.Cog):
         return description
 
     async def _handle_image_generation(
-        self,
-        message: Message,
-        reply_message: Message,
-        message_chain: list[ChatCompletionMessageParam],
+        self, message: Message, reply_message: Message, user_prompt: str
     ) -> None:
         await reply_message.edit(content=":art:")
         image_result = await self.client.images.generate(
-            model=DEFAULT_IMAGE_MODEL, prompt=message_chain[-1]["content"], n=1, size="1024x1024"
+            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="1024x1024"
         )
         if not image_result.data or not image_result.data[0].b64_json:
             raise ValueError("Image generation returned no base64 image data")
@@ -301,7 +296,9 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return stored_content
 
-    async def _build_message_list(self, message: Message) -> list[ChatCompletionMessageParam]:
+    async def _build_message_list(
+        self, message: Message, current_messages: list[ChatCompletionMessageParam]
+    ) -> list[ChatCompletionMessageParam]:
         message_list: list[dict[str, Any]] = []
 
         reference_messages = await self._get_reference_message(message=message)
@@ -311,7 +308,6 @@ class ReplyGeneratorCogs(commands.Cog):
         hist_messages = await self._get_history_message(message=message)
         message_list.extend(hist_messages)
 
-        current_messages = await self._get_current_message(message=message)
         message_list.extend(current_messages)
         return message_list
 
@@ -329,29 +325,31 @@ class ReplyGeneratorCogs(commands.Cog):
         if not self.bot.user or f"<@{self.bot.user.id}>" not in message.content:
             return
 
-        # Build the message chain (includes current message and any references)
-        message_chain = await self._build_message_list(message=message)
         user_prompt = await self._get_user_prompt(message=message)
+        has_attachment = bool(message.attachments or message.stickers)
 
-        # Check if the current message has any actual content
-        current_message_content = message_chain[-1]["content"]
-        has_image = any(part.get("type") == "image_url" for part in current_message_content)
-
-        if not user_prompt and not has_image:
+        if not user_prompt and not has_attachment:
             await message.reply("?")
             return
+
+        # Build current message only (for routing and image generation)
+        current_message = await self._get_current_message(message=message)
 
         # Start typing indicator
         async with message.channel.typing():
             # Send initial thinking message
             reply_message = await message.reply(":thinking:")
             try:
-                route = await self._route_message(message_chain=message_chain)
+                route = await self._route_message(message_chain=current_message)
                 if route == "IMAGE":
                     await self._handle_image_generation(
-                        message=message, reply_message=reply_message, message_chain=message_chain
+                        message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 else:
+                    # Only build full message chain (with references/history) for QA
+                    message_chain = await self._build_message_list(
+                        message=message, current_messages=current_message
+                    )
                     await self._handle_message_reply(
                         message=message, reply_message=reply_message, message_chain=message_chain
                     )
