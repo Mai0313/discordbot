@@ -269,7 +269,7 @@ class ReplyGeneratorCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await reply_message.delete()
 
-    async def _handle_message_reply(
+    async def _handle_streaming(
         self,
         message: Message,
         reply_message: Interaction | Message,
@@ -312,6 +312,25 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return stored_content
 
+    async def _handle_message_reply(
+        self,
+        message: Message,
+        reply_message: Interaction | Message,
+    ) -> str:
+        message_list: list[dict[str, Any]] = []
+
+        hist_messages = await self._get_history_message(message=message, limit=10)
+        reference_messages = await self._get_reference_message(message=message)
+        current_message = await self._get_current_message(message=message)
+
+        message_list.extend(hist_messages)
+        message_list.extend(reference_messages)
+        message_list.extend(current_message)
+
+        return await self._handle_streaming(
+            message=message, reply_message=reply_message, message_list=message_list
+        )
+
     async def _handle_summary(self, message: Message, reply_message: Message) -> None:
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
@@ -322,7 +341,7 @@ class ReplyGeneratorCogs(commands.Cog):
             "role": "user",
             "content": [{"type": "text", "text": "請總結以上的聊天記錄。"}],
         })
-        await self._handle_message_reply(
+        await self._handle_streaming(
             message=message, reply_message=reply_message, message_list=message_list
         )
 
@@ -362,20 +381,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 elif route == "SUMMARY":
                     await self._handle_summary(message=message, reply_message=reply_message)
                 else:
-                    message_list: list[dict[str, Any]] = []
-
-                    # For History
-                    hist_messages = await self._get_history_message(message=message, limit=10)
-                    # For Reference
-                    reference_messages = await self._get_reference_message(message=message)
-                    # For Current
-                    current_message = await self._get_current_message(message=message)
-
-                    message_list.extend(hist_messages)
-                    message_list.extend(reference_messages)
-                    message_list.extend(current_message)
                     await self._handle_message_reply(
-                        message=message, reply_message=reply_message, message_list=message_list
+                        message=message, reply_message=reply_message
                     )
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
