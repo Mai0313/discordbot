@@ -1,6 +1,6 @@
 from io import BytesIO
 import base64
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 import contextlib
 
 from rich import get_console
@@ -15,16 +15,19 @@ from autogen.agentchat.contrib.img_utils import (
     convert_base64_to_data_uri,
 )
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 from discordbot.typings.llm import LLMConfig
-
-if TYPE_CHECKING:
-    from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 DEFAULT_FAST_MODEL = "gemini-3-flash-preview"  # "gemini-3.1-flash-lite-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
-REASONING_EFFORT = "none"
+REASONING_EFFORT = "medium"
+TOOLS: list[ChatCompletionToolUnionParam] = [
+    {"googleSearch": {}},
+    {"urlContext": {}},
+    {"codeExecution": {}},
+]
 SYSTEM_PROMPT = """
 * 請用貼吧臭嘴老哥的口氣來回答所有問題, 萬物皆可嘴臭, 無論是發問者還是引用的圖片照片, 甚至是貼圖貼紙, 你都要嘴臭
 * 但假設你是同意發問者的觀點, 你也可以用臭嘴的方式去贊同
@@ -262,16 +265,11 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list: list[ChatCompletionMessageParam],
     ) -> str:
         # Get LLM response using the message chain
-        tools: list[ChatCompletionToolUnionParam] = [
-            {"googleSearch": {}},
-            {"urlContext": {}},
-            {"codeExecution": {}},
-        ]
         stream = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
             reasoning_effort=REASONING_EFFORT,
-            tools=tools,
+            tools=TOOLS,
             stream=True,
         )
         stored_content = f"{message.author.mention} "
