@@ -308,8 +308,8 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
 
         # Temp disabled, LLM perform bad on long context.
-        # hist_messages = await self._get_history_message(message=message)
-        # message_list.extend(hist_messages)
+        hist_messages = await self._get_history_message(message=message)
+        message_list.extend(hist_messages)
 
         current_messages = await self._get_current_message(message=message)
         message_list.extend(current_messages)
