@@ -311,14 +311,16 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_message_reply(
         self, message: Message, reply_message: Interaction | Message
     ) -> str:
+        await reply_message.edit(content=":question:")
         message_list: list[dict[str, Any]] = []
 
         hist_messages = await self._get_history_message(message=message, limit=10)
-        reference_messages = await self._get_reference_message(message=message)
-        current_message = await self._get_current_message(message=message)
-
         message_list.extend(hist_messages)
+
+        reference_messages = await self._get_reference_message(message=message)
         message_list.extend(reference_messages)
+
+        current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
         return await self._handle_streaming(
@@ -326,6 +328,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _handle_summary(self, message: Message, reply_message: Message) -> None:
+        await reply_message.edit(content=":book:")
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
