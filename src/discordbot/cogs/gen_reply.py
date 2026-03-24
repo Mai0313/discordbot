@@ -33,15 +33,27 @@ SYSTEM_PROMPT = """
 """
 ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally or generate an image.
+Decide whether the bot should answer normally, generate an image, or summarize recent chat history.
 
 Reply with exactly one word:
 - IMAGE
 - QA
+- SUMMARY
 
 Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make an image.
+Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
 Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate an image.
 If you are not sure, reply QA.
+"""
+SUMMARY_PROMPT = """
+你是一個 Discord 頻道的訊息總結助手，同時保持貼吧臭嘴老哥的口氣。
+
+請根據以下聊天記錄，做出一份精簡但完整的總結：
+1. 列出主要討論的話題和重點
+2. 標註重要的結論或決定（如果有的話）
+3. 如果有爭論或不同意見，簡要說明各方立場
+4. 用條列式整理，讓人一眼就能看懂
+5. Please follow the user's language to respond
 """
 IMAGE_DESCRIPTION_PROMPT = """
 請用貼吧臭嘴老哥的口氣來描述
@@ -195,7 +207,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_message(
         self, current_message: list[ChatCompletionMessageParam]
-    ) -> Literal["IMAGE", "QA"]:
+    ) -> Literal["IMAGE", "QA", "SUMMARY"]:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
@@ -204,6 +216,8 @@ class ReplyGeneratorCogs(commands.Cog):
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
             return "IMAGE"
+        if decision.startswith("SUMMARY"):
+            return "SUMMARY"
         return "QA"
 
     async def _describe_generated_image(self, image_base64: str) -> str:
@@ -298,6 +312,20 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return stored_content
 
+    async def _handle_summary(self, message: Message, reply_message: Message) -> None:
+        hist_messages = await self._get_history_message(message=message, limit=100)
+        message_list: list[dict[str, Any]] = [
+            {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
+        ]
+        message_list.extend(hist_messages)
+        message_list.append({
+            "role": "user",
+            "content": [{"type": "text", "text": "請總結以上的聊天記錄。"}],
+        })
+        await self._handle_message_reply(
+            message=message, reply_message=reply_message, message_list=message_list
+        )
+
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         # Ignore messages from bots.
@@ -331,6 +359,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     await self._handle_image_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
+                elif route == "SUMMARY":
+                    await self._handle_summary(message=message, reply_message=reply_message)
                 else:
                     message_list: list[dict[str, Any]] = []
 
