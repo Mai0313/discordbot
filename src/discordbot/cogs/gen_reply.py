@@ -379,7 +379,7 @@ class ReplyGeneratorCogs(commands.Cog):
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
                 with contextlib.suppress(Exception):
-                    await reply_message.edit(content=":x: failed to generate reply")
+                    await reply_message.edit(content=f":x: failed to generate reply\n{e}")
 
 
 async def setup(bot: commands.Bot) -> None:
