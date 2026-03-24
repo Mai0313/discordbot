@@ -143,7 +143,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": "==== Here is the Chat History for better understanding the context. ====",
+                        "text": "==== Chat History that might be helpful for answering. ====",
                     }
                 ],
             })
@@ -166,12 +166,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"The following message is the referenced message from {message.reference.resolved.author.name}",
+                        "text": f"==== Reference Message from {message.reference.resolved.author.name} that might be helpful for answering. ====",
                     }
                 ],
             })
             reference_msg = await self._process_single_message(message=message.reference.resolved)
             messages.append(reference_msg)
+            messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "==== End of Reference Message. ===="}],
+            })
         return messages
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
@@ -182,13 +186,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"The following message is the new message from {message.author.name}",
+                        "text": f"==== Current Message that needs to be answered from {message.author.name}. ====",
                     }
                 ],
             },
         ]
         current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
+        messages.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "==== End of Current Message. ===="}],
+        })
         return messages
 
     async def _route_message(
@@ -301,12 +309,11 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> list[ChatCompletionMessageParam]:
         message_list: list[dict[str, Any]] = []
 
-        reference_messages = await self._get_reference_message(message=message)
-        message_list.extend(reference_messages)
-
-        # Temp disabled, LLM perform bad on long context.
         hist_messages = await self._get_history_message(message=message)
         message_list.extend(hist_messages)
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
 
         message_list.extend(current_messages)
         return message_list
