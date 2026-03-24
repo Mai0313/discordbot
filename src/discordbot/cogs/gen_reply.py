@@ -246,26 +246,6 @@ class ReplyGeneratorCogs(commands.Cog):
             raise ValueError("Generated image description returned empty content")
         return description
 
-    async def _handle_image_generation(
-        self, message: Message, reply_message: Message, user_prompt: str
-    ) -> None:
-        await reply_message.edit(content=":art:")
-        image_result = await self.client.images.generate(
-            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="1024x1024"
-        )
-        if not image_result.data or not image_result.data[0].b64_json:
-            raise ValueError("Image generation returned no base64 image data")
-
-        image_base64 = image_result.data[0].b64_json
-        image_description = await self._describe_generated_image(image_base64=image_base64)
-        image_bytes = base64.b64decode(image_base64)
-        image_file = File(BytesIO(image_bytes), filename="generated.png")
-
-        await reply_message.edit(
-            content=f"{message.author.mention} {image_description}",
-            file=image_file,
-        )
-
     async def _handle_streaming(
         self,
         message: Message,
@@ -308,6 +288,26 @@ class ReplyGeneratorCogs(commands.Cog):
                 await reply_message.edit(content=stored_content)
 
         return stored_content
+
+    async def _handle_image_generation(
+        self, message: Message, reply_message: Message, user_prompt: str
+    ) -> None:
+        await reply_message.edit(content=":art:")
+        image_result = await self.client.images.generate(
+            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="1024x1024"
+        )
+        if not image_result.data or not image_result.data[0].b64_json:
+            raise ValueError("Image generation returned no base64 image data")
+
+        image_base64 = image_result.data[0].b64_json
+        image_description = await self._describe_generated_image(image_base64=image_base64)
+        image_bytes = base64.b64decode(image_base64)
+        image_file = File(BytesIO(image_bytes), filename="generated.png")
+
+        await reply_message.edit(
+            content=f"{message.author.mention} {image_description}",
+            file=image_file,
+        )
 
     async def _handle_message_reply(
         self,
