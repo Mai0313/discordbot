@@ -332,11 +332,12 @@ class ReplyGeneratorCogs(commands.Cog):
         if not self.bot.user or f"<@{self.bot.user.id}>" not in message.content:
             return
 
+        reply_message = await message.reply(":thinking:")
         user_prompt = await self._get_user_prompt(message=message)
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await message.reply("?")
+            await reply_message.edit(content="?")
             return
 
         # Build current message only (for routing and image generation)
@@ -345,7 +346,6 @@ class ReplyGeneratorCogs(commands.Cog):
         # Start typing indicator
         async with message.channel.typing():
             # Send initial thinking message
-            reply_message = await message.reply(":thinking:")
             try:
                 route = await self._route_message(message_chain=current_message)
                 if route == "IMAGE":
