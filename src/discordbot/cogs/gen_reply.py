@@ -6,7 +6,7 @@ import contextlib
 from rich import get_console
 from openai import AsyncOpenAI
 import logfire
-from nextcord import File, Message, Interaction
+from nextcord import File, Embed, Message, Interaction
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
@@ -106,6 +106,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     parts.append(embed.description)
                 for field in embed.fields:
                     parts.append(f"{field.name}: {field.value}")
+                if embed.footer and embed.footer.text:
+                    parts.append(f"Footer: {embed.footer.text}")
                 if parts:
                     embed_parts.append("\n".join(parts))
             content = "\n\n".join(embed_parts)
@@ -430,7 +432,11 @@ class ReplyGeneratorCogs(commands.Cog):
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
                 with contextlib.suppress(Exception):
-                    await reply_message.edit(content=f"{e}")
+                    error_embed = Embed(
+                        title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
+                    )
+                    error_embed.set_footer(text=type(e).__name__)
+                    await reply_message.edit(content=None, embed=error_embed)
 
 
 async def setup(bot: commands.Bot) -> None:
