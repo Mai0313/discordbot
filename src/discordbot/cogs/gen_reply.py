@@ -382,7 +382,7 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         message_list: list[dict[str, Any]] = []
 
-        hist_messages = await self._get_history_message(message=message, limit=10)
+        hist_messages = await self._get_history_message(message=message, limit=15)
         message_list.extend(hist_messages)
 
         reference_messages = await self._get_reference_message(message=message)
