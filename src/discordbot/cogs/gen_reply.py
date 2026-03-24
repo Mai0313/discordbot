@@ -239,28 +239,6 @@ class ReplyGeneratorCogs(commands.Cog):
             return "SUMMARY"
         return "QA"
 
-    async def _describe_generated_image(self, image_base64: str) -> str:
-        image_url = convert_base64_to_data_uri(image_base64)
-        response = await self.client.chat.completions.create(
-            model=DEFAULT_FAST_MODEL,
-            messages=[
-                {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Describe this generated image briefly for the Discord reply.",
-                        },
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
-                },
-            ],
-            reasoning_effort=REASONING_EFFORT,
-        )
-        description = (response.choices[0].message.content or "").strip()
-        return description
-
     async def _handle_streaming(
         self,
         message: Message,
@@ -326,6 +304,28 @@ class ReplyGeneratorCogs(commands.Cog):
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
         await reply_message.edit(content=f"{message.author.mention}", file=video_file)
         self._video_cooldowns[user_id] = time.time()
+
+    async def _describe_generated_image(self, image_base64: str) -> str:
+        image_url = convert_base64_to_data_uri(image_base64)
+        response = await self.client.chat.completions.create(
+            model=DEFAULT_FAST_MODEL,
+            messages=[
+                {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Describe this generated image briefly for the Discord reply.",
+                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                },
+            ],
+            reasoning_effort=REASONING_EFFORT,
+        )
+        description = (response.choices[0].message.content or "").strip()
+        return description
 
     async def _handle_image_generation(
         self, message: Message, reply_message: Message, user_prompt: str
