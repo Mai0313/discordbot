@@ -134,7 +134,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(
-            limit=HISTORY_LIMIT, before=message.reference, oldest_first=True
+            limit=HISTORY_LIMIT, before=message, oldest_first=True
         ):
             hist_messages.append(m)
 
