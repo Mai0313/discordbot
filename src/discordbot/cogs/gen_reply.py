@@ -1,6 +1,7 @@
 from io import BytesIO
 import base64
 from typing import Any, Literal
+import asyncio
 import contextlib
 
 from rich import get_console
@@ -38,16 +39,18 @@ SYSTEM_PROMPT = """
 """
 ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally, generate an image, edit an existing image, or summarize recent chat history.
+Decide whether the bot should answer normally, generate an image, edit an existing image, generate a video, or summarize recent chat history.
 
 Reply with exactly one word:
 - IMAGE
 - EDIT
+- VIDEO
 - QA
 - SUMMARY
 
 Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image from scratch.
 Choose EDIT when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch that image.
+Choose VIDEO when the user explicitly wants the bot to create, generate, or make a video or animation.
 Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
 Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
 If you are not sure, reply QA.
@@ -216,7 +219,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_message(
         self, current_message: list[ChatCompletionMessageParam]
-    ) -> Literal["IMAGE", "QA", "SUMMARY", "EDIT"]:
+    ) -> Literal["IMAGE", "QA", "SUMMARY", "EDIT", "VIDEO"]:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
@@ -227,6 +230,8 @@ class ReplyGeneratorCogs(commands.Cog):
             return "EDIT"
         if decision.startswith("IMAGE"):
             return "IMAGE"
+        if decision.startswith("VIDEO"):
+            return "VIDEO"
         if decision.startswith("SUMMARY"):
             return "SUMMARY"
         return "QA"
@@ -290,6 +295,20 @@ class ReplyGeneratorCogs(commands.Cog):
                 await reply_message.edit(content=stored_content)
 
         return stored_content
+
+    async def _handle_video_generation(
+        self, message: Message, reply_message: Message, user_prompt: str
+    ) -> None:
+        client = self.client
+        video = await client.videos.create(model=DEFAULT_VIDEO_MODEL, prompt=user_prompt)
+        while video.status not in ("completed", "failed"):
+            await asyncio.sleep(5)
+            video = await client.videos.retrieve(video.id)
+        if video.status != "completed":
+            raise RuntimeError(f"Video generation failed: {video.error}")
+        video_content = await client.videos.download_content(video.id)
+        video_file = File(BytesIO(video_content.content), filename="generated.mp4")
+        await reply_message.edit(content=f"{message.author.mention}", file=video_file)
 
     async def _handle_image_generation(
         self, message: Message, reply_message: Message, user_prompt: str
@@ -406,6 +425,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 if route == "IMAGE":
                     await reply_message.edit(content=":art:")
                     await self._handle_image_generation(
+                        message=message, reply_message=reply_message, user_prompt=user_prompt
+                    )
+                elif route == "VIDEO":
+                    await reply_message.edit(content=":movie_camera:")
+                    await self._handle_video_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 elif route == "EDIT":
