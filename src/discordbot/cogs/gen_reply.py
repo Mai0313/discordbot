@@ -20,6 +20,7 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 REASONING_EFFORT = "none"
+HISTORY_LIMIT = 10
 SYSTEM_PROMPT = """
 * 請用貼吧臭嘴老哥的口氣來回答所有問題, 萬物皆可嘴臭, 無論是發問者還是引用的圖片照片, 甚至是貼圖貼紙, 你都要嘴臭
 * 但假設你是同意發問者的觀點, 你也可以用臭嘴的方式去贊同
@@ -133,7 +134,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(
-            limit=10, before=message.reference, oldest_first=True
+            limit=HISTORY_LIMIT, before=message.reference, oldest_first=True
         ):
             hist_messages.append(m)
 
@@ -200,11 +201,11 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _route_message(
-        self, message_chain: list[ChatCompletionMessageParam]
+        self, current_message: list[ChatCompletionMessageParam]
     ) -> Literal["IMAGE", "QA"]:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
-            messages=[{"role": "system", "content": ROUTE_PROMPT}, *message_chain],
+            messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
             reasoning_effort=REASONING_EFFORT,
         )
         decision = (response.choices[0].message.content or "").strip().upper()
@@ -265,7 +266,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self,
         message: Message,
         reply_message: Interaction | Message,
-        message_chain: list[ChatCompletionMessageParam],
+        message_list: list[ChatCompletionMessageParam],
     ) -> str:
         # Get LLM response using the message chain
         tools: list[ChatCompletionToolUnionParam] = [
@@ -275,7 +276,7 @@ class ReplyGeneratorCogs(commands.Cog):
         ]
         stream = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
-            messages=message_chain,
+            messages=message_list,
             reasoning_effort=REASONING_EFFORT,
             tools=tools,
             stream=True,
@@ -304,20 +305,6 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return stored_content
 
-    async def _build_message_list(
-        self, message: Message, current_messages: list[ChatCompletionMessageParam]
-    ) -> list[ChatCompletionMessageParam]:
-        message_list: list[dict[str, Any]] = []
-
-        hist_messages = await self._get_history_message(message=message)
-        message_list.extend(hist_messages)
-
-        reference_messages = await self._get_reference_message(message=message)
-        message_list.extend(reference_messages)
-
-        message_list.extend(current_messages)
-        return message_list
-
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         # Ignore messages from bots.
@@ -340,25 +327,32 @@ class ReplyGeneratorCogs(commands.Cog):
             await reply_message.edit(content="?")
             return
 
-        # Build current message only (for routing and image generation)
-        current_message = await self._get_current_message(message=message)
-
         # Start typing indicator
         async with message.channel.typing():
             # Send initial thinking message
             try:
-                route = await self._route_message(message_chain=current_message)
+                # Build current message only (for routing and image generation)
+                current_message = await self._get_current_message(message=message)
+                route = await self._route_message(current_message=current_message)
                 if route == "IMAGE":
                     await self._handle_image_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 else:
-                    # Only build full message chain (with references/history) for QA
-                    message_chain = await self._build_message_list(
-                        message=message, current_messages=current_message
-                    )
+                    message_list: list[dict[str, Any]] = []
+
+                    # For History
+                    hist_messages = await self._get_history_message(message=message)
+                    # For Reference
+                    reference_messages = await self._get_reference_message(message=message)
+                    # For Current
+                    current_message = await self._get_current_message(message=message)
+
+                    message_list.extend(hist_messages)
+                    message_list.extend(reference_messages)
+                    message_list.extend(current_message)
                     await self._handle_message_reply(
-                        message=message, reply_message=reply_message, message_chain=message_chain
+                        message=message, reply_message=reply_message, message_list=message_list
                     )
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
