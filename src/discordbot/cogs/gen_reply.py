@@ -299,7 +299,6 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_image_generation(
         self, message: Message, reply_message: Message, user_prompt: str
     ) -> None:
-        await reply_message.edit(content=":art:")
         image_result = await self.client.images.generate(
             model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
         )
@@ -318,8 +317,6 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_image_edit(
         self, message: Message, reply_message: Message, user_prompt: str
     ) -> None:
-        await reply_message.edit(content=":paintbrush:")
-
         data_uris = await self._get_attachments(message=message)
         if message.reference and isinstance(message.reference.resolved, Message):
             data_uris.extend(await self._get_attachments(message=message.reference.resolved))
@@ -353,8 +350,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _handle_message_reply(
         self, message: Message, reply_message: Interaction | Message
-    ) -> str:
-        await reply_message.edit(content=":question:")
+    ) -> None:
         message_list: list[dict[str, Any]] = []
 
         hist_messages = await self._get_history_message(message=message, limit=10)
@@ -366,12 +362,11 @@ class ReplyGeneratorCogs(commands.Cog):
         current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
-        return await self._handle_streaming(
+        await self._handle_streaming(
             message=message, reply_message=reply_message, message_list=message_list
         )
 
     async def _handle_summary(self, message: Message, reply_message: Message) -> None:
-        await reply_message.edit(content=":book:")
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
@@ -413,18 +408,24 @@ class ReplyGeneratorCogs(commands.Cog):
             try:
                 # Build current message only (for routing and image generation)
                 current_message = await self._get_current_message(message=message)
+                await reply_message.edit(content=":twisted_rightwards_arrows:")
                 route = await self._route_message(current_message=current_message)
+                await reply_message.edit(content=":exclamation:")
                 if route == "IMAGE":
+                    await reply_message.edit(content=":art:")
                     await self._handle_image_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 elif route == "EDIT":
+                    await reply_message.edit(content=":paintbrush:")
                     await self._handle_image_edit(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 elif route == "SUMMARY":
+                    await reply_message.edit(content=":book:")
                     await self._handle_summary(message=message, reply_message=reply_message)
                 else:
+                    await reply_message.edit(content=":question:")
                     await self._handle_message_reply(message=message, reply_message=reply_message)
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
