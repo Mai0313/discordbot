@@ -8,7 +8,11 @@ from openai import AsyncOpenAI
 import logfire
 from nextcord import File, Message, Interaction
 from nextcord.ext import commands
-from autogen.agentchat.contrib.img_utils import get_pil_image, pil_to_data_uri
+from autogen.agentchat.contrib.img_utils import (
+    get_pil_image,
+    pil_to_data_uri,
+    convert_base64_to_data_uri,
+)
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 
 from discordbot.typings.llm import LLMConfig
@@ -221,6 +225,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return "QA"
 
     async def _describe_generated_image(self, image_base64: str) -> str:
+        image_url = convert_base64_to_data_uri(image_base64)
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
@@ -232,10 +237,7 @@ class ReplyGeneratorCogs(commands.Cog):
                             "type": "text",
                             "text": "Describe this generated image briefly for the Discord reply.",
                         },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{image_base64}"},
-                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 },
             ],
@@ -294,7 +296,7 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         await reply_message.edit(content=":art:")
         image_result = await self.client.images.generate(
-            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="1024x1024"
+            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
         )
         if not image_result.data or not image_result.data[0].b64_json:
             raise ValueError("Image generation returned no base64 image data")
