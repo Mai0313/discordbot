@@ -10,6 +10,7 @@ from nextcord import File, Message, Interaction
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
+    get_image_data,
     pil_to_data_uri,
     convert_base64_to_data_uri,
 )
@@ -37,16 +38,18 @@ SYSTEM_PROMPT = """
 """
 ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally, generate an image, or summarize recent chat history.
+Decide whether the bot should answer normally, generate an image, edit an existing image, or summarize recent chat history.
 
 Reply with exactly one word:
 - IMAGE
+- EDIT
 - QA
 - SUMMARY
 
-Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make an image.
+Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image from scratch.
+Choose EDIT when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch that image.
 Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
-Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate an image.
+Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
 If you are not sure, reply QA.
 """
 SUMMARY_PROMPT = """
@@ -211,13 +214,15 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_message(
         self, current_message: list[ChatCompletionMessageParam]
-    ) -> Literal["IMAGE", "QA", "SUMMARY"]:
+    ) -> Literal["IMAGE", "QA", "SUMMARY", "EDIT"]:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
             reasoning_effort=REASONING_EFFORT,
         )
         decision = (response.choices[0].message.content or "").strip().upper()
+        if decision.startswith("EDIT"):
+            return "EDIT"
         if decision.startswith("IMAGE"):
             return "IMAGE"
         if decision.startswith("SUMMARY"):
@@ -310,6 +315,42 @@ class ReplyGeneratorCogs(commands.Cog):
             content=f"{message.author.mention} {image_description}", file=image_file
         )
 
+    async def _handle_image_edit(
+        self, message: Message, reply_message: Message, user_prompt: str
+    ) -> None:
+        await reply_message.edit(content=":paintbrush:")
+
+        data_uris = await self._get_attachments(message=message)
+        if message.reference and isinstance(message.reference.resolved, Message):
+            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
+
+        if not data_uris:
+            await self._handle_image_generation(
+                message=message, reply_message=reply_message, user_prompt=user_prompt
+            )
+            return
+
+        image_bytes_list: list[bytes] = [
+            get_image_data(image_file=uri, use_b64=False) for uri in data_uris
+        ]
+        image_input: bytes | list[bytes] = (
+            image_bytes_list[0] if len(image_bytes_list) == 1 else image_bytes_list
+        )
+        edit_result = await self.client.images.edit(
+            image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
+        )
+        if not edit_result.data or not edit_result.data[0].b64_json:
+            raise ValueError("Image edit returned no base64 image data")
+
+        image_base64 = edit_result.data[0].b64_json
+        image_description = await self._describe_generated_image(image_base64=image_base64)
+        edited_bytes = base64.b64decode(image_base64)
+        image_file = File(BytesIO(edited_bytes), filename="edited.png")
+
+        await reply_message.edit(
+            content=f"{message.author.mention} {image_description}", file=image_file
+        )
+
     async def _handle_message_reply(
         self, message: Message, reply_message: Interaction | Message
     ) -> str:
@@ -377,6 +418,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     await self._handle_image_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
+                elif route == "EDIT":
+                    await self._handle_image_edit(
+                        message=message, reply_message=reply_message, user_prompt=user_prompt
+                    )
                 elif route == "SUMMARY":
                     await self._handle_summary(message=message, reply_message=reply_message)
                 else:
@@ -384,7 +429,7 @@ class ReplyGeneratorCogs(commands.Cog):
             except Exception as e:
                 logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
                 with contextlib.suppress(Exception):
-                    await reply_message.edit(content=f":x: failed to generate reply\n{e}")
+                    await reply_message.edit(content=f"{e}")
 
 
 async def setup(bot: commands.Bot) -> None:
