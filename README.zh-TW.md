@@ -61,15 +61,15 @@ _歡迎提供建議和貢獻!_
 
 ## 🎯 核心指令
 
-| 指令              | 功能說明              | 特色功能                                                                                            |
-| ----------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
-| `@標記`           | 標記機器人聊天        | AI 採用 Google Gemini 3.1 Pro Preview，**預設串流模式**（約每 15 個字更新）、圖像輸入、自動網路搜尋 |
-| `Threads 連結`    | 自動解析 Threads 貼文 | 自動顯示 threads.net 連結中的文字、圖片、統計數據並下載影片                                         |
-| `/download_video` | 多平台影片下載器      | 最佳/高/中/低品質；若超過 25MB 自動降為低畫質                                                       |
-| `/maple_monster`  | 搜尋楓之谷怪物掉落    | 詳細怪物資訊                                                                                        |
-| `/maple_item`     | 搜尋楓之谷物品來源    | 掉落來源追蹤                                                                                        |
-| `/maple_stats`    | 楓之谷資料庫統計      | 資料概覽和熱門物品                                                                                  |
-| `/ping`           | 機器人效能測試        | 延遲測量                                                                                            |
+| 指令              | 功能說明              | 特色功能                                                                                                                    |
+| ----------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `@標記`           | 標記機器人聊天        | AI 採用 Google Gemini 3.1 Pro Preview，具備智慧路由與總結功能，**預設串流模式**（約每 15 個字更新）、圖像輸入、自動網路搜尋 |
+| `Threads 連結`    | 自動解析 Threads 貼文 | 自動顯示 threads.net 連結中的文字、圖片、統計數據並下載影片                                                                 |
+| `/download_video` | 多平台影片下載器      | 最佳/高/中/低品質；若超過 25MB 自動降為低畫質                                                                               |
+| `/maple_monster`  | 搜尋楓之谷怪物掉落    | 詳細怪物資訊                                                                                                                |
+| `/maple_item`     | 搜尋楓之谷物品來源    | 掉落來源追蹤                                                                                                                |
+| `/maple_stats`    | 楓之谷資料庫統計      | 資料概覽和熱門物品                                                                                                          |
+| `/ping`           | 機器人效能測試        | 延遲測量                                                                                                                    |
 
 ## 🚀 快速開始
 
@@ -417,6 +417,18 @@ grep ERROR logs/bot.log
 ## 🔗 相關資源
 
 - [官方文檔](https://mai0313.github.io/discordbot/)
+- [Nextcord 文檔](https://docs.nextcord.dev/)
+- [OpenAI API 文檔](https://platform.openai.com/docs)
+- [Discord 開發者文檔](https://discord.com/developers/docs)
+
+---
+
+<center>
+
+**⭐ 如果這個專案對你有幫助，請給我們一個星星!**
+
+</center>
+discordbot/)
 - [Nextcord 文檔](https://docs.nextcord.dev/)
 - [OpenAI API 文檔](https://platform.openai.com/docs)
 - [Discord 開發者文檔](https://discord.com/developers/docs)
