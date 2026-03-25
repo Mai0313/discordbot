@@ -292,15 +292,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 return
 
-        client = self.client
-        video = await client.videos.create(model=DEFAULT_VIDEO_MODEL, prompt=user_prompt)
+        video = await self.client.videos.create(model=DEFAULT_VIDEO_MODEL, prompt=user_prompt)
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
             await reply_message.edit(content=":hourglass:")
-            video = await client.videos.retrieve(video.id)
+            video = await self.client.videos.retrieve(video.id)
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
-        video_content = await client.videos.download_content(video.id)
+        video_content = await self.client.videos.download_content(video.id)
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
         await reply_message.edit(content=f"{message.author.mention}", file=video_file)
         self._video_cooldowns[user_id] = time.time()
