@@ -24,7 +24,6 @@ load_dotenv()
 
 console = Console()
 
-COMPLETION_MODEL = "gemini-3-flash-preview"
 SYSTEM_PROMPT = """
 You are a routing classifier for a Discord bot.
 Decide whether the bot should answer normally, generate an image, edit an existing image, generate a video, or summarize recent chat history.
@@ -49,6 +48,7 @@ config = LLMConfig()
 
 def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    model = "gemini-3-flash-preview"
     tools: list[ChatCompletionToolUnionParam] = [
         {"googleSearch": {}},
         {"urlContext": {}},
@@ -56,7 +56,7 @@ def use_oai() -> None:
     ]
     start = time.time()
     responses = client.chat.completions.create(
-        model=COMPLETION_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
@@ -67,7 +67,7 @@ def use_oai() -> None:
         service_tier="auto",
     )
     end = time.time()
-    console.print(f"{COMPLETION_MODEL} takes {end - start:.2f} seconds")
+    console.print(f"{model} takes {end - start:.2f} seconds")
     console.print(responses.choices[0].message.content)
 
 
@@ -89,7 +89,7 @@ def use_gemini() -> None:
         model=model, contents=contents, config=generate_content_config
     )
     end = time.time()
-    console.print(f"{COMPLETION_MODEL} takes {end - start:.2f} seconds")
+    console.print(f"{model} takes {end - start:.2f} seconds")
     console.print(responses.text)
 
 
