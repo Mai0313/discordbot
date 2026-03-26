@@ -30,7 +30,8 @@ from ._gen_reply.prompts import (
 )
 
 DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
-DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
+# DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_SLOW_MODEL = "gemini-3-flash-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
@@ -262,7 +263,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 stored_content += chunk.choices[0].delta.content
                 counted_content += len(chunk.choices[0].delta.content)
 
-                if counted_content >= 15:
+                if counted_content >= 30:
                     if isinstance(reply_message, Interaction):
                         await reply_message.edit_original_message(content=stored_content)
                     else:
