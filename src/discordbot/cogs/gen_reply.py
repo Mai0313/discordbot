@@ -257,6 +257,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         stored_content = f"{message.author.mention} "
         counted_content = 0
+        new_reply: Message | None = None
 
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
@@ -264,19 +265,29 @@ class ReplyGeneratorCogs(commands.Cog):
                 counted_content += len(chunk.choices[0].delta.content)
 
                 if counted_content >= 30:
-                    if isinstance(reply_message, Interaction):
-                        await reply_message.edit_original_message(content=stored_content)
+                    if new_reply is None:
+                        # First content update: delete status message and send a new reply
+                        with contextlib.suppress(Exception):
+                            if isinstance(reply_message, Interaction):
+                                await reply_message.delete_original_message()
+                            else:
+                                await reply_message.delete()
+                        new_reply = await message.reply(content=stored_content)
                     else:
-                        await reply_message.edit(content=stored_content)
+                        await new_reply.edit(content=stored_content)
                     counted_content = 0
 
-        # Delete status message and send a new reply with the final content
-        with contextlib.suppress(Exception):
-            if isinstance(reply_message, Interaction):
-                await reply_message.delete_original_message()
-            else:
-                await reply_message.delete()
-        await message.reply(content=stored_content)
+        # Final update to ensure complete message is displayed
+        if new_reply is None:
+            with contextlib.suppress(Exception):
+                if isinstance(reply_message, Interaction):
+                    await reply_message.delete_original_message()
+                else:
+                    await reply_message.delete()
+            await message.reply(content=stored_content)
+        else:
+            with contextlib.suppress(Exception):
+                await new_reply.edit(content=stored_content)
 
         return stored_content
 
