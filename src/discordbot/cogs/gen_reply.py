@@ -22,7 +22,8 @@ from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToo
 
 from discordbot.typings.llm import LLMConfig
 
-DEFAULT_FAST_MODEL = "gemini-3-flash-preview"  # "gemini-3.1-flash-lite-preview"
+# DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
+DEFAULT_FAST_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
@@ -177,7 +178,7 @@ class ReplyGeneratorCogs(commands.Cog):
             content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
         return {"role": role, "content": content_parts}
 
-    async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
+    async def _get_history_message_ai(self, message: Message, limit: int) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -194,7 +195,10 @@ class ReplyGeneratorCogs(commands.Cog):
             summary_messages: list[dict[str, Any]] = [
                 {"role": "system", "content": HISTORY_PROMPT},
                 *raw_history,
-                {"role": "user", "content": "Please summarize the above chat history into a clean conversation log."},
+                {
+                    "role": "user",
+                    "content": "Please summarize the above chat history into a clean conversation log.",
+                },
             ]
             response = await self.client.chat.completions.create(
                 model=DEFAULT_FAST_MODEL,
@@ -212,6 +216,32 @@ class ReplyGeneratorCogs(commands.Cog):
                         "text": f"==== Chat History Summary ====\n{summary}\n==== End of Chat History ====",
                     }
                 ],
+            })
+        return messages
+
+    async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        hist_messages: list[Message] = []
+        async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
+            hist_messages.append(m)
+
+        if hist_messages:
+            messages.append({
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "==== Chat History that might be helpful for answering. ====",
+                    }
+                ],
+            })
+
+            for hist_msg in hist_messages:
+                hist_message = await self._process_single_message(message=hist_msg)
+                messages.append(hist_message)
+            messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "==== End of Chat History. ===="}],
             })
         return messages
 
