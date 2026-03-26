@@ -270,12 +270,13 @@ class ReplyGeneratorCogs(commands.Cog):
                         await reply_message.edit(content=stored_content)
                     counted_content = 0
 
-        # Final update to ensure complete message is displayed
+        # Delete status message and send a new reply with the final content
         with contextlib.suppress(Exception):
             if isinstance(reply_message, Interaction):
-                await reply_message.edit_original_message(content=stored_content)
+                await reply_message.delete_original_message()
             else:
-                await reply_message.edit(content=stored_content)
+                await reply_message.delete()
+        await message.reply(content=stored_content)
 
         return stored_content
 
@@ -289,7 +290,9 @@ class ReplyGeneratorCogs(commands.Cog):
             if time.time() - last_used < cooldown_seconds:
                 remaining = int((cooldown_seconds - (time.time() - last_used)) / 60)
                 minutes = remaining // 60
-                await reply_message.edit(
+                with contextlib.suppress(Exception):
+                    await reply_message.delete()
+                await message.reply(
                     content=f"{message.author.mention} 影片生成每小時限用一次，還需等待 {minutes} 分鐘"
                 )
                 return
@@ -303,7 +306,9 @@ class ReplyGeneratorCogs(commands.Cog):
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(video.id)
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
-        await reply_message.edit(content=f"{message.author.mention}", file=video_file)
+        with contextlib.suppress(Exception):
+            await reply_message.delete()
+        await message.reply(content=f"{message.author.mention}", file=video_file)
         self._video_cooldowns[user_id] = time.time()
 
     async def _describe_generated_image(self, image_base64: str) -> str:
@@ -341,7 +346,9 @@ class ReplyGeneratorCogs(commands.Cog):
         image_bytes = base64.b64decode(image_base64)
         image_file = File(BytesIO(image_bytes), filename="generated.png")
 
-        await reply_message.edit(
+        with contextlib.suppress(Exception):
+            await reply_message.delete()
+        await message.reply(
             content=f"{message.author.mention} {image_description}", file=image_file
         )
 
@@ -374,7 +381,9 @@ class ReplyGeneratorCogs(commands.Cog):
         edited_bytes = base64.b64decode(image_base64)
         image_file = File(BytesIO(edited_bytes), filename="edited.png")
 
-        await reply_message.edit(
+        with contextlib.suppress(Exception):
+            await reply_message.delete()
+        await message.reply(
             content=f"{message.author.mention} {image_description}", file=image_file
         )
 
@@ -429,7 +438,9 @@ class ReplyGeneratorCogs(commands.Cog):
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await reply_message.edit(content="?")
+            with contextlib.suppress(Exception):
+                await reply_message.delete()
+            await message.reply(content="?")
             return
 
         # Start typing indicator
@@ -468,7 +479,8 @@ class ReplyGeneratorCogs(commands.Cog):
                         title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
                     )
                     error_embed.set_footer(text=type(e).__name__)
-                    await reply_message.edit(content=None, embed=error_embed)
+                    await reply_message.delete()
+                    await message.reply(content=None, embed=error_embed)
 
 
 async def setup(bot: commands.Bot) -> None:
