@@ -14,7 +14,6 @@ from google.genai.types import (
     ThinkingConfig,
     GenerateContentConfig,
 )
-from openai.types.shared.reasoning_effort import ReasoningEffort
 
 from discordbot.typings.llm import LLMConfig
 
@@ -44,7 +43,6 @@ Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or giv
 Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
 If you are not sure, reply QA.
 """
-REASONING_EFFORT: ReasoningEffort = "none"
 
 config = LLMConfig()
 
