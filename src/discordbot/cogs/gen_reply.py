@@ -27,7 +27,7 @@ DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
-REASONING_EFFORT: ReasoningEffort = "medium"
+REASONING_EFFORT: ReasoningEffort = "none"
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
