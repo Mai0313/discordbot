@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI
-from litellm import completion
 from rich.console import Console
 from google.genai.types import (
     Part,
@@ -94,29 +93,6 @@ def use_gemini() -> None:
     console.print(responses.text)
 
 
-def use_litellm() -> None:
-    tools: list[ChatCompletionToolUnionParam] = [
-        {"googleSearch": {}},
-        {"urlContext": {}},
-        {"codeExecution": {}},
-    ]
-    start = time.time()
-    responses = completion(
-        # base_url="https://generativelanguage.googleapis.com/v1beta",
-        api_key=os.getenv("GEMINI_API_KEY"),
-        model="gemini/gemini-3-flash-preview",
-        messages=[
-            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-            {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
-        ],
-        tools=tools,
-    )
-    end = time.time()
-    console.print(f"{COMPLETION_MODEL} takes {end - start:.2f} seconds")
-    console.print(responses.choices[0].message.content)
-
-
 if __name__ == "__main__":
     use_oai()
     use_gemini()
-    use_litellm()
