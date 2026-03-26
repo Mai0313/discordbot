@@ -1,10 +1,27 @@
+import os
 import time
+from typing import TYPE_CHECKING
 
+from dotenv import load_dotenv
+from google import genai
 from openai import OpenAI
 from rich.console import Console
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+from google.genai.types import (
+    Part,
+    Tool,
+    Content,
+    GoogleSearch,
+    ThinkingConfig,
+    GenerateContentConfig,
+)
+from openai.types.shared.reasoning_effort import ReasoningEffort
 
 from discordbot.typings.llm import LLMConfig
+
+if TYPE_CHECKING:
+    from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
+
+load_dotenv()
 
 console = Console()
 
@@ -27,22 +44,28 @@ Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or giv
 Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
 If you are not sure, reply QA.
 """
-message_chain: list[ChatCompletionMessageParam] = [
-    {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-    {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
-]
+REASONING_EFFORT: ReasoningEffort = "none"
 
 config = LLMConfig()
 
 
-def main() -> None:
+def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    tools: list[ChatCompletionToolUnionParam] = [
+        {"googleSearch": {}},
+        {"urlContext": {}},
+        {"codeExecution": {}},
+    ]
     start = time.time()
     responses = client.chat.completions.create(
         model=COMPLETION_MODEL,
-        messages=message_chain,
+        messages=[
+            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+            {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
+        ],
         reasoning_effort="none",
         stream=False,
+        tools=tools,
         service_tier="auto",
     )
     end = time.time()
@@ -50,5 +73,28 @@ def main() -> None:
     console.print(responses.choices[0].message.content)
 
 
+def use_gemini() -> None:
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+    model = "gemini-3-flash-preview"
+    contents = [
+        Content(role="user", parts=[Part.from_text(text=SYSTEM_PROMPT)]),
+        Content(role="user", parts=[Part.from_text(text="幫我畫一隻狗")]),
+    ]
+    tools = [Tool(googleSearch=GoogleSearch())]
+    generate_content_config = GenerateContentConfig(
+        thinking_config=ThinkingConfig(thinking_level="MINIMAL"), tools=tools
+    )
+
+    start = time.time()
+    responses = client.models.generate_content(
+        model=model, contents=contents, config=generate_content_config
+    )
+    end = time.time()
+    console.print(f"{COMPLETION_MODEL} takes {end - start:.2f} seconds")
+    console.print(responses.text)
+
+
 if __name__ == "__main__":
-    main()
+    use_oai()
+    use_gemini()
