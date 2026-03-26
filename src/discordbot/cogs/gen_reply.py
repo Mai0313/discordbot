@@ -16,6 +16,7 @@ from autogen.agentchat.contrib.img_utils import (
     pil_to_data_uri,
     convert_base64_to_data_uri,
 )
+from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
@@ -26,7 +27,7 @@ DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
-REASONING_EFFORT = "none"
+REASONING_EFFORT: ReasoningEffort = "medium"
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},

@@ -231,10 +231,10 @@ class ThreadsOutput(BaseModel):
         for path in self.video_paths:
             path.unlink(missing_ok=True)
 
-    def __enter__(self):
+    def __enter__(self):  # noqa: D105
         return self
 
-    def __exit__(
+    def __exit__(  # noqa: D105
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
