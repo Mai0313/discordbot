@@ -22,8 +22,8 @@ from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToo
 
 from discordbot.typings.llm import LLMConfig
 
-# DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
-DEFAULT_FAST_MODEL = "gemini-3.1-flash-lite-preview"
+DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
+# DEFAULT_FAST_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
