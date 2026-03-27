@@ -329,9 +329,10 @@ class ReplyGeneratorCogs(commands.Cog):
             data_uris.extend(await self._get_attachments(message=message.reference.resolved))
 
         if data_uris:
-            image_bytes_list: list[bytes] = [
-                get_image_data(image_file=uri, use_b64=False) for uri in data_uris
-            ]
+            image_bytes_list: list[bytes] = []
+            for uri in data_uris:
+                image_data = get_image_data(image_file=uri, use_b64=False)
+                image_bytes_list.append(image_data)
             result = await self.client.images.edit(
                 image=image_bytes_list,
                 prompt=user_prompt,
