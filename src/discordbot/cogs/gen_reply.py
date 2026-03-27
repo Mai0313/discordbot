@@ -338,12 +338,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 prompt=user_prompt,
                 model=DEFAULT_IMAGE_MODEL,
                 n=1,
+                response_format="b64_json",
                 quality="auto",
                 size="auto",
             )
         else:
             result = await self.client.images.generate(
-                prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, quality="auto", size="auto"
+                prompt=user_prompt,
+                model=DEFAULT_IMAGE_MODEL,
+                n=1,
+                response_format="b64_json",
+                quality="auto",
+                size="auto",
             )
 
         if not result.data:
