@@ -224,15 +224,13 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_message(
         self, current_message: list[ChatCompletionMessageParam]
-    ) -> Literal["IMAGE", "QA", "SUMMARY", "EDIT", "VIDEO"]:
+    ) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
             reasoning_effort=REASONING_EFFORT,
         )
         decision = (response.choices[0].message.content or "").strip().upper()
-        if decision.startswith("EDIT"):
-            return "EDIT"
         if decision.startswith("IMAGE"):
             return "IMAGE"
         if decision.startswith("VIDEO"):
@@ -323,9 +321,33 @@ class ReplyGeneratorCogs(commands.Cog):
         await message.reply(content=f"{message.author.mention}", file=video_file)
         self._video_cooldowns[user_id] = time.time()
 
-    async def _describe_generated_image(self, image_base64: str) -> str:
+    async def _handle_image_reply(
+        self, message: Message, reply_message: Message, user_prompt: str
+    ) -> None:
+        data_uris = await self._get_attachments(message=message)
+        if message.reference and isinstance(message.reference.resolved, Message):
+            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
+
+        if data_uris:
+            image_bytes_list: list[bytes] = [
+                get_image_data(image_file=uri, use_b64=False) for uri in data_uris
+            ]
+            image_input: bytes | list[bytes] = (
+                image_bytes_list[0] if len(image_bytes_list) == 1 else image_bytes_list
+            )
+            result = await self.client.images.edit(
+                image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
+            )
+        else:
+            result = await self.client.images.generate(
+                model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
+            )
+
+        if not result.data:
+            raise ValueError("Image operation returned no results")
+        image_base64 = result.data[0].b64_json
         image_url = convert_base64_to_data_uri(image_base64)
-        response = await self.client.chat.completions.create(
+        image_responses = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
                 {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
@@ -342,56 +364,9 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
             reasoning_effort=REASONING_EFFORT,
         )
-        description = (response.choices[0].message.content or "").strip()
-        return description
-
-    async def _handle_image_generation(
-        self, message: Message, reply_message: Message, user_prompt: str
-    ) -> None:
-        image_result = await self.client.images.generate(
-            model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
-        )
-        if not image_result.data:
-            raise ValueError("Image generation returned no results")
-        image_base64 = image_result.data[0].b64_json
-        image_description = await self._describe_generated_image(image_base64=image_base64)
+        image_description = (image_responses.choices[0].message.content or "").strip()
         image_bytes = base64.b64decode(image_base64)
         image_file = File(BytesIO(image_bytes), filename="generated.png")
-
-        with contextlib.suppress(Exception):
-            await reply_message.delete()
-        await message.reply(
-            content=f"{message.author.mention} {image_description}", file=image_file
-        )
-
-    async def _handle_image_edit(
-        self, message: Message, reply_message: Message, user_prompt: str
-    ) -> None:
-        data_uris = await self._get_attachments(message=message)
-        if message.reference and isinstance(message.reference.resolved, Message):
-            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
-
-        if not data_uris:
-            await self._handle_image_generation(
-                message=message, reply_message=reply_message, user_prompt=user_prompt
-            )
-            return
-
-        image_bytes_list: list[bytes] = [
-            get_image_data(image_file=uri, use_b64=False) for uri in data_uris
-        ]
-        image_input: bytes | list[bytes] = (
-            image_bytes_list[0] if len(image_bytes_list) == 1 else image_bytes_list
-        )
-        edit_result = await self.client.images.edit(
-            image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
-        )
-        if not edit_result.data:
-            raise ValueError("Image edit returned no results")
-        image_base64 = edit_result.data[0].b64_json
-        image_description = await self._describe_generated_image(image_base64=image_base64)
-        edited_bytes = base64.b64decode(image_base64)
-        image_file = File(BytesIO(edited_bytes), filename="edited.png")
 
         with contextlib.suppress(Exception):
             await reply_message.delete()
@@ -420,7 +395,7 @@ class ReplyGeneratorCogs(commands.Cog):
             message_list=message_list,
         )
 
-    async def _handle_summary(self, message: Message, reply_message: Message) -> None:
+    async def _handle_summary_reply(self, message: Message, reply_message: Message) -> None:
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
@@ -471,7 +446,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 route = await self._route_message(current_message=current_message)
                 if route == "IMAGE":
                     await reply_message.edit(content=":art:")
-                    await self._handle_image_generation(
+                    await self._handle_image_reply(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
                 elif route == "VIDEO":
@@ -479,14 +454,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     await self._handle_video_generation(
                         message=message, reply_message=reply_message, user_prompt=user_prompt
                     )
-                elif route == "EDIT":
-                    await reply_message.edit(content=":paintbrush:")
-                    await self._handle_image_edit(
-                        message=message, reply_message=reply_message, user_prompt=user_prompt
-                    )
                 elif route == "SUMMARY":
                     await reply_message.edit(content=":book:")
-                    await self._handle_summary(message=message, reply_message=reply_message)
+                    await self._handle_summary_reply(message=message, reply_message=reply_message)
                 else:
                     await reply_message.edit(content=":question:")
                     await self._handle_message_reply(message=message, reply_message=reply_message)

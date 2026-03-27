@@ -7,17 +7,15 @@ SYSTEM_PROMPT = """
 """
 ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally, generate an image, edit an existing image, generate a video, or summarize recent chat history.
+Decide whether the bot should answer normally, generate or edit an image, generate a video, or summarize recent chat history.
 
 Reply with exactly one word:
 - IMAGE
-- EDIT
 - VIDEO
 - QA
 - SUMMARY
 
-Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image from scratch.
-Choose EDIT when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch that image.
+Choose IMAGE when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, or when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
 Choose VIDEO when the user explicitly wants the bot to create, generate, or make a video or animation.
 Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
 Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
