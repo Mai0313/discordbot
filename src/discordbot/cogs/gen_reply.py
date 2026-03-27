@@ -354,8 +354,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         if not result.data:
             raise ValueError("Image operation returned no results")
-        image_base64 = result.data[0].b64_json
-        image_url = convert_base64_to_data_uri(image_base64)
+        image_url = convert_base64_to_data_uri(result.data[0].b64_json)
         image_responses = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
@@ -374,7 +373,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_effort=REASONING_EFFORT,
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
-        image_bytes = BytesIO(base64.b64decode(image_base64))
+        image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
         image_file = File(image_bytes, filename="generated.png")
 
         with contextlib.suppress(Exception):
