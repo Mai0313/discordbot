@@ -243,13 +243,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _handle_streaming(
         self,
+        model: str,
         message: Message,
         reply_message: Interaction | Message,
         message_list: list[ChatCompletionMessageParam],
     ) -> str:
         # Get LLM response using the message chain
         stream = await self.client.chat.completions.create(
-            model=DEFAULT_SLOW_MODEL,
+            model=model,
             messages=message_list,
             reasoning_effort=REASONING_EFFORT,
             tools=TOOLS,
@@ -413,7 +414,10 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_message)
 
         await self._handle_streaming(
-            message=message, reply_message=reply_message, message_list=message_list
+            model=DEFAULT_SLOW_MODEL,
+            message=message,
+            reply_message=reply_message,
+            message_list=message_list,
         )
 
     async def _handle_summary(self, message: Message, reply_message: Message) -> None:
@@ -427,7 +431,10 @@ class ReplyGeneratorCogs(commands.Cog):
             "content": [{"type": "text", "text": "請總結以上的聊天記錄。"}],
         })
         await self._handle_streaming(
-            message=message, reply_message=reply_message, message_list=message_list
+            model=DEFAULT_SLOW_MODEL,
+            message=message,
+            reply_message=reply_message,
+            message_list=message_list,
         )
 
     @commands.Cog.listener()
