@@ -48,7 +48,7 @@ config = LLMConfig()
 
 def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = "gemini-3-flash-preview"
+    model = "gemini-flash-latest"
     tools: list[ChatCompletionToolUnionParam] = [
         {"googleSearch": {}},
         {"urlContext": {}},
@@ -74,7 +74,7 @@ def use_oai() -> None:
 def use_gemini() -> None:
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    model = "gemini-3-flash-preview"
+    model = "gemini-flash-latest"
     contents = [
         Content(role="user", parts=[Part.from_text(text=SYSTEM_PROMPT)]),
         Content(role="user", parts=[Part.from_text(text="幫我畫一隻狗")]),

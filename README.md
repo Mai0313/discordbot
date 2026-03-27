@@ -190,7 +190,7 @@ data/
 ### Multi-Modal AI Support
 
 - **Real-time Streaming**: Text responses stream in real-time, updating every 15 characters for immediate feedback
-- **Intelligent Routing**: Employs a fast model (`gemini-3-flash-preview`) to classify requests into QA, IMAGE, or SUMMARY, directing them to the most suitable pipeline
+- **Intelligent Routing**: Employs a fast model (`gemini-flash-latest`) to classify requests into QA, IMAGE, or SUMMARY, directing them to the most suitable pipeline
 - **Enhanced Context Awareness**: Dynamically includes chat history, reference messages, and parses rich embeds to feed comprehensive context to the AI model
 - Text and image input processing with automatic image-to-base64 conversion
 - Model-specific constraint handling
