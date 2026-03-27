@@ -332,15 +332,17 @@ class ReplyGeneratorCogs(commands.Cog):
             image_bytes_list: list[bytes] = [
                 get_image_data(image_file=uri, use_b64=False) for uri in data_uris
             ]
-            image_input: bytes | list[bytes] = (
-                image_bytes_list[0] if len(image_bytes_list) == 1 else image_bytes_list
-            )
             result = await self.client.images.edit(
-                image=image_input, prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, size="auto"
+                image=image_bytes_list,
+                prompt=user_prompt,
+                model=DEFAULT_IMAGE_MODEL,
+                n=1,
+                quality="auto",
+                size="auto",
             )
         else:
             result = await self.client.images.generate(
-                model=DEFAULT_IMAGE_MODEL, prompt=user_prompt, n=1, size="auto"
+                prompt=user_prompt, model=DEFAULT_IMAGE_MODEL, n=1, quality="auto", size="auto"
             )
 
         if not result.data:
@@ -365,8 +367,8 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_effort=REASONING_EFFORT,
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
-        image_bytes = base64.b64decode(image_base64)
-        image_file = File(BytesIO(image_bytes), filename="generated.png")
+        image_bytes = BytesIO(base64.b64decode(image_base64))
+        image_file = File(image_bytes, filename="generated.png")
 
         with contextlib.suppress(Exception):
             await reply_message.delete()
