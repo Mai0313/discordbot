@@ -1,6 +1,6 @@
 <div align="center" markdown="1">
 
-# AI 智能 Discord 机器人 🤖
+# AI 智能 Discord 机器人
 
 [![PyPI version](https://img.shields.io/pypi/v/swebenchv2.svg)](https://pypi.org/project/swebenchv2/)
 [![python](https://img.shields.io/badge/-Python_%7C_3.12%7C_3.13%7C_3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/source/)
@@ -19,413 +19,158 @@
 
 </div>
 
-基于 **nextcord** 框架开发的全功能 Discord 机器人，提供 AI 智能对话、内容处理和实用工具功能。支持多语言界面与整合式网络搜索功能。🚀⚡🔥
+功能丰富的 Discord 机器人，具备 AI 智能对话、图片与视频生成、内容解析、多平台视频下载，以及枫之谷游戏数据库。支持多国语言。
 
-_欢迎提供建议和贡献!_
+## 功能
 
-## ✨ 主要功能
+### AI 聊天
 
-### 🤖 AI 智能互动
+标记机器人（`@bot`）即可开始对话，由 Google Gemini 提供支持：
 
-- **标记聊天**：只需标记机器人（@机器人）就能开始对话 — 支持文字和图片输入，由 Google Gemini 3.1 Pro Preview 提供支持（通过 OpenAI 兼容接口）与**默认流模式**（约每 15 个字更新一次）
-- **图像处理**：视觉模型支持，自动图像格式转换
-- **智能网络访问**：LLM 可于需要时自动搜索网络，提供最新信息
+- **文字对话** — 实时流式响应
+- **图片理解** — 附上图片即可向机器人提问
+- **图片生成** — 请机器人根据文字描述绘制或创作图片
+- **视频生成** — 请机器人生成短视频（请求之间有冷却时间）
+- **聊天摘要** — 请机器人总结近期对话内容
+- **网络搜索** — 机器人在需要最新信息时会自动搜索网络
 
-### 📊 内容处理
+### Threads 解析
 
-- **Threads 解析**：自动展开并显示 Threads 链接中的文字内容、图片以及下载视频。
+贴上 Threads.net 链接，机器人会自动展开帖子 — 显示文字内容、图片、互动数据，并下载附带的视频。
 
-- **视频下载**：多平台支持（YouTube、TikTok、Instagram、X、Facebook），提供质量选项
+### 视频下载
 
-    - Bilibili 兼容性改善：加入正确 Referer 标头、更安全的格式回退、与更稳健的错误处理
-    - 网站专属标头：Referer 仅在 Bilibili 套用，以避免影响 Facebook 链接
-    - Facebook 分享短链接（例如 `facebook.com/share/r/...`）会在下载前自动展开，你可以直接贴上 App 里复制的链接
+使用 `/download_video` 从多个平台下载视频：
 
-- **枫之谷数据库**：查询怪物和物品详细掉落信息
+- YouTube、TikTok、Instagram、X (Twitter)、Facebook、Bilibili
+- 画质选项：最佳、高画质 (1080p)、中等 (720p)、低画质 (480p)
+- 文件超过 Discord 25 MB 限制时自动降为低画质
+- Facebook 分享链接（`facebook.com/share/r/...`）会自动展开
 
-### 🌍 多语言支持
+### 枫之谷数据库
 
-- 繁体中文
-- 简体中文
-- 日本語
-- English
+- `/maple_monster` — 按名称搜索怪物，查看属性、出没地图与掉落物
+- `/maple_item` — 搜索物品并查看哪些怪物会掉落
+- `/maple_stats` — 查看数据库统计信息
+- 支持模糊搜索与多语言显示
 
-### 🔧 技术特色
+### 多语言支持
 
-- **主要机器人实现**：核心机器人类别 `DiscordBot` 在 `src/discordbot/cli.py` 中实现，继承 `nextcord.ext.commands.Bot` 并包含完整的初始化、Cog 加载和事件处理
-- 模块化 Cog 架构设计
-- 异步处理配合 nextcord
-- Pydantic 基础配置管理
-- 完整错误处理与日志记录
-- Docker 支持与开发容器
+指令与响应支持英文、繁体中文、简体中文和日文。
 
-## 🎯 核心指令
+## 指令
 
-| 指令              | 功能说明              | 特色功能                                                                                          |
-| ----------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `@标记`           | 标记机器人聊天        | AI 采用 Google Gemini 3.1 Pro Preview，**默认流模式**（约每 15 个字更新）、图像输入、自动网络搜索 |
-| `Threads 链接`    | 自动解析 Threads 贴文 | 自动显示 threads.net 链接中的文字、图片、统计数据并下载视频                                       |
-| `/download_video` | 多平台视频下载器      | 最佳/高/中/低质量；若超过 25MB 自动降为低画质                                                     |
-| `/maple_monster`  | 搜索枫之谷怪物掉落    | 详细怪物信息                                                                                      |
-| `/maple_item`     | 搜索枫之谷物品来源    | 掉落来源追踪                                                                                      |
-| `/maple_stats`    | 枫之谷数据库统计      | 数据概览和热门物品                                                                                |
-| `/ping`           | 机器人效能测试        | 延迟测量                                                                                          |
+| 指令                            | 说明                                                          |
+| ------------------------------- | ------------------------------------------------------------- |
+| `@bot <消息>`                   | 与 AI 对话（文字、图片、生成、摘要、网络搜索）                |
+| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                               |
+| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频 |
+| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                        |
+| `/maple_item <名称>`            | 搜索枫之谷物品来源                                            |
+| `/maple_stats`                  | 查看枫之谷数据库统计                                          |
+| `/ping`                         | 测试机器人延迟                                                |
 
-## 🚀 快速开始
+## 自托管
 
-### 系统需求
+### 前置要求
 
-- Python 3.10 或更高版本
-- Discord 机器人 Token
-- OpenAI API 密钥
+- Python 3.12+
+- Discord 机器人 Token（[开发者门户](https://discord.com/developers/applications)）
+- OpenAI 兼容 API 密钥（例如 Google Gemini 通过 OpenAI 兼容端点）
 
-### 安装步骤
-
-1. **克隆项目**
-
-    ```bash
-    git clone https://github.com/Mai0313/discordbot.git
-    cd discordbot
-    ```
-
-2. **使用 uv 安装依赖**
-
-    ```bash
-    # 如果尚未安装 uv
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    # 安装项目依赖
-    uv sync
-    ```
-
-3. **设定环境变量**
-
-    ```bash
-    cp .env.example .env
-    # 编辑 .env 文件，填入你的 API 密钥和设定
-    ```
-
-4. **启动机器人**
-
-    ```bash
-    # 推荐（通过 entry point）
-    uv run discordbot
-
-    # 或
-    uv run python -m discordbot.cli
-    ```
-
-### Docker 部署
+### 方式一：Docker（推荐）
 
 ```bash
-# 使用 Docker Compose
+git clone https://github.com/Mai0313/discordbot.git
+cd discordbot
+cp .env.example .env
+# 编辑 .env 填入你的 Token 和 API 密钥
 docker-compose up -d
-
-# 或手动建立
-docker build -t discordbot .
-docker run -d discordbot
 ```
 
-注意：Docker 映像已安装 `ffmpeg`，以便 yt-dlp 可合并视频/音频流。
+Docker 镜像已包含 `ffmpeg`，可处理视频/音频流合并。
+
+### 方式二：本地安装
+
+```bash
+git clone https://github.com/Mai0313/discordbot.git
+cd discordbot
+
+# 安装 uv（Python 包管理器）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安装依赖
+uv sync
+
+# 配置环境
+cp .env.example .env
+# 编辑 .env 填入你的 Token 和 API 密钥
+
+# 运行机器人
+uv run discordbot
+```
 
 ### 可选：更新枫之谷数据库
 
 ```bash
-# 安装 Playwright Chromium（首次）
-uv run playwright install chromium
-
-# 抓取最新怪物/物品数据到 ./data/monsters.json
+uv run playwright install chromium   # 仅首次需要
 uv run update
 ```
 
-## ⚙️ 配置设定
+## 配置
 
-# 必需环境变量
-
-```env
-# Discord 设定
-DISCORD_BOT_TOKEN=你的_discord_机器人_token
-DISCORD_TEST_SERVER_ID=你的_测试_服务器_id  # 可选
-
-# OpenAI 设定
-API_KEY=你的_openai_api_密钥
-BASE_URL=https://api.openai.com/v1
-```
-
-### 可选环境变量
+创建 `.env` 文件（或从 `.env.example` 复制）：
 
 ```env
-# 消息记录（SQLite）
+# 必需
+DISCORD_BOT_TOKEN=你的机器人token
+API_KEY=你的api密钥
+BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 兼容端点
+
+# 可选
+DISCORD_TEST_SERVER_ID=你的测试服务器id
 SQLITE_FILE_PATH=sqlite:///data/messages.db
-
-# 其他服务（如有使用）
-POSTGRES_URL=postgresql://postgres:postgres@postgres:5432/postgres
-REDIS_URL=redis://redis:6379/0
+POSTGRES_URL=postgresql://user:pass@host/db
+REDIS_URL=redis://host:6379/0
 ```
 
-## 📁 项目结构
+## 各平台注意事项
 
-```
-src/discordbot/
-├── cli.py              # 主要机器人入口点
-├── cogs/               # 指令模块
-│   ├── gen_reply.py    # AI 文字生成 (@标记)
-│   ├── video.py        # 视频下载 (/download_video)
-│   ├── maplestory.py   # 枫之谷数据库查询
-│   ├── log_msg.py      # 消息记录（写入 SQLite）
-│   └── template.py     # 系统工具与延迟测试
-├── typings/            # 配置模型
-│   ├── config.py       # Discord 设定
-│   ├── database.py     # DB 设定（SQLite/Postgres/Redis）
-│   └── llm.py          # LLM 整合（OpenAI 兼容）
-└── utils/              # 工具函数
-    └── downloader.py   # yt-dlp 包装
-data/
-├── monsters.json       # 枫之谷怪物与掉落数据库
-└── downloads/          # 视频下载储存
-```
+### Bilibili
 
-## 🔍 核心功能深度解析
+- 需要 `ffmpeg` 来合并分离的视频/音频流（Docker 镜像已内置）。
+- 若出现「Requested format is not available」，请尝试较低的画质设置。
+- 区域/年龄限制的视频可能需要提供 cookies（默认未配置）。
 
-### 多模态 AI 支持
+### Facebook
 
-- **实时流**：文字回应采用实时流，每 15 个字更新一次，提供实时反馈
-- **智能路由系统**：利用快速模型（`gemini-flash-latest`）判断用户意图，自动将请求分派至一般问答、图片生成或聊天记录总结
-- **强化上下文感知**：动态抓取对话历史、引用的消息，并解析 Embed 内容，提供最完整的背景知识给 AI
-- 文字和图像输入处理，包含自动图像转 base64 格式
-- 模型特定限制处理
-- 自动网络搜索回应功能
+- 分享链接（`facebook.com/share/...`）会在下载前自动展开。
+- 请保持 `yt-dlp` 为最新版本以获得最佳兼容性。
 
-### 视频下载引擎
+## 隐私与数据
 
-- 支持 10+ 个平台
-- 质量选择（4K 到纯音频）
-- Discord 文件大小限制验证
-- 进度追踪和错误处理
-- 使用 Tenacity 的重试机制：重试 5 次，每次间隔 1 秒（写死设定）
+本机器人遵守 Discord 服务条款与开发者政策。
 
-#### Bilibili 使用注意
+- **消息记录**：机器人所在频道的消息会记录到本地 SQLite。数据仅存在你的服务器，不会外传。
+- **API 调用**：文字和图片仅在机器人被标记时才会发送至配置的 LLM API。不会与其他第三方分享数据。
+- **权限**：机器人需要 Message Content 意图用于标记聊天和可选的本地记录。斜线指令与嵌入/附件权限用于交互功能。
+- **停用**：服务器管理员可通过调整机器人配置来停用消息记录。
 
-- Referer 仅在 Bilibili 套用；其他站（如 Facebook）使用最小标头。
-- 请确保 `yt-dlp` 为最新版本。
-- 需要安装 `ffmpeg` 以合并分离的视频/音频流（多数 B 站视频为分离流）。
-- 下载器会附带 `Referer: https://www.bilibili.com` 并使用像 `bestvideo*+bestaudio/best` 的安全格式回退。
-- 若仍出现「Requested format is not available」，可尝试选择较低画质（中/低）。部分视频仅提供特定 DASH 配置或受区域/年龄限制。
-- 对于需登录/年龄/区域限制的视频，可能需要提供 cookies 给 yt-dlp（目前未预设接线）。
+## 常见问题
 
-#### Facebook 使用注意
+**机器人不响应指令？**
+检查机器人权限，确保已启用 `applications.commands` 范围。
 
-- 我们不会对 Facebook 强制加入 Referer；为避免与抽取器冲突，仅使用最小必要标头。
-- `facebook.com/share/...` 的短链接会自动展开并转成正确的 reel/watch 链接，无需额外步骤。
-- 请维持 `yt-dlp` 为最新，并确认已安装 `ffmpeg`。
-- 若下载失败，尝试较低画质；对于私密/登录/区域限制的链接，可能需要提供 cookies 给 yt-dlp。
+**视频下载失败？**
+确认 `yt-dlp` 和 `ffmpeg` 为最新版本。尝试较低的画质设置。
 
-### 枫之谷数据库
-
-- 完整的怪物和物品数据库（192+ 个怪物）
-- 支持模糊搜索的互动式查询
-- 多语言支持（繁体中文、简体中文、日文、英文）
-- 详细的怪物属性和掉落信息
-- 物品来源追踪与可视化显示
-- 缓存搜索结果以优化效能
-
-## 🛠️ 开发指南
-
-### 本地开发
-
-```bash
-# 安装开发依赖
-uv sync --dev
-
-# 执行测试
-uv sync --group test
-uv run pytest -q
-
-# 代码质量检查
-uv run ruff check
-uv run ruff format
-
-# 建立文档
-uv run mkdocs serve
-```
-
-### 🧪 测试说明
-
-- 测试框架：`pytest`（含 `xdist` 并行化、`pytest-asyncio` 异步测试、覆盖率设定在 `pyproject.toml`）。
-- 测试路径：所有测试位于 `tests/`，涵盖各个 cog 与核心工具。
-- 新增的 Cog 单元测试包含：
-    - `TemplateCogs`：消息反应与 `/ping` 延迟 Embed
-    - `ReplyGeneratorCogs`：`_get_attachment_list()` 与消息处理
-    - `VideoCogs`：`/download_video` 乐观流程（模拟下载器）
-
-执行完整测试并产生报表：
-
-```bash
-uv run pytest -q
-# 覆盖率报表位置：./.github/reports 与 ./.github/coverage_html_report
-```
-
-### 贡献指南
-
-1. Fork 此项目
-2. 建立功能分支（`git checkout -b feature/新功能`）
-3. 提交变更（`git commit -m '新增某项功能'`）
-4. 推送到分支（`git push origin feature/新功能`）
-5. 建立 Pull Request
-
-### 代码规范
-
-- 遵循 PEP 8 命名惯例
-- 使用 Pydantic 模型进行数据验证
-- 所有函数需要类型提示
-- 使用 Google 风格的 docstring
-- 最大行长度 99 字符
-
-## 📚 API 参考
-
-### 主要 SDK 模块
-
-#### `src/discordbot/typings/llm.py`
-
-```python
-# AI 文字生成（范例代码已更新为新架构）
-# 现在通过 Discord 的 @标记 功能使用
-
-# AI 回应与自动网络搜索
-# 现在整合在 @标记 功能中，LLM 会自动判断是否需要搜索网络
-
-# 网络搜索功能已整合至 AI 回应中
-# 无需单独调用，LLM 会自动处理
-```
-
-## 🚀 部署
-
-### 生产环境部署
-
-1. **环境准备**
-
-    ```bash
-    # 设定生产环境变量
-    export DISCORD_BOT_TOKEN="生产环境token"
-    export API_KEY="生产环境密钥"
-    ```
-
-2. **Docker 部署**
-
-    ```bash
-    docker-compose -f docker-compose.yaml up -d
-    ```
-
-3. **监控设定**
-
-    - 使用 Logfire 进行日志监控
-    - 设定健康检查端点
-    - 配置错误通知
-
-## 🔧 疑难排解
-
-### 常见问题
-
-**Q: 机器人无法回应指令**
-A: 检查机器人权限，确保已启用「应用程序指令」范围
-
-**Q: OpenAI API 错误**
-A: 验证 API 密钥和额度，检查模型可用性
-
-**Q: 视频下载失败**
-A: 确认 yt-dlp 版本为最新，检查平台支持状况
-
-**Q: 数据库连接错误**
-A: 检查文件路径权限，确保目录存在
-
-### 日誌分析
-
-```bash
-# 检视机器人日志
-tail -f logs/bot.log
-
-# 检查错误日志
-grep ERROR logs/bot.log
-```
-
-## 📈 效能优化
-
-### 建议配置
-
-- **内存**：最少 512MB，建议 1GB
-- **储存空间**：最少 2GB（用于视频下载和数据储存）
-- **网络**：稳定的互联网连接
-- **CPU**：多核心处理器，支持大量并发请求
-
-### 优化技巧
-
-1. 使用 Redis 缓存频繁查询
-2. 定期清理旧的下载文件
-3. 配置适当的 API 请求限制
-4. 使用连接池优化数据库连接
-
-## 🔒 隐私与数据
-
-本 Discord 机器人遵守 Discord 服务条款与开发者政策。
-
-### 数据收集与使用
-
-- **本地消息记录**：默认情况下，机器人在所在频道的消息会记录到本机 SQLite（`./data/messages.db`），包含作者、内容、时间戳与附件/贴图链接。数据仅存在你的服务器，不会外传。
-- **不与第三方分享**：除了为完成请求所需的受信任 API（例如 OpenAI）之外，不会与第三方分享数据。
-- **如何停用**：服务器拥有者可在 `src/discordbot/cli.py` 移除记录调用，或依需求调整 `src/discordbot/cogs/log_msg.py`。
-
-### 机器人权限与意图
-
-本机器人仅功能需求申请以下权限：
-
-- **消息内容意图**：用于斜线指令情境、少量关键字处理与上述本地记录（可调整）
-- **斜线指令**：用于互动式指令处理
-- **文件附件**：用于处理 AI 视觉功能中的图像和下载用户请求的内容
-- **嵌入链接**：用于格式化丰富回应和搜索结果
-
-### 数据安全
-
-- 所有 API 通讯使用加密的 HTTPS 连接
-- 不会将数据发送至任何外部服务。若启用本地消息记录，消息仅储存在你的磁盘（SQLite：`./data/messages.db`），不会外传。你可以在 `src/discordbot/cli.py` 移除记录调用或调整 `src/discordbot/cogs/log_msg.py` 以停用。
-- 不进行基于用户内容的长期分析。
-
-### 联络与合规
-
-如果您对隐私有疑虑或对数据处理有疑问：
-
-- 通过 [GitHub Issues](https://github.com/Mai0313/discordbot/issues) 回报问题
-- 通过项目储存库联络开发团队
-
-本机器人采用隐私设计原则和最小化数据处理，以确保用户隐私保护。
-
-## 📄 授权条款
-
-本项目采用 MIT 授权条款。详细信息请参阅 [LICENSE](LICENSE) 文件。
-
-## 👥 贡献者
-
-[![Contributors](https://contrib.rocks/image?repo=Mai0313/discordbot)](https://github.com/Mai0313/discordbot/graphs/contributors)
-
-使用 [contrib.rocks](https://contrib.rocks) 制作
-
-## 📞 联络方式
-
-- 📧 Email: [项目维护者邮箱]
-- 💬 Discord: [Discord 服务器链接]
-- 🐛 Issue: [GitHub Issues](https://github.com/Mai0313/discordbot/issues)
-- 💡 讨论: [GitHub Discussions](https://github.com/Mai0313/discordbot/discussions)
-
-## 🔗 相关资源
-
-- [官方文档](https://mai0313.github.io/discordbot/)
-- [Nextcord 文档](https://docs.nextcord.dev/)
-- [OpenAI API 文档](https://platform.openai.com/docs)
-- [Discord 开发者文档](https://discord.com/developers/docs)
+**API 错误？**
+验证 API 密钥并确认端点 URL 正确。
 
 ---
 
-<center>
+想要贡献？请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
-**⭐ 如果这个项目对你有帮助，请给我们一个星星!**
+[![Contributors](https://contrib.rocks/image?repo=Mai0313/discordbot)](https://github.com/Mai0313/discordbot/graphs/contributors)
 
-</center>
+[文档](https://mai0313.github.io/discordbot/) | [报告问题](https://github.com/Mai0313/discordbot/issues) | [讨论](https://github.com/Mai0313/discordbot/discussions)
