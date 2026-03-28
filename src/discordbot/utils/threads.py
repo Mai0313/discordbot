@@ -96,9 +96,9 @@ class ImageVersions2(BaseModel):
 
 
 class CarouselMedia(BaseModel):
-    pk: str = Field(default="", description="Carousel item primary key")
-    id: str = Field(default="", description="Carousel item full ID")
-    code: str = Field(default="", description="Carousel item short code")
+    pk: str | None = Field(default=None, description="Carousel item primary key")
+    id: str | None = Field(default=None, description="Carousel item full ID")
+    code: str | None = Field(default=None, description="Carousel item short code")
     video_versions: list[VideoVersion] | None = Field(
         default=None, description="Available video versions"
     )
@@ -182,24 +182,30 @@ class TextPostAppInfo(BaseModel):
     id: str = Field(default="", description="TextPostAppInfo ID")
 
     # Engagement metrics
-    direct_reply_count: int = Field(default=0, description="Number of direct replies")
-    repost_count: int = Field(default=0, description="Number of reposts")
-    quote_count: int = Field(default=0, description="Number of quote posts")
-    reshare_count: int = Field(default=0, description="Total reshare count")
-    self_thread_count: int = Field(
-        default=0, description="Number of self-thread replies by the author"
+    direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
+    repost_count: int | None = Field(default=None, description="Number of reposts")
+    quote_count: int | None = Field(default=None, description="Number of quote posts")
+    reshare_count: int | None = Field(default=None, description="Total reshare count")
+    self_thread_count: int | None = Field(
+        default=None, description="Number of self-thread replies by the author"
     )
 
     # Post status flags
-    is_reply: bool = Field(default=False, description="Whether this post is a reply")
-    is_post_unavailable: bool = Field(default=False, description="Whether the post is unavailable")
-    is_ghost_post: bool = Field(
-        default=False, description="Whether the post is a ghost/shadow post"
+    is_reply: bool | None = Field(default=None, description="Whether this post is a reply")
+    is_post_unavailable: bool | None = Field(
+        default=None, description="Whether the post is unavailable"
     )
-    is_spoiler_media: bool = Field(default=False, description="Whether media is marked as spoiler")
-    is_markup: bool = Field(default=False, description="Whether the post uses markup formatting")
-    is_liked_by_root_author: bool = Field(
-        default=False, description="Whether liked by the root thread author"
+    is_ghost_post: bool | None = Field(
+        default=None, description="Whether the post is a ghost/shadow post"
+    )
+    is_spoiler_media: bool | None = Field(
+        default=None, description="Whether media is marked as spoiler"
+    )
+    is_markup: bool | None = Field(
+        default=None, description="Whether the post uses markup formatting"
+    )
+    is_liked_by_root_author: bool | None = Field(
+        default=None, description="Whether liked by the root thread author"
     )
 
     # Reply & permission controls
@@ -207,9 +213,9 @@ class TextPostAppInfo(BaseModel):
         default="everyone",
         description="Who can reply: everyone, accounts_you_follow, mentioned_only",
     )
-    can_reply: bool = Field(default=False, description="Whether the viewer can reply")
-    can_private_reply: bool = Field(
-        default=False, description="Whether the viewer can send a private reply"
+    can_reply: bool | None = Field(default=None, description="Whether the viewer can reply")
+    can_private_reply: bool | None = Field(
+        default=None, description="Whether the viewer can send a private reply"
     )
     is_reply_approval_enabled: bool | None = Field(
         default=None, description="Whether reply approval is enabled"
@@ -217,8 +223,8 @@ class TextPostAppInfo(BaseModel):
     reply_approval_info: ReplyApprovalInfo | None = Field(
         default=None, description="Reply approval details"
     )
-    show_header_follow: bool = Field(
-        default=False, description="Whether to show follow button in header"
+    show_header_follow: bool | None = Field(
+        default=None, description="Whether to show follow button in header"
     )
 
     # Content data
@@ -336,15 +342,15 @@ class Post(BaseModel):
     )
 
     # Engagement
-    like_count: int = Field(default=0, description="Number of likes")
-    like_and_view_counts_disabled: bool = Field(
-        default=False, description="Whether like/view counts are hidden"
+    like_count: int | None = Field(default=None, description="Number of likes")
+    like_and_view_counts_disabled: bool | None = Field(
+        default=None, description="Whether like/view counts are hidden"
     )
 
     # Metadata
     taken_at: int | None = Field(default=None, description="Post creation timestamp (Unix epoch)")
-    caption_is_edited: bool = Field(
-        default=False, description="Whether the caption has been edited"
+    caption_is_edited: bool | None = Field(
+        default=None, description="Whether the caption has been edited"
     )
     is_paid_partnership: bool | None = Field(
         default=None, description="Whether this is a paid partnership/sponsored post"
@@ -395,19 +401,19 @@ class Post(BaseModel):
 
     @property
     def reply_count(self) -> int:
-        return self.text_post_app_info.direct_reply_count if self.text_post_app_info else 0
+        return (self.text_post_app_info.direct_reply_count or 0) if self.text_post_app_info else 0
 
     @property
     def repost_count(self) -> int:
-        return self.text_post_app_info.repost_count if self.text_post_app_info else 0
+        return (self.text_post_app_info.repost_count or 0) if self.text_post_app_info else 0
 
     @property
     def quote_count(self) -> int:
-        return self.text_post_app_info.quote_count if self.text_post_app_info else 0
+        return (self.text_post_app_info.quote_count or 0) if self.text_post_app_info else 0
 
     @property
     def reshare_count(self) -> int:
-        return self.text_post_app_info.reshare_count if self.text_post_app_info else 0
+        return (self.text_post_app_info.reshare_count or 0) if self.text_post_app_info else 0
 
     @property
     def media_urls(self) -> list[str]:
@@ -584,7 +590,6 @@ class ThreadsDownloader(BaseModel):
 
     def parse(self, url: str) -> ThreadsOutput:
         post = self.extract_post_data(url)
-        console.print(post)
         if not post:
             return ThreadsOutput()
 
@@ -614,7 +619,7 @@ class ThreadsDownloader(BaseModel):
             video_paths=video_paths,
             author_name=post.author_name,
             author_icon_url=post.author_icon_url,
-            like_count=post.like_count,
+            like_count=post.like_count or 0,
             reply_count=post.reply_count,
             repost_count=post.repost_count,
             quote_count=post.quote_count,
