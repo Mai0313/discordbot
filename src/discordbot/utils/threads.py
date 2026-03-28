@@ -57,7 +57,7 @@ class User(BaseModel):
 class Caption(BaseModel):
     text: str = Field(default="")
     pk: str = Field(default="")
-    has_translation: bool = Field(default=False)
+    has_translation: bool | None = Field(default=None)
 
 
 class VideoVersion(BaseModel):
@@ -378,7 +378,7 @@ class ThreadsDownloader(BaseModel):
 
 
 if __name__ == "__main__":
-    test_url = "https://www.threads.com/@c32971/post/DVnt6dciSRc?xmt=AQF0GAejzXClnOrILy2_aqEN7a0IhvY6Nq4iAsUbI0K_Yw"
+    test_url = "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_"
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(test_url) as result:
