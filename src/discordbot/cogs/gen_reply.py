@@ -185,7 +185,8 @@ class ReplyGeneratorCogs(commands.Cog):
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
             reasoning_effort=REASONING_EFFORT,
-            extra_headers={"User-Agent": message.author.name},
+            # extra_headers={"User-Agent": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
@@ -210,7 +211,8 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_effort=REASONING_EFFORT,
             tools=TOOLS,
             stream=True,
-            extra_headers={"User-Agent": message.author.name},
+            # extra_headers={"User-Agent": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         stored_content = f"{message.author.mention} "
         counted_content = 0
@@ -276,18 +278,23 @@ class ReplyGeneratorCogs(commands.Cog):
         video = await self.client.videos.create(
             model=DEFAULT_VIDEO_MODEL,
             prompt=user_prompt,
-            extra_headers={"User-Agent": message.author.name},
+            # extra_headers={"User-Agent": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
             await reply_message.edit(content=":hourglass:")
             video = await self.client.videos.retrieve(
-                video_id=video.id, extra_headers={"User-Agent": message.author.name}
+                video_id=video.id,
+                # extra_headers={"User-Agent": message.author.name},
+                extra_body={"metadata": {"tags": [message.author.name]}},
             )
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(
-            video_id=video.id, extra_headers={"User-Agent": message.author.name}
+            video_id=video.id,
+            # extra_headers={"User-Agent": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
         with contextlib.suppress(Exception):
@@ -315,7 +322,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 response_format="b64_json",
                 quality="auto",
                 size="auto",
-                extra_headers={"User-Agent": message.author.name},
+                # extra_headers={"User-Agent": message.author.name},
+                extra_body={"metadata": {"tags": [message.author.name]}},
             )
         else:
             result = await self.client.images.generate(
@@ -325,7 +333,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 response_format="b64_json",
                 quality="auto",
                 size="auto",
-                extra_headers={"User-Agent": message.author.name},
+                # extra_headers={"User-Agent": message.author.name},
+                extra_body={"metadata": {"tags": [message.author.name]}},
             )
 
         if not result.data:
@@ -347,7 +356,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 },
             ],
             reasoning_effort=REASONING_EFFORT,
-            extra_headers={"User-Agent": message.author.name},
+            # extra_headers={"User-Agent": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
