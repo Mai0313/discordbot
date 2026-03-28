@@ -28,7 +28,7 @@ class ThreadsCogs(commands.Cog):
         )
         if result.author_name:
             main_embed.set_author(
-                name=f"@{result.author_name}", icon_url=result.author_icon_url, url=result.url
+                name=result.author_name, url=result.url, icon_url=result.author_icon_url
             )
 
         footer_parts = [
