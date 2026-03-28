@@ -7,11 +7,11 @@ from google import genai
 from openai import OpenAI
 from rich.console import Console
 from google.genai.types import (
-    Part,
     Tool,
-    Content,
+    UrlContext,
     GoogleSearch,
     ThinkingConfig,
+    ToolCodeExecution,
     GenerateContentConfig,
 )
 
@@ -74,19 +74,25 @@ def use_oai() -> None:
 
 def use_gemini() -> None:
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-    contents = [
-        Content(role="user", parts=[Part.from_text(text=SYSTEM_PROMPT)]),
-        Content(role="user", parts=[Part.from_text(text="幫我畫一隻狗")]),
+    tools = [
+        Tool(
+            googleSearch=GoogleSearch(),
+            url_context=UrlContext(),
+            code_execution=ToolCodeExecution(),
+        )
     ]
-    tools = [Tool(googleSearch=GoogleSearch())]
     generate_content_config = GenerateContentConfig(
         thinking_config=ThinkingConfig(thinking_level="MINIMAL"), tools=tools
     )
 
     start = time.time()
     responses = client.models.generate_content(
-        model=MODEL, contents=contents, config=generate_content_config
+        model=MODEL,
+        contents=[
+            {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
+            {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
+        ],
+        config=generate_content_config,
     )
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
