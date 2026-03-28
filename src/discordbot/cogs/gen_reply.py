@@ -306,13 +306,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 return
 
-        data_uris = await self._get_attachments(message=message)
-        if message.reference and isinstance(message.reference.resolved, Message):
-            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
-
         create_kwargs: dict[str, Any] = {"model": DEFAULT_VIDEO_MODEL, "prompt": user_prompt}
-        if data_uris:
-            create_kwargs["input_reference"] = {"image_url": data_uris[0]}
+        # data_uris = await self._get_attachments(message=message)
+        # if message.reference and isinstance(message.reference.resolved, Message):
+        #     data_uris.extend(await self._get_attachments(message=message.reference.resolved))
+
+        # if data_uris:
+        #     create_kwargs["input_reference"] = get_image_data(image_file=data_uris[0], use_b64=False)
 
         video = await self.client.videos.create(**create_kwargs)
         while video.status not in ("completed", "failed"):
