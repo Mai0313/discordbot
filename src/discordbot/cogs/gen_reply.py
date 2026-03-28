@@ -117,47 +117,6 @@ class ReplyGeneratorCogs(commands.Cog):
             content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
         return {"role": role, "content": content_parts}
 
-    async def _get_history_message_ai(self, message: Message, limit: int) -> list[dict[str, Any]]:
-        messages: list[dict[str, Any]] = []
-        hist_messages: list[Message] = []
-        async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
-            hist_messages.append(m)
-
-        if hist_messages:
-            # Build raw history for summarization
-            raw_history: list[dict[str, Any]] = []
-            for hist_msg in hist_messages:
-                hist_message = await self._process_single_message(message=hist_msg)
-                raw_history.append(hist_message)
-
-            # Use LLM to summarize history into a clean conversation log
-            summary_messages: list[dict[str, Any]] = [
-                {"role": "system", "content": HISTORY_PROMPT},
-                *raw_history,
-                {
-                    "role": "user",
-                    "content": "Please summarize the above chat history into a clean conversation log.",
-                },
-            ]
-            response = await self.client.chat.completions.create(
-                model=DEFAULT_FAST_MODEL,
-                messages=summary_messages,
-                reasoning_effort=REASONING_EFFORT,
-                tools=TOOLS,
-            )
-            summary = (response.choices[0].message.content or "").strip()
-
-            messages.append({
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"==== Chat History Summary ====\n{summary}\n==== End of Chat History ====",
-                    }
-                ],
-            })
-        return messages
-
     async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
