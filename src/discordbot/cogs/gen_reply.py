@@ -24,7 +24,6 @@ from discordbot.typings.llm import LLMConfig
 from ._gen_reply.prompts import (
     ROUTE_PROMPT,
     SYSTEM_PROMPT,
-    HISTORY_PROMPT,
     SUMMARY_PROMPT,
     IMAGE_DESCRIPTION_PROMPT,
 )
