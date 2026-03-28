@@ -43,12 +43,13 @@ Choose QA for everything else, including normal questions, image analysis, capti
 If you are not sure, reply QA.
 """
 
+MODEL = "gemini-flash-latest"
+
 config = LLMConfig()
 
 
 def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = "gemini-flash-latest"
     tools: list[ChatCompletionToolUnionParam] = [
         {"googleSearch": {}},
         {"urlContext": {}},
@@ -56,7 +57,7 @@ def use_oai() -> None:
     ]
     start = time.time()
     responses = client.chat.completions.create(
-        model=model,
+        model=MODEL,
         messages=[
             {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
@@ -67,14 +68,13 @@ def use_oai() -> None:
         service_tier="auto",
     )
     end = time.time()
-    console.print(f"{model} takes {end - start:.2f} seconds")
+    console.print(f"{MODEL} takes {end - start:.2f} seconds")
     console.print(responses.choices[0].message.content)
 
 
 def use_gemini() -> None:
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    model = "gemini-flash-latest"
     contents = [
         Content(role="user", parts=[Part.from_text(text=SYSTEM_PROMPT)]),
         Content(role="user", parts=[Part.from_text(text="幫我畫一隻狗")]),
@@ -86,10 +86,10 @@ def use_gemini() -> None:
 
     start = time.time()
     responses = client.models.generate_content(
-        model=model, contents=contents, config=generate_content_config
+        model=MODEL, contents=contents, config=generate_content_config
     )
     end = time.time()
-    console.print(f"{model} takes {end - start:.2f} seconds")
+    console.print(f"{MODEL} takes {end - start:.2f} seconds")
     console.print(responses.text)
 
 
