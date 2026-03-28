@@ -74,16 +74,6 @@ def use_oai() -> None:
 
 def use_gemini() -> None:
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-    tools = [
-        Tool(
-            googleSearch=GoogleSearch(),
-            url_context=UrlContext(),
-            code_execution=ToolCodeExecution(),
-        )
-    ]
-    generate_content_config = GenerateContentConfig(
-        thinking_config=ThinkingConfig(thinking_level="MINIMAL"), tools=tools
-    )
 
     start = time.time()
     responses = client.models.generate_content(
@@ -92,7 +82,16 @@ def use_gemini() -> None:
             {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
             {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
         ],
-        config=generate_content_config,
+        config=GenerateContentConfig(
+            thinking_config=ThinkingConfig(thinking_level="MINIMAL"),
+            tools=[
+                Tool(
+                    googleSearch=GoogleSearch(),
+                    url_context=UrlContext(),
+                    code_execution=ToolCodeExecution(),
+                )
+            ],
+        ),
     )
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
