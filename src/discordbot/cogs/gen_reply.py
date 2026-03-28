@@ -29,9 +29,8 @@ from ._gen_reply.prompts import (
     IMAGE_DESCRIPTION_PROMPT,
 )
 
-DEFAULT_FAST_MODEL = "gemini-flash-latest"
-DEFAULT_SLOW_MODEL = "gemini-pro-latest"
-# DEFAULT_SLOW_MODEL = "gemini-flash-latest"
+DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
+DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
