@@ -18,13 +18,13 @@ class ThreadsCogs(commands.Cog):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
-    def _build_embeds(self, result: ThreadsOutput, message: Message) -> list[Embed]:
+    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
         embeds = []
         main_embed = Embed(
             description=result.text,
             url=result.url,
             color=Color.default(),
-            timestamp=message.created_at,
+            timestamp=result.taken_at,
         )
         if result.author_name:
             main_embed.set_author(
@@ -89,7 +89,7 @@ class ThreadsCogs(commands.Cog):
                         if path.exists()
                     ]
 
-                    embeds = self._build_embeds(result, message)
+                    embeds = self._build_embeds(result=result)
 
                     with contextlib.suppress(Exception):
                         await message.edit(suppress=True)
