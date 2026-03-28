@@ -215,7 +215,7 @@ class ThreadData(BaseModel):
 class ThreadsOutput(BaseModel):
     """Output model for Threads downloader."""
 
-    text: str = Field(default="找不到貼文")
+    text: str = Field(default="")
     url: str = Field(default="")
     image_urls: list[str] = Field(default=[])
     video_paths: list[Path] = Field(default=[])
