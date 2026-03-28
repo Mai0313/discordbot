@@ -69,8 +69,6 @@ class ThreadsCogs(commands.Cog):
                 # Run parsing logic
                 with self.downloader.parse(url) as result:
                     if not result.text and not result.video_paths and not result.image_urls:
-                        with contextlib.suppress(Exception):
-                            await message.delete()
                         return
 
                     # Compute total size of all downloaded media
