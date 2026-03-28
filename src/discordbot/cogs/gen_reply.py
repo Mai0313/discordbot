@@ -306,7 +306,15 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 return
 
-        video = await self.client.videos.create(model=DEFAULT_VIDEO_MODEL, prompt=user_prompt)
+        data_uris = await self._get_attachments(message=message)
+        if message.reference and isinstance(message.reference.resolved, Message):
+            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
+
+        create_kwargs: dict[str, Any] = {"model": DEFAULT_VIDEO_MODEL, "prompt": user_prompt}
+        if data_uris:
+            create_kwargs["input_reference"] = {"image_url": data_uris[0]}
+
+        video = await self.client.videos.create(**create_kwargs)
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
             await reply_message.edit(content=":hourglass:")
