@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import nextcord
-from nextcord import Interaction, SelectOption
+from nextcord import Embed, Interaction, SelectOption
 from nextcord.ui import View, Select
 
 from .embeds import (
+    TranslateFn,
     create_map_embed,
     create_npc_embed,
     create_quest_embed,
@@ -18,6 +20,54 @@ from .embeds import (
 
 if TYPE_CHECKING:
     from .service import MapleStoryService
+
+
+def _resolve_monster(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    monster = service.get_monster(name)
+    return create_monster_embed(monster, translate=tr) if monster else None
+
+
+def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    monsters = service.get_monsters_by_drop(name)
+    return create_item_source_embed(name, monsters, translate=tr) if monsters else None
+
+
+def _resolve_equipment(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    equip = service.get_equipment(name)
+    return create_equipment_embed(equip, translate=tr) if equip else None
+
+
+def _resolve_scroll(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    match = next((s for s in service.search_scrolls_by_name(name) if s.name == name), None)
+    return create_scroll_embed(match, translate=tr) if match else None
+
+
+def _resolve_npc(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    match = next((n for n in service.search_npcs_by_name(name) if n.name == name), None)
+    return create_npc_embed(match, translate=tr) if match else None
+
+
+def _resolve_quest(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    match = next((q for q in service.search_quests_by_name(name) if q.name == name), None)
+    return create_quest_embed(match, translate=tr) if match else None
+
+
+def _resolve_map(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    match = next((m for m in service.search_maps_by_name(name) if m.name == name), None)
+    return create_map_embed(match, translate=tr) if match else None
+
+
+_ResolverFn = Callable[["MapleStoryService", str, TranslateFn], Embed | None]
+
+_RESOLVERS: dict[str, _ResolverFn] = {
+    "monster": _resolve_monster,
+    "item": _resolve_item,
+    "equipment": _resolve_equipment,
+    "scroll": _resolve_scroll,
+    "npc": _resolve_npc,
+    "quest": _resolve_quest,
+    "map": _resolve_map,
+}
 
 
 class MapleDropSearchView(View):
@@ -36,9 +86,6 @@ class MapleDropSearchView(View):
         self.search_type = search_type
         self.query = query
 
-    def _translate(self, category: str, name: str) -> str:
-        return self.service.translate(category, name)
-
     @nextcord.ui.select(
         placeholder="選擇要查看的結果...",
         min_values=1,
@@ -53,47 +100,8 @@ class MapleDropSearchView(View):
             await interaction.followup.send("請先選擇有效的結果。", ephemeral=True)
             return
 
-        embed = None
-        tr = self._translate
-
-        if self.search_type == "monster":
-            monster = self.service.get_monster(selected)
-            if monster:
-                embed = create_monster_embed(monster, translate=tr)
-
-        elif self.search_type == "item":
-            monsters = self.service.get_monsters_by_drop(selected)
-            if monsters:
-                embed = create_item_source_embed(selected, monsters, translate=tr)
-
-        elif self.search_type == "equipment":
-            equip = self.service.get_equipment(selected)
-            if equip:
-                embed = create_equipment_embed(equip, translate=tr)
-
-        elif self.search_type == "scroll":
-            results = self.service.search_scrolls_by_name(selected)
-            match = next((s for s in results if s.name == selected), None)
-            if match:
-                embed = create_scroll_embed(match, translate=tr)
-
-        elif self.search_type == "npc":
-            results = self.service.search_npcs_by_name(selected)
-            match = next((n for n in results if n.name == selected), None)
-            if match:
-                embed = create_npc_embed(match, translate=tr)
-
-        elif self.search_type == "quest":
-            results = self.service.search_quests_by_name(selected)
-            match = next((q for q in results if q.name == selected), None)
-            if match:
-                embed = create_quest_embed(match, translate=tr)
-
-        elif self.search_type == "map":
-            results = self.service.search_maps_by_name(selected)
-            match = next((m for m in results if m.name == selected), None)
-            if match:
-                embed = create_map_embed(match, translate=tr)
+        resolver = _RESOLVERS.get(self.search_type)
+        embed = resolver(self.service, selected, self.service.translate) if resolver else None
 
         if embed:
             await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)

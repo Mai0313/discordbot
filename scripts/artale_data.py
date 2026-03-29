@@ -58,7 +58,7 @@ def extract_rsc_text(html: str) -> str:
     return "".join(parts)
 
 
-def extract_json_value(text: str, key: str) -> Any | None:
+def extract_json_value(text: str, key: str) -> list[dict[str, object]] | dict[str, object] | None:
     """Extract the JSON value for a given key using json.JSONDecoder.raw_decode."""
     pattern = f'"{key}":'
     try:
@@ -186,7 +186,7 @@ def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]
     return all_maps
 
 
-def save_json(data: Any, filename: str) -> Path:
+def save_json(data: object, filename: str) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = DATA_DIR / f"{filename}.json"
     with open(path, "w", encoding="utf-8") as f:

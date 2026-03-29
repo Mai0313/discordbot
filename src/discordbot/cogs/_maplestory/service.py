@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from typing import TypeVar
 from pathlib import Path
@@ -46,20 +48,25 @@ class MapleStoryService:
         self._maps: list[MapEntry] = []
         self._misc: list[MiscItem] = []
         self._translations: dict[str, dict[str, str]] = {}
-        # Caches
-        self._cache: dict[str, object] = {}
+        # Caches — typed per-category to avoid mypy issues with generic dict
+        self._monster_cache: dict[str, list[Monster]] = {}
+        self._equip_cache: dict[str, list[Equipment]] = {}
+        self._scroll_cache: dict[str, list[Scroll]] = {}
+        self._npc_cache: dict[str, list[NPC]] = {}
+        self._quest_cache: dict[str, list[Quest]] = {}
+        self._map_cache: dict[str, list[MapEntry]] = {}
+        self._item_cache: dict[str, list[str]] = {}
+        self._stats: MapleStats | None = None
 
     @classmethod
-    def from_directory(cls, data_dir: Path = DEFAULT_DATA_DIR) -> "MapleStoryService":
+    def from_directory(cls, data_dir: Path = DEFAULT_DATA_DIR) -> MapleStoryService:
         svc = cls()
         svc._load_all(data_dir)
         return svc
 
     # Keep backwards compat for existing callers
     @classmethod
-    def from_file(
-        cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json"
-    ) -> "MapleStoryService":
+    def from_file(cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json") -> MapleStoryService:
         return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
@@ -72,7 +79,14 @@ class MapleStoryService:
         self._maps = _load_json(data_dir / "maps.json", MapEntry)
         self._misc = _load_json(data_dir / "misc.json", MiscItem)
         self._translations = _load_translations(data_dir)
-        self._cache.clear()
+        self._monster_cache.clear()
+        self._equip_cache.clear()
+        self._scroll_cache.clear()
+        self._npc_cache.clear()
+        self._quest_cache.clear()
+        self._map_cache.clear()
+        self._item_cache.clear()
+        self._stats = None
 
     def reload(self, data_dir: Path = DEFAULT_DATA_DIR) -> None:
         self._load_all(data_dir)
@@ -121,13 +135,12 @@ class MapleStoryService:
     # ── Monster searches ────────────────────────────────────────────
 
     def search_monsters_by_name(self, query: str) -> list[Monster]:
-        key = f"monster:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                m for m in self._monsters if q in m.name.lower() or q in m.name_zh.lower()
+        key = query.lower()
+        if key not in self._monster_cache:
+            self._monster_cache[key] = [
+                m for m in self._monsters if key in m.name.lower() or key in m.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._monster_cache[key])
 
     def get_monster(self, name: str) -> Monster | None:
         name_lower = name.lower()
@@ -143,13 +156,12 @@ class MapleStoryService:
     # ── Equipment searches ──────────────────────────────────────────
 
     def search_equipment_by_name(self, query: str) -> list[Equipment]:
-        key = f"equip:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                e for e in self._equipment if q in e.name.lower() or q in e.name_zh.lower()
+        key = query.lower()
+        if key not in self._equip_cache:
+            self._equip_cache[key] = [
+                e for e in self._equipment if key in e.name.lower() or key in e.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._equip_cache[key])
 
     def get_equipment(self, name: str) -> Equipment | None:
         name_lower = name.lower()
@@ -161,56 +173,49 @@ class MapleStoryService:
     # ── Scroll searches ─────────────────────────────────────────────
 
     def search_scrolls_by_name(self, query: str) -> list[Scroll]:
-        key = f"scroll:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                s for s in self._scrolls if q in s.name.lower() or q in s.name_zh.lower()
+        key = query.lower()
+        if key not in self._scroll_cache:
+            self._scroll_cache[key] = [
+                s for s in self._scrolls if key in s.name.lower() or key in s.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._scroll_cache[key])
 
     # ── NPC searches ────────────────────────────────────────────────
 
     def search_npcs_by_name(self, query: str) -> list[NPC]:
-        key = f"npc:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                n for n in self._npcs if q in n.name.lower() or q in n.name_zh.lower()
+        key = query.lower()
+        if key not in self._npc_cache:
+            self._npc_cache[key] = [
+                n for n in self._npcs if key in n.name.lower() or key in n.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._npc_cache[key])
 
     # ── Quest searches ──────────────────────────────────────────────
 
     def search_quests_by_name(self, query: str) -> list[Quest]:
-        key = f"quest:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                quest
-                for quest in self._quests
-                if q in quest.name.lower() or q in quest.name_zh.lower()
+        key = query.lower()
+        if key not in self._quest_cache:
+            self._quest_cache[key] = [
+                q for q in self._quests if key in q.name.lower() or key in q.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._quest_cache[key])
 
     # ── Map searches ────────────────────────────────────────────────
 
     def search_maps_by_name(self, query: str) -> list[MapEntry]:
-        key = f"map:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
-            self._cache[key] = [
-                m for m in self._maps if q in m.name.lower() or q in m.name_zh.lower()
+        key = query.lower()
+        if key not in self._map_cache:
+            self._map_cache[key] = [
+                m for m in self._maps if key in m.name.lower() or key in m.name_zh.lower()
             ]
-        return list(self._cache[key])  # type: ignore[arg-type]
+        return list(self._map_cache[key])
 
     # ── Cross-type item search ──────────────────────────────────────
 
     def search_items_by_name(self, query: str) -> list[str]:
         """Search all drop item names across monsters."""
-        key = f"item:{query.lower()}"
-        if key not in self._cache:
-            q = query.lower()
+        key = query.lower()
+        if key not in self._item_cache:
             items_found: set[str] = set()
             for monster in self._monsters:
                 for drop in monster.drops.all_items:
@@ -220,10 +225,10 @@ class MapleStoryService:
                         or self.translate("useable", drop.name)
                         or self.translate("misc", drop.name)
                     )
-                    if q in drop.name.lower() or (zh and q in zh.lower()):
+                    if key in drop.name.lower() or (zh and key in zh.lower()):
                         items_found.add(drop.name)
-            self._cache[key] = sorted(items_found)
-        return list(self._cache[key])  # type: ignore[arg-type]
+            self._item_cache[key] = sorted(items_found)
+        return list(self._item_cache[key])
 
     def get_item_type(self, item_name: str) -> str:
         """Determine an item's category from monster drops."""
@@ -260,8 +265,8 @@ class MapleStoryService:
         return [name for name, _ in sorted(counts.items(), key=lambda x: x[1], reverse=True)]
 
     def get_stats(self) -> MapleStats:
-        if "stats" not in self._cache:
-            self._cache["stats"] = MapleStats(
+        if self._stats is None:
+            self._stats = MapleStats(
                 total_monsters=len(self._monsters),
                 total_equipment=len(self._equipment),
                 total_scrolls=len(self._scrolls),
@@ -273,4 +278,4 @@ class MapleStoryService:
                 level_distribution=self.get_level_distribution(),
                 popular_items=self.get_popular_items()[:20],
             )
-        return self._cache["stats"]  # type: ignore[return-value]
+        return self._stats

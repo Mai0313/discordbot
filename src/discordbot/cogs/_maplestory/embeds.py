@@ -1,33 +1,73 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterable, Sequence
 
 from nextcord import Embed
 
 from .constants import BASIC_STATS_TEMPLATE, MONSTER_ATTR_TEMPLATE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
-    from .models import NPC, Quest, Scroll, Monster, MapEntry, Equipment, MapleStats
+    from .models import (
+        NPC,
+        Quest,
+        Scroll,
+        Monster,
+        MapEntry,
+        Equipment,
+        QuestStep,
+        MapleStats,
+        AcquisitionNPC,
+        AcquisitionQuest,
+        AcquisitionMonster,
+    )
 
 SITE = "https://www.artalemaplestory.com"
+
+TranslateFn = Callable[[str, str], str]
+
+
+def _identity(_cat: str, name: str) -> str:
+    return name
 
 
 def _truncate(text: str, limit: int = 1024) -> str:
     return text[: limit - 3] + "..." if len(text) > limit else text
 
 
-def _translate_map_name(name: str, translate: callable) -> str:
+def _translate_map_name(name: str, translate: TranslateFn) -> str:
     """Translate composite map names like 'Amherst > Weapon Store'."""
     parts = [translate("maps", p.strip()) for p in name.split(" > ")]
     return " > ".join(parts)
 
 
+def _add_acquisition_fields(
+    embed: Embed,
+    acq_monsters: Sequence[AcquisitionMonster],
+    acq_npcs: Sequence[AcquisitionNPC],
+    acq_quests: Sequence[AcquisitionQuest],
+    translate: TranslateFn,
+) -> None:
+    """Add monster/NPC/quest acquisition fields to an embed."""
+    if acq_monsters:
+        text = "\n".join(
+            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq_monsters[:10]
+        )
+        embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
+
+    if acq_npcs:
+        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq_npcs[:8])
+        embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
+
+    if acq_quests:
+        text = "\n".join(f"• {translate('quests', q.name)} (Lv.{q.level})" for q in acq_quests[:5])
+        embed.add_field(name="\U0001f4cb 任務獎勵", value=_truncate(text), inline=False)
+
+
 # ── Monster ─────────────────────────────────────────────────────────
 
 
-def create_monster_embed(monster: Monster, *, translate: callable = str) -> Embed:
+def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity) -> Embed:
     embed = Embed(
         title=f"\U0001f432 {monster.display_name}",
         description=f"Lv. {monster.level}",
@@ -97,7 +137,49 @@ def create_monster_embed(monster: Monster, *, translate: callable = str) -> Embe
 # ── Equipment ───────────────────────────────────────────────────────
 
 
-def create_equipment_embed(equip: Equipment, *, translate: callable = str) -> Embed:
+def _add_equip_stats(embed: Embed, equip: Equipment) -> None:
+    stats = equip.stats.non_zero_stats()
+    if not stats:
+        return
+    lines = [f"**{label}**: {sv.middle}" for label, sv in stats]
+    if equip.stats.upgrade_slots is not None:
+        lines.append(f"**Upgrade Slots**: {equip.stats.upgrade_slots}")
+    if equip.attack_speed:
+        lines.append(f"**Attack Speed**: {equip.attack_speed}")
+    embed.add_field(name="\U0001f4ca 屬性", value="\n".join(lines), inline=True)
+
+
+def _add_equip_requirements(embed: Embed, equip: Equipment) -> None:
+    req = equip.equipment_restriction
+    if not req.has_requirements():
+        return
+    parts = []
+    for label, val in [
+        ("STR", req.str_req),
+        ("DEX", req.dex),
+        ("INT", req.int_req),
+        ("LUK", req.luk),
+    ]:
+        if val:
+            parts.append(f"{label}: {val}")
+    embed.add_field(name="\U0001f4cf 需求", value="\n".join(parts), inline=True)
+
+
+def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
+    tags = [
+        t
+        for t in [
+            equip.tradeable,
+            "EVENT" if equip.event else "",
+            "UNAVAILABLE" if equip.unavailable else "",
+        ]
+        if t
+    ]
+    if tags:
+        embed.add_field(name="\U0001f3f7\ufe0f 標籤", value=" | ".join(tags), inline=False)
+
+
+def create_equipment_embed(equip: Equipment, *, translate: TranslateFn = _identity) -> Embed:
     slug = equip.name.lower().replace(" ", "-")
     type_slug = equip.type.lower().replace(" ", "-")
 
@@ -109,61 +191,16 @@ def create_equipment_embed(equip: Equipment, *, translate: callable = str) -> Em
     )
     embed.set_thumbnail(url=f"{SITE}/images/equipment/{type_slug}/{slug}.webp")
 
-    # Stats
-    stats = equip.stats.non_zero_stats()
-    if stats:
-        lines = [f"**{label}**: {sv.middle}" for label, sv in stats]
-        if equip.stats.upgrade_slots is not None:
-            lines.append(f"**Upgrade Slots**: {equip.stats.upgrade_slots}")
-        if equip.attack_speed:
-            lines.append(f"**Attack Speed**: {equip.attack_speed}")
-        embed.add_field(name="\U0001f4ca 屬性", value="\n".join(lines), inline=True)
+    _add_equip_stats(embed, equip)
+    _add_equip_requirements(embed, equip)
 
-    # Requirements
-    req = equip.equipment_restriction
-    if req.has_requirements():
-        lines = []
-        if req.str_req:
-            lines.append(f"STR: {req.str_req}")
-        if req.dex:
-            lines.append(f"DEX: {req.dex}")
-        if req.int_req:
-            lines.append(f"INT: {req.int_req}")
-        if req.luk:
-            lines.append(f"LUK: {req.luk}")
-        embed.add_field(name="\U0001f4cf 需求", value="\n".join(lines), inline=True)
-
-    # Jobs
     if equip.jobs:
         job_text = ", ".join(translate("job", j) for j in equip.jobs)
         embed.add_field(name="\U0001f464 職業", value=job_text, inline=False)
 
-    # Acquisition
     acq = equip.acquisition
-    if acq.monsters:
-        text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq.monsters[:8]
-        )
-        embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
-
-    if acq.npcs:
-        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq.npcs[:8])
-        embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
-
-    if acq.quests:
-        text = "\n".join(f"• {translate('quests', q.name)} (Lv.{q.level})" for q in acq.quests[:5])
-        embed.add_field(name="\U0001f4cb 任務獎勵", value=_truncate(text), inline=False)
-
-    # Tags
-    tags: list[str] = []
-    if equip.tradeable:
-        tags.append(equip.tradeable)
-    if equip.event:
-        tags.append("EVENT")
-    if equip.unavailable:
-        tags.append("UNAVAILABLE")
-    if tags:
-        embed.add_field(name="\U0001f3f7\ufe0f 標籤", value=" | ".join(tags), inline=False)
+    _add_acquisition_fields(embed, acq.monsters, acq.npcs, acq.quests, translate)
+    _add_equip_tags(embed, equip)
 
     embed.set_footer(text="資料來源：Artale")
     return embed
@@ -171,8 +208,25 @@ def create_equipment_embed(equip: Equipment, *, translate: callable = str) -> Em
 
 # ── Scroll ──────────────────────────────────────────────────────────
 
+_STAT_LABELS = {
+    "str": "STR",
+    "dex": "DEX",
+    "int": "INT",
+    "luk": "LUK",
+    "hp": "HP",
+    "mp": "MP",
+    "atk": "ATK",
+    "matk": "M.ATK",
+    "def": "DEF",
+    "mdef": "M.DEF",
+    "accuracy": "Accuracy",
+    "avoidability": "Avoidability",
+    "speed": "Speed",
+    "jump": "Jump",
+}
 
-def create_scroll_embed(scroll: Scroll, *, translate: callable = str) -> Embed:
+
+def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -> Embed:
     embed = Embed(
         title=f"\U0001f4dc {scroll.display_name}",
         description=f"適用: {translate('eqType', scroll.type)}" if scroll.type else "",
@@ -180,35 +234,11 @@ def create_scroll_embed(scroll: Scroll, *, translate: callable = str) -> Embed:
     )
 
     if scroll.stats:
-        stat_names = {
-            "str": "STR",
-            "dex": "DEX",
-            "int": "INT",
-            "luk": "LUK",
-            "hp": "HP",
-            "mp": "MP",
-            "atk": "ATK",
-            "matk": "M.ATK",
-            "def": "DEF",
-            "mdef": "M.DEF",
-            "accuracy": "Accuracy",
-            "avoidability": "Avoidability",
-            "speed": "Speed",
-            "jump": "Jump",
-        }
-        lines = [f"**{stat_names.get(k, k)}**: +{v}" for k, v in scroll.stats.items()]
+        lines = [f"**{_STAT_LABELS.get(k, k)}**: +{v}" for k, v in scroll.stats.items()]
         embed.add_field(name="\U0001f4ca 屬性加成", value="\n".join(lines), inline=True)
 
     acq = scroll.acquisition
-    if acq.monsters:
-        text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq.monsters[:10]
-        )
-        embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
-
-    if acq.npcs:
-        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq.npcs[:5])
-        embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
+    _add_acquisition_fields(embed, acq.monsters, acq.npcs, acq.quests, translate)
 
     embed.set_footer(text="資料來源：Artale")
     return embed
@@ -217,7 +247,7 @@ def create_scroll_embed(scroll: Scroll, *, translate: callable = str) -> Embed:
 # ── NPC ─────────────────────────────────────────────────────────────
 
 
-def create_npc_embed(npc: NPC, *, translate: callable = str) -> Embed:
+def create_npc_embed(npc: NPC, *, translate: TranslateFn = _identity) -> Embed:
     npc_type_zh = translate("npcType", npc.type) if npc.type else ""
     embed = Embed(title=f"\U0001f464 {npc.display_name}", description=npc_type_zh, color=0x00CCFF)
 
@@ -263,7 +293,31 @@ FREQ_ZH = {
 }
 
 
-def create_quest_embed(quest: Quest, *, translate: callable = str) -> Embed:
+def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
+    """Format a single quest step into display lines."""
+    lines: list[str] = []
+    if step.start_npc:
+        lines.append(f"**NPC**: {translate('npcs', step.start_npc)}")
+    for target in step.monsters_to_hunt[:5]:
+        lines.append(f"• 狩獵 {translate('monsters', target.name)} x{target.quantity}")
+    for items in step.items_to_collect.values():
+        for item in items[:3]:
+            lines.append(
+                f"• 收集 {translate('misc', item.get('name', ''))} x{item.get('quantity', 0)}"
+            )
+    reward = step.reward
+    if reward:
+        parts = []
+        if "exp" in reward:
+            parts.append(f"EXP: {reward['exp']:,}")
+        if "fame" in reward:
+            parts.append(f"Fame: {reward['fame']}")
+        if parts:
+            lines.append(f"**獎勵**: {' | '.join(parts)}")
+    return lines
+
+
+def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> Embed:
     freq = FREQ_ZH.get(quest.frequency, quest.frequency)
     level_text = f"Lv. {quest.lv_lower}"
     if quest.lv_upper:
@@ -276,27 +330,7 @@ def create_quest_embed(quest: Quest, *, translate: callable = str) -> Embed:
     )
 
     for i, step in enumerate(quest.steps[:3], 1):
-        lines: list[str] = []
-        if step.start_npc:
-            lines.append(f"**NPC**: {translate('npcs', step.start_npc)}")
-        if step.monsters_to_hunt:
-            for target in step.monsters_to_hunt[:5]:
-                lines.append(f"• 狩獵 {translate('monsters', target.name)} x{target.quantity}")
-        if step.items_to_collect:
-            for items in step.items_to_collect.values():
-                for item in items[:3]:
-                    name = item.get("name", "")
-                    qty = item.get("quantity", 0)
-                    lines.append(f"• 收集 {translate('misc', name)} x{qty}")
-        if step.reward:
-            reward_parts: list[str] = []
-            if "exp" in step.reward:
-                reward_parts.append(f"EXP: {step.reward['exp']:,}")
-            if "fame" in step.reward:
-                reward_parts.append(f"Fame: {step.reward['fame']}")
-            if reward_parts:
-                lines.append(f"**獎勵**: {' | '.join(reward_parts)}")
-
+        lines = _format_quest_step(step, translate)
         if lines:
             embed.add_field(
                 name=f"步驟 {i}" if len(quest.steps) > 1 else "任務內容",
@@ -311,7 +345,7 @@ def create_quest_embed(quest: Quest, *, translate: callable = str) -> Embed:
 # ── Map ─────────────────────────────────────────────────────────────
 
 
-def create_map_embed(map_entry: MapEntry, *, translate: callable = str) -> Embed:
+def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity) -> Embed:
     region_zh = translate("region", map_entry.region)
     embed = Embed(
         title=f"\U0001f5fa\ufe0f {map_entry.display_name}",
@@ -340,7 +374,7 @@ def create_map_embed(map_entry: MapEntry, *, translate: callable = str) -> Embed
 
 
 def create_item_source_embed(
-    item_name: str, monsters: Iterable[Monster], *, translate: callable = str
+    item_name: str, monsters: Iterable[Monster], *, translate: TranslateFn = _identity
 ) -> Embed:
     monsters_list = list(monsters)
     item_zh = (
