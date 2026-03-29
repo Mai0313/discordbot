@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
 from nextcord import Embed
 
 from .constants import BASIC_STATS_TEMPLATE, MONSTER_ATTR_TEMPLATE
-from .models import (
-    Equipment,
-    MapEntry,
-    MapleStats,
-    Monster,
-    NPC,
-    Quest,
-    Scroll,
-)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from .models import NPC, Quest, Scroll, Monster, MapEntry, Equipment, MapleStats
 
 SITE = "https://www.artalemaplestory.com"
 
@@ -38,9 +34,7 @@ def create_monster_embed(monster: Monster, *, translate: callable = str) -> Embe
         url=f"{SITE}/zh/monsters/{monster.name.lower().replace(' ', '-')}",
         color=0x00FF00,
     )
-    embed.set_thumbnail(
-        url=f"{SITE}/images/monsters/{monster.name.lower().replace(' ', '-')}.gif"
-    )
+    embed.set_thumbnail(url=f"{SITE}/images/monsters/{monster.name.lower().replace(' ', '-')}.gif")
 
     meso = monster.drops.meso_range
     attr_text = MONSTER_ATTR_TEMPLATE.format(
@@ -75,9 +69,7 @@ def create_monster_embed(monster: Monster, *, translate: callable = str) -> Embe
 
     drops = monster.drops
     if drops.equipment_items:
-        text = "\n".join(
-            f"• {translate('equipment', d.name)}" for d in drops.equipment_items[:10]
-        )
+        text = "\n".join(f"• {translate('equipment', d.name)}" for d in drops.equipment_items[:10])
         embed.add_field(name="\u2694\ufe0f 裝備掉落", value=_truncate(text), inline=True)
 
     consumables = drops.useable_items + drops.misc_items
@@ -89,9 +81,7 @@ def create_monster_embed(monster: Monster, *, translate: callable = str) -> Embe
         embed.add_field(name="\U0001f9ea 消耗/素材", value=_truncate(text), inline=True)
 
     if drops.scrolls:
-        text = "\n".join(
-            f"• {translate('scrolls', d.name)}" for d in drops.scrolls[:10]
-        )
+        text = "\n".join(f"• {translate('scrolls', d.name)}" for d in drops.scrolls[:10])
         embed.add_field(name="\U0001f4dc 捲軸掉落", value=_truncate(text), inline=True)
 
     if monster.quests:
@@ -152,23 +142,16 @@ def create_equipment_embed(equip: Equipment, *, translate: callable = str) -> Em
     acq = equip.acquisition
     if acq.monsters:
         text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})"
-            for m in acq.monsters[:8]
+            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq.monsters[:8]
         )
         embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
 
     if acq.npcs:
-        text = "\n".join(
-            f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)"
-            for n in acq.npcs[:8]
-        )
+        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq.npcs[:8])
         embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
 
     if acq.quests:
-        text = "\n".join(
-            f"• {translate('quests', q.name)} (Lv.{q.level})"
-            for q in acq.quests[:5]
-        )
+        text = "\n".join(f"• {translate('quests', q.name)} (Lv.{q.level})" for q in acq.quests[:5])
         embed.add_field(name="\U0001f4cb 任務獎勵", value=_truncate(text), inline=False)
 
     # Tags
@@ -197,26 +180,34 @@ def create_scroll_embed(scroll: Scroll, *, translate: callable = str) -> Embed:
     )
 
     if scroll.stats:
-        stat_names = {"str": "STR", "dex": "DEX", "int": "INT", "luk": "LUK",
-                      "hp": "HP", "mp": "MP", "atk": "ATK", "matk": "M.ATK",
-                      "def": "DEF", "mdef": "M.DEF", "accuracy": "Accuracy",
-                      "avoidability": "Avoidability", "speed": "Speed", "jump": "Jump"}
+        stat_names = {
+            "str": "STR",
+            "dex": "DEX",
+            "int": "INT",
+            "luk": "LUK",
+            "hp": "HP",
+            "mp": "MP",
+            "atk": "ATK",
+            "matk": "M.ATK",
+            "def": "DEF",
+            "mdef": "M.DEF",
+            "accuracy": "Accuracy",
+            "avoidability": "Avoidability",
+            "speed": "Speed",
+            "jump": "Jump",
+        }
         lines = [f"**{stat_names.get(k, k)}**: +{v}" for k, v in scroll.stats.items()]
         embed.add_field(name="\U0001f4ca 屬性加成", value="\n".join(lines), inline=True)
 
     acq = scroll.acquisition
     if acq.monsters:
         text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})"
-            for m in acq.monsters[:10]
+            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq.monsters[:10]
         )
         embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
 
     if acq.npcs:
-        text = "\n".join(
-            f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)"
-            for n in acq.npcs[:5]
-        )
+        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq.npcs[:5])
         embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
 
     embed.set_footer(text="資料來源：Artale")
@@ -228,17 +219,15 @@ def create_scroll_embed(scroll: Scroll, *, translate: callable = str) -> Embed:
 
 def create_npc_embed(npc: NPC, *, translate: callable = str) -> Embed:
     npc_type_zh = translate("npcType", npc.type) if npc.type else ""
-    embed = Embed(
-        title=f"\U0001f464 {npc.display_name}",
-        description=npc_type_zh,
-        color=0x00CCFF,
-    )
+    embed = Embed(title=f"\U0001f464 {npc.display_name}", description=npc_type_zh, color=0x00CCFF)
 
     if npc.region_to_maps_list:
         lines: list[str] = []
         for region in npc.region_to_maps_list:
             region_zh = translate("region", region.region)
-            lines.append(f"**{region_zh}**: {', '.join(_translate_map_name(m, translate) for m in region.maps)}")
+            lines.append(
+                f"**{region_zh}**: {', '.join(_translate_map_name(m, translate) for m in region.maps)}"
+            )
         embed.add_field(
             name="\U0001f5fa\ufe0f 位置", value=_truncate("\n".join(lines)), inline=False
         )
@@ -294,7 +283,7 @@ def create_quest_embed(quest: Quest, *, translate: callable = str) -> Embed:
             for target in step.monsters_to_hunt[:5]:
                 lines.append(f"• 狩獵 {translate('monsters', target.name)} x{target.quantity}")
         if step.items_to_collect:
-            for cat, items in step.items_to_collect.items():
+            for items in step.items_to_collect.values():
                 for item in items[:3]:
                     name = item.get("name", "")
                     qty = item.get("quantity", 0)
@@ -332,15 +321,12 @@ def create_map_embed(map_entry: MapEntry, *, translate: callable = str) -> Embed
 
     if map_entry.monsters:
         text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})"
-            for m in map_entry.monsters[:10]
+            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in map_entry.monsters[:10]
         )
         embed.add_field(name="\U0001f432 怪物", value=_truncate(text), inline=True)
 
     if map_entry.npcs:
-        text = "\n".join(
-            f"• {translate('npcs', n.name)}" for n in map_entry.npcs[:10]
-        )
+        text = "\n".join(f"• {translate('npcs', n.name)}" for n in map_entry.npcs[:10])
         embed.add_field(name="\U0001f464 NPC", value=_truncate(text), inline=True)
 
     if map_entry.hidden:
@@ -354,10 +340,7 @@ def create_map_embed(map_entry: MapEntry, *, translate: callable = str) -> Embed
 
 
 def create_item_source_embed(
-    item_name: str,
-    monsters: Iterable[Monster],
-    *,
-    translate: callable = str,
+    item_name: str, monsters: Iterable[Monster], *, translate: callable = str
 ) -> Embed:
     monsters_list = list(monsters)
     item_zh = (
@@ -368,17 +351,13 @@ def create_item_source_embed(
     )
     display = item_zh if item_zh != item_name else item_name
 
-    embed = Embed(
-        title=f"\U0001f381 {display}", description="物品掉落來源", color=0x0099FF
-    )
+    embed = Embed(title=f"\U0001f381 {display}", description="物品掉落來源", color=0x0099FF)
 
     lines: list[str] = []
     for monster in monsters_list[:15]:
         lines.append(f"• **{monster.display_name}** (Lv.{monster.level})")
     if lines:
-        embed.add_field(
-            name="\U0001f432 掉落來源怪物", value="\n".join(lines), inline=False
-        )
+        embed.add_field(name="\U0001f432 掉落來源怪物", value="\n".join(lines), inline=False)
 
     embed.set_footer(text="資料來源：Artale")
     return embed
@@ -389,9 +368,7 @@ def create_item_source_embed(
 
 def build_stats_embed(stats: MapleStats) -> Embed:
     embed = Embed(
-        title="\U0001f4ca 楓之谷資料庫統計",
-        description="Artale 楓之谷資料庫概覽",
-        color=0x00FF88,
+        title="\U0001f4ca 楓之谷資料庫統計", description="Artale 楓之谷資料庫概覽", color=0x00FF88
     )
     embed.add_field(
         name="\U0001f4c8 資料總覽",
@@ -410,18 +387,13 @@ def build_stats_embed(stats: MapleStats) -> Embed:
 
     if stats.level_distribution:
         level_dist = "\n".join(
-            f"**{r}級**: {c}隻"
-            for r, c in sorted(stats.level_distribution.items())
+            f"**{r}級**: {c}隻" for r, c in sorted(stats.level_distribution.items())
         )
         embed.add_field(name="\U0001f3af 等級分布", value=level_dist, inline=True)
 
     if stats.popular_items:
         popular_text = "\n".join(f"• {item}" for item in stats.popular_items[:15])
-        embed.add_field(
-            name="\U0001f525 熱門掉落物品", value=popular_text, inline=False
-        )
+        embed.add_field(name="\U0001f525 熱門掉落物品", value=popular_text, inline=False)
 
-    embed.set_footer(
-        text="資料來源：Artale | 使用 /maple_monster 或 /maple_item 搜尋"
-    )
+    embed.set_footer(text="資料來源：Artale | 使用 /maple_monster 或 /maple_item 搜尋")
     return embed

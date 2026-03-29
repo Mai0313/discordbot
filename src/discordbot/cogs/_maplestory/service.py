@@ -1,28 +1,18 @@
 import json
-from pathlib import Path
 from typing import TypeVar
+from pathlib import Path
 
 import logfire
 from pydantic import BaseModel
 
-from .models import (
-    Equipment,
-    MapEntry,
-    MapleStats,
-    MiscItem,
-    Monster,
-    NPC,
-    Quest,
-    Scroll,
-    Useable,
-)
+from .models import NPC, Quest, Scroll, Monster, Useable, MapEntry, MiscItem, Equipment, MapleStats
 
 DEFAULT_DATA_DIR = Path("./data/maplestory")
 
 T = TypeVar("T", bound=BaseModel)
 
 
-def _load_json(path: Path, model: type[T]) -> list[T]:
+def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
     try:
         with path.open(encoding="utf-8") as f:
             raw = json.load(f)
@@ -67,7 +57,9 @@ class MapleStoryService:
 
     # Keep backwards compat for existing callers
     @classmethod
-    def from_file(cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json") -> "MapleStoryService":
+    def from_file(
+        cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json"
+    ) -> "MapleStoryService":
         return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
@@ -133,8 +125,7 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                m for m in self._monsters
-                if q in m.name.lower() or q in m.name_zh.lower()
+                m for m in self._monsters if q in m.name.lower() or q in m.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
 
@@ -147,10 +138,7 @@ class MapleStoryService:
 
     def get_monsters_by_drop(self, item_name: str) -> list[Monster]:
         q = item_name.lower()
-        return [
-            m for m in self._monsters
-            if any(d.name.lower() == q for d in m.drops.all_items)
-        ]
+        return [m for m in self._monsters if any(d.name.lower() == q for d in m.drops.all_items)]
 
     # ── Equipment searches ──────────────────────────────────────────
 
@@ -159,8 +147,7 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                e for e in self._equipment
-                if q in e.name.lower() or q in e.name_zh.lower()
+                e for e in self._equipment if q in e.name.lower() or q in e.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
 
@@ -178,8 +165,7 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                s for s in self._scrolls
-                if q in s.name.lower() or q in s.name_zh.lower()
+                s for s in self._scrolls if q in s.name.lower() or q in s.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
 
@@ -190,8 +176,7 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                n for n in self._npcs
-                if q in n.name.lower() or q in n.name_zh.lower()
+                n for n in self._npcs if q in n.name.lower() or q in n.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
 
@@ -202,7 +187,8 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                quest for quest in self._quests
+                quest
+                for quest in self._quests
                 if q in quest.name.lower() or q in quest.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
@@ -214,8 +200,7 @@ class MapleStoryService:
         if key not in self._cache:
             q = query.lower()
             self._cache[key] = [
-                m for m in self._maps
-                if q in m.name.lower() or q in m.name_zh.lower()
+                m for m in self._maps if q in m.name.lower() or q in m.name_zh.lower()
             ]
         return list(self._cache[key])  # type: ignore[arg-type]
 
@@ -229,10 +214,12 @@ class MapleStoryService:
             items_found: set[str] = set()
             for monster in self._monsters:
                 for drop in monster.drops.all_items:
-                    zh = self.translate("equipment", drop.name) or \
-                         self.translate("scrolls", drop.name) or \
-                         self.translate("useable", drop.name) or \
-                         self.translate("misc", drop.name)
+                    zh = (
+                        self.translate("equipment", drop.name)
+                        or self.translate("scrolls", drop.name)
+                        or self.translate("useable", drop.name)
+                        or self.translate("misc", drop.name)
+                    )
                     if q in drop.name.lower() or (zh and q in zh.lower()):
                         items_found.add(drop.name)
             self._cache[key] = sorted(items_found)

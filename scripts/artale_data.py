@@ -4,11 +4,11 @@ Extracts game data from artalemaplestory.com by parsing the Next.js RSC
 (React Server Components) payload embedded in each page's HTML.
 """
 
-import json
 import re
+import json
 import time
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
 import requests
 from rich.console import Console
@@ -34,9 +34,7 @@ CATEGORIES: dict[str, tuple[str, str]] = {
 def fetch_html(url: str, *, max_retries: int = 3) -> str:
     for attempt in range(max_retries):
         try:
-            resp = requests.get(
-                url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30
-            )
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
             resp.raise_for_status()
             return resp.text
         except requests.RequestException:
@@ -48,9 +46,7 @@ def fetch_html(url: str, *, max_retries: int = 3) -> str:
 
 def extract_rsc_text(html: str) -> str:
     """Concatenate all RSC payload chunks from self.__next_f.push() scripts."""
-    chunks = re.findall(
-        r"self\.__next_f\.push\(\s*(\[.*?\])\s*\)", html, re.DOTALL
-    )
+    chunks = re.findall(r"self\.__next_f\.push\(\s*(\[.*?\])\s*\)", html, re.DOTALL)
     parts: list[str] = []
     for raw in chunks:
         try:
@@ -87,8 +83,15 @@ def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:
 
     # Entity name translations (en -> zh)
     for key in (
-        "monsters", "equipment", "scrolls", "useable",
-        "misc", "maps", "quests", "npcs", "skill",
+        "monsters",
+        "equipment",
+        "scrolls",
+        "useable",
+        "misc",
+        "maps",
+        "quests",
+        "npcs",
+        "skill",
     ):
         val = messages.get(key)
         if isinstance(val, dict):
@@ -116,10 +119,7 @@ def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:
     return translations
 
 
-def apply_name_translations(
-    items: list[dict[str, Any]],
-    name_dict: dict[str, str],
-) -> None:
+def apply_name_translations(items: list[dict[str, Any]], name_dict: dict[str, str]) -> None:
     """Add 'nameZh' field to each item from translation dictionary."""
     for item in items:
         en_name = item.get("name", "")
@@ -128,10 +128,7 @@ def apply_name_translations(
 
 
 def scrape_category(
-    category: str,
-    url_path: str,
-    rsc_key: str,
-    translations: dict[str, dict[str, str]],
+    category: str, url_path: str, rsc_key: str, translations: dict[str, dict[str, str]]
 ) -> list[dict[str, Any]]:
     url = f"{BASE_URL}/{LOCALE}/{url_path}"
     console.print(f"  📖 {url}")
@@ -150,9 +147,7 @@ def scrape_category(
     return data
 
 
-def scrape_maps(
-    translations: dict[str, dict[str, str]],
-) -> list[dict[str, Any]]:
+def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     """Scrape maps by fetching each region page."""
     # Discover region slugs from main maps page
     main_url = f"{BASE_URL}/{LOCALE}/maps"
@@ -184,7 +179,7 @@ def scrape_maps(
                 all_maps.extend(maps)
                 console.print(f"    ✓ {len(maps)} maps")
             else:
-                console.print(f"    [yellow]⚠ No maps data[/yellow]")
+                console.print("    [yellow]⚠ No maps data[/yellow]")
         except requests.RequestException as e:
             console.print(f"    [red]✗ {e}[/red]")
 
@@ -209,8 +204,7 @@ def main() -> None:
     translations = extract_translations(rsc_text)
     save_json(translations, "translations")
     console.print(
-        f"  ✓ Translations: "
-        + ", ".join(f"{k}={len(v)}" for k, v in translations.items())
+        "  ✓ Translations: " + ", ".join(f"{k}={len(v)}" for k, v in translations.items())
     )
 
     # Step 2: extract monsters from the already-fetched page

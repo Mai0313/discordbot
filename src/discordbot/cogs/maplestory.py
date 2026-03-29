@@ -1,21 +1,21 @@
 from pathlib import Path
 
 import nextcord
-from nextcord import Embed, Interaction, Locale, SelectOption, SlashOption
+from nextcord import Embed, Locale, Interaction, SlashOption, SelectOption
 from nextcord.ext import commands
 
+from ._maplestory.views import MapleDropSearchView
 from ._maplestory.embeds import (
-    build_stats_embed,
-    create_equipment_embed,
-    create_item_source_embed,
     create_map_embed,
-    create_monster_embed,
     create_npc_embed,
+    build_stats_embed,
     create_quest_embed,
     create_scroll_embed,
+    create_monster_embed,
+    create_equipment_embed,
+    create_item_source_embed,
 )
 from ._maplestory.service import DEFAULT_DATA_DIR, MapleStoryService
-from ._maplestory.views import MapleDropSearchView
 
 _NOT_FOUND_COLOR = 0xFFAA00
 _MULTI_COLOR = 0x00AAFF
@@ -40,7 +40,9 @@ class MapleStoryCogs(commands.Cog):
         return self.service.translate(category, name)
 
     async def _send_error(self, interaction: Interaction) -> None:
-        embed = Embed(title=":x: 錯誤", description="無法載入資料，請聯絡管理員。", color=_ERROR_COLOR)
+        embed = Embed(
+            title=":x: 錯誤", description="無法載入資料，請聯絡管理員。", color=_ERROR_COLOR
+        )
         await interaction.followup.send(embed=embed)
 
     async def _send_not_found(self, interaction: Interaction, kind: str, query: str) -> None:
@@ -95,12 +97,11 @@ class MapleStoryCogs(commands.Cog):
         )
         view = MapleDropSearchView(self.service, "monster", name)
         view.set_options([
-            SelectOption(
-                label=m.display_name, description=f"Lv.{m.level}", value=m.name
-            )
+            SelectOption(label=m.display_name, description=f"Lv.{m.level}", value=m.name)
             for m in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_equip ────────────────────────────────────────────────
 
@@ -154,6 +155,7 @@ class MapleStoryCogs(commands.Cog):
             for e in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_scroll ───────────────────────────────────────────────
 
@@ -200,13 +202,12 @@ class MapleStoryCogs(commands.Cog):
         view = MapleDropSearchView(self.service, "scroll", name)
         view.set_options([
             SelectOption(
-                label=s.display_name,
-                description=self._translate("eqType", s.type),
-                value=s.name,
+                label=s.display_name, description=self._translate("eqType", s.type), value=s.name
             )
             for s in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_npc ──────────────────────────────────────────────────
 
@@ -252,10 +253,10 @@ class MapleStoryCogs(commands.Cog):
         )
         view = MapleDropSearchView(self.service, "npc", name)
         view.set_options([
-            SelectOption(label=n.display_name, description=n.type, value=n.name)
-            for n in results
+            SelectOption(label=n.display_name, description=n.type, value=n.name) for n in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_quest ────────────────────────────────────────────────
 
@@ -302,13 +303,12 @@ class MapleStoryCogs(commands.Cog):
         view = MapleDropSearchView(self.service, "quest", name)
         view.set_options([
             SelectOption(
-                label=q.display_name,
-                description=f"Lv.{q.lv_lower} | {q.frequency}",
-                value=q.name,
+                label=q.display_name, description=f"Lv.{q.lv_lower} | {q.frequency}", value=q.name
             )
             for q in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_map ──────────────────────────────────────────────────
 
@@ -355,13 +355,12 @@ class MapleStoryCogs(commands.Cog):
         view = MapleDropSearchView(self.service, "map", name)
         view.set_options([
             SelectOption(
-                label=m.display_name,
-                description=self._translate("region", m.region),
-                value=m.name,
+                label=m.display_name, description=self._translate("region", m.region), value=m.name
             )
             for m in results
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_item ─────────────────────────────────────────────────
 
@@ -419,6 +418,7 @@ class MapleStoryCogs(commands.Cog):
             for item in items_found
         ])
         await interaction.followup.send(embed=embed, view=view)
+        return None
 
     # ── /maple_stats ────────────────────────────────────────────────
 
@@ -439,6 +439,7 @@ class MapleStoryCogs(commands.Cog):
         stats = self.service.get_stats()
         embed = build_stats_embed(stats)
         await interaction.followup.send(embed=embed)
+        return None
 
 
 async def setup(bot: commands.Bot) -> None:

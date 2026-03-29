@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, BaseModel, ConfigDict
 
 
 class _Base(BaseModel):
@@ -10,6 +10,7 @@ class _Base(BaseModel):
 
 
 # ── Shared sub-models ───────────────────────────────────────────────
+
 
 class RegionMaps(_Base):
     region: str
@@ -39,6 +40,7 @@ class Acquisition(_Base):
 
 
 # ── Monster ─────────────────────────────────────────────────────────
+
 
 class DefenseStats(_Base):
     weapon: int = 0
@@ -85,9 +87,7 @@ class Monster(_Base):
     def_stats: DefenseStats = Field(default_factory=DefenseStats, alias="def")
     accuracy: AccuracyStats = Field(default_factory=AccuracyStats)
     modifiers: list[str] = []
-    region_to_maps_list: list[RegionMaps] = Field(
-        default_factory=list, alias="regionToMapsList"
-    )
+    region_to_maps_list: list[RegionMaps] = Field(default_factory=list, alias="regionToMapsList")
     drops: MonsterDrops = Field(default_factory=MonsterDrops)
     quests: list[MonsterQuest] = []
 
@@ -101,6 +101,7 @@ class Monster(_Base):
 
 
 # ── Equipment ───────────────────────────────────────────────────────
+
 
 class StatValue(_Base):
     middle: int = 0
@@ -130,12 +131,20 @@ class EquipmentStats(_Base):
     def non_zero_stats(self) -> list[tuple[str, StatValue]]:
         """Return (label, value) pairs for stats with non-zero middle."""
         mapping = [
-            ("STR", self.str_stat), ("DEX", self.dex), ("INT", self.int_stat),
-            ("LUK", self.luk), ("HP", self.hp), ("MP", self.mp),
-            ("ATK", self.atk), ("M.ATK", self.matk),
-            ("DEF", self.def_stat), ("M.DEF", self.mdef),
-            ("Accuracy", self.accuracy), ("Avoidability", self.avoidability),
-            ("Speed", self.speed), ("Jump", self.jump),
+            ("STR", self.str_stat),
+            ("DEX", self.dex),
+            ("INT", self.int_stat),
+            ("LUK", self.luk),
+            ("HP", self.hp),
+            ("MP", self.mp),
+            ("ATK", self.atk),
+            ("M.ATK", self.matk),
+            ("DEF", self.def_stat),
+            ("M.DEF", self.mdef),
+            ("Accuracy", self.accuracy),
+            ("Avoidability", self.avoidability),
+            ("Speed", self.speed),
+            ("Jump", self.jump),
         ]
         return [(label, sv) for label, sv in mapping if sv and sv.middle]
 
@@ -174,6 +183,7 @@ class Equipment(_Base):
 
 # ── Scroll ──────────────────────────────────────────────────────────
 
+
 class Scroll(_Base):
     name: str
     name_zh: str = Field(default="", alias="nameZh")
@@ -187,6 +197,7 @@ class Scroll(_Base):
 
 
 # ── Useable ─────────────────────────────────────────────────────────
+
 
 class UseableStat(_Base):
     amount: int = 0
@@ -216,6 +227,7 @@ class Useable(_Base):
 
 # ── NPC ─────────────────────────────────────────────────────────────
 
+
 class NPCItem(_Base):
     name: str
     price: int = 0
@@ -225,9 +237,7 @@ class NPC(_Base):
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     type: str = ""
-    region_to_maps_list: list[RegionMaps] = Field(
-        default_factory=list, alias="regionToMapsList"
-    )
+    region_to_maps_list: list[RegionMaps] = Field(default_factory=list, alias="regionToMapsList")
     equipment_items: list[NPCItem] = Field(default_factory=list, alias="equipmentItems")
     useable_items: list[NPCItem] = Field(default_factory=list, alias="useableItems")
     scrolls: list[NPCItem] = Field(default_factory=list, alias="scrolls")
@@ -246,6 +256,7 @@ class NPC(_Base):
 
 # ── Quest ───────────────────────────────────────────────────────────
 
+
 class HuntTarget(_Base):
     name: str
     quantity: int = 0
@@ -253,9 +264,7 @@ class HuntTarget(_Base):
 
 class QuestStep(_Base):
     start_npc: str = Field(default="", alias="startNPC")
-    monsters_to_hunt: list[HuntTarget] = Field(
-        default_factory=list, alias="monstersToHunt"
-    )
+    monsters_to_hunt: list[HuntTarget] = Field(default_factory=list, alias="monstersToHunt")
     items_to_collect: dict[str, list[dict[str, Any]]] = Field(
         default_factory=dict, alias="itemsToCollect"
     )
@@ -278,6 +287,7 @@ class Quest(_Base):
 
 
 # ── Map ─────────────────────────────────────────────────────────────
+
 
 class MapNPC(_Base):
     name: str
@@ -310,6 +320,7 @@ class MapEntry(_Base):
 
 # ── Misc Item ───────────────────────────────────────────────────────
 
+
 class MiscItem(_Base):
     name: str
     name_zh: str = Field(default="", alias="nameZh")
@@ -322,6 +333,7 @@ class MiscItem(_Base):
 
 
 # ── Stats (for /maple_stats command) ────────────────────────────────
+
 
 class MapleStats(BaseModel):
     total_monsters: int

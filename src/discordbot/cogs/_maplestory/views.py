@@ -4,16 +4,16 @@ from typing import TYPE_CHECKING
 
 import nextcord
 from nextcord import Interaction, SelectOption
-from nextcord.ui import Select, View
+from nextcord.ui import View, Select
 
 from .embeds import (
-    create_equipment_embed,
-    create_item_source_embed,
     create_map_embed,
-    create_monster_embed,
     create_npc_embed,
     create_quest_embed,
     create_scroll_embed,
+    create_monster_embed,
+    create_equipment_embed,
+    create_item_source_embed,
 )
 
 if TYPE_CHECKING:
@@ -96,9 +96,7 @@ class MapleDropSearchView(View):
                 embed = create_map_embed(match, translate=tr)
 
         if embed:
-            await interaction.followup.edit_message(
-                interaction.message.id, embed=embed, view=None
-            )
+            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
 
     def set_options(self, options: list[SelectOption]) -> None:
         self.select_result.options = options[:25]
