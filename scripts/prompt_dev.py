@@ -62,14 +62,17 @@ def use_oai() -> None:
             {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
         ],
-        reasoning_effort="none",
+        reasoning_effort="low",
         stream=False,
         tools=tools,
         service_tier="auto",
     )
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
-    console.print(responses.choices[0].message.content)
+    content = responses.choices[0].message.content
+    if content.startswith("\n\n\n"):
+        content = content[3:]
+    console.print(content)
 
 
 def use_gemini() -> None:

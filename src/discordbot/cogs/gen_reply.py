@@ -15,7 +15,6 @@ from autogen.agentchat.contrib.img_utils import (
     pil_to_data_uri,
     convert_base64_to_data_uri,
 )
-from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
@@ -33,7 +32,6 @@ DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
-REASONING_EFFORT: ReasoningEffort = "none"
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
@@ -184,7 +182,7 @@ class ReplyGeneratorCogs(commands.Cog):
         response = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"metadata": {"tags": [message.author.name]}},
         )
@@ -197,7 +195,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return "SUMMARY"
         return "QA"
 
-    async def _handle_streaming(
+    async def _handle_streaming(  # noqa: PLR0912
         self,
         model: str,
         message: Message,
@@ -208,7 +206,7 @@ class ReplyGeneratorCogs(commands.Cog):
         stream = await self.client.chat.completions.create(
             model=model,
             messages=message_list,
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort="medium",
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
@@ -217,11 +215,18 @@ class ReplyGeneratorCogs(commands.Cog):
         stored_content = f"{message.author.mention} "
         counted_content = 0
         new_reply: Message | None = None
+        content_started = False
 
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
-                stored_content += chunk.choices[0].delta.content
-                counted_content += len(chunk.choices[0].delta.content)
+                delta = chunk.choices[0].delta.content
+                if not content_started:
+                    delta = delta.lstrip("\n")
+                    if not delta:
+                        continue
+                    content_started = True
+                stored_content += delta
+                counted_content += len(delta)
 
                 if counted_content >= 30:
                     if new_reply is None:
@@ -355,7 +360,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     ],
                 },
             ],
-            reasoning_effort=REASONING_EFFORT,
+            reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"metadata": {"tags": [message.author.name]}},
         )
