@@ -97,7 +97,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 converted_attachment = pil_to_data_uri(image=downloaded_attachment)
                 converted_attachments.append(converted_attachment)
             except Exception:
-                logfire.warn("Filed to download the attachment")
+                logfire.warn(
+                    "Failed to convert attachment to image, keeping original URL", url=attachment
+                )
+                converted_attachments.append(attachment)
 
         return converted_attachments
 
@@ -111,7 +114,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # Only include images for current/recent messages, not historical ones
         attachments = await self._get_attachments(message=message)
         for attachment in attachments:
-            content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
+            if attachment.startswith("data:"):
+                content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
+            else:
+                content_parts.append({"type": "text", "text": f"Attachment URL: {attachment}"})
         return {"role": role, "content": content_parts}
 
     async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
