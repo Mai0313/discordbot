@@ -30,7 +30,6 @@ uv run discordbot
 ### Optional: MapleStory Data
 
 ```bash
-uv run playwright install chromium
 uv run update
 ```
 

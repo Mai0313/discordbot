@@ -113,7 +113,6 @@ uv run discordbot
 ### 可選：更新楓之谷資料庫
 
 ```bash
-uv run playwright install chromium   # 僅首次需要
 uv run update
 ```
 

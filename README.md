@@ -113,7 +113,6 @@ uv run discordbot
 ### Optional: Update MapleStory Database
 
 ```bash
-uv run playwright install chromium   # first time only
 uv run update
 ```
 

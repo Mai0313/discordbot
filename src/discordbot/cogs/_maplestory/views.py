@@ -1,13 +1,27 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import nextcord
 from nextcord import Interaction, SelectOption
-from nextcord.ui import View, Select
+from nextcord.ui import Select, View
 
-from .embeds import create_monster_embed, create_item_source_embed
-from .service import MapleStoryService
+from .embeds import (
+    create_equipment_embed,
+    create_item_source_embed,
+    create_map_embed,
+    create_monster_embed,
+    create_npc_embed,
+    create_quest_embed,
+    create_scroll_embed,
+)
+
+if TYPE_CHECKING:
+    from .service import MapleStoryService
 
 
 class MapleDropSearchView(View):
-    """楓之谷掉落物品搜尋的互動式介面"""
+    """Interactive select menu for Artale search results."""
 
     def __init__(
         self,
@@ -22,6 +36,9 @@ class MapleDropSearchView(View):
         self.search_type = search_type
         self.query = query
 
+    def _translate(self, category: str, name: str) -> str:
+        return self.service.translate(category, name)
+
     @nextcord.ui.select(
         placeholder="選擇要查看的結果...",
         min_values=1,
@@ -31,25 +48,57 @@ class MapleDropSearchView(View):
     async def select_result(self, select: Select, interaction: Interaction) -> None:
         await interaction.response.defer()
 
-        selected_value = select.values[0]
-        if selected_value == "loading":
+        selected = select.values[0]
+        if selected == "loading":
             await interaction.followup.send("請先選擇有效的結果。", ephemeral=True)
             return
 
+        embed = None
+        tr = self._translate
+
         if self.search_type == "monster":
-            monster = self.service.get_monster(selected_value)
+            monster = self.service.get_monster(selected)
             if monster:
-                embed = create_monster_embed(monster)
-                await interaction.followup.edit_message(
-                    interaction.message.id, embed=embed, view=None
-                )
+                embed = create_monster_embed(monster, translate=tr)
+
         elif self.search_type == "item":
-            monsters = self.service.get_monsters_by_item(selected_value)
+            monsters = self.service.get_monsters_by_drop(selected)
             if monsters:
-                embed = create_item_source_embed(selected_value, monsters)
-                await interaction.followup.edit_message(
-                    interaction.message.id, embed=embed, view=None
-                )
+                embed = create_item_source_embed(selected, monsters, translate=tr)
+
+        elif self.search_type == "equipment":
+            equip = self.service.get_equipment(selected)
+            if equip:
+                embed = create_equipment_embed(equip, translate=tr)
+
+        elif self.search_type == "scroll":
+            results = self.service.search_scrolls_by_name(selected)
+            match = next((s for s in results if s.name == selected), None)
+            if match:
+                embed = create_scroll_embed(match, translate=tr)
+
+        elif self.search_type == "npc":
+            results = self.service.search_npcs_by_name(selected)
+            match = next((n for n in results if n.name == selected), None)
+            if match:
+                embed = create_npc_embed(match, translate=tr)
+
+        elif self.search_type == "quest":
+            results = self.service.search_quests_by_name(selected)
+            match = next((q for q in results if q.name == selected), None)
+            if match:
+                embed = create_quest_embed(match, translate=tr)
+
+        elif self.search_type == "map":
+            results = self.service.search_maps_by_name(selected)
+            match = next((m for m in results if m.name == selected), None)
+            if match:
+                embed = create_map_embed(match, translate=tr)
+
+        if embed:
+            await interaction.followup.edit_message(
+                interaction.message.id, embed=embed, view=None
+            )
 
     def set_options(self, options: list[SelectOption]) -> None:
         self.select_result.options = options[:25]

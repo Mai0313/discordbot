@@ -76,7 +76,7 @@ dependencies = [
     "orjson>=3.11.7",
     "pandas>=3.0.1",
     "pillow>=12.1.1",
-    "playwright>=1.58.0",
+
     "psycopg2-binary>=2.9.11",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
@@ -183,9 +183,7 @@ exclude = [
 cli = "python ./src/discordbot/cli.py"
 api = "python ./src/discordbot/cli.py"
 main = "python ./src/discordbot/cli.py"
-install_chrome = "playwright install chromium"
-update_data = "python ./scripts/artale_data.py"
-update = ["install_chrome", "update_data"]
+update = "python ./scripts/artale_data.py"
 
 # Documentation
 docs_gen = "make gen-docs"
