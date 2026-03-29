@@ -5,7 +5,7 @@ from typing import Any, Literal
 import asyncio
 import contextlib
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import File, Embed, Message, Interaction
 from nextcord.ext import commands
@@ -15,7 +15,7 @@ from autogen.agentchat.contrib.img_utils import (
     pil_to_data_uri,
     convert_base64_to_data_uri,
 )
-from openai.types.chat.chat_completion_message_param import ChatCompletionMessageParam
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 from discordbot.typings.llm import LLMConfig
@@ -316,21 +316,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _handle_streaming(  # noqa: PLR0912
         self,
-        model: str,
+        stream: AsyncStream[ChatCompletionChunk],
         message: Message,
         reply_message: Interaction | Message,
-        message_list: list[ChatCompletionMessageParam],
     ) -> str:
         # Get LLM response using the message chain
-        stream = await self.client.chat.completions.create(
-            model=model,
-            messages=message_list,
-            reasoning_effort="medium",
-            tools=TOOLS,
-            stream=True,
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
-        )
         stored_content = f"{message.author.mention} "
         counted_content = 0
         new_reply: Message | None = None
@@ -388,12 +378,17 @@ class ReplyGeneratorCogs(commands.Cog):
         current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
-        await self._handle_streaming(
+        stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
-            message=message,
-            reply_message=reply_message,
-            message_list=message_list,
+            messages=message_list,
+            reasoning_effort="medium",
+            tools=TOOLS,
+            stream=True,
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
+
+        await self._handle_streaming(stream=stream, message=message, reply_message=reply_message)
 
     async def _handle_summary_reply(self, message: Message, reply_message: Message) -> None:
         hist_messages = await self._get_history_message(message=message, limit=50)
@@ -405,12 +400,17 @@ class ReplyGeneratorCogs(commands.Cog):
             "role": "user",
             "content": [{"type": "text", "text": "請總結以上的聊天記錄。"}],
         })
-        await self._handle_streaming(
+        stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
-            message=message,
-            reply_message=reply_message,
-            message_list=message_list,
+            messages=message_list,
+            reasoning_effort="medium",
+            tools=TOOLS,
+            stream=True,
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"metadata": {"tags": [message.author.name]}},
         )
+
+        await self._handle_streaming(stream=stream, message=message, reply_message=reply_message)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
