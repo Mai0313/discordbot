@@ -3,6 +3,7 @@ import time
 import base64
 from typing import Any, Literal
 import asyncio
+from mimetypes import guess_type
 import contextlib
 
 from openai import AsyncOpenAI, AsyncStream
@@ -35,7 +36,7 @@ VIDEO_COOLDOWN = 10  # minutes
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
-    {"codeExecution": {}},
+    # {"codeExecution": {}},
 ]
 
 
@@ -78,29 +79,68 @@ class ReplyGeneratorCogs(commands.Cog):
         content = f"{message.author.name}: {content}"
         return content
 
-    async def _get_attachments(self, message: Message) -> list[str]:
-        attachments: list[str] = []
-        if message.attachments:
-            attachments = [attachment.url for attachment in message.attachments]
-        if message.stickers:
-            attachments.extend([sticker.url for sticker in message.stickers])
-        for embed in message.embeds:
-            if embed.image and embed.image.url:
-                attachments.append(embed.image.url)
-            if embed.thumbnail and embed.thumbnail.url:
-                attachments.append(embed.thumbnail.url)
+    async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
+        content_parts: list[dict[str, Any]] = []
 
-        converted_attachments: list[str] = []
-        for attachment in attachments:
+        # Process Discord attachments (have content_type metadata)
+        for attachment in message.attachments:
+            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            if content_type.startswith("video/"):
+                try:
+                    video_bytes = await attachment.read()
+                    b64_data = base64.b64encode(video_bytes).decode()
+                    mime_type = content_type.split(";")[0].strip()
+                    data_uri = f"data:{mime_type};base64,{b64_data}"
+                    content_parts.append({
+                        "type": "file",
+                        "file": {"filename": attachment.filename, "file_data": data_uri},
+                    })
+                except Exception:
+                    logfire.warn("Failed to download video attachment, keeping original URL")
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"Attachment URL: {attachment.url}",
+                    })
+            else:
+                try:
+                    downloaded = get_pil_image(image_file=attachment.url)
+                    converted = pil_to_data_uri(image=downloaded)
+                    content_parts.append({"type": "image_url", "image_url": {"url": converted}})
+                except Exception:
+                    logfire.warn("Failed to convert attachment to image, keeping original URL")
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"Attachment URL: {attachment.url}",
+                    })
+
+        # Process stickers
+        for sticker in message.stickers:
             try:
-                downloaded_attachment = get_pil_image(image_file=attachment)
-                converted_attachment = pil_to_data_uri(image=downloaded_attachment)
-                converted_attachments.append(converted_attachment)
+                downloaded = get_pil_image(image_file=sticker.url)
+                converted = pil_to_data_uri(image=downloaded)
+                content_parts.append({"type": "image_url", "image_url": {"url": converted}})
             except Exception:
-                logfire.warn("Failed to convert attachment to image, keeping original URL")
-                converted_attachments.append(attachment)
+                logfire.warn("Failed to convert sticker to image, keeping original URL")
+                content_parts.append({"type": "text", "text": f"Attachment URL: {sticker.url}"})
 
-        return converted_attachments
+        # Process embed images
+        for embed in message.embeds:
+            for url in filter(
+                None,
+                [
+                    embed.image.url if embed.image else None,
+                    embed.thumbnail.url if embed.thumbnail else None,
+                ],
+            ):
+                try:
+                    downloaded = get_pil_image(image_file=url)
+                    converted = pil_to_data_uri(image=downloaded)
+                    content_parts.append({"type": "image_url", "image_url": {"url": converted}})
+                except Exception:
+                    logfire.warn("Failed to convert embed image, keeping original URL")
+                    content_parts.append({"type": "text", "text": f"Attachment URL: {url}"})
+
+        return content_parts
 
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
         content = await self._get_cleaned_content(message=message)
@@ -110,12 +150,8 @@ class ReplyGeneratorCogs(commands.Cog):
         content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
 
         # Only include images for current/recent messages, not historical ones
-        attachments = await self._get_attachments(message=message)
-        for attachment in attachments:
-            if attachment.startswith("data:"):
-                content_parts.append({"type": "image_url", "image_url": {"url": attachment}})
-            else:
-                content_parts.append({"type": "text", "text": f"Attachment URL: {attachment}"})
+        attachment_parts = await self._get_attachments(message=message)
+        content_parts.extend(attachment_parts)
         return {"role": role, "content": content_parts}
 
     async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
@@ -254,9 +290,16 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_image_reply(
         self, message: Message, reply_message: Message, user_prompt: str
     ) -> None:
-        data_uris = await self._get_attachments(message=message)
+        attachment_parts = await self._get_attachments(message=message)
         if message.reference and isinstance(message.reference.resolved, Message):
-            data_uris.extend(await self._get_attachments(message=message.reference.resolved))
+            ref_attachment_parts = await self._get_attachments(message=message.reference.resolved)
+            attachment_parts.extend(ref_attachment_parts)
+
+        data_uris = [
+            part["image_url"]["url"]
+            for part in attachment_parts
+            if part.get("type") == "image_url"
+        ]
 
         if data_uris:
             image_bytes_list: list[bytes] = []
