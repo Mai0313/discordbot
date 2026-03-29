@@ -302,18 +302,15 @@ def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
         lines.append(f"• 狩獵 {translate('monsters', target.name)} x{target.quantity}")
     for items in step.items_to_collect.values():
         for item in items[:3]:
-            lines.append(
-                f"• 收集 {translate('misc', item.get('name', ''))} x{item.get('quantity', 0)}"
-            )
+            lines.append(f"• 收集 {translate('misc', item.name)} x{item.quantity}")
     reward = step.reward
-    if reward:
-        parts = []
-        if "exp" in reward:
-            parts.append(f"EXP: {reward['exp']:,}")
-        if "fame" in reward:
-            parts.append(f"Fame: {reward['fame']}")
-        if parts:
-            lines.append(f"**獎勵**: {' | '.join(parts)}")
+    parts: list[str] = []
+    if reward.exp:
+        parts.append(f"EXP: {reward.exp:,}")
+    if reward.fame:
+        parts.append(f"Fame: {reward.fame}")
+    if parts:
+        lines.append(f"**獎勵**: {' | '.join(parts)}")
     return lines
 
 

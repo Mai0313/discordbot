@@ -7,13 +7,16 @@ Extracts game data from artalemaplestory.com by parsing the Next.js RSC
 import re
 import json
 import time
-from typing import Any
 from pathlib import Path
+from collections.abc import Mapping
 
 import requests
 from rich.console import Console
 
 console = Console()
+
+# Raw JSON record from the website RSC payload
+type JsonRecord = dict[str, str | int | float | bool | list | dict | None]
 
 BASE_URL = "https://www.artalemaplestory.com"
 LOCALE = "zh"
@@ -58,7 +61,7 @@ def extract_rsc_text(html: str) -> str:
     return "".join(parts)
 
 
-def extract_json_value(text: str, key: str) -> list[dict[str, object]] | dict[str, object] | None:
+def _raw_decode_value(text: str, key: str) -> list[JsonRecord] | dict[str, str] | None:
     """Extract the JSON value for a given key using json.JSONDecoder.raw_decode."""
     pattern = f'"{key}":'
     try:
@@ -73,12 +76,28 @@ def extract_json_value(text: str, key: str) -> list[dict[str, object]] | dict[st
         return None
 
 
+def extract_json_list(text: str, key: str) -> list[JsonRecord] | None:
+    """Extract a JSON array for a given key."""
+    value = _raw_decode_value(text, key)
+    return value if isinstance(value, list) else None
+
+
+def _get_nested_dict(d: Mapping[str, object], *keys: str) -> dict[str, str]:
+    """Traverse nested dicts safely, returning {} if any key is missing."""
+    current: object = d
+    for k in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(k, {})
+    return current if isinstance(current, dict) else {}
+
+
 def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:
     """Extract all name translation dicts from the RSC messages section."""
-    messages = extract_json_value(rsc_text, "messages")
-    if not isinstance(messages, dict):
+    raw = _raw_decode_value(rsc_text, "messages")
+    if not isinstance(raw, dict):
         return {}
-
+    messages = raw
     translations: dict[str, dict[str, str]] = {}
 
     # Entity name translations (en -> zh)
@@ -96,47 +115,43 @@ def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:
         val = messages.get(key)
         if isinstance(val, dict):
             translations[key] = val
-
     # Enum translations
-    maple = messages.get("maple", {})
-    for key in ("job", "eqType", "region"):
-        val = maple.get(key)
-        if isinstance(val, dict):
-            translations[key] = val
+    maple = messages.get("maple")
+    if isinstance(maple, dict):
+        for key in ("job", "eqType", "region"):
+            val = maple.get(key)
+            if isinstance(val, dict):
+                translations[key] = val
+        for parent_key, trans_key in [("misc", "miscType"), ("npc", "npcType")]:
+            nested = _get_nested_dict(maple, parent_key, "type")
+            if nested:
+                translations[trans_key] = nested
 
-    misc_type = maple.get("misc", {}).get("type")
-    if isinstance(misc_type, dict):
-        translations["miscType"] = misc_type
-
-    npc_type = maple.get("npc", {}).get("type")
-    if isinstance(npc_type, dict):
-        translations["npcType"] = npc_type
-
-    modifiers = messages.get("monster", {}).get("modifiers")
-    if isinstance(modifiers, dict):
+    modifiers = _get_nested_dict(messages, "monster", "modifiers")
+    if modifiers:
         translations["modifiers"] = modifiers
 
     return translations
 
 
-def apply_name_translations(items: list[dict[str, Any]], name_dict: dict[str, str]) -> None:
+def apply_name_translations(items: list[JsonRecord], name_dict: dict[str, str]) -> None:
     """Add 'nameZh' field to each item from translation dictionary."""
     for item in items:
-        en_name = item.get("name", "")
-        if en_name in name_dict:
+        en_name = item.get("name")
+        if isinstance(en_name, str) and en_name in name_dict:
             item["nameZh"] = name_dict[en_name]
 
 
 def scrape_category(
     category: str, url_path: str, rsc_key: str, translations: dict[str, dict[str, str]]
-) -> list[dict[str, Any]]:
+) -> list[JsonRecord]:
     url = f"{BASE_URL}/{LOCALE}/{url_path}"
     console.print(f"  📖 {url}")
     html = fetch_html(url)
     rsc_text = extract_rsc_text(html)
 
-    data = extract_json_value(rsc_text, rsc_key)
-    if not isinstance(data, list):
+    data = extract_json_list(rsc_text, rsc_key)
+    if data is None:
         console.print(f"  [red]✗ Key '{rsc_key}' not found[/red]")
         return []
 
@@ -147,7 +162,7 @@ def scrape_category(
     return data
 
 
-def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
+def scrape_maps(translations: dict[str, dict[str, str]]) -> list[JsonRecord]:
     """Scrape maps by fetching each region page."""
     # Discover region slugs from main maps page
     main_url = f"{BASE_URL}/{LOCALE}/maps"
@@ -163,7 +178,7 @@ def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]
     console.print(f"  📍 Found {len(region_slugs)} regions")
 
     map_names = translations.get("maps", {})
-    all_maps: list[dict[str, Any]] = []
+    all_maps: list[JsonRecord] = []
 
     for slug in region_slugs:
         time.sleep(1)
@@ -172,8 +187,8 @@ def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]
         try:
             html = fetch_html(url)
             rsc_text = extract_rsc_text(html)
-            maps = extract_json_value(rsc_text, "maps")
-            if isinstance(maps, list):
+            maps = extract_json_list(rsc_text, "maps")
+            if maps is not None:
                 if map_names:
                     apply_name_translations(maps, map_names)
                 all_maps.extend(maps)
@@ -186,7 +201,7 @@ def scrape_maps(translations: dict[str, dict[str, str]]) -> list[dict[str, Any]]
     return all_maps
 
 
-def save_json(data: object, filename: str) -> Path:
+def save_json(data: list[JsonRecord] | dict[str, dict[str, str]], filename: str) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = DATA_DIR / f"{filename}.json"
     with open(path, "w", encoding="utf-8") as f:
@@ -210,8 +225,8 @@ def main() -> None:
     # Step 2: extract monsters from the already-fetched page
     console.print("\n[bold cyan]Scraping categories...[/bold cyan]")
 
-    monsters = extract_json_value(rsc_text, "inScopeMonsters")
-    if isinstance(monsters, list):
+    monsters = extract_json_list(rsc_text, "inScopeMonsters")
+    if monsters is not None:
         apply_name_translations(monsters, translations.get("monsters", {}))
         save_json(monsters, "monsters")
         console.print(f"  ✓ monsters: {len(monsters)} items")

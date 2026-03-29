@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import Field, BaseModel, ConfigDict
 
 
@@ -32,11 +30,22 @@ class AcquisitionQuest(_Base):
     level: int = 0
 
 
+class CraftingMaterial(_Base):
+    item: str = ""
+    quantity: int = 0
+
+
+class CraftingRecipe(_Base):
+    npc: str = ""
+    output: str = ""
+    materials: list[CraftingMaterial] = []
+
+
 class Acquisition(_Base):
     monsters: list[AcquisitionMonster] = []
     npcs: list[AcquisitionNPC] = []
     quests: list[AcquisitionQuest] = []
-    craftings: list[dict[str, Any]] = []
+    craftings: list[CraftingRecipe] = []
 
 
 # ── Monster ─────────────────────────────────────────────────────────
@@ -243,7 +252,7 @@ class NPC(_Base):
     scrolls: list[NPCItem] = Field(default_factory=list, alias="scrolls")
     misc_items: list[NPCItem] = Field(default_factory=list, alias="miscItems")
     quests: list[AcquisitionQuest] = []
-    recipes: list[dict[str, Any]] = []
+    recipes: list[CraftingRecipe] = []
 
     @property
     def display_name(self) -> str:
@@ -262,13 +271,25 @@ class HuntTarget(_Base):
     quantity: int = 0
 
 
+class CollectItem(_Base):
+    name: str = ""
+    quantity: int = 0
+
+
+class QuestReward(_Base):
+    exp: int = 0
+    fame: int = 0
+    mesos: int = 0
+    items: dict[str, list[CollectItem]] | list[dict[str, list[CollectItem]]] = {}
+
+
 class QuestStep(_Base):
     start_npc: str = Field(default="", alias="startNPC")
     monsters_to_hunt: list[HuntTarget] = Field(default_factory=list, alias="monstersToHunt")
-    items_to_collect: dict[str, list[dict[str, Any]]] = Field(
+    items_to_collect: dict[str, list[CollectItem]] = Field(
         default_factory=dict, alias="itemsToCollect"
     )
-    reward: dict[str, Any] = {}
+    reward: QuestReward = Field(default_factory=QuestReward)
 
 
 class Quest(_Base):
