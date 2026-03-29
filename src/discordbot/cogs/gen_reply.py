@@ -97,9 +97,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 converted_attachment = pil_to_data_uri(image=downloaded_attachment)
                 converted_attachments.append(converted_attachment)
             except Exception:
-                logfire.warn(
-                    "Failed to convert attachment to image, keeping original URL", url=attachment
-                )
+                logfire.warn("Failed to convert attachment to image, keeping original URL")
                 converted_attachments.append(attachment)
 
         return converted_attachments
