@@ -456,40 +456,40 @@ class ReplyGeneratorCogs(commands.Cog):
             return
 
         current_emoji = "🤔"
-        await self._handle_reaction(message, current_emoji)
+        await self._handle_reaction(message=message, emoji=current_emoji)
         user_prompt = await self._get_user_prompt(message=message)
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await self._handle_reaction(message, "🆗", current_emoji)
+            await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
             await message.reply(content="?")
             return
 
         try:
-            await self._handle_reaction(message, "🔀", current_emoji)
+            await self._handle_reaction(message=message, emoji="🔀", previous_emoji=current_emoji)
             current_emoji = "🔀"
             route = await self._route_message(message=message)
             if route == "IMAGE":
-                await self._handle_reaction(message, "🎨", current_emoji)
+                await self._handle_reaction(message=message, emoji="🎨", previous_emoji=current_emoji)
                 current_emoji = "🎨"
                 await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
-                await self._handle_reaction(message, "🎬", current_emoji)
+                await self._handle_reaction(message=message, emoji="🎬", previous_emoji=current_emoji)
                 current_emoji = "🎬"
                 await self._handle_video_generation(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
-                await self._handle_reaction(message, "📖", current_emoji)
+                await self._handle_reaction(message=message, emoji="📖", previous_emoji=current_emoji)
                 current_emoji = "📖"
                 await self._handle_summary_reply(message=message)
             else:
-                await self._handle_reaction(message, "❓", current_emoji)
+                await self._handle_reaction(message=message, emoji="❓", previous_emoji=current_emoji)
                 current_emoji = "❓"
                 await self._handle_message_reply(message=message)
-            await self._handle_reaction(message, "🆗", current_emoji)
+            await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
             logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
             with contextlib.suppress(Exception):
-                await self._handle_reaction(message, "❌", current_emoji)
+                await self._handle_reaction(message=message, emoji="❌", previous_emoji=current_emoji)
                 error_embed = Embed(
                     title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
                 )
