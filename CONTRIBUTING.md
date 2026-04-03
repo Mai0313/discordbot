@@ -70,7 +70,7 @@ data/
 - **Cog-based**: Each feature is a separate cog in `cogs/`. The bot auto-discovers and loads all `.py` files in the directory (excluding `__` prefixed files).
 - **Async**: Built on nextcord with async/await patterns throughout.
 - **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically.
-- **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) and routes to the appropriate handler.
+- **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) and routes to the appropriate handler. Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → route emoji → 🆗).
 
 ## Code Standards
 

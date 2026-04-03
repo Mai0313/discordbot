@@ -33,6 +33,7 @@ Mention the bot (`@bot`) to start a conversation. Powered by Google Gemini, it s
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
 - **Web search** — the bot automatically searches the web when it needs up-to-date information
+- **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗)
 
 ### Threads Parsing
 
