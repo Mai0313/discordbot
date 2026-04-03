@@ -23,9 +23,9 @@ from discordbot.typings.llm import LLMConfig
 
 from ._gen_reply.prompts import (
     ROUTE_PROMPT,
-    SYSTEM_PROMPT,
-    SUMMARY_PROMPT,
-    IMAGE_DESCRIPTION_PROMPT,
+    get_system_prompt,
+    get_summary_prompt,
+    get_image_description_prompt,
 )
 
 DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
@@ -202,7 +202,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+            {"role": "system", "content": [{"type": "text", "text": get_system_prompt()}]},
             {
                 "role": "assistant",
                 "content": [
@@ -335,7 +335,7 @@ class ReplyGeneratorCogs(commands.Cog):
         image_responses = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
-                {"role": "system", "content": IMAGE_DESCRIPTION_PROMPT},
+                {"role": "system", "content": get_image_description_prompt()},
                 {
                     "role": "user",
                     "content": [
@@ -440,7 +440,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_summary_reply(self, message: Message, reply_message: Message) -> None:
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": SUMMARY_PROMPT}]}
+            {"role": "system", "content": [{"type": "text", "text": get_summary_prompt()}]}
         ]
         message_list.extend(hist_messages)
         message_list.append({
