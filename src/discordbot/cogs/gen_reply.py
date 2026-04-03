@@ -446,12 +446,13 @@ class ReplyGeneratorCogs(commands.Cog):
         if message.author.bot:
             return
 
-        # Only respond when the bot is explicitly mentioned in the message text.
+        # In DMs, always respond. In guilds, only respond when explicitly mentioned.
         # A Discord reply-notification puts the bot in message.mentions without
         # writing <@ID> into the content, so we check content to avoid
         # triggering on messages that merely reply to a functional bot post
         # (e.g. a Threads embed or a video download result).
-        if not self.bot.user or f"<@{self.bot.user.id}>" not in message.content:
+        is_dm = message.guild is None
+        if not is_dm and (not self.bot.user or f"<@{self.bot.user.id}>" not in message.content):
             return
 
         current_emoji = "🤔"
