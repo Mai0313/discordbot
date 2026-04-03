@@ -8,7 +8,7 @@ import contextlib
 
 from openai import AsyncOpenAI, AsyncStream
 import logfire
-from nextcord import File, Embed, Message, Interaction
+from nextcord import File, Embed, Message
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
@@ -235,9 +235,16 @@ class ReplyGeneratorCogs(commands.Cog):
             return "SUMMARY"
         return "QA"
 
-    async def _handle_video_generation(
-        self, message: Message, reply_message: Message, user_prompt: str
+    async def _handle_reaction(
+        self, message: Message, emoji: str, previous_emoji: str | None = None
     ) -> None:
+        if previous_emoji and self.bot.user:
+            with contextlib.suppress(Exception):
+                await message.remove_reaction(previous_emoji, self.bot.user)
+        with contextlib.suppress(Exception):
+            await message.add_reaction(emoji)
+
+    async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         user_id = message.author.id
         if message.author.name != "mai9999":
             last_used = self._video_cooldowns.get(user_id, 0)
@@ -245,8 +252,6 @@ class ReplyGeneratorCogs(commands.Cog):
             if time.time() - last_used < cooldown_seconds:
                 remaining = int((cooldown_seconds - (time.time() - last_used)) / 60)
                 minutes = remaining // 60
-                with contextlib.suppress(Exception):
-                    await reply_message.delete()
                 await message.reply(
                     content=f"{message.author.mention} 影片生成每小時限用一次，還需等待 {minutes} 分鐘"
                 )
@@ -268,7 +273,6 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
-            await reply_message.edit(content=":hourglass:")
             video = await self.client.videos.retrieve(
                 video_id=video.id,
                 extra_headers={"x-litellm-end-user-id": message.author.name},
@@ -282,14 +286,10 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"metadata": {"tags": [message.author.name]}},
         )
         video_file = File(BytesIO(video_content.content), filename="generated.mp4")
-        with contextlib.suppress(Exception):
-            await reply_message.delete()
         await message.reply(content=f"{message.author.mention}", file=video_file)
         self._video_cooldowns[user_id] = time.time()
 
-    async def _handle_image_reply(
-        self, message: Message, reply_message: Message, user_prompt: str
-    ) -> None:
+    async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
         attachment_parts = await self._get_attachments(message=message)
         if message.reference and isinstance(message.reference.resolved, Message):
             ref_attachment_parts = await self._get_attachments(message=message.reference.resolved)
@@ -355,22 +355,16 @@ class ReplyGeneratorCogs(commands.Cog):
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
         image_file = File(image_bytes, filename="generated.png")
 
-        with contextlib.suppress(Exception):
-            await reply_message.delete()
         await message.reply(
             content=f"{message.author.mention} {image_description}", file=image_file
         )
 
-    async def _handle_streaming(  # noqa: PLR0912
-        self,
-        stream: AsyncStream[ChatCompletionChunk],
-        message: Message,
-        reply_message: Interaction | Message,
+    async def _handle_streaming(
+        self, stream: AsyncStream[ChatCompletionChunk], message: Message
     ) -> str:
-        # Get LLM response using the message chain
         stored_content = f"{message.author.mention} "
         counted_content = 0
-        new_reply: Message | None = None
+        reply: Message | None = None
         content_started = False
 
         async for chunk in stream:
@@ -385,35 +379,22 @@ class ReplyGeneratorCogs(commands.Cog):
                 counted_content += len(delta)
 
                 if counted_content >= 30:
-                    if new_reply is None:
-                        # First content update: delete status message and send a new reply
-                        with contextlib.suppress(Exception):
-                            if isinstance(reply_message, Interaction):
-                                await reply_message.delete_original_message()
-                            else:
-                                await reply_message.delete()
-                        new_reply = await message.reply(content=stored_content)
+                    if reply is None:
+                        reply = await message.reply(content=stored_content)
                     else:
-                        await new_reply.edit(content=stored_content)
+                        await reply.edit(content=stored_content)
                     counted_content = 0
 
         # Final update to ensure complete message is displayed
-        if new_reply is None:
-            with contextlib.suppress(Exception):
-                if isinstance(reply_message, Interaction):
-                    await reply_message.delete_original_message()
-                else:
-                    await reply_message.delete()
+        if reply is None:
             await message.reply(content=stored_content)
         else:
             with contextlib.suppress(Exception):
-                await new_reply.edit(content=stored_content)
+                await reply.edit(content=stored_content)
 
         return stored_content
 
-    async def _handle_message_reply(
-        self, message: Message, reply_message: Interaction | Message
-    ) -> None:
+    async def _handle_message_reply(self, message: Message) -> None:
         message_list: list[dict[str, Any]] = []
 
         hist_messages = await self._get_history_message(message=message, limit=15)
@@ -435,9 +416,9 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"metadata": {"tags": [message.author.name]}},
         )
 
-        await self._handle_streaming(stream=stream, message=message, reply_message=reply_message)
+        await self._handle_streaming(stream=stream, message=message)
 
-    async def _handle_summary_reply(self, message: Message, reply_message: Message) -> None:
+    async def _handle_summary_reply(self, message: Message) -> None:
         hist_messages = await self._get_history_message(message=message, limit=50)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": get_summary_prompt()}]}
@@ -457,7 +438,7 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"metadata": {"tags": [message.author.name]}},
         )
 
-        await self._handle_streaming(stream=stream, message=message, reply_message=reply_message)
+        await self._handle_streaming(stream=stream, message=message)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -473,44 +454,45 @@ class ReplyGeneratorCogs(commands.Cog):
         if not self.bot.user or f"<@{self.bot.user.id}>" not in message.content:
             return
 
-        reply_message = await message.reply(":thinking:")
+        current_emoji = "🤔"
+        await self._handle_reaction(message, current_emoji)
         user_prompt = await self._get_user_prompt(message=message)
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            with contextlib.suppress(Exception):
-                await reply_message.delete()
+            await self._handle_reaction(message, "🆗", current_emoji)
             await message.reply(content="?")
             return
 
         try:
-            # Build current message only (for routing and image generation)
-            await reply_message.edit(content=":twisted_rightwards_arrows:")
+            await self._handle_reaction(message, "🔀", current_emoji)
+            current_emoji = "🔀"
             route = await self._route_message(message=message)
             if route == "IMAGE":
-                await reply_message.edit(content=":art:")
-                await self._handle_image_reply(
-                    message=message, reply_message=reply_message, user_prompt=user_prompt
-                )
+                await self._handle_reaction(message, "🎨", current_emoji)
+                current_emoji = "🎨"
+                await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
-                await reply_message.edit(content=":movie_camera:")
-                await self._handle_video_generation(
-                    message=message, reply_message=reply_message, user_prompt=user_prompt
-                )
+                await self._handle_reaction(message, "🎬", current_emoji)
+                current_emoji = "🎬"
+                await self._handle_video_generation(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
-                await reply_message.edit(content=":book:")
-                await self._handle_summary_reply(message=message, reply_message=reply_message)
+                await self._handle_reaction(message, "📖", current_emoji)
+                current_emoji = "📖"
+                await self._handle_summary_reply(message=message)
             else:
-                await reply_message.edit(content=":question:")
-                await self._handle_message_reply(message=message, reply_message=reply_message)
+                await self._handle_reaction(message, "❓", current_emoji)
+                current_emoji = "❓"
+                await self._handle_message_reply(message=message)
+            await self._handle_reaction(message, "🆗", current_emoji)
         except Exception as e:
             logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
             with contextlib.suppress(Exception):
+                await self._handle_reaction(message, "❌", current_emoji)
                 error_embed = Embed(
                     title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
                 )
                 error_embed.set_footer(text=type(e).__name__)
-                await reply_message.delete()
                 await message.reply(content=None, embed=error_embed)
 
 
