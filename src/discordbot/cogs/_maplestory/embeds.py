@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from collections.abc import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Protocol
 
 from nextcord import Embed
 
 from .constants import BASIC_STATS_TEMPLATE, MONSTER_ATTR_TEMPLATE
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
     from .models import (
         NPC,
         Quest,
@@ -24,10 +25,12 @@ if TYPE_CHECKING:
 
 SITE = "https://www.artalemaplestory.com"
 
-TranslateFn = Callable[[str, str], str]
+
+class TranslateFn(Protocol):
+    def __call__(self, category: str, name: str) -> str: ...
 
 
-def _identity(_cat: str, name: str) -> str:
+def _identity(category: str, name: str) -> str:
     return name
 
 
@@ -37,7 +40,7 @@ def _truncate(text: str, limit: int = 1024) -> str:
 
 def _translate_map_name(name: str, translate: TranslateFn) -> str:
     """Translate composite map names like 'Amherst > Weapon Store'."""
-    parts = [translate("maps", p.strip()) for p in name.split(" > ")]
+    parts = [translate(category="maps", name=p.strip()) for p in name.split(" > ")]
     return " > ".join(parts)
 
 
@@ -51,16 +54,21 @@ def _add_acquisition_fields(
     """Add monster/NPC/quest acquisition fields to an embed."""
     if acq_monsters:
         text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in acq_monsters[:10]
+            f"• {translate(category='monsters', name=m.name)} (Lv.{m.level})"
+            for m in acq_monsters[:10]
         )
         embed.add_field(name="\U0001f432 怪物掉落", value=_truncate(text), inline=True)
 
     if acq_npcs:
-        text = "\n".join(f"• {translate('npcs', n.name)} ({n.price:,} 楓幣)" for n in acq_npcs[:8])
+        text = "\n".join(
+            f"• {translate(category='npcs', name=n.name)} ({n.price:,} 楓幣)" for n in acq_npcs[:8]
+        )
         embed.add_field(name="\U0001f6d2 NPC 商店", value=_truncate(text), inline=True)
 
     if acq_quests:
-        text = "\n".join(f"• {translate('quests', q.name)} (Lv.{q.level})" for q in acq_quests[:5])
+        text = "\n".join(
+            f"• {translate(category='quests', name=q.name)} (Lv.{q.level})" for q in acq_quests[:5]
+        )
         embed.add_field(name="\U0001f4cb 任務獎勵", value=_truncate(text), inline=False)
 
 
@@ -91,14 +99,14 @@ def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity
     embed.add_field(name="\U0001f4ca 屬性", value=attr_text, inline=True)
 
     if monster.modifiers:
-        mod_text = ", ".join(translate("modifiers", m) for m in monster.modifiers)
+        mod_text = ", ".join(translate(category="modifiers", name=m) for m in monster.modifiers)
         embed.add_field(name="\U0001f300 屬性抗性", value=mod_text, inline=True)
 
     if monster.region_to_maps_list:
         lines: list[str] = []
         for region in monster.region_to_maps_list:
-            region_zh = translate("region", region.region)
-            map_names = [_translate_map_name(m, translate) for m in region.maps[:5]]
+            region_zh = translate(category="region", name=region.region)
+            map_names = [_translate_map_name(name=m, translate=translate) for m in region.maps[:5]]
             lines.append(f"**{region_zh}**")
             lines.extend(f"• {n}" for n in map_names)
             if len(region.maps) > 5:
@@ -109,24 +117,29 @@ def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity
 
     drops = monster.drops
     if drops.equipment_items:
-        text = "\n".join(f"• {translate('equipment', d.name)}" for d in drops.equipment_items[:10])
+        text = "\n".join(
+            f"• {translate(category='equipment', name=d.name)}" for d in drops.equipment_items[:10]
+        )
         embed.add_field(name="\u2694\ufe0f 裝備掉落", value=_truncate(text), inline=True)
 
     consumables = drops.useable_items + drops.misc_items
     if consumables:
         text = "\n".join(
-            f"• {translate('useable', d.name) if d in drops.useable_items else translate('misc', d.name)}"
+            f"• {translate(category='useable', name=d.name) if d in drops.useable_items else translate(category='misc', name=d.name)}"
             for d in consumables[:10]
         )
         embed.add_field(name="\U0001f9ea 消耗/素材", value=_truncate(text), inline=True)
 
     if drops.scrolls:
-        text = "\n".join(f"• {translate('scrolls', d.name)}" for d in drops.scrolls[:10])
+        text = "\n".join(
+            f"• {translate(category='scrolls', name=d.name)}" for d in drops.scrolls[:10]
+        )
         embed.add_field(name="\U0001f4dc 捲軸掉落", value=_truncate(text), inline=True)
 
     if monster.quests:
         text = "\n".join(
-            f"• {translate('quests', q.name)} (Lv.{q.level})" for q in monster.quests[:5]
+            f"• {translate(category='quests', name=q.name)} (Lv.{q.level})"
+            for q in monster.quests[:5]
         )
         embed.add_field(name="\U0001f4cb 相關任務", value=_truncate(text), inline=False)
 
@@ -185,22 +198,28 @@ def create_equipment_embed(equip: Equipment, *, translate: TranslateFn = _identi
 
     embed = Embed(
         title=f"\u2694\ufe0f {equip.display_name}",
-        description=f"Lv. {equip.level} | {translate('eqType', equip.type)}",
+        description=f"Lv. {equip.level} | {translate(category='eqType', name=equip.type)}",
         url=f"{SITE}/zh/equipment/{type_slug}/{slug}",
         color=0xFF9900,
     )
     embed.set_thumbnail(url=f"{SITE}/images/equipment/{type_slug}/{slug}.webp")
 
-    _add_equip_stats(embed, equip)
-    _add_equip_requirements(embed, equip)
+    _add_equip_stats(embed=embed, equip=equip)
+    _add_equip_requirements(embed=embed, equip=equip)
 
     if equip.jobs:
-        job_text = ", ".join(translate("job", j) for j in equip.jobs)
+        job_text = ", ".join(translate(category="job", name=j) for j in equip.jobs)
         embed.add_field(name="\U0001f464 職業", value=job_text, inline=False)
 
     acq = equip.acquisition
-    _add_acquisition_fields(embed, acq.monsters, acq.npcs, acq.quests, translate)
-    _add_equip_tags(embed, equip)
+    _add_acquisition_fields(
+        embed=embed,
+        acq_monsters=acq.monsters,
+        acq_npcs=acq.npcs,
+        acq_quests=acq.quests,
+        translate=translate,
+    )
+    _add_equip_tags(embed=embed, equip=equip)
 
     embed.set_footer(text="資料來源：Artale")
     return embed
@@ -229,7 +248,9 @@ _STAT_LABELS = {
 def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -> Embed:
     embed = Embed(
         title=f"\U0001f4dc {scroll.display_name}",
-        description=f"適用: {translate('eqType', scroll.type)}" if scroll.type else "",
+        description=f"適用: {translate(category='eqType', name=scroll.type)}"
+        if scroll.type
+        else "",
         color=0x9966FF,
     )
 
@@ -238,7 +259,13 @@ def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -
         embed.add_field(name="\U0001f4ca 屬性加成", value="\n".join(lines), inline=True)
 
     acq = scroll.acquisition
-    _add_acquisition_fields(embed, acq.monsters, acq.npcs, acq.quests, translate)
+    _add_acquisition_fields(
+        embed=embed,
+        acq_monsters=acq.monsters,
+        acq_npcs=acq.npcs,
+        acq_quests=acq.quests,
+        translate=translate,
+    )
 
     embed.set_footer(text="資料來源：Artale")
     return embed
@@ -248,15 +275,15 @@ def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -
 
 
 def create_npc_embed(npc: NPC, *, translate: TranslateFn = _identity) -> Embed:
-    npc_type_zh = translate("npcType", npc.type) if npc.type else ""
+    npc_type_zh = translate(category="npcType", name=npc.type) if npc.type else ""
     embed = Embed(title=f"\U0001f464 {npc.display_name}", description=npc_type_zh, color=0x00CCFF)
 
     if npc.region_to_maps_list:
         lines: list[str] = []
         for region in npc.region_to_maps_list:
-            region_zh = translate("region", region.region)
+            region_zh = translate(category="region", name=region.region)
             lines.append(
-                f"**{region_zh}**: {', '.join(_translate_map_name(m, translate) for m in region.maps)}"
+                f"**{region_zh}**: {', '.join(_translate_map_name(name=m, translate=translate) for m in region.maps)}"
             )
         embed.add_field(
             name="\U0001f5fa\ufe0f 位置", value=_truncate("\n".join(lines)), inline=False
@@ -264,14 +291,14 @@ def create_npc_embed(npc: NPC, *, translate: TranslateFn = _identity) -> Embed:
 
     if npc.equipment_items:
         text = "\n".join(
-            f"• {translate('equipment', i.name.split('/')[-1])} ({i.price:,} 楓幣)"
+            f"• {translate(category='equipment', name=i.name.split('/')[-1])} ({i.price:,} 楓幣)"
             for i in npc.equipment_items[:10]
         )
         embed.add_field(name="\u2694\ufe0f 販售裝備", value=_truncate(text), inline=True)
 
     if npc.useable_items:
         text = "\n".join(
-            f"• {translate('useable', i.name.split('/')[-1])} ({i.price:,} 楓幣)"
+            f"• {translate(category='useable', name=i.name.split('/')[-1])} ({i.price:,} 楓幣)"
             for i in npc.useable_items[:10]
         )
         embed.add_field(name="\U0001f9ea 販售消耗品", value=_truncate(text), inline=True)
@@ -297,12 +324,14 @@ def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
     """Format a single quest step into display lines."""
     lines: list[str] = []
     if step.start_npc:
-        lines.append(f"**NPC**: {translate('npcs', step.start_npc)}")
+        lines.append(f"**NPC**: {translate(category='npcs', name=step.start_npc)}")
     for target in step.monsters_to_hunt[:5]:
-        lines.append(f"• 狩獵 {translate('monsters', target.name)} x{target.quantity}")
+        lines.append(
+            f"• 狩獵 {translate(category='monsters', name=target.name)} x{target.quantity}"
+        )
     for items in step.items_to_collect.values():
         for item in items[:3]:
-            lines.append(f"• 收集 {translate('misc', item.name)} x{item.quantity}")
+            lines.append(f"• 收集 {translate(category='misc', name=item.name)} x{item.quantity}")
     reward = step.reward
     parts: list[str] = []
     if reward.exp:
@@ -327,7 +356,7 @@ def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> E
     )
 
     for i, step in enumerate(quest.steps[:3], 1):
-        lines = _format_quest_step(step, translate)
+        lines = _format_quest_step(step=step, translate=translate)
         if lines:
             embed.add_field(
                 name=f"步驟 {i}" if len(quest.steps) > 1 else "任務內容",
@@ -343,7 +372,7 @@ def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> E
 
 
 def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity) -> Embed:
-    region_zh = translate("region", map_entry.region)
+    region_zh = translate(category="region", name=map_entry.region)
     embed = Embed(
         title=f"\U0001f5fa\ufe0f {map_entry.display_name}",
         description=f"Region: {region_zh}",
@@ -352,12 +381,15 @@ def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity)
 
     if map_entry.monsters:
         text = "\n".join(
-            f"• {translate('monsters', m.name)} (Lv.{m.level})" for m in map_entry.monsters[:10]
+            f"• {translate(category='monsters', name=m.name)} (Lv.{m.level})"
+            for m in map_entry.monsters[:10]
         )
         embed.add_field(name="\U0001f432 怪物", value=_truncate(text), inline=True)
 
     if map_entry.npcs:
-        text = "\n".join(f"• {translate('npcs', n.name)}" for n in map_entry.npcs[:10])
+        text = "\n".join(
+            f"• {translate(category='npcs', name=n.name)}" for n in map_entry.npcs[:10]
+        )
         embed.add_field(name="\U0001f464 NPC", value=_truncate(text), inline=True)
 
     if map_entry.hidden:
@@ -375,10 +407,10 @@ def create_item_source_embed(
 ) -> Embed:
     monsters_list = list(monsters)
     item_zh = (
-        translate("equipment", item_name)
-        or translate("scrolls", item_name)
-        or translate("useable", item_name)
-        or translate("misc", item_name)
+        translate(category="equipment", name=item_name)
+        or translate(category="scrolls", name=item_name)
+        or translate(category="useable", name=item_name)
+        or translate(category="misc", name=item_name)
     )
     display = item_zh if item_zh != item_name else item_name
 

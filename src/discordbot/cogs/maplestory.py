@@ -37,7 +37,7 @@ class MapleStoryCogs(commands.Cog):
         return self.service.has_data()
 
     def _translate(self, category: str, name: str) -> str:
-        return self.service.translate(category, name)
+        return self.service.translate(category=category, name=name)
 
     async def _send_error(self, interaction: Interaction) -> None:
         embed = Embed(
@@ -84,10 +84,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_monsters_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "怪物", name)
+            return await self._send_not_found(interaction=interaction, kind="怪物", query=name)
 
         if len(results) == 1:
-            embed = create_monster_embed(results[0], translate=self._translate)
+            embed = create_monster_embed(monster=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -95,7 +95,7 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關怪物，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "monster", name)
+        view = MapleDropSearchView(service=self.service, search_type="monster", query=name)
         view.set_options([
             SelectOption(label=m.display_name, description=f"Lv.{m.level}", value=m.name)
             for m in results
@@ -134,10 +134,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_equipment_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "裝備", name)
+            return await self._send_not_found(interaction=interaction, kind="裝備", query=name)
 
         if len(results) == 1:
-            embed = create_equipment_embed(results[0], translate=self._translate)
+            embed = create_equipment_embed(equip=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -145,11 +145,11 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關裝備，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "equipment", name)
+        view = MapleDropSearchView(service=self.service, search_type="equipment", query=name)
         view.set_options([
             SelectOption(
                 label=e.display_name,
-                description=f"Lv.{e.level} | {self._translate('eqType', e.type)}",
+                description=f"Lv.{e.level} | {self._translate(category='eqType', name=e.type)}",
                 value=e.name,
             )
             for e in results
@@ -188,10 +188,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_scrolls_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "捲軸", name)
+            return await self._send_not_found(interaction=interaction, kind="捲軸", query=name)
 
         if len(results) == 1:
-            embed = create_scroll_embed(results[0], translate=self._translate)
+            embed = create_scroll_embed(scroll=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -199,10 +199,12 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關捲軸，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "scroll", name)
+        view = MapleDropSearchView(service=self.service, search_type="scroll", query=name)
         view.set_options([
             SelectOption(
-                label=s.display_name, description=self._translate("eqType", s.type), value=s.name
+                label=s.display_name,
+                description=self._translate(category="eqType", name=s.type),
+                value=s.name,
             )
             for s in results
         ])
@@ -240,10 +242,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_npcs_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "NPC", name)
+            return await self._send_not_found(interaction=interaction, kind="NPC", query=name)
 
         if len(results) == 1:
-            embed = create_npc_embed(results[0], translate=self._translate)
+            embed = create_npc_embed(npc=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -251,7 +253,7 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關 NPC，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "npc", name)
+        view = MapleDropSearchView(service=self.service, search_type="npc", query=name)
         view.set_options([
             SelectOption(label=n.display_name, description=n.type, value=n.name) for n in results
         ])
@@ -289,10 +291,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_quests_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "任務", name)
+            return await self._send_not_found(interaction=interaction, kind="任務", query=name)
 
         if len(results) == 1:
-            embed = create_quest_embed(results[0], translate=self._translate)
+            embed = create_quest_embed(quest=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -300,7 +302,7 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關任務，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "quest", name)
+        view = MapleDropSearchView(service=self.service, search_type="quest", query=name)
         view.set_options([
             SelectOption(
                 label=q.display_name, description=f"Lv.{q.lv_lower} | {q.frequency}", value=q.name
@@ -341,10 +343,10 @@ class MapleStoryCogs(commands.Cog):
 
         results = self.service.search_maps_by_name(name)
         if not results:
-            return await self._send_not_found(interaction, "地圖", name)
+            return await self._send_not_found(interaction=interaction, kind="地圖", query=name)
 
         if len(results) == 1:
-            embed = create_map_embed(results[0], translate=self._translate)
+            embed = create_map_embed(map_entry=results[0], translate=self._translate)
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -352,10 +354,12 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(results)} 個相關地圖，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "map", name)
+        view = MapleDropSearchView(service=self.service, search_type="map", query=name)
         view.set_options([
             SelectOption(
-                label=m.display_name, description=self._translate("region", m.region), value=m.name
+                label=m.display_name,
+                description=self._translate(category="region", name=m.region),
+                value=m.name,
             )
             for m in results
         ])
@@ -393,12 +397,14 @@ class MapleStoryCogs(commands.Cog):
 
         items_found = self.service.search_items_by_name(name)
         if not items_found:
-            return await self._send_not_found(interaction, "物品", name)
+            return await self._send_not_found(interaction=interaction, kind="物品", query=name)
 
         if len(items_found) == 1:
             item = items_found[0]
             monsters = self.service.get_monsters_by_drop(item)
-            embed = create_item_source_embed(item, monsters, translate=self._translate)
+            embed = create_item_source_embed(
+                item_name=item, monsters=monsters, translate=self._translate
+            )
             return await interaction.followup.send(embed=embed)
 
         embed = Embed(
@@ -406,12 +412,12 @@ class MapleStoryCogs(commands.Cog):
             description=f"找到 {len(items_found)} 個相關物品，請選擇：",
             color=_MULTI_COLOR,
         )
-        view = MapleDropSearchView(self.service, "item", name)
+        view = MapleDropSearchView(service=self.service, search_type="item", query=name)
         view.set_options([
             SelectOption(
-                label=self._translate("equipment", item)
-                if self._translate("equipment", item) != item
-                else self._translate("misc", item),
+                label=self._translate(category="equipment", name=item)
+                if self._translate(category="equipment", name=item) != item
+                else self._translate(category="misc", name=item),
                 description=self.service.get_item_type(item),
                 value=item,
             )

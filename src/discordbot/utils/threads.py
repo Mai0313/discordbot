@@ -523,10 +523,10 @@ class ThreadsDownloader(BaseModel):
                 if k == key and isinstance(v, list | dict):
                     results.append(v)
                 else:
-                    results.extend(ThreadsDownloader._find_keys(v, key))
+                    results.extend(ThreadsDownloader._find_keys(obj=v, key=key))
         elif isinstance(obj, list):
             for item in obj:
-                results.extend(ThreadsDownloader._find_keys(item, key))
+                results.extend(ThreadsDownloader._find_keys(obj=item, key=key))
         return results
 
     def _parse_post_from_html(self, html: str, post_code: str) -> Post | None:
@@ -537,7 +537,7 @@ class ThreadsDownloader(BaseModel):
 
             try:
                 data = json.loads(text)
-                raw_lists = self._find_keys(data, "thread_items")
+                raw_lists = self._find_keys(obj=data, key="thread_items")
                 for raw_items in raw_lists:
                     if not isinstance(raw_items, list):
                         continue
@@ -586,7 +586,7 @@ class ThreadsDownloader(BaseModel):
     def extract_post_data(self, url: str) -> Post | None:
         threads_url = ThreadsURL(raw_url=url)
         html = self._fetch_html(threads_url.clean_url)
-        return self._parse_post_from_html(html, threads_url.post_code)
+        return self._parse_post_from_html(html=html, post_code=threads_url.post_code)
 
     def parse(self, url: str) -> ThreadsOutput:
         post = self.extract_post_data(url)
@@ -603,7 +603,7 @@ class ThreadsDownloader(BaseModel):
             if ext == "mp4":
                 video_urls.append(media_url)
                 filename = f"threads_{post_code}_{i}.{ext}"
-                filepath = self.download_media(media_url, filename)
+                filepath = self.download_media(url=media_url, filename=filename)
                 if filepath:
                     video_paths.append(filepath)
             else:

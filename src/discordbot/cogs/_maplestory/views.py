@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol
 
 import nextcord
 from nextcord import Embed, Interaction, SelectOption
@@ -24,40 +23,46 @@ if TYPE_CHECKING:
 
 def _resolve_monster(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     monster = service.get_monster(name)
-    return create_monster_embed(monster, translate=tr) if monster else None
+    return create_monster_embed(monster=monster, translate=tr) if monster else None
 
 
 def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     monsters = service.get_monsters_by_drop(name)
-    return create_item_source_embed(name, monsters, translate=tr) if monsters else None
+    return (
+        create_item_source_embed(item_name=name, monsters=monsters, translate=tr)
+        if monsters
+        else None
+    )
 
 
 def _resolve_equipment(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     equip = service.get_equipment(name)
-    return create_equipment_embed(equip, translate=tr) if equip else None
+    return create_equipment_embed(equip=equip, translate=tr) if equip else None
 
 
 def _resolve_scroll(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     match = next((s for s in service.search_scrolls_by_name(name) if s.name == name), None)
-    return create_scroll_embed(match, translate=tr) if match else None
+    return create_scroll_embed(scroll=match, translate=tr) if match else None
 
 
 def _resolve_npc(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     match = next((n for n in service.search_npcs_by_name(name) if n.name == name), None)
-    return create_npc_embed(match, translate=tr) if match else None
+    return create_npc_embed(npc=match, translate=tr) if match else None
 
 
 def _resolve_quest(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     match = next((q for q in service.search_quests_by_name(name) if q.name == name), None)
-    return create_quest_embed(match, translate=tr) if match else None
+    return create_quest_embed(quest=match, translate=tr) if match else None
 
 
 def _resolve_map(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     match = next((m for m in service.search_maps_by_name(name) if m.name == name), None)
-    return create_map_embed(match, translate=tr) if match else None
+    return create_map_embed(map_entry=match, translate=tr) if match else None
 
 
-_ResolverFn = Callable[["MapleStoryService", str, TranslateFn], Embed | None]
+class _ResolverFn(Protocol):
+    def __call__(self, service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None: ...
+
 
 _RESOLVERS: dict[str, _ResolverFn] = {
     "monster": _resolve_monster,
@@ -101,10 +106,16 @@ class MapleDropSearchView(View):
             return
 
         resolver = _RESOLVERS.get(self.search_type)
-        embed = resolver(self.service, selected, self.service.translate) if resolver else None
+        embed = (
+            resolver(service=self.service, name=selected, tr=self.service.translate)
+            if resolver
+            else None
+        )
 
         if embed:
-            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id, embed=embed, view=None
+            )
 
     def set_options(self, options: list[SelectOption]) -> None:
         self.select_result.options = options[:25]

@@ -67,7 +67,8 @@ class VideoCogs(commands.Cog):
                                 await interaction.edit_original_message(
                                     content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
                                     file=File(
-                                        str(low_result.filename), filename=low_result.filename.name
+                                        fp=str(low_result.filename),
+                                        filename=low_result.filename.name,
                                     ),
                                 )
                     else:
@@ -78,7 +79,7 @@ class VideoCogs(commands.Cog):
                 else:
                     await interaction.edit_original_message(
                         content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                        file=File(str(result.filename), filename=result.filename.name),
+                        file=File(fp=str(result.filename), filename=result.filename.name),
                     )
         except Exception:
             await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")

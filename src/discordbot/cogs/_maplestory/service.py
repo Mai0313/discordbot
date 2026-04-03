@@ -70,14 +70,14 @@ class MapleStoryService:
         return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
-        self._monsters = _load_json(data_dir / "monsters.json", Monster)
-        self._equipment = _load_json(data_dir / "equipment.json", Equipment)
-        self._scrolls = _load_json(data_dir / "scrolls.json", Scroll)
-        self._useable = _load_json(data_dir / "useable.json", Useable)
-        self._npcs = _load_json(data_dir / "npcs.json", NPC)
-        self._quests = _load_json(data_dir / "quests.json", Quest)
-        self._maps = _load_json(data_dir / "maps.json", MapEntry)
-        self._misc = _load_json(data_dir / "misc.json", MiscItem)
+        self._monsters = _load_json(path=data_dir / "monsters.json", model=Monster)
+        self._equipment = _load_json(path=data_dir / "equipment.json", model=Equipment)
+        self._scrolls = _load_json(path=data_dir / "scrolls.json", model=Scroll)
+        self._useable = _load_json(path=data_dir / "useable.json", model=Useable)
+        self._npcs = _load_json(path=data_dir / "npcs.json", model=NPC)
+        self._quests = _load_json(path=data_dir / "quests.json", model=Quest)
+        self._maps = _load_json(path=data_dir / "maps.json", model=MapEntry)
+        self._misc = _load_json(path=data_dir / "misc.json", model=MiscItem)
         self._translations = _load_translations(data_dir)
         self._monster_cache.clear()
         self._equip_cache.clear()
@@ -220,10 +220,10 @@ class MapleStoryService:
             for monster in self._monsters:
                 for drop in monster.drops.all_items:
                     zh = (
-                        self.translate("equipment", drop.name)
-                        or self.translate("scrolls", drop.name)
-                        or self.translate("useable", drop.name)
-                        or self.translate("misc", drop.name)
+                        self.translate(category="equipment", name=drop.name)
+                        or self.translate(category="scrolls", name=drop.name)
+                        or self.translate(category="useable", name=drop.name)
+                        or self.translate(category="misc", name=drop.name)
                     )
                     if key in drop.name.lower() or (zh and key in zh.lower()):
                         items_found.add(drop.name)

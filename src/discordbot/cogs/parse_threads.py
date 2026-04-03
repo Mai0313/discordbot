@@ -84,7 +84,7 @@ class ThreadsCogs(commands.Cog):
                         return
 
                     files = [
-                        File(str(path), filename=path.name)
+                        File(fp=str(path), filename=path.name)
                         for path in result.video_paths
                         if path.exists()
                     ]
