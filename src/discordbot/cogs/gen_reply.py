@@ -483,38 +483,35 @@ class ReplyGeneratorCogs(commands.Cog):
             await message.reply(content="?")
             return
 
-        # Start typing indicator
-        async with message.channel.typing():
-            # Send initial thinking message
-            try:
-                # Build current message only (for routing and image generation)
-                await reply_message.edit(content=":twisted_rightwards_arrows:")
-                route = await self._route_message(message=message)
-                if route == "IMAGE":
-                    await reply_message.edit(content=":art:")
-                    await self._handle_image_reply(
-                        message=message, reply_message=reply_message, user_prompt=user_prompt
-                    )
-                elif route == "VIDEO":
-                    await reply_message.edit(content=":movie_camera:")
-                    await self._handle_video_generation(
-                        message=message, reply_message=reply_message, user_prompt=user_prompt
-                    )
-                elif route == "SUMMARY":
-                    await reply_message.edit(content=":book:")
-                    await self._handle_summary_reply(message=message, reply_message=reply_message)
-                else:
-                    await reply_message.edit(content=":question:")
-                    await self._handle_message_reply(message=message, reply_message=reply_message)
-            except Exception as e:
-                logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
-                with contextlib.suppress(Exception):
-                    error_embed = Embed(
-                        title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
-                    )
-                    error_embed.set_footer(text=type(e).__name__)
-                    await reply_message.delete()
-                    await message.reply(content=None, embed=error_embed)
+        try:
+            # Build current message only (for routing and image generation)
+            await reply_message.edit(content=":twisted_rightwards_arrows:")
+            route = await self._route_message(message=message)
+            if route == "IMAGE":
+                await reply_message.edit(content=":art:")
+                await self._handle_image_reply(
+                    message=message, reply_message=reply_message, user_prompt=user_prompt
+                )
+            elif route == "VIDEO":
+                await reply_message.edit(content=":movie_camera:")
+                await self._handle_video_generation(
+                    message=message, reply_message=reply_message, user_prompt=user_prompt
+                )
+            elif route == "SUMMARY":
+                await reply_message.edit(content=":book:")
+                await self._handle_summary_reply(message=message, reply_message=reply_message)
+            else:
+                await reply_message.edit(content=":question:")
+                await self._handle_message_reply(message=message, reply_message=reply_message)
+        except Exception as e:
+            logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
+            with contextlib.suppress(Exception):
+                error_embed = Embed(
+                    title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
+                )
+                error_embed.set_footer(text=type(e).__name__)
+                await reply_message.delete()
+                await message.reply(content=None, embed=error_embed)
 
 
 async def setup(bot: commands.Bot) -> None:
