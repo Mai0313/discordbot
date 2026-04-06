@@ -86,7 +86,7 @@ def use_gemini() -> None:
             {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
         ],
         config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(thinking_level="MINIMAL"),
+            thinking_config=ThinkingConfig(thinking_level="LOW"),
             tools=[
                 Tool(
                     googleSearch=GoogleSearch(),

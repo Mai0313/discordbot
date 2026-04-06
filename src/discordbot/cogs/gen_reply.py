@@ -28,8 +28,8 @@ from ._gen_reply.prompts import (
     get_image_description_prompt,
 )
 
-DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
-DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_FAST_MODEL = "gemini-flash-latest"
+DEFAULT_SLOW_MODEL = "gemini-pro-latest"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 VIDEO_COOLDOWN = 10  # minutes
@@ -409,7 +409,7 @@ class ReplyGeneratorCogs(commands.Cog):
         stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
-            reasoning_effort="medium",
+            reasoning_effort="high",
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
@@ -431,7 +431,7 @@ class ReplyGeneratorCogs(commands.Cog):
         stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
-            reasoning_effort="medium",
+            reasoning_effort="high",
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
