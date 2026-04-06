@@ -29,7 +29,7 @@
 
 - **文字對話** — 即時串流回應
 - **圖片理解** — 附上圖片即可向機器人提問
-- **圖片生成** — 請機器人根據文字描述繪製或創作圖片
+- **圖片生成與編輯** — 請機器人根據文字描述繪製或創作圖片（附上圖片即可進行編輯修改）
 - **影片生成** — 請機器人生成短影片（請求之間有冷卻時間）
 - **聊天摘要** — 請機器人總結近期對話內容
 - **網路搜尋** — 機器人在需要最新資訊時會自動搜尋網路
@@ -48,9 +48,14 @@
 - 檔案超過 Discord 25 MB 限制時自動降為低畫質
 - Facebook 分享連結（`facebook.com/share/r/...`）會自動展開
 
-### 楓之谷資料庫
+### 楓之谷 Artale 資料庫
 
 - `/maple_monster` — 依名稱搜尋怪物，查看屬性、出沒地圖與掉落物
+- `/maple_equip` — 依名稱搜尋裝備，查看屬性與取得方式
+- `/maple_scroll` — 依名稱搜尋捲軸與附加屬性
+- `/maple_npc` — 依名稱搜尋 NPC 與所在位置
+- `/maple_quest` — 依名稱搜尋任務、等級範圍與頻率
+- `/maple_map` — 依名稱搜尋地圖、區域與出沒怪物
 - `/maple_item` — 搜尋物品並查看哪些怪物會掉落
 - `/maple_stats` — 查看資料庫統計資訊
 - 支援模糊搜尋與多語言顯示
@@ -67,6 +72,11 @@
 | _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                               |
 | `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片 |
 | `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                        |
+| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                |
+| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                |
+| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                |
+| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                |
+| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                |
 | `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                            |
 | `/maple_stats`                  | 查看楓之谷資料庫統計                                          |
 | `/ping`                         | 測試機器人延遲                                                |
@@ -111,7 +121,7 @@ cp .env.example .env
 uv run discordbot
 ```
 
-### 可選：更新楓之谷資料庫
+### 可選：更新楓之谷 Artale 資料庫
 
 ```bash
 uv run update

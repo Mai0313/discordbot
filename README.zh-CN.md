@@ -29,7 +29,7 @@
 
 - **文字对话** — 实时流式响应
 - **图片理解** — 附上图片即可向机器人提问
-- **图片生成** — 请机器人根据文字描述绘制或创作图片
+- **图片生成与编辑** — 请机器人根据文字描述绘制或创作图片（附上图片即可进行编辑修改）
 - **视频生成** — 请机器人生成短视频（请求之间有冷却时间）
 - **聊天摘要** — 请机器人总结近期对话内容
 - **网络搜索** — 机器人在需要最新信息时会自动搜索网络
@@ -48,9 +48,14 @@
 - 文件超过 Discord 25 MB 限制时自动降为低画质
 - Facebook 分享链接（`facebook.com/share/r/...`）会自动展开
 
-### 枫之谷数据库
+### 枫之谷 Artale 数据库
 
 - `/maple_monster` — 按名称搜索怪物，查看属性、出没地图与掉落物
+- `/maple_equip` — 按名称搜索装备，查看属性与获取方式
+- `/maple_scroll` — 按名称搜索卷轴与附加属性
+- `/maple_npc` — 按名称搜索 NPC 与所在位置
+- `/maple_quest` — 按名称搜索任务、等级范围与频率
+- `/maple_map` — 按名称搜索地图、区域与出没怪物
 - `/maple_item` — 搜索物品并查看哪些怪物会掉落
 - `/maple_stats` — 查看数据库统计信息
 - 支持模糊搜索与多语言显示
@@ -67,6 +72,11 @@
 | _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                               |
 | `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频 |
 | `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                        |
+| `/maple_equip <名称>`           | 搜索枫之谷装备                                                |
+| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                |
+| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                |
+| `/maple_quest <名称>`           | 搜索枫之谷任务                                                |
+| `/maple_map <名称>`             | 搜索枫之谷地图                                                |
 | `/maple_item <名称>`            | 搜索枫之谷物品来源                                            |
 | `/maple_stats`                  | 查看枫之谷数据库统计                                          |
 | `/ping`                         | 测试机器人延迟                                                |
@@ -111,7 +121,7 @@ cp .env.example .env
 uv run discordbot
 ```
 
-### 可选：更新枫之谷数据库
+### 可选：更新枫之谷 Artale 数据库
 
 ```bash
 uv run update

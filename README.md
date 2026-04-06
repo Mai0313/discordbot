@@ -29,7 +29,7 @@ Mention the bot (`@bot`) to start a conversation. Powered by Google Gemini, it s
 
 - **Text conversations** with real-time streaming responses
 - **Image understanding** — attach images and ask questions about them
-- **Image generation** — ask the bot to draw or create images from text prompts
+- **Image generation & editing** — ask the bot to draw, create, or edit images (attach an image to modify it)
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
 - **Web search** — the bot automatically searches the web when it needs up-to-date information
@@ -48,9 +48,14 @@ Use `/download_video` to download videos from multiple platforms:
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
 
-### MapleStory Database
+### MapleStory Artale Database
 
 - `/maple_monster` — Search monsters by name, view stats, spawn maps, and drops
+- `/maple_equip` — Search equipment by name, view stats and acquisition sources
+- `/maple_scroll` — Search scrolls by name and stat bonuses
+- `/maple_npc` — Search NPCs by name and location
+- `/maple_quest` — Search quests by name, level range, and frequency
+- `/maple_map` — Search maps by name, region, and spawning monsters
 - `/maple_item` — Search items and find which monsters drop them
 - `/maple_stats` — View database statistics
 - Interactive search with fuzzy matching and multi-language results
@@ -67,6 +72,11 @@ Commands and responses are available in English, Traditional Chinese, Simplified
 | _Threads link_                    | Automatically expands Threads.net posts with media                    |
 | `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                  |
+| `/maple_equip <name>`             | Search MapleStory equipment                                           |
+| `/maple_scroll <name>`            | Search MapleStory scrolls                                             |
+| `/maple_npc <name>`               | Search MapleStory NPCs                                                |
+| `/maple_quest <name>`             | Search MapleStory quests                                              |
+| `/maple_map <name>`               | Search MapleStory maps                                                |
 | `/maple_item <name>`              | Search MapleStory item sources                                        |
 | `/maple_stats`                    | View MapleStory database statistics                                   |
 | `/ping`                           | Check bot latency                                                     |
@@ -111,7 +121,7 @@ cp .env.example .env
 uv run discordbot
 ```
 
-### Optional: Update MapleStory Database
+### Optional: Update MapleStory Artale Database
 
 ```bash
 uv run update

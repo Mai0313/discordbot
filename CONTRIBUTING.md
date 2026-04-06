@@ -27,7 +27,7 @@ cp .env.example .env
 uv run discordbot
 ```
 
-### Optional: MapleStory Data
+### Optional: MapleStory Artale Data
 
 ```bash
 uv run update
@@ -44,13 +44,13 @@ src/discordbot/
 │   │       └── prompts.py  # System & routing prompts
 │   ├── parse_threads.py    # Threads.net auto-parser
 │   ├── video.py            # /download_video slash command
-│   ├── maplestory.py       # /maple_* slash commands
+│   ├── maplestory.py       # /maple_* slash commands (8 commands)
 │   │   └── _maplestory/
-│   │       ├── service.py  # Search logic
-│   │       ├── models.py   # Data models
+│   │       ├── service.py  # Data loading, search logic, caching
+│   │       ├── models.py   # Pydantic data models
 │   │       ├── embeds.py   # Discord embed builders
-│   │       ├── constants.py
-│   │       └── views.py    # Interactive UI components
+│   │       ├── constants.py# Display templates for stats
+│   │       └── views.py    # Interactive UI components (dropdown select)
 │   ├── log_msg.py          # Message logging to SQLite/PostgreSQL
 │   └── template.py         # /ping and utility reactions
 ├── typings/                # Pydantic configuration models
@@ -61,8 +61,18 @@ src/discordbot/
     ├── downloader.py       # yt-dlp video downloader wrapper
     └── threads.py          # Threads.net content scraper
 data/
-├── monsters.json           # MapleStory monster/item database
-└── downloads/              # Temporary video download storage
+├── maplestory/             # MapleStory Artale game database
+│   ├── monsters.json
+│   ├── equipment.json
+│   ├── scrolls.json
+│   ├── npcs.json
+│   ├── quests.json
+│   ├── maps.json
+│   ├── translations.json
+│   ├── misc.json
+│   └── useable.json
+├── downloads/              # Temporary video download storage
+└── threads/                # Downloaded Threads.net media
 ```
 
 ### Architecture
@@ -122,9 +132,8 @@ uv run pytest -vv
 
 ### Existing Test Coverage
 
-- **TemplateCogs**: message reactions and `/ping` embed
-- **ReplyGeneratorCogs**: `_get_attachment_list()` and message processing
-- **VideoCogs**: `/download_video` happy path (downloader mocked)
+- **VideoDownloader**: parametrized integration tests with URLs from X, Facebook, TikTok
+- **ThreadsDownloader**: parametrized integration tests with 7 different Threads.net URLs
 
 ## CI/CD
 
@@ -135,7 +144,7 @@ uv run pytest -vv
 | `build_image.yml`        | Push to main, tags | Build & push Docker image to `ghcr.io/mai0313/discordbot` |
 | `deploy.yml`             | Push to main, tags | Build mkdocs and deploy to GitHub Pages                   |
 | `build_release.yml`      | Tags               | Cross-platform binaries via PyInstaller, publish to PyPI  |
-| `code_scan.yml`          | Push/PRs           | GitLeaks, Trufflehog, CodeQL, Trivy security scans        |
+| `code_scan.yml`          | Push/PRs           | GitLeaks, Trufflehog, CodeQL security scans               |
 
 ## How to Contribute
 
@@ -149,14 +158,14 @@ uv run pytest -vv
 
 ## Scripts
 
-| Script                | Description                               |
-| --------------------- | ----------------------------------------- |
-| `uv run discordbot`   | Run the bot                               |
-| `uv run update`       | Install Chromium + update MapleStory data |
-| `make format`         | Run pre-commit formatting hooks           |
-| `make test`           | Run all tests                             |
-| `make gen-docs`       | Generate API documentation                |
-| `uv run mkdocs serve` | Serve documentation locally (port 9987)   |
+| Script                | Description                                      |
+| --------------------- | ------------------------------------------------ |
+| `uv run discordbot`   | Run the bot                                      |
+| `uv run update`       | Install Chromium + update MapleStory Artale data |
+| `make format`         | Run pre-commit formatting hooks                  |
+| `make test`           | Run all tests                                    |
+| `make gen-docs`       | Generate API documentation                       |
+| `uv run mkdocs serve` | Serve documentation locally (port 9987)          |
 
 ## License
 
