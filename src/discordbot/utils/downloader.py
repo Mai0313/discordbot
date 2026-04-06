@@ -113,9 +113,8 @@ class VideoDownloader(BaseModel):
         return url
 
     def get_params(self, quality: str, dry_run: bool, url: str | None = None) -> dict[str, Any]:
-        today = datetime.datetime.now().strftime("%Y%m%d")
 
-        output_path = Path(self.output_folder) / today
+        output_path = Path(self.output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Base headers safe for most sites; site-specific headers added conditionally below
