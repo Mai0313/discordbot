@@ -240,9 +240,9 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         if previous_emoji and self.bot.user:
             with contextlib.suppress(Exception):
-                await message.remove_reaction(previous_emoji, self.bot.user)
+                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
         with contextlib.suppress(Exception):
-            await message.add_reaction(emoji)
+            await message.add_reaction(emoji=emoji)
 
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         user_id = message.author.id
