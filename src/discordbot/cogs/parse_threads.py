@@ -18,6 +18,15 @@ class ThreadsCogs(commands.Cog):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
+    async def _handle_reaction(
+        self, message: Message, emoji: str, previous_emoji: str | None = None
+    ) -> None:
+        if previous_emoji and self.bot.user:
+            with contextlib.suppress(Exception):
+                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
+        with contextlib.suppress(Exception):
+            await message.add_reaction(emoji=emoji)
+
     def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
         embeds = []
         main_embed = Embed(
@@ -62,41 +71,51 @@ class ThreadsCogs(commands.Cog):
             return
 
         url = match.group(0)
+        current_emoji = "🔗"
+        await self._handle_reaction(message=message, emoji=current_emoji)
 
-        # Start typing indicator
-        async with message.channel.typing():
-            try:
-                # Run parsing logic
-                with self.downloader.parse(url) as result:
-                    if not result.text and not result.video_paths and not result.image_urls:
-                        return
+        try:
+            with self.downloader.parse(url) as result:
+                if not result.text and not result.video_paths and not result.image_urls:
+                    await self._handle_reaction(
+                        message=message, emoji="⚠️", previous_emoji=current_emoji
+                    )
+                    return
 
-                    # Compute total size of all downloaded media
-                    total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
-                    max_size = 25 * 1024 * 1024  # 25 MB limit
+                total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
+                max_size = 25 * 1024 * 1024  # 25 MB limit
 
-                    # If limits are exceeded, just ignore the message
-                    if (
-                        total_size > max_size
-                        or len(result.video_paths) + len(result.image_urls) > 10
-                        or len(result.text) > 4096
-                    ):
-                        return
+                if (
+                    total_size > max_size
+                    or len(result.video_paths) + len(result.image_urls) > 10
+                    or len(result.text) > 4096
+                ):
+                    await self._handle_reaction(
+                        message=message, emoji="⚠️", previous_emoji=current_emoji
+                    )
+                    return
 
-                    files = [
-                        File(fp=str(path), filename=path.name)
-                        for path in result.video_paths
-                        if path.exists()
-                    ]
+                files = [
+                    File(fp=str(path), filename=path.name)
+                    for path in result.video_paths
+                    if path.exists()
+                ]
 
-                    embeds = self._build_embeds(result=result)
+                embeds = self._build_embeds(result=result)
 
-                    with contextlib.suppress(Exception):
-                        await message.edit(suppress=True)
+                with contextlib.suppress(Exception):
+                    await message.edit(suppress=True)
 
-                    await message.reply(embeds=embeds, files=files, mention_author=False)
-            except Exception as e:
-                logfire.error(f"Failed to send Threads message: {e}")
+                await message.reply(embeds=embeds, files=files, mention_author=False)
+                await self._handle_reaction(
+                    message=message, emoji="🆗", previous_emoji=current_emoji
+                )
+        except Exception as e:
+            logfire.error(f"Failed to send Threads message: {e}")
+            with contextlib.suppress(Exception):
+                await self._handle_reaction(
+                    message=message, emoji="❌", previous_emoji=current_emoji
+                )
 
 
 async def setup(bot: commands.Bot) -> None:
