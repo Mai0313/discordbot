@@ -46,37 +46,12 @@ class ThreadsURL(BaseModel):
 
 
 class User(BaseModel):
-    id: str = Field(default="", description="Full user ID")
-    pk: str = Field(default="", description="User primary key")
     username: str = Field(default="", description="Username handle")
-    full_name: str = Field(default="", description="Display name")
     profile_pic_url: str = Field(default="", description="Profile picture URL")
-    hd_profile_pic_versions: list[dict] | None = Field(
-        default=None, description="HD profile picture versions"
-    )
-    is_verified: bool = Field(default=False, description="Blue-check verification status")
-    transparency_label: str | None = Field(default=None, description="Account transparency label")
-    transparency_product: str | None = Field(default=None, description="Transparency product type")
-    transparency_product_enabled: bool = Field(
-        default=False, description="Whether transparency product is enabled"
-    )
-    has_onboarded_to_text_post_app: bool = Field(
-        default=False, description="Whether user has onboarded to Threads"
-    )
-    text_post_app_is_private: bool = Field(
-        default=False, description="Whether the user's Threads account is private"
-    )
-    friendship_status: dict | None = Field(
-        default=None, description="Friendship/follow status with viewer"
-    )
 
 
 class Caption(BaseModel):
     text: str = Field(default="", description="Caption text content")
-    pk: str = Field(default="", description="Caption primary key")
-    has_translation: bool | None = Field(
-        default=None, description="Whether a translation is available"
-    )
 
 
 class VideoVersion(BaseModel):
@@ -85,8 +60,6 @@ class VideoVersion(BaseModel):
 
 class ImageCandidate(BaseModel):
     url: str = Field(default="", description="Image URL")
-    height: int = Field(default=0, description="Image height in pixels")
-    width: int = Field(default=0, description="Image width in pixels")
 
 
 class ImageVersions2(BaseModel):
@@ -96,50 +69,16 @@ class ImageVersions2(BaseModel):
 
 
 class CarouselMedia(BaseModel):
-    pk: str | None = Field(default=None, description="Carousel item primary key")
-    id: str | None = Field(default=None, description="Carousel item full ID")
-    code: str | None = Field(default=None, description="Carousel item short code")
     video_versions: list[VideoVersion] | None = Field(
         default=None, description="Available video versions"
     )
     image_versions2: ImageVersions2 | None = Field(
         default=None, description="Available image versions"
     )
-    original_height: int | None = Field(
-        default=None, description="Original media height in pixels"
-    )
-    original_width: int | None = Field(default=None, description="Original media width in pixels")
-    accessibility_caption: str | None = Field(
-        default=None, description="Alt text for accessibility"
-    )
-    media_type: int | None = Field(default=None, description="Media type (1=image, 2=video)")
-    has_audio: bool | None = Field(default=None, description="Whether the media has audio")
-    usertags: dict | None = Field(default=None, description="Tagged users in this carousel item")
-
-
-class LinkFragment(BaseModel):
-    url: str = Field(default="", description="Link destination URL")
-
-
-class MentionFragment(BaseModel):
-    username: str = Field(default="", description="Mentioned username")
 
 
 class Fragment(BaseModel):
-    fragment_type: str = Field(
-        default="plaintext", description="Type of fragment: plaintext, mention, link, etc."
-    )
     plaintext: str = Field(default="", description="Plain text content of the fragment")
-    link_fragment: LinkFragment | None = Field(
-        default=None, description="Link data if fragment is a link"
-    )
-    mention_fragment: MentionFragment | None = Field(
-        default=None, description="Mention data if fragment is a @mention"
-    )
-    inline_sticker_fragment: dict | None = Field(default=None, description="Inline sticker data")
-    linkified_web_url: str | None = Field(default=None, description="Auto-linkified web URL")
-    linkified_in_app_url: str | None = Field(default=None, description="Auto-linkified in-app URL")
-    styling_info: dict | None = Field(default=None, description="Text styling/formatting info")
 
 
 class TextFragments(BaseModel):
@@ -148,180 +87,24 @@ class TextFragments(BaseModel):
     )
 
 
-class ShareInfo(BaseModel):
-    quoted_post: dict | None = Field(default=None, description="Quoted post data")
-    reposted_post: dict | None = Field(default=None, description="Reposted post data")
-    quoted_attachment_post: dict | None = Field(
-        default=None, description="Quoted attachment post data"
-    )
-    quoted_attachment_post_unavailable: bool = Field(
-        default=False, description="Whether the quoted attachment post is unavailable"
-    )
-    quoted_attachment_author_attribution_allowed: bool = Field(
-        default=True, description="Whether author attribution is allowed for quoted attachment"
-    )
-
-
-class ReplyApprovalInfo(BaseModel):
-    hidden_reply_reason: str | None = Field(default=None, description="Reason a reply was hidden")
-    pending_reply_status: str | None = Field(
-        default=None, description="Pending reply approval status"
-    )
-    pending_reply_count: int | None = Field(default=None, description="Number of pending replies")
-    ignored_reply_count: int | None = Field(default=None, description="Number of ignored replies")
-
-
-class PinnedPostInfo(BaseModel):
-    is_pinned_to_parent_post: bool = Field(
-        default=False, description="Whether pinned to parent post"
-    )
-    is_pinned_to_profile: bool = Field(default=False, description="Whether pinned to profile")
-
-
 class TextPostAppInfo(BaseModel):
-    id: str = Field(default="", description="TextPostAppInfo ID")
-
-    # Engagement metrics
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
     repost_count: int | None = Field(default=None, description="Number of reposts")
     quote_count: int | None = Field(default=None, description="Number of quote posts")
     reshare_count: int | None = Field(default=None, description="Total reshare count")
-    self_thread_count: int | None = Field(
-        default=None, description="Number of self-thread replies by the author"
-    )
-
-    # Post status flags
-    is_reply: bool | None = Field(default=None, description="Whether this post is a reply")
-    is_post_unavailable: bool | None = Field(
-        default=None, description="Whether the post is unavailable"
-    )
-    is_ghost_post: bool | None = Field(
-        default=None, description="Whether the post is a ghost/shadow post"
-    )
-    is_spoiler_media: bool | None = Field(
-        default=None, description="Whether media is marked as spoiler"
-    )
-    is_markup: bool | None = Field(
-        default=None, description="Whether the post uses markup formatting"
-    )
-    is_liked_by_root_author: bool | None = Field(
-        default=None, description="Whether liked by the root thread author"
-    )
-
-    # Reply & permission controls
-    reply_control: str = Field(
-        default="everyone",
-        description="Who can reply: everyone, accounts_you_follow, mentioned_only",
-    )
-    can_reply: bool | None = Field(default=None, description="Whether the viewer can reply")
-    can_private_reply: bool | None = Field(
-        default=None, description="Whether the viewer can send a private reply"
-    )
-    is_reply_approval_enabled: bool | None = Field(
-        default=None, description="Whether reply approval is enabled"
-    )
-    reply_approval_info: ReplyApprovalInfo | None = Field(
-        default=None, description="Reply approval details"
-    )
-    show_header_follow: bool | None = Field(
-        default=None, description="Whether to show follow button in header"
-    )
-
-    # Content data
     text_fragments: TextFragments | None = Field(
         default=None, description="Structured text fragments with links/mentions"
-    )
-    share_info: ShareInfo | None = Field(default=None, description="Quoted/reposted post info")
-    pinned_post_info: PinnedPostInfo | None = Field(default=None, description="Pin status")
-
-    # Author context
-    reply_to_author: User | None = Field(
-        default=None, description="Author of the post being replied to"
-    )
-    root_post_author: User | None = Field(default=None, description="Original thread author")
-    private_reply_partner: dict | None = Field(
-        default=None, description="Private reply partner info"
-    )
-    author_notif_control: dict | None = Field(
-        default=None, description="Author notification control settings"
-    )
-
-    # Attachments & previews
-    link_preview_attachment: dict | None = Field(
-        default=None, description="Link preview card attachment"
-    )
-    link_preview_response: dict | None = Field(
-        default=None, description="Link preview response data"
-    )
-    linked_inline_media: dict | None = Field(default=None, description="Inline linked media")
-    snippet_attachment_info: dict | None = Field(
-        default=None, description="Snippet attachment info"
-    )
-    attachment_tombstone_info: dict | None = Field(
-        default=None, description="Tombstone info for removed attachments"
-    )
-
-    # Ghost post details
-    ghost_post_exp_time_ms: int | None = Field(
-        default=None, description="Ghost post expiration time in ms"
-    )
-    ghost_post_approximate_like_count_str: str | None = Field(
-        default=None, description="Approximate like count for ghost posts"
-    )
-    ghost_post_reply_type: str | None = Field(default=None, description="Ghost post reply type")
-    ghost_post_approximate_reply_count_str: str | None = Field(
-        default=None, description="Approximate reply count for ghost posts"
-    )
-
-    # Miscellaneous metadata
-    hush_info: dict | None = Field(default=None, description="Hush/mute info")
-    self_thread_info: dict | None = Field(default=None, description="Self-thread context info")
-    tag_header: dict | None = Field(default=None, description="Tag header info")
-    system_status_message: str | None = Field(default=None, description="System status message")
-    post_unavailable_reason: str | None = Field(
-        default=None, description="Reason the post is unavailable"
-    )
-    post_tombstone_info: dict | None = Field(
-        default=None, description="Tombstone info for deleted posts"
-    )
-    related_trends_info: dict | None = Field(default=None, description="Related trending topics")
-    custom_feed_preview_info: dict | None = Field(
-        default=None, description="Custom feed preview data"
-    )
-    special_effects_enabled_str: str = Field(
-        default="", description="Special effects enabled string"
-    )
-    algo_tweaks_info: dict | None = Field(default=None, description="Algorithm tweaks info")
-
-    # Platform-specific
-    platform_podcast_episode_info: dict | None = Field(
-        default=None, description="Podcast episode info"
-    )
-    platform_podcast_info: dict | None = Field(default=None, description="Podcast info")
-    game_score_share_info: dict | None = Field(default=None, description="Game score sharing info")
-    public_view_count_card_attachment_info: dict | None = Field(
-        default=None, description="Public view count card info"
     )
 
 
 class Post(BaseModel):
     """Represents a single Threads post parsed from the API JSON."""
 
-    # Identifiers
-    pk: str = Field(default="", description="Post primary key")
-    id: str = Field(default="", description="Full post ID (pk_userPk format)")
     code: str = Field(default="", description="Post short code used in URLs")
-
-    # Content
     caption: Caption | None = Field(default=None, description="Post caption")
     user: User | None = Field(default=None, description="Post author")
     text_post_app_info: TextPostAppInfo | None = Field(
         default=None, description="Threads-specific post info and engagement metrics"
-    )
-
-    # Media
-    media_type: int | None = Field(
-        default=None, description="Media type (1=image, 2=video, 8=carousel)"
     )
     carousel_media: list[CarouselMedia] | None = Field(
         default=None, description="Carousel media items"
@@ -332,52 +115,8 @@ class Post(BaseModel):
     image_versions2: ImageVersions2 | None = Field(
         default=None, description="Available image versions"
     )
-    original_height: int | None = Field(
-        default=None, description="Original media height in pixels"
-    )
-    original_width: int | None = Field(default=None, description="Original media width in pixels")
-    has_audio: bool | None = Field(default=None, description="Whether the media has audio")
-    accessibility_caption: str | None = Field(
-        default=None, description="Alt text for accessibility"
-    )
-
-    # Engagement
     like_count: int | None = Field(default=None, description="Number of likes")
-    like_and_view_counts_disabled: bool | None = Field(
-        default=None, description="Whether like/view counts are hidden"
-    )
-
-    # Metadata
     taken_at: int | None = Field(default=None, description="Post creation timestamp (Unix epoch)")
-    caption_is_edited: bool | None = Field(
-        default=None, description="Whether the caption has been edited"
-    )
-    is_paid_partnership: bool | None = Field(
-        default=None, description="Whether this is a paid partnership/sponsored post"
-    )
-    gen_ai_detection_method: dict | None = Field(
-        default=None, description="AI-generated content detection method"
-    )
-    canonical_url: str | None = Field(default=None, description="Canonical URL of the post")
-    organic_tracking_token: str | None = Field(
-        default=None, description="Analytics tracking token"
-    )
-
-    # Additional media info
-    audio: dict | None = Field(default=None, description="Audio attachment data")
-    transcription_data: dict | None = Field(
-        default=None, description="Audio/video transcription data"
-    )
-    usertags: dict | None = Field(default=None, description="Tagged users in media")
-    giphy_media_info: dict | None = Field(default=None, description="GIPHY sticker/GIF info")
-    media_overlay_info: dict | None = Field(default=None, description="Media overlay info")
-    caption_add_on: dict | None = Field(default=None, description="Caption add-on data")
-
-    # Platform flags
-    is_fb_only: bool | None = Field(default=None, description="Whether post is Facebook-only")
-    is_internal_only: bool | None = Field(
-        default=None, description="Whether post is internal-only"
-    )
 
     # -- derived properties ---------------------------------------------------
 
