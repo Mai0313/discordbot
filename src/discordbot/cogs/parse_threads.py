@@ -8,7 +8,7 @@ from nextcord.ext import commands
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 
-URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s]+")
+URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
 
 
 class ThreadsCogs(commands.Cog):
