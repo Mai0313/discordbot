@@ -35,7 +35,7 @@ jobs:
         run: |
           uv sync --group docs
           uv run make gen-docs
-          uv run mkdocs build
+          uv run zensical build
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
