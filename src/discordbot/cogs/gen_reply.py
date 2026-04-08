@@ -394,8 +394,9 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(self, message: Message) -> None:
+        system_prompt = get_system_prompt()
         message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": get_system_prompt()}]}
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
         ]
 
         hist_messages = await self._get_history_message(message=message, limit=30)
@@ -420,12 +421,16 @@ class ReplyGeneratorCogs(commands.Cog):
         await self._handle_streaming(stream=stream, message=message)
 
     async def _handle_summary_reply(self, message: Message) -> None:
+        system_prompt = get_summary_prompt()
         message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": get_summary_prompt()}]}
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
         ]
 
         hist_messages = await self._get_history_message(message=message, limit=100)
         message_list.extend(hist_messages)
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
 
         current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
