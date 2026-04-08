@@ -234,15 +234,6 @@ class ReplyGeneratorCogs(commands.Cog):
             return "SUMMARY"
         return "QA"
 
-    async def _handle_reaction(
-        self, message: Message, emoji: str, previous_emoji: str | None = None
-    ) -> None:
-        if previous_emoji and self.bot.user:
-            with contextlib.suppress(Exception):
-                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(emoji=emoji)
-
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         user_id = message.author.id
         if message.author.name != "mai9999":
@@ -358,6 +349,15 @@ class ReplyGeneratorCogs(commands.Cog):
             content=f"{message.author.mention} {image_description}", file=image_file
         )
 
+    async def _handle_reaction(
+        self, message: Message, emoji: str, previous_emoji: str | None = None
+    ) -> None:
+        if previous_emoji and self.bot.user:
+            with contextlib.suppress(Exception):
+                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
+        with contextlib.suppress(Exception):
+            await message.add_reaction(emoji=emoji)
+
     async def _handle_streaming(
         self, stream: AsyncStream[ChatCompletionChunk], message: Message
     ) -> str:
@@ -393,40 +393,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
         return stored_content
 
-    async def _handle_message_reply(self, message: Message) -> None:
-        system_prompt = get_system_prompt()
+    async def _handle_message_reply(
+        self, message: Message, system_prompt: str, history_limit: int
+    ) -> None:
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
         ]
 
-        hist_messages = await self._get_history_message(message=message, limit=30)
-        message_list.extend(hist_messages)
-
-        reference_messages = await self._get_reference_message(message=message)
-        message_list.extend(reference_messages)
-
-        current_message = await self._get_current_message(message=message)
-        message_list.extend(current_message)
-
-        stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
-            model=DEFAULT_SLOW_MODEL,
-            messages=message_list,
-            reasoning_effort="high",
-            tools=TOOLS,
-            stream=True,
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
-        )
-
-        await self._handle_streaming(stream=stream, message=message)
-
-    async def _handle_summary_reply(self, message: Message) -> None:
-        system_prompt = get_summary_prompt()
-        message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
-        ]
-
-        hist_messages = await self._get_history_message(message=message, limit=100)
+        hist_messages = await self._get_history_message(message=message, limit=history_limit)
         message_list.extend(hist_messages)
 
         reference_messages = await self._get_reference_message(message=message)
@@ -493,13 +467,17 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message, emoji="📖", previous_emoji=current_emoji
                 )
                 current_emoji = "📖"
-                await self._handle_summary_reply(message=message)
+                await self._handle_message_reply(
+                    message=message, system_prompt=get_summary_prompt(), history_limit=100
+                )
             else:
                 await self._handle_reaction(
                     message=message, emoji="❓", previous_emoji=current_emoji
                 )
                 current_emoji = "❓"
-                await self._handle_message_reply(message=message)
+                await self._handle_message_reply(
+                    message=message, system_prompt=get_system_prompt(), history_limit=30
+                )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
             logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
