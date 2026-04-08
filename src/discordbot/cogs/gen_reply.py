@@ -202,7 +202,6 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": get_system_prompt()}]},
             {
                 "role": "assistant",
                 "content": [
@@ -211,7 +210,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         "text": f"==== Current Message that needs to be answered {message.author.name}. ====",
                     }
                 ],
-            },
+            }
         ]
         current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
@@ -395,7 +394,9 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(self, message: Message) -> None:
-        message_list: list[dict[str, Any]] = []
+        message_list: list[dict[str, Any]] = [
+            {"role": "system", "content": [{"type": "text", "text": get_system_prompt()}]}
+        ]
 
         hist_messages = await self._get_history_message(message=message, limit=30)
         message_list.extend(hist_messages)
@@ -419,15 +420,16 @@ class ReplyGeneratorCogs(commands.Cog):
         await self._handle_streaming(stream=stream, message=message)
 
     async def _handle_summary_reply(self, message: Message) -> None:
-        hist_messages = await self._get_history_message(message=message, limit=100)
         message_list: list[dict[str, Any]] = [
             {"role": "system", "content": [{"type": "text", "text": get_summary_prompt()}]}
         ]
+
+        hist_messages = await self._get_history_message(message=message, limit=100)
         message_list.extend(hist_messages)
-        message_list.append({
-            "role": "user",
-            "content": [{"type": "text", "text": "請總結以上的聊天記錄。"}],
-        })
+
+        current_message = await self._get_current_message(message=message)
+        message_list.extend(current_message)
+
         stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
