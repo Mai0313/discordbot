@@ -223,7 +223,6 @@ class ReplyGeneratorCogs(commands.Cog):
             messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
@@ -259,21 +258,16 @@ class ReplyGeneratorCogs(commands.Cog):
             model=DEFAULT_VIDEO_MODEL,
             prompt=user_prompt,
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         while video.status not in ("completed", "failed"):
             await asyncio.sleep(5)
             video = await self.client.videos.retrieve(
-                video_id=video.id,
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"metadata": {"tags": [message.author.name]}},
+                video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
             )
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(
-            video_id=video.id,
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
+            video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
         )
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
         await message.reply(content=f"{message.author.mention}", file=video_file)
@@ -305,7 +299,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 quality="auto",
                 size="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"metadata": {"tags": [message.author.name]}},
             )
         else:
             result = await self.client.images.generate(
@@ -316,7 +309,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 quality="auto",
                 size="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"metadata": {"tags": [message.author.name]}},
             )
 
         if not result.data:
@@ -339,7 +331,6 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
@@ -416,7 +407,6 @@ class ReplyGeneratorCogs(commands.Cog):
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"metadata": {"tags": [message.author.name]}},
         )
 
         await self._handle_streaming(stream=stream, message=message)
