@@ -21,12 +21,7 @@ from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToo
 
 from discordbot.typings.llm import LLMConfig
 
-from ._gen_reply.prompts import (
-    ROUTE_PROMPT,
-    get_system_prompt,
-    get_summary_prompt,
-    get_image_description_prompt,
-)
+from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
@@ -277,7 +272,7 @@ class ReplyGeneratorCogs(commands.Cog):
         image_responses = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=[
-                {"role": "system", "content": get_image_description_prompt()},
+                {"role": "system", "content": IMAGE_PROMPT},
                 {
                     "role": "user",
                     "content": [
@@ -442,7 +437,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "📖"
                 await self._handle_message_reply(
-                    message=message, system_prompt=get_summary_prompt(), history_limit=100
+                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=100
                 )
             else:
                 await self._handle_reaction(
@@ -450,7 +445,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "❓"
                 await self._handle_message_reply(
-                    message=message, system_prompt=get_system_prompt(), history_limit=30
+                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
