@@ -1,8 +1,8 @@
 from io import BytesIO
-import time
 import base64
 from typing import Any, Literal
 import asyncio
+from functools import cached_property
 from mimetypes import guess_type
 import contextlib
 
@@ -32,7 +32,6 @@ DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-VIDEO_COOLDOWN = 10  # minutes
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
@@ -44,9 +43,8 @@ class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.config = LLMConfig()
-        self._video_cooldowns: dict[int, float] = {}
 
-    @property
+    @cached_property
     def client(self) -> AsyncOpenAI:
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
@@ -144,12 +142,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
         content = await self._get_cleaned_content(message=message)
-        role = "assistant" if message.author.bot else "user"
+        role = "assistant" if self.bot.user and message.author.id == self.bot.user.id else "user"
 
         # Build content parts - start with text
         content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
 
-        # Only include images for current/recent messages, not historical ones
+        # Include all attachments (images, videos, stickers, embed images)
         attachment_parts = await self._get_attachments(message=message)
         content_parts.extend(attachment_parts)
         return {"role": role, "content": content_parts}
@@ -216,44 +214,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        current_message = await self._get_current_message(message=message)
-        response = await self.client.chat.completions.create(
-            model=DEFAULT_FAST_MODEL,
-            messages=[{"role": "system", "content": ROUTE_PROMPT}, *current_message],
-            reasoning_effort="none",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-        )
-        decision = (response.choices[0].message.content or "").strip().upper()
-        if decision.startswith("IMAGE"):
-            return "IMAGE"
-        if decision.startswith("VIDEO"):
-            return "VIDEO"
-        if decision.startswith("SUMMARY"):
-            return "SUMMARY"
-        return "QA"
-
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
-        user_id = message.author.id
-        if message.author.name != "mai9999":
-            last_used = self._video_cooldowns.get(user_id, 0)
-            cooldown_seconds = VIDEO_COOLDOWN * 60
-            if time.time() - last_used < cooldown_seconds:
-                remaining = int((cooldown_seconds - (time.time() - last_used)) / 60)
-                minutes = remaining // 60
-                await message.reply(
-                    content=f"{message.author.mention} 影片生成每小時限用一次，還需等待 {minutes} 分鐘"
-                )
-                return
-
-        # create_kwargs: dict[str, Any] = {"model": DEFAULT_VIDEO_MODEL, "prompt": user_prompt}
-        # data_uris = await self._get_attachments(message=message)
-        # if message.reference and isinstance(message.reference.resolved, Message):
-        #     data_uris.extend(await self._get_attachments(message=message.reference.resolved))
-
-        # if data_uris:
-        #     create_kwargs["input_reference"] = get_image_data(image_file=data_uris[0], use_b64=False)
-
         video = await self.client.videos.create(
             model=DEFAULT_VIDEO_MODEL,
             prompt=user_prompt,
@@ -271,7 +232,6 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
         await message.reply(content=f"{message.author.mention}", file=video_file)
-        self._video_cooldowns[user_id] = time.time()
 
     async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
         attachment_parts = await self._get_attachments(message=message)
@@ -383,6 +343,30 @@ class ReplyGeneratorCogs(commands.Cog):
                 await reply.edit(content=stored_content)
 
         return stored_content
+
+    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
+        message_list: list[dict[str, Any]] = [{"role": "system", "content": ROUTE_PROMPT}]
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
+
+        current_message = await self._get_current_message(message=message)
+        message_list.extend(current_message)
+
+        response = await self.client.chat.completions.create(
+            model=DEFAULT_FAST_MODEL,
+            messages=message_list,
+            reasoning_effort="none",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+        )
+        decision = (response.choices[0].message.content or "").strip().upper()
+        if decision.startswith("IMAGE"):
+            return "IMAGE"
+        if decision.startswith("VIDEO"):
+            return "VIDEO"
+        if decision.startswith("SUMMARY"):
+            return "SUMMARY"
+        return "QA"
 
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int
