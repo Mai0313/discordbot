@@ -16,8 +16,8 @@ Thanks for your interest in contributing! This guide covers everything you need 
 git clone https://github.com/Mai0313/discordbot.git
 cd discordbot
 
-# Install all dependencies (including dev and test groups)
-uv sync --dev
+# Install all dependencies (including dev, test, and docs groups)
+uv sync --all-groups
 
 # Set up environment
 cp .env.example .env
@@ -42,6 +42,7 @@ src/discordbot/
 │   ├── gen_reply.py        # AI chat — @mention trigger, streaming, routing
 │   │   └── _gen_reply/
 │   │       └── prompts.py  # System & routing prompts
+│   ├── help.py             # /help slash command (localized guide)
 │   ├── parse_threads.py    # Threads.net auto-parser
 │   ├── video.py            # /download_video slash command
 │   ├── maplestory.py       # /maple_* slash commands (8 commands)
@@ -86,11 +87,12 @@ data/
 
 ### Tooling
 
-| Tool           | Purpose                                  |
-| -------------- | ---------------------------------------- |
-| **Ruff**       | Linting and formatting (line length: 99) |
-| **mypy**       | Type checking with Pydantic plugin       |
-| **pre-commit** | Runs all checks automatically on commit  |
+| Tool           | Purpose                                   |
+| -------------- | ----------------------------------------- |
+| **Ruff**       | Linting and formatting (line length: 99)  |
+| **mypy**       | Type checking with Pydantic plugin        |
+| **ty**         | Astral's type checker (error-level rules) |
+| **pre-commit** | Runs all checks automatically on commit   |
 
 ### Style
 
@@ -110,7 +112,7 @@ uv run pre-commit install
 uv run pre-commit run -a
 ```
 
-Hooks include: Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, nbstripout.
+Hooks include: Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, nbstripout, uv-sync, uv-lock.
 
 ## Testing
 
@@ -145,6 +147,7 @@ uv run pytest -vv
 | `deploy.yml`             | Push to main, tags | Build mkdocs and deploy to GitHub Pages                   |
 | `build_release.yml`      | Tags               | Cross-platform binaries via PyInstaller, publish to PyPI  |
 | `code_scan.yml`          | Push/PRs           | GitLeaks, Trufflehog, CodeQL security scans               |
+| `auto_review_merge.yml`  | PRs                | Auto-review and merge eligible pull requests              |
 
 ## How to Contribute
 

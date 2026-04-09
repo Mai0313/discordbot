@@ -79,6 +79,7 @@ Commands and responses are available in English, Traditional Chinese, Simplified
 | `/maple_map <name>`               | Search MapleStory maps                                                |
 | `/maple_item <name>`              | Search MapleStory item sources                                        |
 | `/maple_stats`                    | View MapleStory database statistics                                   |
+| `/help`                           | Show bot usage guide                                                  |
 | `/ping`                           | Check bot latency                                                     |
 
 ## Self-Hosting
