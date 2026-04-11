@@ -8,7 +8,7 @@ import contextlib
 
 from openai import AsyncOpenAI, AsyncStream
 import logfire
-from nextcord import File, Embed, Message
+from nextcord import File, Embed, Message, Attachment
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
@@ -72,67 +72,56 @@ class ReplyGeneratorCogs(commands.Cog):
         content = f"{message.author.name}: {content}"
         return content
 
+    def _image_url_to_part(self, url: str) -> dict[str, Any]:
+        try:
+            downloaded = get_pil_image(image_file=url)
+            converted = pil_to_data_uri(image=downloaded)
+            return {"type": "image_url", "image_url": {"url": converted}}
+        except Exception:
+            logfire.warn(f"Failed to convert image, keeping original URL: {url}")
+            return {"type": "text", "text": f"Attachment URL: {url}"}
+
+    async def _video_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
+        try:
+            video_bytes = await attachment.read()
+            b64_data = base64.b64encode(video_bytes).decode()
+            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            mime_type = content_type.split(";")[0].strip()
+            data_uri = f"data:{mime_type};base64,{b64_data}"
+            return {
+                "type": "file",
+                "file": {"filename": attachment.filename, "file_data": data_uri},
+            }
+        except Exception:
+            logfire.warn(f"Failed to download video attachment: {attachment.url}")
+            return {"type": "text", "text": f"Attachment URL: {attachment.url}"}
+
+    def _embed_image_urls(self, embed: Embed) -> list[str]:
+        # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
+        # since sources like Threads CDN expire and reject requests without specific headers.
+        urls: list[str] = []
+        if embed.image:
+            urls.append(embed.image.proxy_url or embed.image.url)
+        if embed.thumbnail:
+            urls.append(embed.thumbnail.proxy_url or embed.thumbnail.url)
+        return [u for u in urls if u]
+
     async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
         content_parts: list[dict[str, Any]] = []
 
-        # Process Discord attachments (have content_type metadata)
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("video/"):
-                try:
-                    video_bytes = await attachment.read()
-                    b64_data = base64.b64encode(video_bytes).decode()
-                    mime_type = content_type.split(";")[0].strip()
-                    data_uri = f"data:{mime_type};base64,{b64_data}"
-                    content_parts.append({
-                        "type": "file",
-                        "file": {"filename": attachment.filename, "file_data": data_uri},
-                    })
-                except Exception:
-                    logfire.warn("Failed to download video attachment, keeping original URL")
-                    content_parts.append({
-                        "type": "text",
-                        "text": f"Attachment URL: {attachment.url}",
-                    })
+                content_parts.append(await self._video_attachment_to_part(attachment=attachment))
             else:
-                try:
-                    downloaded = get_pil_image(image_file=attachment.url)
-                    converted = pil_to_data_uri(image=downloaded)
-                    content_parts.append({"type": "image_url", "image_url": {"url": converted}})
-                except Exception:
-                    logfire.warn("Failed to convert attachment to image, keeping original URL")
-                    content_parts.append({
-                        "type": "text",
-                        "text": f"Attachment URL: {attachment.url}",
-                    })
+                content_parts.append(self._image_url_to_part(url=attachment.url))
 
-        # Process stickers
         for sticker in message.stickers:
-            try:
-                downloaded = get_pil_image(image_file=sticker.url)
-                converted = pil_to_data_uri(image=downloaded)
-                content_parts.append({"type": "image_url", "image_url": {"url": converted}})
-            except Exception:
-                logfire.warn("Failed to convert sticker to image, keeping original URL")
-                content_parts.append({"type": "text", "text": f"Attachment URL: {sticker.url}"})
+            content_parts.append(self._image_url_to_part(url=sticker.url))
 
-        # Process embed images — prefer Discord's proxy_url (media.discordapp.net)
-        # over the original URL, since sources like Threads CDN expire and reject
-        # requests without specific headers.
         for embed in message.embeds:
-            embed_urls: list[str] = []
-            if embed.image:
-                embed_urls.append(embed.image.proxy_url or embed.image.url)
-            if embed.thumbnail:
-                embed_urls.append(embed.thumbnail.proxy_url or embed.thumbnail.url)
-            for url in filter(None, embed_urls):
-                try:
-                    downloaded = get_pil_image(image_file=url)
-                    converted = pil_to_data_uri(image=downloaded)
-                    content_parts.append({"type": "image_url", "image_url": {"url": converted}})
-                except Exception:
-                    logfire.warn("Failed to convert embed image, keeping original URL")
-                    content_parts.append({"type": "text", "text": f"Attachment URL: {url}"})
+            for url in self._embed_image_urls(embed=embed):
+                content_parts.append(self._image_url_to_part(url=url))
 
         return content_parts
 
