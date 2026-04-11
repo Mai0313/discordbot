@@ -431,7 +431,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "❓"
                 await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=50
+                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
