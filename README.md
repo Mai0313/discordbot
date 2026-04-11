@@ -33,6 +33,7 @@ Mention the bot (`@bot`) to start a conversation. Powered by Google Gemini, it s
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
 - **Web search** — the bot automatically searches the web when it needs up-to-date information
+- **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗)
 
 ### Threads Parsing
@@ -163,7 +164,7 @@ REDIS_URL=redis://host:6379/0
 This bot complies with Discord's Terms of Service and Developer Policy.
 
 - **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite. Data stays on your server and is never shared externally.
-- **API Calls**: Text and images are sent to the configured LLM API only when the bot is mentioned. No data is shared with other third parties.
+- **API Calls**: Text, images, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is mentioned. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
 - **Opt-out**: Server owners can disable message logging by adjusting the bot configuration.
 
