@@ -116,15 +116,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 logfire.warn("Failed to convert sticker to image, keeping original URL")
                 content_parts.append({"type": "text", "text": f"Attachment URL: {sticker.url}"})
 
-        # Process embed images
+        # Process embed images — prefer Discord's proxy_url (media.discordapp.net)
+        # over the original URL, since sources like Threads CDN expire and reject
+        # requests without specific headers.
         for embed in message.embeds:
-            for url in filter(
-                None,
-                [
-                    embed.image.url if embed.image else None,
-                    embed.thumbnail.url if embed.thumbnail else None,
-                ],
-            ):
+            embed_urls: list[str] = []
+            if embed.image:
+                embed_urls.append(embed.image.proxy_url or embed.image.url)
+            if embed.thumbnail:
+                embed_urls.append(embed.thumbnail.proxy_url or embed.thumbnail.url)
+            for url in filter(None, embed_urls):
                 try:
                     downloaded = get_pil_image(image_file=url)
                     converted = pil_to_data_uri(image=downloaded)
