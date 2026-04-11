@@ -46,8 +46,8 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _get_user_prompt(self, message: Message) -> str:
         content = message.content
-        for mention in message.mentions:
-            content = content.replace(f"<@{mention.id}>", "").strip()
+        if self.bot.user:
+            content = content.replace(f"<@{self.bot.user.id}>", "")
         return content.strip()
 
     async def _get_cleaned_content(self, message: Message) -> str:
