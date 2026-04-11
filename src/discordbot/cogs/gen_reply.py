@@ -50,6 +50,10 @@ class ReplyGeneratorCogs(commands.Cog):
             content = content.replace(f"<@{self.bot.user.id}>", "")
         return content.strip()
 
+    def _format_author_label(self, message: Message) -> str:
+        author = message.author
+        return f"{author.display_name} ({author.name}) [id: {author.id}]"
+
     async def _get_cleaned_content(self, message: Message) -> str:
         content = await self._get_user_prompt(message=message)
         if not content and message.embeds:
@@ -69,7 +73,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 if parts:
                     embed_parts.append("\n".join(parts))
             content = "\n\n".join(embed_parts)
-        content = f"{message.author.name}: {content}"
+        content = f"{self._format_author_label(message=message)}: {content}"
         return content
 
     def _image_url_to_part(self, url: str) -> dict[str, Any]:
@@ -171,7 +175,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"==== Reference Message from {message.reference.resolved.author.name} that might be helpful for answering. ====",
+                        "text": f"==== Reference Message from {self._format_author_label(message=message.reference.resolved)} that might be helpful for answering. ====",
                     }
                 ],
             })
@@ -190,7 +194,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"==== Current Message that needs to be answered {message.author.name}. ====",
+                        "text": f"==== Current Message that needs to be answered from {self._format_author_label(message=message)}. ====",
                     }
                 ],
             }

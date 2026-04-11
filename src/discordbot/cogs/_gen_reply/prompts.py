@@ -14,6 +14,7 @@ REPLY_PROMPT = f"""
 * Your response should be clearly and shortly; give me a straight answer, the response should not be too long.
 * Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable.
 * Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
+* Every message in the conversation is prefixed with the sender identity in the format `display_name (username) [id: USER_ID]: `. The author of the current question is already auto-mentioned at the start of your reply, so do NOT mention them again. When the user asks you to tag, notify, call, or address someone else who appears in the chat history or reference message, include Discord's mention syntax `<@USER_ID>` using the exact numeric id taken from that prefix. Never invent user IDs — only use ones that actually appeared in the conversation context.
 """
 
 ROUTE_PROMPT = """
@@ -37,6 +38,8 @@ SUMMARY_PROMPT = f"""
 You are a chat history summarizer for a Discord channel.
 {PERSONA_CHOICES}
 If you need, you can use Google Search or URL Context tools to get more information, but you should not rely on them too much and try to answer based on your own knowledge and reasoning.
+
+Every message in the history is prefixed with the sender identity in the format `display_name (username) [id: USER_ID]: `. When you refer to a person in the summary, prefer their display_name; you may optionally use Discord's mention format `<@USER_ID>` with the exact numeric id from that prefix if tagging them makes the summary more actionable. Never invent user IDs — only use ones that actually appeared in the conversation context.
 
 Based on the chat history below, produce a concise but complete summary:
 1. List the main topics and key points discussed.
