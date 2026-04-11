@@ -161,10 +161,6 @@ class ReplyGeneratorCogs(commands.Cog):
             for hist_msg in hist_messages:
                 hist_message = await self._process_single_message(message=hist_msg)
                 messages.append(hist_message)
-            messages.append({
-                "role": "assistant",
-                "content": [{"type": "text", "text": "==== End of Chat History. ===="}],
-            })
         return messages
 
     async def _get_reference_message(self, message: Message) -> list[dict[str, Any]]:
@@ -181,10 +177,6 @@ class ReplyGeneratorCogs(commands.Cog):
             })
             reference_msg = await self._process_single_message(message=message.reference.resolved)
             messages.append(reference_msg)
-            messages.append({
-                "role": "assistant",
-                "content": [{"type": "text", "text": "==== End of Reference Message. ===="}],
-            })
         return messages
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
@@ -439,7 +431,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "❓"
                 await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
+                    message=message, system_prompt=REPLY_PROMPT, history_limit=50
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
