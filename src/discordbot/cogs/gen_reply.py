@@ -54,6 +54,15 @@ class ReplyGeneratorCogs(commands.Cog):
         author = message.author
         return f"{author.display_name} ({author.name}) [id: {author.id}]"
 
+    @staticmethod
+    def _format_footer(model: str, input_tokens: int = 0, output_tokens: int = 0) -> str:
+        if not model:
+            return ""
+        parts = [model]
+        if input_tokens or output_tokens:
+            parts.append(f"↑{input_tokens:,} ↓{output_tokens:,}")
+        return f"\n> *{' · '.join(parts)}*"
+
     async def _get_cleaned_content(self, message: Message) -> str:
         content = await self._get_user_prompt(message=message)
         if not content and message.embeds:
@@ -298,10 +307,15 @@ class ReplyGeneratorCogs(commands.Cog):
         reply: Message | None = None
         content_started = False
         model_name = ""
+        input_tokens = 0
+        output_tokens = 0
 
         async for chunk in stream:
             if not model_name and chunk.model:
                 model_name = chunk.model
+            if chunk.usage:
+                input_tokens = chunk.usage.prompt_tokens or 0
+                output_tokens = chunk.usage.completion_tokens or 0
             if chunk.choices and chunk.choices[0].delta.content:
                 delta = chunk.choices[0].delta.content
                 if not content_started:
@@ -319,8 +333,9 @@ class ReplyGeneratorCogs(commands.Cog):
                         await reply.edit(content=stored_content)
                     counted_content = 0
 
-        if model_name:
-            stored_content += f"\n> *{model_name}*"
+        stored_content += self._format_footer(
+            model=model_name, input_tokens=input_tokens, output_tokens=output_tokens
+        )
 
         # Final update to ensure complete message is displayed
         if reply is None:
@@ -377,6 +392,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_effort="high",
             tools=TOOLS,
             stream=True,
+            stream_options={"include_usage": True},
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
 
