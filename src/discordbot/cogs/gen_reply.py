@@ -27,6 +27,8 @@ DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+DEFAULT_SLOW_MODEL_FALLBACKS = ["deepseek-reasoner"]
+DEFAULT_FAST_MODEL_FALLBACKS = ["deepseek-chat"]
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
@@ -272,6 +274,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"fallbacks": DEFAULT_FAST_MODEL_FALLBACKS},
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
@@ -297,8 +300,11 @@ class ReplyGeneratorCogs(commands.Cog):
         counted_content = 0
         reply: Message | None = None
         content_started = False
+        model_name = ""
 
         async for chunk in stream:
+            if not model_name and chunk.model:
+                model_name = chunk.model
             if chunk.choices and chunk.choices[0].delta.content:
                 delta = chunk.choices[0].delta.content
                 if not content_started:
@@ -315,6 +321,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     else:
                         await reply.edit(content=stored_content)
                     counted_content = 0
+
+        if model_name:
+            stored_content += f"\n> *{model_name}*"
 
         # Final update to ensure complete message is displayed
         if reply is None:
@@ -339,6 +348,7 @@ class ReplyGeneratorCogs(commands.Cog):
             messages=message_list,
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"fallbacks": DEFAULT_FAST_MODEL_FALLBACKS},
         )
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
@@ -372,6 +382,7 @@ class ReplyGeneratorCogs(commands.Cog):
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"fallbacks": DEFAULT_SLOW_MODEL_FALLBACKS},
         )
 
         await self._handle_streaming(stream=stream, message=message)
