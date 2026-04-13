@@ -27,8 +27,6 @@ DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-DEFAULT_SLOW_MODEL_FALLBACKS = ["deepseek-reasoner"]
-DEFAULT_FAST_MODEL_FALLBACKS = ["deepseek-chat"]
 TOOLS: list[ChatCompletionToolUnionParam] = [
     {"googleSearch": {}},
     {"urlContext": {}},
@@ -274,7 +272,6 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"fallbacks": DEFAULT_FAST_MODEL_FALLBACKS},
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
@@ -348,7 +345,6 @@ class ReplyGeneratorCogs(commands.Cog):
             messages=message_list,
             reasoning_effort="none",
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"fallbacks": DEFAULT_FAST_MODEL_FALLBACKS},
         )
         decision = (response.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
@@ -382,7 +378,6 @@ class ReplyGeneratorCogs(commands.Cog):
             tools=TOOLS,
             stream=True,
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"fallbacks": DEFAULT_SLOW_MODEL_FALLBACKS},
         )
 
         await self._handle_streaming(stream=stream, message=message)
