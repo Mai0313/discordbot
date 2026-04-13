@@ -139,15 +139,19 @@ uv run pytest -vv
 
 ## CI/CD
 
-| Workflow                 | Trigger            | What It Does                                              |
-| ------------------------ | ------------------ | --------------------------------------------------------- |
-| `test.yml`               | Push to main, PRs  | Pytest on Python 3.12 & 3.13, coverage comments on PRs    |
-| `code-quality-check.yml` | PRs                | Pre-commit hooks (Ruff, mypy, etc.)                       |
-| `build_image.yml`        | Push to main, tags | Build & push Docker image to `ghcr.io/mai0313/discordbot` |
-| `deploy.yml`             | Push to main, tags | Build mkdocs and deploy to GitHub Pages                   |
-| `build_release.yml`      | Tags               | Cross-platform binaries via PyInstaller, publish to PyPI  |
-| `code_scan.yml`          | Push/PRs           | GitLeaks, Trufflehog, CodeQL security scans               |
-| `auto_review_merge.yml`  | PRs                | Auto-review and merge eligible pull requests              |
+| Workflow                    | Trigger            | What It Does                                              |
+| --------------------------- | ------------------ | --------------------------------------------------------- |
+| `test.yml`                  | Push to main, PRs  | Pytest on Python 3.12 & 3.13, coverage comments on PRs    |
+| `code-quality-check.yml`    | PRs                | Pre-commit hooks (Ruff, mypy, etc.)                       |
+| `build_image.yml`           | Push to main, tags | Build & push Docker image to `ghcr.io/mai0313/discordbot` |
+| `deploy.yml`                | Push to main, tags | Build docs with zensical and deploy to GitHub Pages       |
+| `build_release.yml`         | Tags               | Cross-platform binaries via PyInstaller, publish to PyPI  |
+| `code_scan.yml`             | Push/PRs           | GitLeaks, Trufflehog, CodeQL security scans               |
+| `auto_review_merge.yml`     | PRs                | Auto-review and merge eligible pull requests              |
+| `semantic-pull-request.yml` | PRs                | Enforce semantic commit format in PR titles               |
+| `auto_labeler.yml`          | PRs                | Auto-label PRs based on changed files                     |
+| `release_drafter.yml`       | Push to main       | Auto-draft release notes from merged PRs                  |
+| `pre-commit-updater.yml`    | Scheduled          | Auto-update pre-commit hook versions                      |
 
 ## How to Contribute
 
@@ -161,14 +165,14 @@ uv run pytest -vv
 
 ## Scripts
 
-| Script                | Description                                      |
-| --------------------- | ------------------------------------------------ |
-| `uv run discordbot`   | Run the bot                                      |
-| `uv run update`       | Install Chromium + update MapleStory Artale data |
-| `make format`         | Run pre-commit formatting hooks                  |
-| `make test`           | Run all tests                                    |
-| `make gen-docs`       | Generate API documentation                       |
-| `uv run mkdocs serve` | Serve documentation locally (port 9987)          |
+| Script                  | Description                                      |
+| ----------------------- | ------------------------------------------------ |
+| `uv run discordbot`     | Run the bot                                      |
+| `uv run update`         | Install Chromium + update MapleStory Artale data |
+| `make format`           | Run pre-commit formatting hooks                  |
+| `make test`             | Run all tests                                    |
+| `make gen-docs`         | Generate API documentation                       |
+| `uv run zensical serve` | Serve documentation locally (port 9987)          |
 
 ## License
 

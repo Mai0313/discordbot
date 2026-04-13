@@ -25,7 +25,7 @@ A feature-rich Discord bot with AI-powered conversations, image and video genera
 
 ### AI Chat
 
-Mention the bot (`@bot`) to start a conversation. Powered by Google Gemini, it supports:
+Mention the bot (`@bot`) or send a direct message to start a conversation. Powered by Google Gemini, it supports:
 
 - **Text conversations** with real-time streaming responses
 - **Image understanding** — attach images and ask questions about them
@@ -35,6 +35,7 @@ Mention the bot (`@bot`) to start a conversation. Powered by Google Gemini, it s
 - **Web search** — the bot automatically searches the web when it needs up-to-date information
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗)
+- **Reply footer** — each AI response includes the model name and token usage at the bottom
 
 ### Threads Parsing
 
