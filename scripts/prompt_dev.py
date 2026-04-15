@@ -50,11 +50,7 @@ config = LLMConfig()
 
 def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    tools: list[ChatCompletionToolUnionParam] = [
-        {"googleSearch": {}},
-        {"urlContext": {}},
-        {"codeExecution": {}},
-    ]
+    tools: list[ChatCompletionToolUnionParam] = [{"googleSearch": {}}, {"urlContext": {}}]
     start = time.time()
     responses = client.chat.completions.create(
         model=MODEL,
@@ -63,16 +59,18 @@ def use_oai() -> None:
             {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
         ],
         reasoning_effort="low",
-        stream=False,
+        stream=True,
+        stream_options={"include_usage": True},
         tools=tools,
         service_tier="auto",
     )
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
-    content = responses.choices[0].message.content
-    if content.startswith("\n\n\n"):
-        content = content[3:]
-    console.print(content)
+    for response in responses:
+        if response.choices[0].delta.content:
+            console.print(response.choices[0].delta.content, end="")
+    console.print()
+    console.print(responses.response.headers.get("x-litellm-key-spend"))
 
 
 def use_gemini() -> None:
@@ -103,4 +101,4 @@ def use_gemini() -> None:
 
 if __name__ == "__main__":
     use_oai()
-    use_gemini()
+    # use_gemini()

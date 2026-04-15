@@ -54,15 +54,6 @@ class ReplyGeneratorCogs(commands.Cog):
         author = message.author
         return f"{author.display_name} ({author.name}) [id: {author.id}]"
 
-    @staticmethod
-    def _format_footer(model: str, input_tokens: int = 0, output_tokens: int = 0) -> str:
-        if not model:
-            return ""
-        parts = [model]
-        if input_tokens or output_tokens:
-            parts.append(f"↑{input_tokens:,} ↓{output_tokens:,}")
-        return f"\n> *{' · '.join(parts)}*"
-
     async def _get_cleaned_content(self, message: Message) -> str:
         content = await self._get_user_prompt(message=message)
         if not content and message.embeds:
@@ -333,9 +324,12 @@ class ReplyGeneratorCogs(commands.Cog):
                         await reply.edit(content=stored_content)
                     counted_content = 0
 
-        stored_content += self._format_footer(
-            model=model_name, input_tokens=input_tokens, output_tokens=output_tokens
-        )
+        cost = 0.0
+        with contextlib.suppress(Exception):
+            cost = float(stream.response.headers.get("x-litellm-key-spend", 0.0))
+
+        usage_footer = f"\n> *{model_name}* ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
+        stored_content += usage_footer
 
         # Final update to ensure complete message is displayed
         if reply is None:
