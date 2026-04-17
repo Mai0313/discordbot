@@ -11,7 +11,6 @@ from google.genai.types import (
     UrlContext,
     GoogleSearch,
     ThinkingConfig,
-    ToolCodeExecution,
     GenerateContentConfig,
 )
 
@@ -64,12 +63,11 @@ def use_oai() -> None:
         tools=tools,
         service_tier="auto",
     )
-    end = time.time()
-    console.print(f"{MODEL} takes {end - start:.2f} seconds")
     for response in responses:
         if response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
-    console.print()
+    end = time.time()
+    console.print(f"{MODEL} takes {end - start:.2f} seconds")
     console.print(responses.response.headers.get("x-litellm-key-spend"))
 
 
@@ -77,7 +75,7 @@ def use_gemini() -> None:
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     start = time.time()
-    responses = client.models.generate_content(
+    responses = client.models.generate_content_stream(
         model=MODEL,
         contents=[
             {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
@@ -85,20 +83,16 @@ def use_gemini() -> None:
         ],
         config=GenerateContentConfig(
             thinking_config=ThinkingConfig(thinking_level="LOW"),
-            tools=[
-                Tool(
-                    googleSearch=GoogleSearch(),
-                    url_context=UrlContext(),
-                    code_execution=ToolCodeExecution(),
-                )
-            ],
+            tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
+    for response in responses:
+        console.print(response.text, end="")
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
-    console.print(responses.text)
 
 
 if __name__ == "__main__":
     use_oai()
-    # use_gemini()
+    console.print()
+    use_gemini()
