@@ -28,11 +28,7 @@ DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-TOOLS: list[ChatCompletionToolUnionParam] = [
-    {"googleSearch": {}},
-    {"urlContext": {}},
-    # {"codeExecution": {}},
-]
+TOOLS: list[ChatCompletionToolUnionParam] = [{"googleSearch": {}}, {"urlContext": {}}]
 
 
 class ReplyGeneratorCogs(commands.Cog):
