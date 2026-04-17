@@ -63,6 +63,7 @@ def use_oai() -> None:
         tools=tools,
         service_tier="auto",
     )
+    console.print(dict(responses.response.headers))
     for response in responses:
         if response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
