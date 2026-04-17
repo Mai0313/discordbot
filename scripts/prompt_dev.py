@@ -61,13 +61,13 @@ def use_oai() -> None:
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
-        service_tier="priority",
+        service_tier="auto",
     )
     for response in responses:
         if response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
-    console.print(f"{MODEL} takes {end - start:.2f} seconds")
+    console.print(f"\n{MODEL} takes {end - start:.2f} seconds")
 
 
 def use_gemini() -> None:
@@ -81,14 +81,14 @@ def use_gemini() -> None:
             {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
         ],
         config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(thinking_level="LOW"),
+            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="LOW"),
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
     for response in responses:
         console.print(response.text, end="")
     end = time.time()
-    console.print(f"{MODEL} takes {end - start:.2f} seconds")
+    console.print(f"\n{MODEL} takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
