@@ -165,14 +165,19 @@ uv run pytest -vv
 
 ## Scripts
 
-| Script                  | Description                                      |
-| ----------------------- | ------------------------------------------------ |
-| `uv run discordbot`     | Run the bot                                      |
-| `uv run update`         | Install Chromium + update MapleStory Artale data |
-| `make format`           | Run pre-commit formatting hooks                  |
-| `make test`             | Run all tests                                    |
-| `make gen-docs`         | Generate API documentation                       |
-| `uv run zensical serve` | Serve documentation locally (port 9987)          |
+| Script                  | Description                                             |
+| ----------------------- | ------------------------------------------------------- |
+| `uv run discordbot`     | Run the bot                                             |
+| `uv run update`         | Install Chromium + update MapleStory Artale data        |
+| `make help`             | Show all available make targets                         |
+| `make clean`            | Remove build artifacts, caches, reports, and prune repo |
+| `make format`           | Run pre-commit formatting hooks                         |
+| `make test`             | Run all tests                                           |
+| `make gen-docs`         | Generate API documentation                              |
+| `make uv-install`       | Install uv package manager on the system                |
+| `make submodule-init`   | Initialize and update git submodules                    |
+| `make submodule-update` | Update all submodules to latest remote version          |
+| `uv run zensical serve` | Serve documentation locally (port 9987)                 |
 
 ## License
 
