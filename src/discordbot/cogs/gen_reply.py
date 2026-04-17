@@ -7,6 +7,7 @@ from mimetypes import guess_type
 import contextlib
 
 from openai import AsyncOpenAI, AsyncStream
+from litellm import model_cost
 import logfire
 from nextcord import File, Embed, Message, Attachment
 from nextcord.ext import commands
@@ -290,6 +291,15 @@ class ReplyGeneratorCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
 
+    @staticmethod
+    def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
+        info = model_cost.get(model_name) or {}
+        default_input_rate = info.get("input_cost_per_token", 0)
+        input_rate = info.get("input_cost_per_token_priority", default_input_rate)
+        default_output_rate = info.get("output_cost_per_token", 0)
+        output_rate = info.get("output_cost_per_token_priority", default_output_rate)
+        return float(input_rate) * input_tokens + float(output_rate) * output_tokens
+
     async def _handle_streaming(
         self, stream: AsyncStream[ChatCompletionChunk], message: Message
     ) -> str:
@@ -324,9 +334,9 @@ class ReplyGeneratorCogs(commands.Cog):
                         await reply.edit(content=stored_content)
                     counted_content = 0
 
-        cost = 0.0
-        with contextlib.suppress(Exception):
-            cost = float(stream.response.headers.get("x-litellm-key-spend", 0.0))
+        cost = self._calculate_cost(
+            model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
+        )
 
         usage_footer = f"\n> *{model_name}* ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
         stored_content += usage_footer
