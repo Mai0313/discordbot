@@ -303,7 +303,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_streaming(
         self, stream: AsyncStream[ChatCompletionChunk], message: Message
     ) -> str:
-        stored_content = f"{message.author.mention} "
+        stored_content = ""
         counted_content = 0
         reply: Message | None = None
         content_started = False
