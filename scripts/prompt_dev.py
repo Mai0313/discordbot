@@ -61,14 +61,13 @@ def use_oai() -> None:
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
-        service_tier="auto",
+        service_tier="priority",
     )
     for response in responses:
         if response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
     console.print(f"{MODEL} takes {end - start:.2f} seconds")
-    console.print(responses.response.headers.get("x-litellm-key-spend"))
 
 
 def use_gemini() -> None:
