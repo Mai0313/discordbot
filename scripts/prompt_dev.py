@@ -1,4 +1,3 @@
-import os
 import time
 from typing import TYPE_CHECKING
 
@@ -9,6 +8,7 @@ from rich.console import Console
 from google.genai.types import (
     Tool,
     UrlContext,
+    HttpOptions,
     GoogleSearch,
     ThinkingConfig,
     GenerateContentConfig,
@@ -42,7 +42,7 @@ Choose QA for everything else, including normal questions, image analysis, capti
 If you are not sure, reply QA.
 """
 
-MODEL = "gemini-flash-latest"
+MODEL = "gemini-pro-latest"
 
 config = LLMConfig()
 
@@ -72,7 +72,9 @@ def use_oai() -> None:
 
 
 def use_gemini() -> None:
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+    client = genai.Client(
+        api_key=config.api_key, http_options=HttpOptions(base_url=config.base_url)
+    )
 
     start = time.time()
     responses = client.models.generate_content_stream(
@@ -82,17 +84,24 @@ def use_gemini() -> None:
             {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
         ],
         config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="LOW"),
+            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="HIGH"),
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
-    for response in responses:
-        console.print(response.text, end="")
+    for chunk in responses:
+        if not chunk.candidates or not chunk.candidates[0].content.parts:
+            continue
+        for part in chunk.candidates[0].content.parts:
+            if not part.text:
+                continue
+            if part.thought:
+                console.print(f"[dim]{part.text}[/dim]", end="")
+            else:
+                console.print(part.text, end="")
     end = time.time()
     console.print(f"\n{MODEL} takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
-    use_oai()
-    console.print()
+    # use_oai()
     use_gemini()
