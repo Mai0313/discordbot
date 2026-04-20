@@ -80,24 +80,33 @@ def use_gemini() -> None:
 
 def use_anthropic() -> None:
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
-
     start = time.time()
     with client.messages.stream(
         model="claude-sonnet-4-6",
-        max_tokens=8096,
+        max_tokens=16000,
+        thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
         messages=[
             {"role": "user", "content": REPLY_PROMPT},
             {"role": "user", "content": "為何 37 是質數?"},
         ],
+        tools=[
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260209", "name": "web_fetch"},
+        ],
     ) as stream:
-        for text in stream.text_stream:
-            console.print(text, end="")
+        for event in stream:
+            if event.type != "content_block_delta":
+                continue
+            if event.delta.type == "thinking_delta":
+                console.print(f"[dim]{event.delta.thinking}[/dim]", end="")
+            elif event.delta.type == "text_delta":
+                console.print(event.delta.text, end="")
     end = time.time()
     console.print(f"\nAnthropic SDK takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
-    use_oai()
-    use_gemini()
+    # use_oai()
+    # use_gemini()
     use_anthropic()
