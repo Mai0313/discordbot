@@ -18,6 +18,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
+    from openai.types.responses.tool_param import ToolParam
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 console = Console()
@@ -34,7 +35,7 @@ def use_oai() -> None:
             {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning_effort="low",
+        reasoning_effort="high",
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
@@ -46,6 +47,32 @@ def use_oai() -> None:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
     console.print(f"\nLitellm takes {end - start:.2f} seconds")
+
+
+def use_oai_responses() -> None:
+    client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    tools: list[ToolParam] = [{"googleSearch": {}}, {"urlContext": {}}]
+    start = time.time()
+    responses = client.responses.create(
+        model="gemini-3.1-pro-preview",
+        input=[
+            {"role": "system", "content": [{"type": "input_text", "text": REPLY_PROMPT}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]},
+        ],
+        reasoning={"effort": "high", "generate_summary": "auto", "summary": "auto"},
+        stream=True,
+        tools=tools,
+    )
+    for response in responses:
+        if response.type in {
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        }:
+            console.print(f"[dim]{response.delta}[/dim]", end="")
+        elif response.type == "response.output_text.delta":
+            console.print(response.delta, end="")
+    end = time.time()
+    console.print(f"\nLitellm (Responses API) takes {end - start:.2f} seconds")
 
 
 def use_gemini() -> None:
@@ -64,10 +91,10 @@ def use_gemini() -> None:
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
-    for chunk in responses:
-        if not chunk.candidates or not chunk.candidates[0].content.parts:
+    for response in responses:
+        if not response.candidates or not response.candidates[0].content.parts:
             continue
-        for part in chunk.candidates[0].content.parts:
+        for part in response.candidates[0].content.parts:
             if not part.text:
                 continue
             if part.thought:
@@ -94,19 +121,20 @@ def use_anthropic() -> None:
             {"type": "web_search_20260209", "name": "web_search"},
             {"type": "web_fetch_20260209", "name": "web_fetch"},
         ],
-    ) as stream:
-        for event in stream:
-            if event.type != "content_block_delta":
+    ) as responses:
+        for response in responses:
+            if response.type != "content_block_delta":
                 continue
-            if event.delta.type == "thinking_delta":
-                console.print(f"[dim]{event.delta.thinking}[/dim]", end="")
-            elif event.delta.type == "text_delta":
-                console.print(event.delta.text, end="")
+            if response.delta.type == "thinking_delta":
+                console.print(f"[dim]{response.delta.thinking}[/dim]", end="")
+            elif response.delta.type == "text_delta":
+                console.print(response.delta.text, end="")
     end = time.time()
     console.print(f"\nAnthropic SDK takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
     # use_oai()
+    use_oai_responses()
     # use_gemini()
-    use_anthropic()
+    # use_anthropic()
