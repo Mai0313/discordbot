@@ -42,7 +42,7 @@ Choose QA for everything else, including normal questions, image analysis, capti
 If you are not sure, reply QA.
 """
 
-MODEL = "gemini-pro-latest"
+MODEL = "gemini-3.1-pro-preview"
 
 config = LLMConfig()
 

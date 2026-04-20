@@ -24,8 +24,8 @@ from discordbot.typings.llm import LLMConfig
 
 from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
 
-DEFAULT_FAST_MODEL = "gemini-flash-latest"
-DEFAULT_SLOW_MODEL = "gemini-pro-latest"
+DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
+DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 TOOLS: list[ChatCompletionToolUnionParam] = [{"googleSearch": {}}, {"urlContext": {}}]
@@ -113,7 +113,9 @@ class ReplyGeneratorCogs(commands.Cog):
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("video/"):
-                content_parts.append(await self._video_attachment_to_part(attachment=attachment))
+                # Temporarily skip video attachments in content parts since they can be large and cause issues.
+                # content_parts.append(await self._video_attachment_to_part(attachment=attachment))
+                pass
             else:
                 content_parts.append(self._image_url_to_part(url=attachment.url))
 
