@@ -27,18 +27,6 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-MAX_IMAGE_DIM = 1568
-JPEG_QUALITY = 85
-TOOLS: list[ChatCompletionToolUnionParam] = [
-    # For Gemini
-    {"googleSearch": {}},
-    {"urlContext": {}},
-    # # For Anthropic
-    # {"type": "web_search_20260209", "name": "web_search"},
-    # {"type": "web_fetch_20260209", "name": "web_fetch"},
-    # # For OpenAI
-    # {"type": "web_search"},
-]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -50,6 +38,16 @@ class ReplyGeneratorCogs(commands.Cog):
     def client(self) -> AsyncOpenAI:
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
+
+    def get_tools(self, model: str) -> list[ChatCompletionToolUnionParam]:
+        if "gemini" in model:
+            return [{"googleSearch": {}}, {"urlContext": {}}]
+        if "claude" in model:
+            return [
+                {"type": "web_search_20260209", "name": "web_search"},
+                {"type": "web_fetch_20260209", "name": "web_fetch"},
+            ]
+        return [{"type": "web_search"}]
 
     async def _get_user_prompt(self, message: Message) -> str:
         content = message.content
@@ -86,11 +84,11 @@ class ReplyGeneratorCogs(commands.Cog):
     def _image_url_to_part(self, url: str) -> dict[str, Any]:
         try:
             downloaded = get_pil_image(image_file=url)
-            downloaded.thumbnail(size=(MAX_IMAGE_DIM, MAX_IMAGE_DIM))
+            downloaded.thumbnail(size=(1568, 1568))
             if downloaded.mode != "RGB":
                 downloaded = downloaded.convert("RGB")
             buffer = BytesIO()
-            downloaded.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            downloaded.save(buffer, format="JPEG", quality=85, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             converted = convert_base64_to_data_uri(b64)
             return {"type": "image_url", "image_url": {"url": converted}}
@@ -404,11 +402,12 @@ class ReplyGeneratorCogs(commands.Cog):
         current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
+        tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
         stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
             reasoning_effort="high",
-            tools=TOOLS,
+            tools=tools,
             stream=True,
             stream_options={"include_usage": True},
             extra_headers={"x-litellm-end-user-id": message.author.name},
