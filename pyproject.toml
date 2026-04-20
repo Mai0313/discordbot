@@ -68,6 +68,7 @@ authors = [
 ]
 dependencies = [
     "ag2>=0.11.4",
+    "anthropic>=0.96.0",
     "chat-downloader>=0.2.8",
     "google-genai>=1.68.0",
     "litellm>=1.83.7",

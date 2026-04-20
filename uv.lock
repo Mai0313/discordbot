@@ -175,6 +175,25 @@ wheels = [
 ]
 
 [[package]]
+name = "anthropic"
+version = "0.96.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "docstring-parser" },
+    { name = "httpx" },
+    { name = "jiter" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/7e/672f533dee813028d2c699bfd2a7f52c9118d7353680d9aa44b9e23f717f/anthropic-0.96.0.tar.gz", hash = "sha256:9de947b737f39452f68aa520f1c2239d44119c9b73b0fb6d4e6ca80f00279ee6", size = 658210, upload-time = "2026-04-16T14:28:02.846Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/5a/72f33204064b6e87601a71a6baf8d855769f8a0c1eaae8d06a1094872371/anthropic-0.96.0-py3-none-any.whl", hash = "sha256:9a6e335a354602a521cd9e777e92bfd46ba6e115bf9bbfe6135311e8fb2015b2", size = 635930, upload-time = "2026-04-16T14:28:01.436Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -830,6 +849,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ag2" },
+    { name = "anthropic" },
     { name = "chat-downloader" },
     { name = "google-genai" },
     { name = "litellm" },
@@ -882,6 +902,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "ag2", specifier = ">=0.11.4" },
+    { name = "anthropic", specifier = ">=0.96.0" },
     { name = "chat-downloader", specifier = ">=0.2.8" },
     { name = "google-genai", specifier = ">=1.68.0" },
     { name = "litellm", specifier = ">=1.83.7" },
