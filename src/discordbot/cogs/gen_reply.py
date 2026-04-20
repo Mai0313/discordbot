@@ -14,7 +14,6 @@ from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
     get_image_data,
-    pil_to_data_uri,
     convert_base64_to_data_uri,
 )
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -28,7 +27,13 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-TOOLS: list[ChatCompletionToolUnionParam] = [{"googleSearch": {}}, {"urlContext": {}}]
+MAX_IMAGE_DIM = 1568
+JPEG_QUALITY = 85
+TOOLS: list[ChatCompletionToolUnionParam] = [
+    # For Gemini
+    {"googleSearch": {}},
+    {"urlContext": {}},
+]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -76,7 +81,13 @@ class ReplyGeneratorCogs(commands.Cog):
     def _image_url_to_part(self, url: str) -> dict[str, Any]:
         try:
             downloaded = get_pil_image(image_file=url)
-            converted = pil_to_data_uri(image=downloaded)
+            downloaded.thumbnail(size=(MAX_IMAGE_DIM, MAX_IMAGE_DIM))
+            if downloaded.mode != "RGB":
+                downloaded = downloaded.convert("RGB")
+            buffer = BytesIO()
+            downloaded.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+            b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            converted = convert_base64_to_data_uri(b64)
             return {"type": "image_url", "image_url": {"url": converted}}
         except Exception:
             logfire.warn(f"Failed to convert image, keeping original URL: {url}")
