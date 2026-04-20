@@ -33,6 +33,11 @@ TOOLS: list[ChatCompletionToolUnionParam] = [
     # For Gemini
     {"googleSearch": {}},
     {"urlContext": {}},
+    # # For Anthropic
+    # {"type": "web_search_20260209", "name": "web_search"},
+    # {"type": "web_fetch_20260209", "name": "web_fetch"},
+    # # For OpenAI
+    # {"type": "web_search"},
 ]
 
 
