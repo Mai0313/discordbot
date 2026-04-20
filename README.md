@@ -32,7 +32,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. Power
 - **Image generation & editing** — ask the bot to draw, create, or edit images (attach an image to modify it)
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
-- **Web search** — the bot automatically searches the web when it needs up-to-date information
+- **Web search & URL reading** — the bot automatically searches the web and reads linked URLs in the conversation for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error)
 - **Reply footer** — each AI response shows the model name, input/output token counts, and estimated USD cost
@@ -64,7 +64,7 @@ Use `/download_video` to download videos from multiple platforms:
 
 ### Multi-Language Support
 
-Commands and responses are available in English, Traditional Chinese, Simplified Chinese, and Japanese.
+Slash command names, descriptions, and the `/help` guide are localized for English, Traditional Chinese (`zh-TW`), and Japanese (`ja`). AI chat replies follow whichever language the user writes in.
 
 ## Commands
 
@@ -127,8 +127,10 @@ uv run discordbot
 ### Optional: Update MapleStory Artale Database
 
 ```bash
-uv run update
+uv run python scripts/artale_data.py
 ```
+
+This scrapes `artalemaplestory.com` and writes JSON files into `data/maplestory/`.
 
 ## Configuration
 
