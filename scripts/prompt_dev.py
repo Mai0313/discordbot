@@ -1,7 +1,6 @@
 import time
 from typing import TYPE_CHECKING
 
-from dotenv import load_dotenv
 from google import genai
 from openai import OpenAI
 from rich.console import Console
@@ -15,35 +14,15 @@ from google.genai.types import (
 )
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
-load_dotenv()
-
-console = Console()
-
-SYSTEM_PROMPT = """
-You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally, generate an image, edit an existing image, generate a video, or summarize recent chat history.
-
-Reply with exactly one word:
-- IMAGE
-- EDIT
-- VIDEO
-- QA
-- SUMMARY
-
-Choose IMAGE only when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image from scratch.
-Choose EDIT when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch that image.
-Choose VIDEO when the user explicitly wants the bot to create, generate, or make a video or animation.
-Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
-Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
-If you are not sure, reply QA.
-"""
 
 MODEL = "gemini-3.1-pro-preview"
 
+console = Console()
 config = LLMConfig()
 
 
@@ -54,8 +33,8 @@ def use_oai() -> None:
     responses = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-            {"role": "user", "content": [{"type": "text", "text": "幫我畫一隻狗"}]},
+            {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
+            {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
         ],
         reasoning_effort="low",
         stream=True,
@@ -80,8 +59,8 @@ def use_gemini() -> None:
     responses = client.models.generate_content_stream(
         model=MODEL,
         contents=[
-            {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
-            {"role": "user", "parts": [{"text": "幫我畫一隻狗"}]},
+            {"role": "user", "parts": [{"text": REPLY_PROMPT}]},
+            {"role": "user", "parts": [{"text": "為何 37 是質數?"}]},
         ],
         config=GenerateContentConfig(
             thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="HIGH"),
@@ -103,5 +82,5 @@ def use_gemini() -> None:
 
 
 if __name__ == "__main__":
-    # use_oai()
+    use_oai()
     use_gemini()
