@@ -49,14 +49,13 @@ class ReplyGeneratorCogs(commands.Cog):
             ]
         return [{"type": "web_search"}]
 
-    async def _get_user_prompt(self, message: Message) -> str:
-        content = message.content
+    async def _get_user_prompt(self, content: str) -> str:
         if self.bot.user:
             content = content.replace(f"<@{self.bot.user.id}>", "")
         return content.strip()
 
     async def _get_cleaned_content(self, message: Message) -> str:
-        content = await self._get_user_prompt(message=message)
+        content = await self._get_user_prompt(content=message.content)
         if not content and message.embeds:
             embed_parts: list[str] = []
             for embed in message.embeds:
@@ -428,7 +427,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         current_emoji = "🤔"
         await self._handle_reaction(message=message, emoji=current_emoji)
-        user_prompt = await self._get_user_prompt(message=message)
+        user_prompt = await self._get_user_prompt(content=message.content)
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
