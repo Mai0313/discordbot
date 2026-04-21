@@ -11,6 +11,7 @@ import nextcord
 from nextcord import Game, Embed, Guild, Intents, Message
 from nextcord.ext import tasks, commands
 
+from discordbot import setup_logging
 from discordbot.typings.config import DiscordConfig
 
 
@@ -60,8 +61,8 @@ class DiscordBot(commands.Bot):
     async def load_cogs(self) -> None:
         cog_files = await self.get_cogs_names()
         self.load_extensions(cog_files, stop_at_error=True)
-        all_cogs = ", ".join(cog_files)
-        logfire.info(f"Cogs Loaded: {all_cogs}")
+        # all_cogs = ", ".join(cog_files)
+        logfire.info(f"Cogs Loaded: {cog_files}")
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
@@ -194,6 +195,7 @@ class DiscordBot(commands.Bot):
 
 
 def main() -> None:
+    setup_logging()
     discord_config = DiscordConfig()
     bot = DiscordBot()
     bot.run(token=discord_config.discord_bot_token)
