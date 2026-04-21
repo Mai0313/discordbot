@@ -44,7 +44,7 @@ class DiscordBot(commands.Bot):
         )
 
         logfire.info("Bot Started", bot_name=self.user.name, bot_id=self.user.id)
-        logfire.info(f"Invite Link: {invite_url}")
+        logfire.info("Invite Link", invite_url=invite_url)
 
     async def on_guild_available(self, guild: Guild) -> None:
         return await super().on_guild_available(guild)
@@ -61,8 +61,7 @@ class DiscordBot(commands.Bot):
     async def load_cogs(self) -> None:
         cog_files = await self.get_cogs_names()
         self.load_extensions(cog_files, stop_at_error=True)
-        # all_cogs = ", ".join(cog_files)
-        logfire.info(f"Cogs Loaded: {cog_files}")
+        logfire.info("Cogs Loaded", cogs=cog_files)
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
