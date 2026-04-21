@@ -35,7 +35,7 @@ def use_oai() -> None:
             {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning_effort="high",
+        reasoning_effort="medium",
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
@@ -61,7 +61,7 @@ def use_oai_responses() -> None:
             {"role": "system", "content": [{"type": "input_text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning={"effort": "high", "summary": "auto"},
+        reasoning={"effort": "medium", "summary": "auto"},
         stream=True,
         tools=tools,
         extra_body={"mock_testing_fallbacks": False},
@@ -96,7 +96,7 @@ def use_gemini() -> None:
             {"role": "user", "parts": [{"text": "為何 37 是質數?"}]},
         ],
         config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="HIGH"),
+            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="MEDIUM"),
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
