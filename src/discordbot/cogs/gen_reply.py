@@ -295,6 +295,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning={"effort": "none"},
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
         )
         image_description = (image_responses.output_text or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
@@ -330,6 +331,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning={"effort": "none"},
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
         )
         if responses.output_parsed is None:
             return "QA"
@@ -419,6 +421,7 @@ class ReplyGeneratorCogs(commands.Cog):
             stream=True,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
         )
 
         await self._handle_streaming(responses=responses, message=message)
