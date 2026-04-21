@@ -27,15 +27,15 @@ A feature-rich Discord bot with AI-powered conversations, image and video genera
 
 Mention the bot (`@bot`) or send a direct message to start a conversation. Powered by Google Gemini, it supports:
 
-- **Text conversations** with real-time streaming responses
-- **Media understanding** — attach images or short videos and ask questions about them
+- **Text conversations** powered by the OpenAI Responses API with real-time streaming
+- **Media understanding** — attach images or stickers and ask the bot about them; it also reads images embedded in messages or quoted replies (e.g. a parsed Threads post)
 - **Image generation & editing** — ask the bot to draw, create, or edit images (attach an image to modify it)
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
-- **Web search & URL reading** — the bot automatically searches the web and reads linked URLs in the conversation for up-to-date context
+- **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error)
-- **Reply footer** — each AI response shows the model name, input/output token counts, and estimated USD cost
+- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, and estimated USD cost (computed via `litellm.model_cost`)
 
 ### Threads Parsing
 

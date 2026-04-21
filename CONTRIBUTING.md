@@ -39,9 +39,10 @@ Scrapes `artalemaplestory.com` and writes JSON files into `data/maplestory/`.
 
 ```
 src/discordbot/
+├── __init__.py              # setup_logging() — configures logfire and tees stdout to ./data/logs/<timestamp>.log
 ├── cli.py                   # Main bot entry point (DiscordBot class)
 ├── cogs/                    # Command modules (auto-loaded, excluding __-prefixed files)
-│   ├── gen_reply.py         # AI chat — @mention trigger, routing, streaming
+│   ├── gen_reply.py         # AI chat — @mention/DM trigger, routing, streaming via OpenAI Responses API
 │   ├── _gen_reply/
 │   │   └── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / HISTORY prompts
 │   ├── help.py              # /help slash command (localized guide)
@@ -67,11 +68,13 @@ src/discordbot/
 scripts/
 ├── artale_data.py           # Scrape Artale MapleStory data from artalemaplestory.com
 ├── gen_docs.py              # Generate mkdocstrings reference pages
-├── migrate.py               # Database migration helper
-├── prompt_dev.py            # Prompt iteration / evaluation sandbox
+├── migrate.py               # Database migration helper (SQLite → PostgreSQL)
+├── prompt_dev.py            # Prompt iteration / evaluation sandbox (OpenAI / Gemini / Anthropic SDK)
+├── test_fallback.py         # Sandbox for testing Litellm fallback behavior
 └── video_dev.py             # Ad-hoc yt-dlp experiments
 
 data/
+├── logs/                    # Per-run log files written by setup_logging() (`<timestamp>.log`)
 ├── maplestory/              # MapleStory Artale game database
 │   ├── monsters.json
 │   ├── equipment.json
@@ -88,10 +91,14 @@ data/
 
 ### Architecture
 
-- **Cog-based**: Each feature is a separate cog in `cogs/`. The bot auto-discovers and loads all `.py` files in the directory (excluding `__` prefixed files).
+- **Cog-based**: Each feature is a separate cog in `cogs/`. The bot auto-discovers and loads all `.py` files in the directory (excluding `__` prefixed files). Helper packages live in sibling `_<cog>/` folders so they are not auto-loaded.
 - **Async**: Built on nextcord with async/await patterns throughout.
-- **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically.
-- **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) and routes to the appropriate handler. The slow reply path enables Google Search + URL Context tools and streams usage metadata (model, in/out tokens, cost via `litellm.model_cost`) as a footer. Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error).
+- **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig`, `LLMConfig`, `DatabaseConfig`).
+- **Logging**: `setup_logging()` in `discordbot/__init__.py` configures `logfire` (local console only, `send_to_logfire=False`) and tees stdout to `./data/logs/<timestamp>.log` for each run. `nextcord.state` logs are forwarded into logfire too.
+- **LLM client**: A single `AsyncOpenAI` client (`base_url=BASE_URL`, `api_key=API_KEY`) issues all chat / image / video calls. The endpoint is OpenAI-compatible — typically a Litellm proxy that fronts Gemini / Claude / OpenAI / etc.
+- **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) via `client.responses.create` and dispatches to the matching handler. All chat / route / caption calls use the **OpenAI Responses API** (not Chat Completions); the slow reply path enables model-specific tools (Gemini → `googleSearch` + `urlContext`; Claude → `web_search_*` + `web_fetch_*`; others → OpenAI `web_search`) and streams the answer event-by-event (`response.output_text.delta`). Each response ends with a Discord-quoted footer (`> **{model}** ⬆ in ⬇ out $cost`) where the cost comes from `litellm.model_cost`. Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error).
+- **Trigger rule**: In DMs the bot always responds; in guilds it only responds when the message text contains `<@bot_id>` (a reply-notification alone is ignored, so users replying to a Threads embed or a download result won't accidentally summon the bot).
+- **Attachment ingestion**: `_get_attachments` collects images from message attachments, stickers, and Discord embeds (preferring `media.discordapp.net` proxy URLs, since CDNs like Threads expire and reject unauthenticated requests), so the AI can see images inside referenced/quoted bot embeds (e.g. a Threads-parsed post). Video attachments are currently skipped to avoid uploading large blobs to the LLM.
 
 ## Code Standards
 
@@ -175,19 +182,22 @@ uv run pytest -vv
 
 ## Scripts
 
-| Script                                 | Description                                               |
-| -------------------------------------- | --------------------------------------------------------- |
-| `uv run discordbot`                    | Run the bot                                               |
-| `uv run python scripts/artale_data.py` | Update MapleStory Artale data from `artalemaplestory.com` |
-| `uv run poe docs`                      | Generate reference docs then serve locally (port 9987)    |
-| `make help`                            | Show all available make targets                           |
-| `make clean`                           | Remove build artifacts, caches, reports, and prune repo   |
-| `make format`                          | Run pre-commit formatting hooks                           |
-| `make test`                            | Run all tests                                             |
-| `make gen-docs`                        | Generate API documentation into `docs/`                   |
-| `make uv-install`                      | Install uv package manager on the system                  |
-| `make submodule-init`                  | Initialize and update git submodules                      |
-| `make submodule-update`                | Update all submodules to latest remote version            |
+| Script                                   | Description                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| `uv run discordbot`                      | Run the bot                                                           |
+| `uv run python scripts/artale_data.py`   | Update MapleStory Artale data from `artalemaplestory.com`             |
+| `uv run python scripts/migrate.py`       | Migrate logged messages from SQLite to PostgreSQL                     |
+| `uv run python scripts/prompt_dev.py`    | Iterate prompts against OpenAI / Gemini / Anthropic SDKs              |
+| `uv run python scripts/test_fallback.py` | Smoke-test Litellm `mock_testing_fallbacks` behavior                  |
+| `uv run poe docs`                        | Generate reference docs then serve locally (port 9987)                |
+| `make help`                              | Show all available make targets                                       |
+| `make clean`                             | Remove build artifacts, caches, reports, and prune repo               |
+| `make format`                            | Run pre-commit formatting hooks                                       |
+| `make test`                              | Run all tests                                                         |
+| `make gen-docs`                          | Generate API documentation into `docs/` (mirrors README into `docs/`) |
+| `make uv-install`                        | Install uv package manager on the system                              |
+| `make submodule-init`                    | Initialize and update git submodules                                  |
+| `make submodule-update`                  | Update all submodules to latest remote version                        |
 
 ## License
 
