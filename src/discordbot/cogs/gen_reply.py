@@ -278,6 +278,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 },
             ],
             reasoning_effort="none",
+            service_tier="priority",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
         image_description = (image_responses.choices[0].message.content or "").strip()
@@ -310,6 +311,7 @@ class ReplyGeneratorCogs(commands.Cog):
             model=DEFAULT_FAST_MODEL,
             messages=message_list,
             reasoning_effort="none",
+            service_tier="priority",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
         decision = (response.choices[0].message.content or "").strip().upper()
@@ -404,6 +406,7 @@ class ReplyGeneratorCogs(commands.Cog):
             tools=tools,
             stream=True,
             stream_options={"include_usage": True},
+            service_tier="priority",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
 
