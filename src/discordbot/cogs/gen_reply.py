@@ -297,6 +297,30 @@ class ReplyGeneratorCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
 
+    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
+        message_list: list[dict[str, Any]] = [{"role": "system", "content": ROUTE_PROMPT}]
+
+        reference_messages = await self._get_reference_message(message=message)
+        message_list.extend(reference_messages)
+
+        current_message = await self._get_current_message(message=message)
+        message_list.extend(current_message)
+
+        response = await self.client.chat.completions.create(
+            model=DEFAULT_FAST_MODEL,
+            messages=message_list,
+            reasoning_effort="none",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+        )
+        decision = (response.choices[0].message.content or "").strip().upper()
+        if decision.startswith("IMAGE"):
+            return "IMAGE"
+        if decision.startswith("VIDEO"):
+            return "VIDEO"
+        if decision.startswith("SUMMARY"):
+            return "SUMMARY"
+        return "QA"
+
     @staticmethod
     def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
         info = model_cost.get(model_name) or {}
@@ -355,30 +379,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 await reply.edit(content=stored_content)
 
         return stored_content
-
-    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        message_list: list[dict[str, Any]] = [{"role": "system", "content": ROUTE_PROMPT}]
-
-        reference_messages = await self._get_reference_message(message=message)
-        message_list.extend(reference_messages)
-
-        current_message = await self._get_current_message(message=message)
-        message_list.extend(current_message)
-
-        response = await self.client.chat.completions.create(
-            model=DEFAULT_FAST_MODEL,
-            messages=message_list,
-            reasoning_effort="none",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-        )
-        decision = (response.choices[0].message.content or "").strip().upper()
-        if decision.startswith("IMAGE"):
-            return "IMAGE"
-        if decision.startswith("VIDEO"):
-            return "VIDEO"
-        if decision.startswith("SUMMARY"):
-            return "SUMMARY"
-        return "QA"
 
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int
