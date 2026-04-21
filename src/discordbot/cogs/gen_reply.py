@@ -12,13 +12,13 @@ from litellm import model_cost
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
 from nextcord.ext import commands
+from openai.types.responses import ResponseStreamEvent
+from openai.types.responses.tool_param import ToolParam
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
     get_image_data,
     convert_base64_to_data_uri,
 )
-from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
-from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 from discordbot.typings.llm import LLMConfig
 
@@ -40,7 +40,7 @@ class ReplyGeneratorCogs(commands.Cog):
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
-    def get_tools(self, model: str) -> list[ChatCompletionToolUnionParam]:
+    def get_tools(self, model: str) -> list[ToolParam]:
         if "gemini" in model:
             return [{"googleSearch": {}}, {"urlContext": {}}]
         if "claude" in model:
@@ -91,7 +91,7 @@ class ReplyGeneratorCogs(commands.Cog):
             downloaded.save(buffer, format="JPEG", quality=85, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             converted = convert_base64_to_data_uri(b64)
-            return {"type": "image_url", "image_url": {"url": converted}}
+            return {"type": "input_image", "image_url": converted}
         except Exception:
             logfire.warn(f"Failed to convert image, keeping original URL: {url}")
             return {}
@@ -103,10 +103,7 @@ class ReplyGeneratorCogs(commands.Cog):
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             mime_type = content_type.split(";")[0].strip()
             data_uri = f"data:{mime_type};base64,{b64_data}"
-            return {
-                "type": "file",
-                "file": {"filename": attachment.filename, "file_data": data_uri},
-            }
+            return {"type": "input_file", "filename": attachment.filename, "file_data": data_uri}
         except Exception:
             logfire.warn(f"Failed to download video attachment: {attachment.url}")
             return {}
@@ -144,7 +141,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 role = "assistant"
 
             # Build content parts - start with text
-            content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": content}]
 
             # Include all attachments (images, videos, stickers, embed images)
             attachment_parts = await self._get_attachments(message=message)
@@ -170,7 +167,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "role": "assistant",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": "==== Chat History that might be helpful for answering. ====",
                     }
                 ],
@@ -188,7 +185,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "role": "assistant",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": f"==== Reference Message from {message.author.display_name} ({message.author.name}) [id: {message.author.id}] that might be helpful for answering. ====",
                     }
                 ],
@@ -203,7 +200,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "role": "assistant",
                 "content": [
                     {
-                        "type": "text",
+                        "type": "input_text",
                         "text": f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ====",
                     }
                 ],
@@ -243,9 +240,7 @@ class ReplyGeneratorCogs(commands.Cog):
             attachment_parts = await self._get_attachments(message=message)
 
         data_uris = [
-            part["image_url"]["url"]
-            for part in attachment_parts
-            if part.get("type") == "image_url"
+            part["image_url"] for part in attachment_parts if part.get("type") == "input_image"
         ]
 
         if data_uris:
@@ -277,26 +272,26 @@ class ReplyGeneratorCogs(commands.Cog):
         if not result.data:
             raise ValueError("Image operation returned no results")
         image_url = convert_base64_to_data_uri(result.data[0].b64_json)
-        image_responses = await self.client.chat.completions.create(
+        image_responses = await self.client.responses.create(
             model=DEFAULT_FAST_MODEL,
-            messages=[
+            input=[
                 {"role": "system", "content": IMAGE_PROMPT},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "text",
+                            "type": "input_text",
                             "text": "Describe this generated image briefly for the Discord reply.",
                         },
-                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "input_image", "image_url": image_url},
                     ],
                 },
             ],
-            reasoning_effort="none",
-            service_tier="priority",
+            reasoning={"effort": "none"},
+            service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        image_description = (image_responses.choices[0].message.content or "").strip()
+        image_description = (image_responses.output_text or "").strip()
         image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
         image_file = File(fp=image_bytes, filename="generated.png")
 
@@ -323,14 +318,14 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        responses = await self.client.chat.completions.create(
+        responses = await self.client.responses.create(
             model=DEFAULT_FAST_MODEL,
-            messages=message_list,
-            reasoning_effort="none",
-            service_tier="priority",
+            input=message_list,
+            reasoning={"effort": "none"},
+            service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        decision = (responses.choices[0].message.content or "").strip().upper()
+        decision = (responses.output_text or "").strip().upper()
         if decision.startswith("IMAGE"):
             return "IMAGE"
         if decision.startswith("VIDEO"):
@@ -349,7 +344,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return float(input_rate) * input_tokens + float(output_rate) * output_tokens
 
     async def _handle_streaming(
-        self, responses: AsyncStream[ChatCompletionChunk], message: Message
+        self, responses: AsyncStream[ResponseStreamEvent], message: Message
     ) -> str:
         stored_content = ""
         counted_content = 0
@@ -360,13 +355,13 @@ class ReplyGeneratorCogs(commands.Cog):
         output_tokens = 0
 
         async for response in responses:
-            if not model_name and response.model:
-                model_name = response.model
-            if response.usage:
-                input_tokens = response.usage.prompt_tokens or 0
-                output_tokens = response.usage.completion_tokens or 0
-            if response.choices and response.choices[0].delta.content:
-                delta = response.choices[0].delta.content
+            if response.type == "response.completed":
+                model_name = response.response.model
+                if response.response.usage:
+                    input_tokens = response.response.usage.input_tokens or 0
+                    output_tokens = response.response.usage.output_tokens or 0
+            elif response.type == "response.output_text.delta":
+                delta = response.delta
                 if not content_started:
                     delta = delta.lstrip("\n")
                     if not delta:
@@ -402,7 +397,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int
     ) -> None:
         message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]}
         ]
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
@@ -415,14 +410,13 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_message)
 
         tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
-        responses = await self.client.chat.completions.create(
+        responses = await self.client.responses.create(
             model=DEFAULT_SLOW_MODEL,
-            messages=message_list,
-            reasoning_effort="high",
+            input=message_list,
+            reasoning={"effort": "high"},
             tools=tools,
             stream=True,
-            stream_options={"include_usage": True},
-            service_tier="priority",
+            service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
 
@@ -487,7 +481,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
-            logfire.error(f"Failed to generate reply: {e}", _exc_info=True)
+            logfire.error(f"Failed to generate reply", _exc_info=True)
             with contextlib.suppress(Exception):
                 await self._handle_reaction(
                     message=message, emoji="❌", previous_emoji=current_emoji
