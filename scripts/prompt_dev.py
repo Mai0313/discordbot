@@ -39,11 +39,8 @@ def use_oai() -> None:
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
-        service_tier="auto",
-        # extra_body={
-        #     "mock_testing_fallbacks": False
-        #     "request_timeout": 300,
-        # },
+        service_tier="priority",
+        extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
     console.print(dict(responses.response.headers))
