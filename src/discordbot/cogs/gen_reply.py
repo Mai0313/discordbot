@@ -11,6 +11,7 @@ from openai import AsyncOpenAI, AsyncStream
 from litellm import model_cost
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
+from pydantic import BaseModel
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
@@ -28,6 +29,10 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+
+
+class RouteDecision(BaseModel):
+    decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -318,21 +323,17 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        responses = await self.client.responses.create(
+        responses = await self.client.responses.parse(
             model=DEFAULT_FAST_MODEL,
             input=message_list,
+            text_format=RouteDecision,
             reasoning={"effort": "none"},
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        decision = (responses.output_text or "").strip().upper()
-        if decision.startswith("IMAGE"):
-            return "IMAGE"
-        if decision.startswith("VIDEO"):
-            return "VIDEO"
-        if decision.startswith("SUMMARY"):
-            return "SUMMARY"
-        return "QA"
+        if responses.output_parsed is None:
+            return "QA"
+        return responses.output_parsed.decision
 
     @staticmethod
     def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
