@@ -307,14 +307,14 @@ class ReplyGeneratorCogs(commands.Cog):
         current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
-        response = await self.client.chat.completions.create(
+        responses = await self.client.chat.completions.create(
             model=DEFAULT_FAST_MODEL,
             messages=message_list,
             reasoning_effort="none",
             service_tier="priority",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        decision = (response.choices[0].message.content or "").strip().upper()
+        decision = (responses.choices[0].message.content or "").strip().upper()
         if decision.startswith("IMAGE"):
             return "IMAGE"
         if decision.startswith("VIDEO"):
@@ -333,7 +333,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return float(input_rate) * input_tokens + float(output_rate) * output_tokens
 
     async def _handle_streaming(
-        self, stream: AsyncStream[ChatCompletionChunk], message: Message
+        self, responses: AsyncStream[ChatCompletionChunk], message: Message
     ) -> str:
         stored_content = ""
         counted_content = 0
@@ -343,14 +343,14 @@ class ReplyGeneratorCogs(commands.Cog):
         input_tokens = 0
         output_tokens = 0
 
-        async for chunk in stream:
-            if not model_name and chunk.model:
-                model_name = chunk.model
-            if chunk.usage:
-                input_tokens = chunk.usage.prompt_tokens or 0
-                output_tokens = chunk.usage.completion_tokens or 0
-            if chunk.choices and chunk.choices[0].delta.content:
-                delta = chunk.choices[0].delta.content
+        async for response in responses:
+            if not model_name and response.model:
+                model_name = response.model
+            if response.usage:
+                input_tokens = response.usage.prompt_tokens or 0
+                output_tokens = response.usage.completion_tokens or 0
+            if response.choices and response.choices[0].delta.content:
+                delta = response.choices[0].delta.content
                 if not content_started:
                     delta = delta.lstrip("\n")
                     if not delta:
@@ -399,7 +399,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_message)
 
         tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
-        stream: AsyncStream[ChatCompletionChunk] = await self.client.chat.completions.create(
+        responses = await self.client.chat.completions.create(
             model=DEFAULT_SLOW_MODEL,
             messages=message_list,
             reasoning_effort="high",
@@ -410,7 +410,7 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
 
-        await self._handle_streaming(stream=stream, message=message)
+        await self._handle_streaming(responses=responses, message=message)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
