@@ -338,13 +338,16 @@ class ReplyGeneratorCogs(commands.Cog):
         return responses.output_parsed.decision
 
     @staticmethod
-    def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
+    def _calculate_cost(
+        model_name: str, input_tokens: int, output_tokens: int, reasoning_tokens: int
+    ) -> float:
         info = model_cost.get(model_name) or {}
         default_input_rate = info.get("input_cost_per_token", 0)
         input_rate = info.get("input_cost_per_token_priority", default_input_rate)
         default_output_rate = info.get("output_cost_per_token", 0)
         output_rate = info.get("output_cost_per_token_priority", default_output_rate)
-        return float(input_rate) * input_tokens + float(output_rate) * output_tokens
+        total_output_tokens = output_tokens + reasoning_tokens
+        return float(input_rate) * input_tokens + float(output_rate) * total_output_tokens
 
     async def _handle_streaming(
         self, responses: AsyncStream[ResponseStreamEvent], message: Message
@@ -356,13 +359,17 @@ class ReplyGeneratorCogs(commands.Cog):
         model_name = ""
         input_tokens = 0
         output_tokens = 0
+        reasoning_tokens = 0
 
         async for response in responses:
             if response.type == "response.completed":
                 model_name = response.response.model
                 if response.response.usage:
-                    input_tokens = response.response.usage.input_tokens or 0
-                    output_tokens = response.response.usage.output_tokens or 0
+                    input_tokens = response.response.usage.input_tokens
+                    output_tokens = response.response.usage.output_tokens
+                    reasoning_tokens = (
+                        response.response.usage.output_tokens_details.reasoning_tokens
+                    )
             elif response.type == "response.output_text.delta":
                 delta = response.delta
                 if not content_started:
@@ -381,7 +388,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     counted_content = 0
 
         cost = self._calculate_cost(
-            model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
+            model_name=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
         )
 
         usage_footer = f"\n> **{model_name}** ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
