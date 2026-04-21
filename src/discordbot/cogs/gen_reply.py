@@ -279,8 +279,8 @@ class ReplyGeneratorCogs(commands.Cog):
         image_url = convert_base64_to_data_uri(result.data[0].b64_json)
         image_responses = await self.client.responses.create(
             model=DEFAULT_FAST_MODEL,
+            instructions=IMAGE_PROMPT,
             input=[
-                {"role": "system", "content": IMAGE_PROMPT},
                 {
                     "role": "user",
                     "content": [
@@ -290,7 +290,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         },
                         {"type": "input_image", "image_url": image_url},
                     ],
-                },
+                }
             ],
             reasoning={"effort": "none", "summary": "auto"},
             service_tier="auto",
@@ -315,7 +315,7 @@ class ReplyGeneratorCogs(commands.Cog):
             await message.add_reaction(emoji=emoji)
 
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        message_list: list[dict[str, Any]] = [{"role": "system", "content": ROUTE_PROMPT}]
+        message_list: list[dict[str, Any]] = []
 
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
@@ -326,6 +326,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         responses = await self.client.responses.parse(
             model=DEFAULT_FAST_MODEL,
+            instructions=ROUTE_PROMPT,
             input=message_list,
             text_format=RouteDecision,
             reasoning={"effort": "none", "summary": "auto"},
@@ -409,9 +410,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int
     ) -> None:
-        message_list: list[dict[str, Any]] = [
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]}
-        ]
+        message_list: list[dict[str, Any]] = []
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
@@ -425,6 +424,7 @@ class ReplyGeneratorCogs(commands.Cog):
         tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
         responses = await self.client.responses.create(
             model=DEFAULT_SLOW_MODEL,
+            instructions=system_prompt,
             input=message_list,
             reasoning={"effort": "medium", "summary": "auto"},
             tools=tools,

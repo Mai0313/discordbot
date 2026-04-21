@@ -21,12 +21,9 @@ def use_oai_responses_parse() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     responses = client.responses.parse(
         model=FAST_MODEL,
+        instructions=ROUTE_PROMPT,
         input=[
-            {"role": "system", "content": [{"type": "input_text", "text": ROUTE_PROMPT}]},
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": "幫我畫一隻穿西裝的柴犬"}],
-            },
+            {"role": "user", "content": [{"type": "input_text", "text": "幫我畫一隻穿西裝的柴犬"}]}
         ],
         text_format=RouteDecision,
         reasoning={"effort": "none"},

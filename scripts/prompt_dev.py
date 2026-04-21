@@ -57,10 +57,8 @@ def use_oai_responses() -> None:
     start = time.time()
     responses = client.responses.create(
         model="gemini-3.1-pro-preview",
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": REPLY_PROMPT}]},
-            {"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]},
-        ],
+        instructions=REPLY_PROMPT,
+        input=[{"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]}],
         reasoning={"effort": "medium", "summary": "auto"},
         stream=True,
         tools=tools,
