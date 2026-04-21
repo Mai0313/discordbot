@@ -48,7 +48,7 @@ class MessageLogger(BaseModel):
     @property
     def channel_name_or_author_name(self) -> str:
         if isinstance(self.message.channel, DMChannel):
-            author_name = self.message.author.nick or self.message.author.name
+            author_name = self.message.author.display_name
             return f"DM_{author_name}_{self.message.author.id}"
         return f"channel_{self.message.channel.name}_{self.message.channel.id}"
 
