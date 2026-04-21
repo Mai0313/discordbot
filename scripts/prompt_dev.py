@@ -62,9 +62,10 @@ def use_oai_responses() -> None:
             {"role": "system", "content": [{"type": "input_text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning={"effort": "high", "generate_summary": "auto", "summary": "auto"},
+        reasoning={"effort": "high", "summary": "auto"},
         stream=True,
         tools=tools,
+        extra_body={"mock_testing_fallbacks": False},
     )
     for response in responses:
         if response.type in {
@@ -80,7 +81,10 @@ def use_oai_responses() -> None:
 
 def use_gemini() -> None:
     client = genai.Client(
-        api_key=config.api_key, http_options=HttpOptions(base_url=config.base_url)
+        api_key=config.api_key,
+        http_options=HttpOptions(
+            base_url=config.base_url, extra_body={"mock_testing_fallbacks": False}
+        ),
     )
     start = time.time()
     responses = client.models.generate_content_stream(
