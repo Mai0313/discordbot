@@ -135,6 +135,6 @@ def use_anthropic() -> None:
 
 if __name__ == "__main__":
     use_oai()
-    use_oai_responses()
-    use_gemini()
-    use_anthropic()
+    # use_oai_responses()
+    # use_gemini()
+    # use_anthropic()
