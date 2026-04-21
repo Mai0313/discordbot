@@ -6,10 +6,11 @@ from functools import cached_property
 from mimetypes import guess_type
 import contextlib
 
+from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
 from litellm import model_cost
 import logfire
-from nextcord import File, Embed, Message, Attachment
+from nextcord import File, Embed, Message, Attachment, StickerItem
 from nextcord.ext import commands
 from autogen.agentchat.contrib.img_utils import (
     get_pil_image,
@@ -76,9 +77,13 @@ class ReplyGeneratorCogs(commands.Cog):
         content = f"{message.author.display_name} ({message.author.name}) [id: {message.author.id}]: {content}"
         return content
 
-    def _image_url_to_part(self, url: str) -> dict[str, Any]:
+    async def _image_to_part(self, source: Attachment | StickerItem | str) -> dict[str, Any]:
+        url = source if isinstance(source, str) else source.url
         try:
-            downloaded = get_pil_image(image_file=url)
+            if isinstance(source, str):
+                downloaded = get_pil_image(image_file=source)
+            else:
+                downloaded = Image.open(BytesIO(await source.read()))
             downloaded.thumbnail(size=(1568, 1568))
             if downloaded.mode != "RGB":
                 downloaded = downloaded.convert("RGB")
@@ -106,16 +111,6 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(f"Failed to download video attachment: {attachment.url}")
             return {"type": "text", "text": f"Attachment URL: {attachment.url}"}
 
-    def _embed_image_urls(self, embed: Embed) -> list[str]:
-        # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
-        # since sources like Threads CDN expire and reject requests without specific headers.
-        urls: list[str] = []
-        if embed.image:
-            urls.append(embed.image.proxy_url or embed.image.url)
-        if embed.thumbnail:
-            urls.append(embed.thumbnail.proxy_url or embed.thumbnail.url)
-        return [u for u in urls if u]
-
     async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
         content_parts: list[dict[str, Any]] = []
 
@@ -126,14 +121,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 # content_parts.append(await self._video_attachment_to_part(attachment=attachment))
                 pass
             else:
-                content_parts.append(self._image_url_to_part(url=attachment.url))
+                content_parts.append(await self._image_to_part(source=attachment))
 
         for sticker in message.stickers:
-            content_parts.append(self._image_url_to_part(url=sticker.url))
+            content_parts.append(await self._image_to_part(source=sticker))
 
+        # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
+        # since sources like Threads CDN expire and reject requests without specific headers.
         for embed in message.embeds:
-            for url in self._embed_image_urls(embed=embed):
-                content_parts.append(self._image_url_to_part(url=url))
+            if embed.image and (url := embed.image.proxy_url or embed.image.url):
+                content_parts.append(await self._image_to_part(source=url))
+            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
+                content_parts.append(await self._image_to_part(source=url))
 
         return content_parts
 
