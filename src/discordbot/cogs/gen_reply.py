@@ -137,16 +137,22 @@ class ReplyGeneratorCogs(commands.Cog):
         return content_parts
 
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
-        content = await self._get_cleaned_content(message=message)
-        role = "assistant" if self.bot.user and message.author.id == self.bot.user.id else "user"
+        try:
+            content = await self._get_cleaned_content(message=message)
+            role = "user"
+            if self.bot.user and message.author.id == self.bot.user.id:
+                role = "assistant"
 
-        # Build content parts - start with text
-        content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+            # Build content parts - start with text
+            content_parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
 
-        # Include all attachments (images, videos, stickers, embed images)
-        attachment_parts = await self._get_attachments(message=message)
-        content_parts.extend(attachment_parts)
-        return {"role": role, "content": content_parts}
+            # Include all attachments (images, videos, stickers, embed images)
+            attachment_parts = await self._get_attachments(message=message)
+            content_parts.extend(attachment_parts)
+            return {"role": role, "content": content_parts}
+        except Exception as e:
+            logfire.warn(f"Failed to process message {message.id}: {e}")
+            return {}
 
     async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
@@ -155,6 +161,11 @@ class ReplyGeneratorCogs(commands.Cog):
             hist_messages.append(m)
 
         if hist_messages:
+            tasks = []
+            for hist_msg in hist_messages:
+                tasks.append(self._process_single_message(message=hist_msg))
+            processed = await asyncio.gather(*tasks)
+
             messages.append({
                 "role": "assistant",
                 "content": [
@@ -164,10 +175,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     }
                 ],
             })
+            for msg in processed:
+                if msg is not None:
+                    messages.append(msg)
 
-            for hist_msg in hist_messages:
-                hist_message = await self._process_single_message(message=hist_msg)
-                messages.append(hist_message)
         return messages
 
     async def _get_reference_message(self, message: Message) -> list[dict[str, Any]]:
@@ -222,10 +233,14 @@ class ReplyGeneratorCogs(commands.Cog):
         await message.reply(content=f"{message.author.mention}", file=video_file)
 
     async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
-        attachment_parts = await self._get_attachments(message=message)
         if message.reference and isinstance(message.reference.resolved, Message):
-            ref_attachment_parts = await self._get_attachments(message=message.reference.resolved)
-            attachment_parts.extend(ref_attachment_parts)
+            own_parts, ref_parts = await asyncio.gather(
+                self._get_attachments(message=message),
+                self._get_attachments(message=message.reference.resolved),
+            )
+            attachment_parts = own_parts + ref_parts
+        else:
+            attachment_parts = await self._get_attachments(message=message)
 
         data_uris = [
             part["image_url"]["url"]
@@ -301,10 +316,11 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
         message_list: list[dict[str, Any]] = [{"role": "system", "content": ROUTE_PROMPT}]
 
-        reference_messages = await self._get_reference_message(message=message)
+        reference_messages, current_message = await asyncio.gather(
+            self._get_reference_message(message=message),
+            self._get_current_message(message=message),
+        )
         message_list.extend(reference_messages)
-
-        current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
         responses = await self.client.chat.completions.create(
@@ -389,13 +405,13 @@ class ReplyGeneratorCogs(commands.Cog):
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]}
         ]
 
-        hist_messages = await self._get_history_message(message=message, limit=history_limit)
+        hist_messages, reference_messages, current_message = await asyncio.gather(
+            self._get_history_message(message=message, limit=history_limit),
+            self._get_reference_message(message=message),
+            self._get_current_message(message=message),
+        )
         message_list.extend(hist_messages)
-
-        reference_messages = await self._get_reference_message(message=message)
         message_list.extend(reference_messages)
-
-        current_message = await self._get_current_message(message=message)
         message_list.extend(current_message)
 
         tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
