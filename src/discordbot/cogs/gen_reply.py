@@ -481,7 +481,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
-            logfire.error(f"Failed to generate reply", _exc_info=True)
+            logfire.error("Failed to generate reply", _exc_info=True)
             with contextlib.suppress(Exception):
                 await self._handle_reaction(
                     message=message, emoji="❌", previous_emoji=current_emoji
