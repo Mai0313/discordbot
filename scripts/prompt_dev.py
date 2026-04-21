@@ -66,8 +66,11 @@ def use_oai_responses() -> None:
         tools=tools,
         extra_body={"mock_testing_fallbacks": False},
     )
+    model_name = ""
     for response in responses:
-        if response.type in {
+        if response.type in {"response.created", "response.completed"}:
+            model_name = response.response.model
+        elif response.type in {
             "response.reasoning_summary_text.delta",
             "response.reasoning_text.delta",
         }:
@@ -75,7 +78,7 @@ def use_oai_responses() -> None:
         elif response.type == "response.output_text.delta":
             console.print(response.delta, end="")
     end = time.time()
-    console.print(f"\nLitellm (Responses API) takes {end - start:.2f} seconds")
+    console.print(f"\n{model_name} on Litellm (Responses API) takes {end - start:.2f} seconds")
 
 
 def use_gemini() -> None:
@@ -97,7 +100,9 @@ def use_gemini() -> None:
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
+    model_name = ""
     for response in responses:
+        model_name = response.model_version or model_name
         if not response.candidates or not response.candidates[0].content.parts:
             continue
         for part in response.candidates[0].content.parts:
@@ -108,7 +113,7 @@ def use_gemini() -> None:
             else:
                 console.print(part.text, end="")
     end = time.time()
-    console.print(f"\nGemini SDK takes {end - start:.2f} seconds")
+    console.print(f"\n{model_name} on Gemini SDK takes {end - start:.2f} seconds")
 
 
 def use_anthropic() -> None:
@@ -128,19 +133,22 @@ def use_anthropic() -> None:
             {"type": "web_fetch_20260209", "name": "web_fetch"},
         ],
     ) as responses:
+        model_name = ""
         for response in responses:
-            if response.type != "content_block_delta":
+            if response.type == "message_start":
+                model_name = response.message.model
+            elif response.type != "content_block_delta":
                 continue
-            if response.delta.type == "thinking_delta":
+            elif response.delta.type == "thinking_delta":
                 console.print(f"[dim]{response.delta.thinking}[/dim]", end="")
             elif response.delta.type == "text_delta":
                 console.print(response.delta.text, end="")
     end = time.time()
-    console.print(f"\nAnthropic SDK takes {end - start:.2f} seconds")
+    console.print(f"\n{model_name} on Anthropic SDK takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
-    use_oai()
-    # use_oai_responses()
+    # use_oai()
+    use_oai_responses()
     # use_gemini()
     # use_anthropic()
