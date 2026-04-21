@@ -110,8 +110,8 @@ class ThreadsCogs(commands.Cog):
                 await self._handle_reaction(
                     message=message, emoji="🆗", previous_emoji=current_emoji
                 )
-        except Exception as e:
-            logfire.error(f"Failed to send Threads message: {e}")
+        except Exception:
+            logfire.error("Failed to send Threads message", _exc_info=True)
             with contextlib.suppress(Exception):
                 await self._handle_reaction(
                     message=message, emoji="❌", previous_emoji=current_emoji

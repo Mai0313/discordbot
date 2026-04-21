@@ -94,7 +94,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return {"type": "image_url", "image_url": {"url": converted}}
         except Exception:
             logfire.warn(f"Failed to convert image, keeping original URL: {url}")
-            return {"type": "text", "text": f"Attachment URL: {url}"}
+            return {}
 
     async def _video_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
         try:
@@ -109,7 +109,7 @@ class ReplyGeneratorCogs(commands.Cog):
             }
         except Exception:
             logfire.warn(f"Failed to download video attachment: {attachment.url}")
-            return {"type": "text", "text": f"Attachment URL: {attachment.url}"}
+            return {}
 
     async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
         content_parts: list[dict[str, Any]] = []
