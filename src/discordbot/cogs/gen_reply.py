@@ -416,7 +416,7 @@ class ReplyGeneratorCogs(commands.Cog):
         responses = await self.client.responses.create(
             model=DEFAULT_SLOW_MODEL,
             input=message_list,
-            reasoning={"effort": "high"},
+            reasoning={"effort": "medium"},
             tools=tools,
             stream=True,
             service_tier="auto",
