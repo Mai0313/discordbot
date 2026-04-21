@@ -368,7 +368,7 @@ class ReplyGeneratorCogs(commands.Cog):
             model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-        usage_footer = f"\n> **{model_name}** ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
+        usage_footer = f"\n> **{model_name}**\n⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
         stored_content += usage_footer
 
         # Final update to ensure complete message is displayed
