@@ -29,8 +29,6 @@ def use_streaming() -> None:
         extra_body={"mock_testing_fallbacks": True},
         stream=True,
     )
-
-    console.print(dict(responses.response.headers))
     for response in responses:
         model_name = response.model
         console.print(response.choices[0].delta.content, end="")

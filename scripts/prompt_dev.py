@@ -43,7 +43,6 @@ def use_oai() -> None:
         extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
-    console.print(dict(responses.response.headers))
     for response in responses:
         model_name = response.model
         if response.choices[0].delta.content:
