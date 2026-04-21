@@ -40,13 +40,19 @@ def use_oai() -> None:
         stream_options={"include_usage": True},
         tools=tools,
         service_tier="auto",
+        # extra_body={
+        #     "mock_testing_fallbacks": False
+        #     "request_timeout": 300,
+        # },
     )
+    model_name = ""
     console.print(dict(responses.response.headers))
     for response in responses:
+        model_name = response.model
         if response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
-    console.print(f"\nLitellm takes {end - start:.2f} seconds")
+    console.print(f"\n{model_name} on Litellm takes {end - start:.2f} seconds")
 
 
 def use_oai_responses() -> None:
