@@ -439,8 +439,8 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        # Workaround: gemini-pro-latest is overloaded during UTC 10:00-20:00, swap to the lite model.
-        model = PEAK_SLOW_MODEL if 10 <= datetime.now(UTC).hour < 20 else DEFAULT_SLOW_MODEL
+        # Workaround: gemini-pro-latest is overloaded during UTC 10:00-18:00, swap to the lite model.
+        model = PEAK_SLOW_MODEL if 10 <= datetime.now(UTC).hour < 18 else DEFAULT_SLOW_MODEL
         tools = get_tools(model=model)
         responses = await self.client.responses.create(
             model=model,
