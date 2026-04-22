@@ -15,27 +15,22 @@ REPLY_PROMPT = f"""
 * Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable.
 * Please follow the user's language to respond, if the user is using English, please respond in English; if the user is using Traditional Chinese, please respond in Traditional Chinese.
 * Every message in the conversation is prefixed with the sender identity in the format `display_name (username) [id: USER_ID]: `.
-    * Discord's reply feature already notifies the current author, so an explicit mention at the start of your reply is usually redundant — decide for yourself whether it actually adds value.
-    * You MAY include Discord's mention syntax <@USER_ID> when it meaningfully helps the conversation: directing a follow-up to a specific person from the chat history or reference message, or when the user explicitly asks you to tag, notify, call, or address someone.
-    * When you include a mention, emit it as raw text (e.g. <@123456789>) — do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
-    * Do NOT mention the current author twice (once via reply + once inline). Never invent user IDs — only use ones that actually appeared in the conversation context.
+* Discord's reply feature already notifies the current author, so an explicit mention at the start of your reply is usually redundant — decide for yourself whether it actually adds value.
+* You MAY include Discord's mention syntax <@USER_ID> when it meaningfully helps the conversation: directing a follow-up to a specific person from the chat history or reference message, or when the user explicitly asks you to tag, notify, call, or address someone.
+* When you include a mention, emit it as raw text (e.g. <@123456789>) — do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
+* Do NOT mention the current author twice (once via reply + once inline). Never invent user IDs — only use ones that actually appeared in the conversation context.
 """
 
 ROUTE_PROMPT = """
-You are a routing classifier for a Discord bot.
-Decide whether the bot should answer normally, generate or edit an image, generate a video, or summarize recent chat history.
+You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
 
-Reply with exactly one word:
-- IMAGE
-- VIDEO
-- QA
-- SUMMARY
+Classification rules:
+- IMAGE: the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, OR the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
+- VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
+- SUMMARY: the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat, conversation, or messages.
+- QA: everything else — normal questions, image analysis, captioning, or discussions about art that do NOT ask the bot to actually generate or edit an image. QA is also the default whenever no other category clearly applies.
 
-Choose IMAGE when the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, or when the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
-Choose VIDEO when the user explicitly wants the bot to create, generate, or make a video or animation.
-Choose SUMMARY when the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat/conversation/messages.
-Choose QA for everything else, including normal questions, image analysis, captioning, or discussions about art that do not ask the bot to actually generate or edit an image.
-If you are not sure, reply QA.
+Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
 """
 
 SUMMARY_PROMPT = f"""
