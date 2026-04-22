@@ -3,6 +3,7 @@ import re
 import base64
 from typing import Any, Literal
 import asyncio
+from datetime import UTC, datetime
 from functools import cached_property
 from mimetypes import guess_type
 import contextlib
@@ -438,11 +439,13 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_message)
 
         tools = get_tools(model=DEFAULT_SLOW_MODEL)
+        # Workaround: Gemini is overloaded during UTC 10:00-20:00, lower effort to keep latency sane.
+        effort = "low" if 10 <= datetime.now(UTC).hour < 20 else "high"
         responses = await self.client.responses.create(
             model=DEFAULT_SLOW_MODEL,
             instructions=system_prompt,
             input=message_list,
-            reasoning={"effort": "medium", "summary": "auto"},
+            reasoning={"effort": effort, "summary": "auto"},
             tools=tools,
             stream=True,
             service_tier="auto",
