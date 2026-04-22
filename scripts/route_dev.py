@@ -11,7 +11,7 @@ from discordbot.cogs._gen_reply.prompts import ROUTE_PROMPT
 console = Console()
 config = LLMConfig()
 
-FAST_MODEL = "gemini-3-flash-preview"
+FAST_MODEL = "gemini-flash-latest"
 
 
 class RouteDecision(BaseModel):
