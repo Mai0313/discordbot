@@ -442,7 +442,7 @@ class ReplyGeneratorCogs(commands.Cog):
             model=DEFAULT_SLOW_MODEL,
             instructions=system_prompt,
             input=message_list,
-            reasoning={"effort": "high", "summary": "auto"},
+            reasoning={"effort": "medium", "summary": "auto"},
             tools=tools,
             stream=True,
             service_tier="auto",
