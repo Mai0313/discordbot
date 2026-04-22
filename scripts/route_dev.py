@@ -1,3 +1,4 @@
+import time
 from typing import Literal
 
 from openai import OpenAI
@@ -19,6 +20,7 @@ class RouteDecision(BaseModel):
 
 def use_oai_responses_parse() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    start = time.time()
     responses = client.responses.parse(
         model=FAST_MODEL,
         instructions=ROUTE_PROMPT,
@@ -30,6 +32,8 @@ def use_oai_responses_parse() -> None:
         extra_body={"mock_testing_fallbacks": False},
     )
     console.print(responses.output_parsed)
+    end = time.time()
+    console.print(f"\n{responses.model} on Litellm takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
