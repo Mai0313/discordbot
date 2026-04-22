@@ -141,3 +141,11 @@ Every `on_message` is persisted through SQLAlchemy to SQLite by default. Set `PO
     - Separator / header messages (`==== Chat History ====` etc.) use `role=system`, not `developer`, to stay compatible with Gemini/Claude via LiteLLM. The real system prompt is delivered via `instructions`.
 - **OpenAI SDK quirk for image edits**: `client.images.edit(image=...)` needs raw `bytes`, not `ImageInputReferenceParam` dicts. `_handle_image_reply` extracts `data_uris` → `get_image_data(use_b64=False)` → `bytes` for this reason.
 - **`litellm.model_cost`** is the source of truth for per-token pricing in the reply footer. If a new model name shows `$0.00000000`, it's because Litellm hasn't catalogued it yet — update Litellm, don't hardcode rates.
+
+## Helper skills (use when relevant)
+
+Claude Code has access to these skills for checking **provider-native** behavior when you need authoritative docs or migration guidance. Invoke them as needed — they are reference tools, not required steps. Remember: the runtime path still goes through LiteLLM + `AsyncOpenAI`; do NOT introduce provider-native SDKs into request-path code just because a skill discusses them.
+
+- **`openai-docs`** — official OpenAI API / Responses API / model specs. Use when debugging Responses-API edge cases (role/content pairing, streaming event shapes), confirming GPT-5.4 behavior, or picking the right OpenAI model string.
+- **`gemini-api-dev`** — Gemini model lineup, capabilities, and native API semantics. Use when a LiteLLM-proxied Gemini call behaves oddly (e.g. reasoning/thought-summary quirks, tool parameter shape) and you need the upstream spec to decide whether it's a LiteLLM translation issue or a Gemini-side constraint.
+- **`claude-api`** — Anthropic SDK / Claude model specs / migration notes. Use when swapping Claude model strings, tuning Claude-specific knobs surfaced through `extra_body`, or understanding what Claude features (web_search, web_fetch, caching, thinking) LiteLLM actually forwards.
