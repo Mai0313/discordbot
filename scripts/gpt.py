@@ -23,7 +23,7 @@ def use_chat() -> None:
             {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning_effort="medium",
+        reasoning_effort="none",
         stream=True,
         stream_options={"include_usage": True},
         service_tier="priority",
@@ -45,14 +45,16 @@ def use_responses() -> None:
         model="azure/gpt-5.4",
         instructions=REPLY_PROMPT,
         input=[{"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]}],
-        reasoning={"effort": "medium", "summary": "auto"},
+        reasoning={"effort": "none", "summary": "auto"},
         stream=True,
         extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
+    response_id = ""
     for response in responses:
         if response.type in {"response.created", "response.completed"}:
             model_name = response.response.model
+            response_id = response.response.id
         elif response.type in {
             "response.reasoning_summary_text.delta",
             "response.reasoning_text.delta",
@@ -60,10 +62,14 @@ def use_responses() -> None:
             console.print(f"[dim]{response.delta}[/dim]", end="")
         elif response.type == "response.output_text.delta":
             console.print(response.delta, end="")
+
+    retrieved_responses = client.responses.retrieve(response_id=response_id)
+    console.print("\n==== Retrieve full response object ====")
+    console.print(retrieved_responses.output_text)
     end = time.time()
     console.print(f"\n{model_name} on Litellm (Responses API) takes {end - start:.2f} seconds")
 
 
 if __name__ == "__main__":
-    use_chat()
+    # use_chat()
     use_responses()
