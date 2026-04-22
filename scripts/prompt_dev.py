@@ -15,10 +15,10 @@ from google.genai.types import (
 )
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs.gen_reply import get_tools
 from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
-    from openai.types.responses.tool_param import ToolParam
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 console = Console()
@@ -27,10 +27,11 @@ config = LLMConfig()
 
 def use_oai() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    tools: list[ChatCompletionToolUnionParam] = [{"googleSearch": {}}, {"urlContext": {}}]
+    model = "gemini-3.1-pro-preview"
+    tools: list[ChatCompletionToolUnionParam] = get_tools(model=model)
     start = time.time()
     responses = client.chat.completions.create(
-        model="gemini-3.1-pro-preview",
+        model=model,
         messages=[
             {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
@@ -53,10 +54,11 @@ def use_oai() -> None:
 
 def use_oai_responses() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    tools: list[ToolParam] = [{"googleSearch": {}}, {"urlContext": {}}]
+    model = "gemini-3.1-pro-preview"
+    tools = get_tools(model=model)
     start = time.time()
     responses = client.responses.create(
-        model="gemini-3.1-pro-preview",
+        model=model,
         instructions=REPLY_PROMPT,
         input=[{"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]}],
         reasoning={"effort": "medium", "summary": "auto"},
@@ -116,9 +118,11 @@ def use_gemini() -> None:
 
 def use_anthropic() -> None:
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
+    model = "claude-haiku-4-5"
+    tools = get_tools(model=model)
     start = time.time()
     with client.messages.stream(
-        model="claude-haiku-4-5",
+        model=model,
         max_tokens=16000,
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
@@ -126,10 +130,7 @@ def use_anthropic() -> None:
             {"role": "user", "content": REPLY_PROMPT},
             {"role": "user", "content": "為何 37 是質數?"},
         ],
-        tools=[
-            {"type": "web_search_20260209", "name": "web_search"},
-            {"type": "web_fetch_20260209", "name": "web_fetch"},
-        ],
+        tools=tools,
     ) as responses:
         model_name = ""
         for response in responses:
