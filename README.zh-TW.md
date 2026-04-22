@@ -25,7 +25,7 @@
 
 ### AI 聊天
 
-標記機器人（`@bot`）或傳送私訊即可開始對話，由 Google Gemini 提供支援：
+標記機器人（`@bot`）或傳送私訊即可開始對話。AI 後端是任何 OpenAI 相容端點（通常會搭配 [LiteLLM](https://github.com/BerriAI/litellm) proxy 對接 OpenAI、Google Gemini、Anthropic Claude 等），機器人會依任務切換模型 — 用快速 model 做意圖分類與圖片 caption、慢速推理 model 做對話與摘要、專用 image model 做圖片生成/編輯、video model 做短片生成。支援功能：
 
 - **文字對話** — 透過 OpenAI Responses API 串流即時回應
 - **多媒體理解** — 附上圖片或貼圖即可向機器人提問；也能讀取訊息或引用回覆中內嵌的圖片（例如已解析的 Threads 貼文 embed）
@@ -90,7 +90,7 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 
 - Python 3.12+
 - Discord 機器人 Token（[開發者入口](https://discord.com/developers/applications)）
-- OpenAI 相容 API 金鑰（例如 Google Gemini 透過 OpenAI 相容端點）
+- OpenAI 相容端點與 API 金鑰 — 可以是單一 provider（OpenAI、Gemini 透過 OpenAI 相容端點等），或是 [LiteLLM](https://github.com/BerriAI/litellm) proxy 對接多個 provider
 
 ### 方式一：Docker（推薦）
 

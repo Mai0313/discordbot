@@ -68,8 +68,10 @@ src/discordbot/
 scripts/
 ├── artale_data.py           # Scrape Artale MapleStory data from artalemaplestory.com
 ├── gen_docs.py              # Generate mkdocstrings reference pages
+├── gpt.py                   # Azure GPT-5.4 sandbox comparing chat.completions vs responses API
 ├── migrate.py               # Database migration helper (SQLite → PostgreSQL)
 ├── prompt_dev.py            # Prompt iteration / evaluation sandbox (OpenAI / Gemini / Anthropic SDK)
+├── route_dev.py             # Route-classifier sandbox — client.responses.parse + Pydantic RouteDecision
 ├── test_fallback.py         # Sandbox for testing Litellm fallback behavior
 └── video_dev.py             # Ad-hoc yt-dlp experiments
 
@@ -188,7 +190,10 @@ uv run pytest -vv
 | `uv run python scripts/artale_data.py`   | Update MapleStory Artale data from `artalemaplestory.com`             |
 | `uv run python scripts/migrate.py`       | Migrate logged messages from SQLite to PostgreSQL                     |
 | `uv run python scripts/prompt_dev.py`    | Iterate prompts against OpenAI / Gemini / Anthropic SDKs              |
+| `uv run python scripts/gpt.py`           | Azure GPT-5.4 sandbox — compare chat.completions vs responses APIs    |
+| `uv run python scripts/route_dev.py`     | Route-classifier sandbox using `responses.parse` + Pydantic           |
 | `uv run python scripts/test_fallback.py` | Smoke-test Litellm `mock_testing_fallbacks` behavior                  |
+| `uv run python scripts/video_dev.py`     | Ad-hoc `yt-dlp` download experiments                                  |
 | `uv run poe docs`                        | Generate reference docs then serve locally (port 9987)                |
 | `make help`                              | Show all available make targets                                       |
 | `make clean`                             | Remove build artifacts, caches, reports, and prune repo               |

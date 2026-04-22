@@ -25,7 +25,7 @@ A feature-rich Discord bot with AI-powered conversations, image and video genera
 
 ### AI Chat
 
-Mention the bot (`@bot`) or send a direct message to start a conversation. Powered by Google Gemini, it supports:
+Mention the bot (`@bot`) or send a direct message to start a conversation. The AI backend is any OpenAI-compatible endpoint (typically a [LiteLLM](https://github.com/BerriAI/litellm) proxy fronting OpenAI, Google Gemini, Anthropic Claude, etc.), and the bot routes each task to a different model — a fast model for intent routing and image captions, a slow reasoning model for replies and summaries, a dedicated image model for generation/editing, and a video model for short clips. Supported features:
 
 - **Text conversations** powered by the OpenAI Responses API with real-time streaming
 - **Media understanding** — attach images or stickers and ask the bot about them; it also reads images embedded in messages or quoted replies (e.g. a parsed Threads post)
@@ -90,7 +90,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 
 - Python 3.12+
 - A Discord bot token ([Developer Portal](https://discord.com/developers/applications))
-- An OpenAI-compatible API key (e.g. Google Gemini via OpenAI-compatible endpoint)
+- An OpenAI-compatible endpoint + API key — either a single provider (OpenAI, Gemini via its OpenAI-compatible endpoint, etc.) or a [LiteLLM](https://github.com/BerriAI/litellm) proxy fronting multiple providers
 
 ### Option 1: Docker (Recommended)
 
