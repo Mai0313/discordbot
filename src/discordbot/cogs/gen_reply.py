@@ -147,17 +147,25 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
         try:
             content = await self._get_cleaned_content(message=message)
-            role = "user"
-            if self.bot.user and message.author.id == self.bot.user.id:
-                role = "assistant"
-
-            # Build content parts - start with text
-            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": content}]
-
-            # Include all attachments (images, videos, stickers, embed images)
             attachment_parts = await self._get_attachments(message=message)
+            is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
+
+            # No attachments → use EasyInputMessageParam's string-content shorthand.
+            # The SDK serializes it as `output_text` for role=assistant and as
+            # `input_text` for role=user, which satisfies GPT-5.4's strict rule
+            # (role=assistant rejects an explicit `type: input_text` content part).
+            # This preserves the assistant-role weighting for bot text replies.
+            if not attachment_parts:
+                return {"role": "assistant" if is_bot else "user", "content": content}
+
+            # Has attachments → must use a content list with input_text/input_image.
+            # role=assistant cannot carry `input_image` (only output_text/refusal),
+            # so bot replies that include generated images (from _handle_image_reply)
+            # fall back to role=user. The author identity prefix already in `content`
+            # preserves bot-vs-user distinction for the model.
+            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": content}]
             content_parts.extend(attachment_parts)
-            return {"role": role, "content": content_parts}
+            return {"role": "user", "content": content_parts}
         except Exception as e:
             logfire.warn(f"Failed to process message {message.id}: {e}")
             return {}
@@ -175,7 +183,7 @@ class ReplyGeneratorCogs(commands.Cog):
             processed = await asyncio.gather(*tasks)
 
             messages.append({
-                "role": "assistant",
+                "role": "system",
                 "content": [
                     {
                         "type": "input_text",
@@ -193,7 +201,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages: list[dict[str, Any]] = []
         if message.reference and isinstance(message.reference.resolved, Message):
             messages.append({
-                "role": "assistant",
+                "role": "system",
                 "content": [
                     {
                         "type": "input_text",
@@ -208,7 +216,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = [
             {
-                "role": "assistant",
+                "role": "system",
                 "content": [
                     {
                         "type": "input_text",
