@@ -37,6 +37,17 @@ DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 
 
+def get_tools(model: str) -> list[ToolParam]:
+    if "gemini" in model:
+        return [{"googleSearch": {}}, {"urlContext": {}}]
+    if "claude" in model:
+        return [
+            {"type": "web_search_20260209", "name": "web_search"},
+            {"type": "web_fetch_20260209", "name": "web_fetch"},
+        ]
+    return [{"type": "web_search"}]
+
+
 class RouteDecision(BaseModel):
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
 
@@ -50,16 +61,6 @@ class ReplyGeneratorCogs(commands.Cog):
     def client(self) -> AsyncOpenAI:
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
-
-    def get_tools(self, model: str) -> list[ToolParam]:
-        if "gemini" in model:
-            return [{"googleSearch": {}}, {"urlContext": {}}]
-        if "claude" in model:
-            return [
-                {"type": "web_search_20260209", "name": "web_search"},
-                {"type": "web_fetch_20260209", "name": "web_fetch"},
-            ]
-        return [{"type": "web_search"}]
 
     async def _get_user_prompt(self, content: str) -> str:
         if self.bot.user:
@@ -436,7 +437,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        tools = self.get_tools(model=DEFAULT_SLOW_MODEL)
+        tools = get_tools(model=DEFAULT_SLOW_MODEL)
         responses = await self.client.responses.create(
             model=DEFAULT_SLOW_MODEL,
             instructions=system_prompt,
