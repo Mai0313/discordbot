@@ -1,4 +1,5 @@
 from io import BytesIO
+import re
 import base64
 from typing import Any, Literal
 import asyncio
@@ -29,6 +30,11 @@ DEFAULT_FAST_MODEL = "gemini-3-flash-preview"
 DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+
+# Gemini occasionally wraps Discord mention syntax in backticks (inline code),
+# which stops Discord from rendering the actual mention. Strip those wrappers
+# before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
+_CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 
 
 class RouteDecision(BaseModel):
@@ -395,6 +401,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning_tokens=reasoning_tokens,
         )
 
+        stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         usage_footer = f"\n> **{model_name}** ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
         stored_content += usage_footer
 
