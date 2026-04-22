@@ -118,7 +118,7 @@ def use_anthropic() -> None:
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     with client.messages.stream(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5",
         max_tokens=16000,
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
