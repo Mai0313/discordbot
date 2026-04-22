@@ -29,6 +29,7 @@ from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMAR
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
+PEAK_SLOW_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 
@@ -438,14 +439,14 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        tools = get_tools(model=DEFAULT_SLOW_MODEL)
-        # Workaround: Gemini is overloaded during UTC 10:00-20:00, lower effort to keep latency sane.
-        effort = "low" if 10 <= datetime.now(UTC).hour < 20 else "high"
+        # Workaround: gemini-pro-latest is overloaded during UTC 10:00-20:00, swap to the lite model.
+        model = PEAK_SLOW_MODEL if 10 <= datetime.now(UTC).hour < 20 else DEFAULT_SLOW_MODEL
+        tools = get_tools(model=model)
         responses = await self.client.responses.create(
-            model=DEFAULT_SLOW_MODEL,
+            model=model,
             instructions=system_prompt,
             input=message_list,
-            reasoning={"effort": effort, "summary": "auto"},
+            reasoning={"effort": "high", "summary": "auto"},
             tools=tools,
             stream=True,
             service_tier="auto",
