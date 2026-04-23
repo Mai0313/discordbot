@@ -24,7 +24,7 @@ uv run mypy src
 uv run ty check src                   # Astral's type checker; most rules set to error
 
 # Make shortcuts
-make format        # == pre-commit run -a
+make fmt           # == pre-commit run -a
 make test          # == uv run pytest
 make gen-docs      # regenerate docs/Reference and docs/Scripts via scripts/gen_docs.py
 make clean         # wipe caches, reports, pycache, then git gc

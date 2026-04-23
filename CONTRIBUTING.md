@@ -197,7 +197,7 @@ uv run pytest -vv
 | `uv run poe docs`                        | Generate reference docs then serve locally (port 9987)                |
 | `make help`                              | Show all available make targets                                       |
 | `make clean`                             | Remove build artifacts, caches, reports, and prune repo               |
-| `make format`                            | Run pre-commit formatting hooks                                       |
+| `make fmt`                               | Run pre-commit formatting hooks                                       |
 | `make test`                              | Run all tests                                                         |
 | `make gen-docs`                          | Generate API documentation into `docs/` (mirrors README into `docs/`) |
 | `make uv-install`                        | Install uv package manager on the system                              |
