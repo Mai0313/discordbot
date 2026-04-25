@@ -88,6 +88,20 @@ class ReplyGeneratorCogs(commands.Cog):
                 if parts:
                     embed_parts.append("\n".join(parts))
             content = "\n\n".join(embed_parts)
+        # TODO(deferred root-cause fix): weaker models sometimes echo the
+        # `display_name (username) [id: USER_ID]: ` prefix at the start of their
+        # own reply, because they see the same prefix attached to their previous
+        # replies in chat history and imitate the pattern. The thorough fix is
+        # to skip the prefix for the bot's own messages — role=assistant already
+        # marks them, so the prefix is redundant on those rows. Sketch:
+        #     is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
+        #     if is_bot:
+        #         return content
+        #     content = f"{message.author.display_name} ({message.author.name}) [id: {message.author.id}]: {content}"
+        #     return content
+        # Currently relying on the prompt-level guard in REPLY_PROMPT /
+        # SUMMARY_PROMPT (do-not-reproduce-prefix rule); revisit if that proves
+        # insufficient.
         content = f"{message.author.display_name} ({message.author.name}) [id: {message.author.id}]: {content}"
         return content
 
