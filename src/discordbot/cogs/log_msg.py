@@ -8,15 +8,12 @@ from pydantic import BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, create_engine
 from nextcord.ext import commands
 
-from discordbot.typings.database import DatabaseConfig
-
 CONTROL_CHARS_RE = re.compile(r"\x00")
 
 # Single shared engine — putting create_engine() on a per-message
-# cached_property leaked the SingletonThreadPool's thread-local connection,
-# the dialect cache and the inspector cache for every Discord message.
-_database_config = DatabaseConfig()
-_sql_engine: Engine = create_engine(_database_config.sqlite.sqlite_file_path)
+# cached_property leaked the connection pool, dialect cache and inspector
+# cache for every Discord message.
+_sql_engine: Engine = create_engine(url="sqlite:///data/messages.db")
 
 
 class MessageLogger(BaseModel):

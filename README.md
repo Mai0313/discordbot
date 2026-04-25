@@ -144,9 +144,6 @@ BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible endpoint
 
 # Optional
 DISCORD_TEST_SERVER_ID=your_test_server_id
-SQLITE_FILE_PATH=sqlite:///data/messages.db
-POSTGRES_URL=postgresql://user:pass@host/db
-REDIS_URL=redis://host:6379/0
 ```
 
 ## Platform-Specific Notes

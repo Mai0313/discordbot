@@ -144,9 +144,6 @@ BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 相容端點
 
 # 可選
 DISCORD_TEST_SERVER_ID=你的測試伺服器id
-SQLITE_FILE_PATH=sqlite:///data/messages.db
-POSTGRES_URL=postgresql://user:pass@host/db
-REDIS_URL=redis://host:6379/0
 ```
 
 ## 各平台注意事項

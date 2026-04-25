@@ -31,9 +31,6 @@ make clean         # wipe caches, reports, pycache, then git gc
 
 # Update MapleStory Artale dataset (scrapes artalemaplestory.com into data/maplestory/*.json)
 uv run python scripts/artale_data.py
-
-# Migrate logged messages from SQLite → PostgreSQL
-uv run python scripts/migrate.py
 ```
 
 The pytest config lives under `[tool.pytest.ini_options]` in `pyproject.toml` — it auto-discovers tests in `tests/`, runs doctests from modules (`--doctest-modules`), collects coverage into `./.github/reports/` and `./.github/coverage_html_report/`, and runs in parallel (`-n=auto`). Asyncio mode is `auto`, so `async def test_*` works without a decorator.
@@ -86,7 +83,6 @@ Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasCh
 
 - `DiscordConfig` — `DISCORD_BOT_TOKEN` (required), `DISCORD_TEST_SERVER_ID` (optional, enables instant-sync to one guild).
 - `LLMConfig` — `BASE_URL`, `API_KEY`.
-- `DatabaseConfig` — a `BaseModel` composed of `PostgreSQLConfig` / `SQLiteConfig` / `RedisConfig`. `PostgreSQLConfig.init_db()` auto-creates the database on first connect if it doesn't exist. `RedisConfig` exposes hash-style `save`/`load`/`delete` helpers.
 
 When adding a new configurable value, keep the `Field(description=..., examples=...)` descriptions populated — Pydantic Field descriptions are load-bearing in this codebase and must not be stripped during refactors.
 
@@ -96,7 +92,7 @@ When adding a new configurable value, keep the `Field(description=..., examples=
 
 ### Message logging (`cogs/log_msg.py`)
 
-Every `on_message` is persisted through `MessageLogger._save_messages`, which builds a one-row `pandas.DataFrame` and writes it via `to_sql` into `SQLiteConfig.sqlite_file_path` (default `data/messages.db`). The PostgreSQL branch is currently commented out in `_save_messages`, so setting `POSTGRES_URL` alone does **not** redirect writes — re-enable that block if you want dual/primary PostgreSQL logging. The schema is defined implicitly by the `data_dict` fields in this cog; `scripts/migrate.py` moves an existing SQLite table into PostgreSQL.
+Every `on_message` is persisted through `MessageLogger._save_messages`, which builds a one-row `pandas.DataFrame` and writes it via `to_sql` into a SQLite DB at `data/messages.db`. The engine is a module-level singleton (`cogs/log_msg.py:_sql_engine`) — do not move `create_engine()` back onto a per-instance `cached_property`, that pattern was the dominant memory leak. The schema is defined implicitly by the `data_dict` fields in this cog.
 
 ### Data dir (`data/`)
 
@@ -108,13 +104,34 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 ## Coding conventions
 
 - **Ruff** is the formatter and the linter. Line length 99, double quotes, `skip-magic-trailing-comma = true`, Google docstring style. Preview rules are on and the rule set is broad (`F E W C90 I N D UP ANN ASYNC S B A C4 …`). Don't silence with blanket `# noqa` — prefer fixing or, if impossible, the narrowest possible `# noqa: <rule>` with a one-line reason.
+
 - **Type checking**: both `mypy` (`[tool.mypy]`, with the Pydantic plugin) and `ty` (`[tool.ty.rules]`, most rules at `error`) run in pre-commit. Any new public function needs real type hints — `Any` is a last resort.
-- **Keyword arguments** are required for any call with two or more arguments. Positional-only calls read as noise in this codebase.
+
+- **Keyword arguments** are required for **every** function and method call, **including single-argument calls**. Concrete:
+
+    - ✓ `create_engine(url="sqlite:///data/messages.db")` ✗ `create_engine("sqlite:///data/messages.db")`
+    - ✓ `re.compile(pattern=r"...")` ✗ `re.compile(r"...")`
+    - ✓ `asyncio.create_task(coro=...)` ✗ `asyncio.create_task(...)`
+    - ✓ `BytesIO(initial_bytes=data)` ✗ `BytesIO(data)`
+
+    Positional-only calls read as noise in this codebase. There are exactly three exception categories — anything outside them must be named:
+
+    5. **Signature-level positional-only** (Python rejects the kwarg form). Examples: `Path("a/b")` (`*pathsegments`), `RuntimeError("msg")` and other exception constructors (`*args`), `logfire.info("...")` (`msg_template` is positional-only).
+    6. **Variadic `*args` collectors**, where each "argument" is a member of a tuple, not a named parameter. Examples: `contextlib.suppress(Exception, OSError)`, `AliasChoices("ENV_NAME")`, `super().__init__(*a, **kw)`.
+    7. **One-line builtin idioms** where naming is pure noise: `print(x)`, `len(x)`, `str(x)`, `int(x)`, `s.split(",")`, `s.startswith("/")`. Anything reading like a stdlib idiom — not application logic — qualifies.
+
+    Enforced by code review — no automated lint rule exists for this. When you write or touch a call, the default answer is "name it"; the burden of proof is on the positional form.
+
 - **No intermediate one-level aliases** (`usage = responses.usage` → just use `responses.usage`).
+
 - **`responses` / `response` naming**: whenever you call any LLM SDK (streaming or not), name the return object `responses`; if iterating, the loop variable is `response`. This is enforced by code review.
+
 - **LLM latency matters** in the request path. Don't chain extra LLM calls for cosmetic improvements, and don't add executor/`asyncio.gather` scaffolding for tiny (~100 ms) CPU work without measuring first.
+
 - **Comments**: default to none. Only write a comment when the *why* is non-obvious (hidden constraint, subtle invariant, specific-bug workaround). Do not narrate what well-named code already says, and do not reference tasks / PRs / issues in code comments.
+
 - **Docs**: API reference is auto-generated from docstrings via `scripts/gen_docs.py` into `docs/Reference` and `docs/Scripts`; don't hand-edit those paths.
+
 - **Commits**: Conventional Commits, English. PR titles are enforced by `semantic-pull-request.yml`.
 
 ## CI signals
