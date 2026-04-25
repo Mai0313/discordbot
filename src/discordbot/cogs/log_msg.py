@@ -1,11 +1,10 @@
 import re
 import asyncio
-from functools import cached_property
 
 import pandas as pd
 import logfire
 from nextcord import Message, DMChannel
-from pydantic import Field, BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, create_engine
 from nextcord.ext import commands
 
@@ -13,29 +12,22 @@ from discordbot.typings.database import DatabaseConfig
 
 CONTROL_CHARS_RE = re.compile(r"\x00")
 
+# Single shared engine — putting create_engine() on a per-message
+# cached_property leaked the SingletonThreadPool's thread-local connection,
+# the dialect cache and the inspector cache for every Discord message.
+_database_config = DatabaseConfig()
+_sql_engine: Engine = create_engine(_database_config.sqlite.sqlite_file_path)
+
 
 class MessageLogger(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: Message
-    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
 
     @staticmethod
     def sanitize_text(s: str | None) -> str:
         if s is None:
             return ""
         return CONTROL_CHARS_RE.sub("", s)
-
-    @computed_field
-    @cached_property
-    def sql_engine(self) -> Engine:
-        sql_engine = create_engine(self.database.sqlite.sqlite_file_path)
-        return sql_engine
-
-    @computed_field
-    @cached_property
-    def psg_engine(self) -> Engine:
-        psg_engine = create_engine(self.database.postgres.postgres_url)
-        return psg_engine
 
     @computed_field
     @property
@@ -88,20 +80,12 @@ class MessageLogger(BaseModel):
 
         messages.to_sql(
             name=f"{self.table_name}",
-            con=self.sql_engine,
+            con=_sql_engine,
             if_exists="append",
             index=False,
             chunksize=10_000,
             method="multi",
         )
-        # messages.to_sql(
-        #     name=f"{self.table_name}",
-        #     con=self.psg_engine,
-        #     if_exists="append",
-        #     index=False,
-        #     chunksize=10_000,
-        #     method="multi",
-        # )
 
     async def log(self) -> None:
         try:
