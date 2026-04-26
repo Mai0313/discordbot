@@ -380,7 +380,7 @@ class ReplyGeneratorCogs(commands.Cog):
         total_output_tokens = output_tokens + reasoning_tokens
         return float(input_rate) * input_tokens + float(output_rate) * total_output_tokens
 
-    async def _handle_streaming(
+    async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self, responses: AsyncStream[ResponseStreamEvent], message: Message
     ) -> str:
         stored_content = ""
@@ -391,6 +391,7 @@ class ReplyGeneratorCogs(commands.Cog):
         input_tokens = 0
         output_tokens = 0
         reasoning_tokens = 0
+        used_web_search = False
 
         async for response in responses:
             if response.type == "response.completed":
@@ -401,6 +402,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     reasoning_tokens = (
                         response.response.usage.output_tokens_details.reasoning_tokens
                     )
+            elif response.type == "response.output_text.annotation.added":
+                used_web_search = True
             elif response.type == "response.output_text.delta":
                 delta = response.delta
                 if not content_started:
@@ -435,6 +438,9 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             with contextlib.suppress(Exception):
                 await reply.edit(content=stored_content)
+
+        if used_web_search:
+            await self._handle_reaction(message=message, emoji="🌐")
 
         return stored_content
 
