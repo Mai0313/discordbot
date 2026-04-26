@@ -142,9 +142,7 @@ class ReplyGeneratorCogs(commands.Cog):
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("video/"):
-                # Temporarily skip video attachments in content parts since they can be large and cause issues.
-                # content_parts.append(await self._video_attachment_to_part(attachment=attachment))
-                pass
+                content_parts.append(await self._video_attachment_to_part(attachment=attachment))
             else:
                 content_parts.append(await self._image_to_part(source=attachment))
 
