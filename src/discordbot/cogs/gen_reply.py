@@ -13,7 +13,7 @@ from openai import AsyncOpenAI, AsyncStream
 from litellm import model_cost
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
@@ -354,19 +354,25 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        responses = await self.client.responses.parse(
-            model=DEFAULT_FAST_MODEL,
-            instructions=ROUTE_PROMPT,
-            input=message_list,
-            text_format=RouteDecision,
-            reasoning={"effort": "none", "summary": "auto"},
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
-        )
-        if responses.output_parsed is None:
+        try:
+            responses = await self.client.responses.parse(
+                model=DEFAULT_FAST_MODEL,
+                instructions=ROUTE_PROMPT,
+                input=message_list,
+                text_format=RouteDecision,
+                reasoning={"effort": "none", "summary": "auto"},
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
+            )
+            if responses.output_parsed is None:
+                return "QA"
+            return responses.output_parsed.decision
+        except ValidationError:
+            # The model returned no text output (e.g. safety filter, empty response);
+            # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
+            logfire.warn("RouteDecision parse failed — model returned no text; defaulting to QA")
             return "QA"
-        return responses.output_parsed.decision
 
     @staticmethod
     def _calculate_cost(
