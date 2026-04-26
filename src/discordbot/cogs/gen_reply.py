@@ -124,16 +124,16 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(f"Failed to convert image, keeping original URL: {url}")
             return {}
 
-    async def _video_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
+    async def _file_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
         try:
-            video_bytes = await attachment.read()
-            b64_data = base64.b64encode(video_bytes).decode()
+            file_bytes = await attachment.read()
+            b64_data = base64.b64encode(file_bytes).decode()
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             mime_type = content_type.split(";")[0].strip()
             data_uri = f"data:{mime_type};base64,{b64_data}"
             return {"type": "input_file", "filename": attachment.filename, "file_data": data_uri}
         except Exception:
-            logfire.warn(f"Failed to download video attachment: {attachment.url}")
+            logfire.warn(f"Failed to download attachment: {attachment.url}")
             return {}
 
     async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
@@ -141,10 +141,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-            if content_type.startswith("video/"):
-                content_parts.append(await self._video_attachment_to_part(attachment=attachment))
-            else:
+            if content_type.startswith("image/"):
                 content_parts.append(await self._image_to_part(source=attachment))
+            else:
+                # video/*, application/pdf, text/plain, application/json, etc.
+                content_parts.append(await self._file_attachment_to_part(attachment=attachment))
 
         for sticker in message.stickers:
             content_parts.append(await self._image_to_part(source=sticker))
