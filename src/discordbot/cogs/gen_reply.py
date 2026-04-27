@@ -130,6 +130,11 @@ class ReplyGeneratorCogs(commands.Cog):
             b64_data = base64.b64encode(file_bytes).decode()
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             mime_type = content_type.split(";")[0].strip()
+            if not mime_type:
+                logfire.warn(
+                    f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
+                )
+                return {}
             data_uri = f"data:{mime_type};base64,{b64_data}"
             return {"type": "input_file", "filename": attachment.filename, "file_data": data_uri}
         except Exception:
@@ -158,7 +163,7 @@ class ReplyGeneratorCogs(commands.Cog):
             if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
                 content_parts.append(await self._image_to_part(source=url))
 
-        return content_parts
+        return [part for part in content_parts if part]
 
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
         try:
