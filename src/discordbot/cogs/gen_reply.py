@@ -1,5 +1,7 @@
 from io import BytesIO
 import re
+import ast
+import json
 import base64
 from typing import Any, Literal
 import asyncio
@@ -37,6 +39,42 @@ DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 # which stops Discord from rendering the actual mention. Strip those wrappers
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
+
+# LiteLLM surfaces upstream provider errors as a chain like
+# `litellm.X: litellm.Y: VertexException - b'{"error": {"message": "..."}}'`,
+# where the provider's actual JSON body is embedded as a Python bytes literal.
+_BYTES_LITERAL_RE = re.compile(pattern=r"b'((?:[^'\\]|\\.)*)'", flags=re.DOTALL)
+
+
+def _extract_friendly_error(exc: BaseException) -> str:
+    """Surface the innermost provider error message from a LiteLLM-wrapped APIError.
+
+    OpenAI's streaming layer constructs `APIError(message=error["message"], ...)`
+    from the upstream SSE event; when LiteLLM is the upstream, that `message` is
+    the wrapped exception chain with the provider response stuffed inside as a
+    `b'...'` Python literal. Walk every embedded bytes literal, parse it as
+    JSON, and return `error.message` (or top-level `message`). Fall back to
+    `str(exc)` when nothing parses, so we never lose the original signal.
+    """
+    raw = str(exc)
+    for match in _BYTES_LITERAL_RE.finditer(string=raw):
+        try:
+            decoded = ast.literal_eval(node_or_string=match.group(0)).decode(
+                encoding="utf-8", errors="replace"
+            )
+            data = json.loads(s=decoded)
+        except (SyntaxError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                inner = error.get("message")
+                if isinstance(inner, str) and inner:
+                    return inner
+            top = data.get("message")
+            if isinstance(top, str) and top:
+                return top
+    return raw
 
 
 def get_tools(model: str) -> list[ToolParam]:
@@ -553,7 +591,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message, emoji="❌", previous_emoji=current_emoji
                 )
                 error_embed = Embed(
-                    title="Something went wrong", description=f"```\n{e}\n```", color=0xED4245
+                    title="Something went wrong",
+                    description=f"```\n{_extract_friendly_error(exc=e)}\n```",
+                    color=0xED4245,
                 )
                 error_embed.set_footer(text=type(e).__name__)
                 await message.reply(content=None, embed=error_embed)
