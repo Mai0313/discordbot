@@ -18,10 +18,11 @@ def downloader() -> ThreadsDownloader:
         "https://www.threads.com/@cyj308/post/DVn6dqzjzQf",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?hl=zh-tw",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?xmt=AQF0p6UfiuvtlPVEKZ36kqN7JVKUzuMJUhGDOwfkJK6Rsw",
+        "https://www.threads.com/@lift4life_nickson/post/DXy_VeVmSGK",
     ],
 )
 def test_parse(downloader: ThreadsDownloader, url: str) -> None:
     with downloader.parse(url=url) as output:
-        assert output.text or output.image_urls, "post should have text or images"
+        assert output.text or output.image_urls or output.video_urls, "post should have content"
         assert output.author_name, "author_name should not be empty"
         assert output.taken_at is not None, "taken_at should not be None"

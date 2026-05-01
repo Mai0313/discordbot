@@ -77,6 +77,33 @@ class CarouselMedia(BaseModel):
     )
 
 
+class MediaContainer(BaseModel):
+    carousel_media: list[CarouselMedia] | None = Field(
+        default=None, description="Carousel media items"
+    )
+    video_versions: list[VideoVersion] | None = Field(
+        default=None, description="Available video versions"
+    )
+    image_versions2: ImageVersions2 | None = Field(
+        default=None, description="Available image versions"
+    )
+
+    @property
+    def media_urls(self) -> list[str]:
+        urls: list[str] = []
+        if self.carousel_media:
+            for item in self.carousel_media:
+                if item.video_versions:
+                    urls.append(item.video_versions[0].url)
+                elif item.image_versions2 and item.image_versions2.candidates:
+                    urls.append(item.image_versions2.candidates[0].url)
+        elif self.video_versions:
+            urls.append(self.video_versions[0].url)
+        elif self.image_versions2 and self.image_versions2.candidates:
+            urls.append(self.image_versions2.candidates[0].url)
+        return [u for u in urls if u]
+
+
 class Fragment(BaseModel):
     plaintext: str = Field(default="", description="Plain text content of the fragment")
 
@@ -87,6 +114,17 @@ class TextFragments(BaseModel):
     )
 
 
+class LinkPreviewAttachment(BaseModel):
+    title: str = Field(default="", description="Title shown in the link preview")
+    image_url: str = Field(default="", description="Image shown in the link preview")
+    url: str = Field(default="", description="Original link preview URL")
+
+
+class LinkedInlineMedia(MediaContainer):
+    code: str = Field(default="", description="Linked media short code")
+    caption: Caption | None = Field(default=None, description="Linked media caption")
+
+
 class TextPostAppInfo(BaseModel):
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
     repost_count: int | None = Field(default=None, description="Number of reposts")
@@ -95,9 +133,15 @@ class TextPostAppInfo(BaseModel):
     text_fragments: TextFragments | None = Field(
         default=None, description="Structured text fragments with links/mentions"
     )
+    link_preview_attachment: LinkPreviewAttachment | None = Field(
+        default=None, description="Preview metadata for shared links"
+    )
+    linked_inline_media: LinkedInlineMedia | None = Field(
+        default=None, description="Inline media attached through a link preview"
+    )
 
 
-class Post(BaseModel):
+class Post(MediaContainer):
     """Represents a single Threads post parsed from the API JSON."""
 
     code: str = Field(default="", description="Post short code used in URLs")
@@ -105,15 +149,6 @@ class Post(BaseModel):
     user: User | None = Field(default=None, description="Post author")
     text_post_app_info: TextPostAppInfo | None = Field(
         default=None, description="Threads-specific post info and engagement metrics"
-    )
-    carousel_media: list[CarouselMedia] | None = Field(
-        default=None, description="Carousel media items"
-    )
-    video_versions: list[VideoVersion] | None = Field(
-        default=None, description="Available video versions"
-    )
-    image_versions2: ImageVersions2 | None = Field(
-        default=None, description="Available image versions"
     )
     like_count: int | None = Field(default=None, description="Number of likes")
     taken_at: int | None = Field(default=None, description="Post creation timestamp (Unix epoch)")
@@ -128,7 +163,13 @@ class Post(BaseModel):
             )
             if fragments_text:
                 return fragments_text
-        return self.caption.text if self.caption else ""
+        if self.caption and self.caption.text:
+            return self.caption.text
+        if self.text_post_app_info and self.text_post_app_info.link_preview_attachment:
+            title = self.text_post_app_info.link_preview_attachment.title
+            if title:
+                return title
+        return ""
 
     @property
     def author_name(self) -> str:
@@ -156,18 +197,13 @@ class Post(BaseModel):
 
     @property
     def media_urls(self) -> list[str]:
-        urls: list[str] = []
-        if self.carousel_media:
-            for item in self.carousel_media:
-                if item.video_versions:
-                    urls.append(item.video_versions[0].url)
-                elif item.image_versions2 and item.image_versions2.candidates:
-                    urls.append(item.image_versions2.candidates[0].url)
-        elif self.video_versions:
-            urls.append(self.video_versions[0].url)
-        elif self.image_versions2 and self.image_versions2.candidates:
-            urls.append(self.image_versions2.candidates[0].url)
-        return [u for u in urls if u]
+        urls = super().media_urls
+        app_info = self.text_post_app_info
+        if app_info and app_info.linked_inline_media:
+            urls.extend(app_info.linked_inline_media.media_urls)
+        if not urls and app_info and app_info.link_preview_attachment:
+            urls.append(app_info.link_preview_attachment.image_url)
+        return [u for u in dict.fromkeys(urls) if u]
 
 
 # ---------------------------------------------------------------------------
@@ -308,10 +344,12 @@ class ThreadsDownloader(BaseModel):
 
     def download_media(self, url: str, filename: str) -> Path | None:
         try:
-            response = requests.get(url, stream=True, timeout=15)
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"}
+            response = requests.get(url, headers=headers, stream=True, timeout=15)
             response.raise_for_status()
 
             filepath = Path(self.output_folder) / filename
+            filepath.parent.mkdir(parents=True, exist_ok=True)
             with Path.open(filepath, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
@@ -368,7 +406,7 @@ class ThreadsDownloader(BaseModel):
 
 
 if __name__ == "__main__":
-    test_url = "https://www.threads.com/@show4653/post/DWYp35uGh4l"
+    test_url = "https://www.threads.com/@lift4life_nickson/post/DXy_VeVmSGK"
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(test_url) as result:
