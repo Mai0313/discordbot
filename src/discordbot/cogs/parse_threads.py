@@ -27,38 +27,77 @@ class ThreadsCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
 
-    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
-        embeds = []
-        main_embed = Embed(
-            description=result.text,
-            url=result.url,
-            color=Color.default(),
-            timestamp=result.taken_at,
+    @staticmethod
+    def _gradient_color(*, index: int, total: int) -> Color:
+        """Greyscale gradient — lightest at index=0 (root), darkest at index=total-1 (leaf).
+
+        Both ends stay inside [0x40, 0xC0] so every layer renders a visible stripe; pure black
+        (#000000) is reserved for "no stripe" on solo posts.
+        """
+        if total <= 1:
+            return Color.default()
+        light = 0xC0
+        dark = 0x40
+        shade = round(light + (dark - light) * index / (total - 1))
+        return Color.from_rgb(r=shade, g=shade, b=shade)
+
+    @staticmethod
+    def _build_post_embed(output: ThreadsOutput, *, color: Color) -> Embed:
+        embed = Embed(
+            description=output.text, url=output.url, color=color, timestamp=output.taken_at
         )
-        if result.author_name:
-            main_embed.set_author(
-                name=result.author_name, url=result.url, icon_url=result.author_icon_url
+        if output.author_name:
+            embed.set_author(
+                name=output.author_name, url=output.url, icon_url=output.author_icon_url
             )
-
         footer_parts = [
-            f"❤️ {result.like_count:,}",
-            f"💬 {result.reply_count:,}",
-            f"🔁 {result.repost_count:,}",
-            f"🔗 {result.quote_count:,}",
-            f"↗️ {result.reshare_count:,}",
+            f"❤️ {output.like_count:,}",
+            f"💬 {output.reply_count:,}",
+            f"🔁 {output.repost_count:,}",
+            f"🔗 {output.quote_count:,}",
+            f"↗️ {output.reshare_count:,}",
         ]
-        main_embed.set_footer(text=" | ".join(footer_parts))
+        embed.set_footer(text=" | ".join(footer_parts))
+        return embed
 
+    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
+        # Discord caps a single message at 10 embeds. We always keep the current post's main
+        # embed; the rest of the budget is split between ancestor context (oldest → newest)
+        # and extra image embeds for the current post. Context wins over extra images when
+        # the chain is deep — that's the whole point of fetching the chain.
+        max_embeds = 10
+        embeds: list[Embed] = []
+        chain_depth = len(result.parents) + 1
+
+        for i, parent in enumerate(result.parents):
+            if len(embeds) >= max_embeds - 1:  # leave one slot for the current post's main embed
+                break
+            parent_embed = self._build_post_embed(
+                output=parent, color=self._gradient_color(index=i, total=chain_depth)
+            )
+            if parent.image_urls:
+                parent_embed.set_image(url=parent.image_urls[0])
+            if parent.video_urls and parent.url:
+                # Parent videos aren't downloaded (see ThreadsDownloader.parse), so surface a
+                # link hint — otherwise a video-only parent shows as an empty embed.
+                hint = f"\n\n🎬 [點此觀看影片]({parent.url})"
+                parent_embed.description = (parent_embed.description or "") + hint
+            embeds.append(parent_embed)
+
+        main_embed = self._build_post_embed(
+            output=result, color=self._gradient_color(index=chain_depth - 1, total=chain_depth)
+        )
         if result.image_urls:
             main_embed.set_image(url=result.image_urls[0])
-            embeds.append(main_embed)
-            # Add subsequent images as their own embeds with the same URL to visually group them
-            for img_url in result.image_urls[1:10]:
-                embed = Embed(url=result.url)
-                embed.set_image(url=img_url)
-                embeds.append(embed)
-        else:
-            embeds.append(main_embed)
+        embeds.append(main_embed)
+
+        # Subsequent images of the current post share the same URL so Discord visually groups them.
+        remaining = max_embeds - len(embeds)
+        for img_url in result.image_urls[1 : 1 + remaining]:
+            extra = Embed(url=result.url)
+            extra.set_image(url=img_url)
+            embeds.append(extra)
+
         return embeds
 
     @commands.Cog.listener()

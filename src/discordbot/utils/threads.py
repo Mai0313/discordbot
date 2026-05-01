@@ -218,11 +218,18 @@ class ThreadItem(BaseModel):
 class ThreadData(BaseModel):
     thread_items: list[ThreadItem] = Field(default_factory=list)
 
-    def find_post(self, post_code: str) -> Post | None:
-        for item in self.thread_items:
+    def find_post_with_parents(self, post_code: str) -> tuple[Post | None, list[Post]]:
+        """Return the matching post and the chronologically-ordered ancestors before it.
+
+        Threads stores an entire reply chain (root → direct parent → target) in a single
+        ``thread_items`` list, oldest first. Everything appearing before the target item is
+        therefore an ancestor of it.
+        """
+        for index, item in enumerate(self.thread_items):
             if item.post and item.post.code == post_code:
-                return item.post
-        return None
+                parents = [t.post for t in self.thread_items[:index] if t.post]
+                return item.post, parents
+        return None, []
 
 
 # ---------------------------------------------------------------------------
@@ -246,10 +253,16 @@ class ThreadsOutput(BaseModel):
     quote_count: int = Field(default=0)
     reshare_count: int = Field(default=0)
     taken_at: datetime | None = Field(default=None, description="Post creation time")
+    parents: list["ThreadsOutput"] = Field(
+        default_factory=list,
+        description="Ancestor posts in the reply chain, ordered oldest (root) → newest (direct parent)",
+    )
 
     def unlink(self) -> None:
         for path in self.video_paths:
             path.unlink(missing_ok=True)
+        for parent in self.parents:
+            parent.unlink()
 
     def __enter__(self):  # noqa: D105
         return self
@@ -304,26 +317,26 @@ class ThreadsDownloader(BaseModel):
                 results.extend(ThreadsDownloader._find_keys(obj=item, key=key))
         return results
 
-    def _parse_post_from_html(self, html: str, post_code: str) -> Post | None:
-        for match in _SJS_PATTERN.finditer(html):
+    def _parse_post_from_html(self, html: str, post_code: str) -> tuple[Post | None, list[Post]]:
+        for match in _SJS_PATTERN.finditer(string=html):
             text = match.group(1)
             if "thread_items" not in text:
                 continue
 
             try:
-                data = json.loads(text)
+                data = json.loads(s=text)
                 raw_lists = self._find_keys(obj=data, key="thread_items")
                 for raw_items in raw_lists:
                     if not isinstance(raw_items, list):
                         continue
                     thread_data = ThreadData(thread_items=raw_items)
-                    post = thread_data.find_post(post_code)
+                    post, parents = thread_data.find_post_with_parents(post_code=post_code)
                     if post:
-                        return post
+                        return post, parents
             except (json.JSONDecodeError, ValueError):
                 continue
 
-        return None
+        return None, []
 
     # -- Media download -------------------------------------------------------
 
@@ -360,29 +373,37 @@ class ThreadsDownloader(BaseModel):
 
     # -- Public API -----------------------------------------------------------
 
-    def extract_post_data(self, url: str) -> Post | None:
+    def extract_post_data(self, url: str) -> tuple[Post | None, list[Post]]:
         threads_url = ThreadsURL(raw_url=url)
-        html = self._fetch_html(threads_url.clean_url)
+        html = self._fetch_html(url=threads_url.clean_url)
         return self._parse_post_from_html(html=html, post_code=threads_url.post_code)
 
-    def parse(self, url: str) -> ThreadsOutput:
-        post = self.extract_post_data(url)
-        if not post:
-            return ThreadsOutput()
+    @staticmethod
+    def _post_url(post: Post) -> str:
+        """Reconstruct a canonical Threads URL from a post's author handle and code."""
+        username = post.author_name
+        code = post.code
+        if username and code:
+            return f"https://www.threads.com/@{username}/post/{code}"
+        return ""
 
+    def _build_output(
+        self, post: Post, url: str, *, download: bool, parents: list[ThreadsOutput] | None = None
+    ) -> ThreadsOutput:
         post_code = post.code or "unknown"
         image_urls: list[str] = []
         video_urls: list[str] = []
         video_paths: list[Path] = []
 
         for i, media_url in enumerate(post.media_urls):
-            ext = self._determine_extension(media_url)
+            ext = self._determine_extension(media_url=media_url)
             if ext == "mp4":
                 video_urls.append(media_url)
-                filename = f"threads_{post_code}_{i}.{ext}"
-                filepath = self.download_media(url=media_url, filename=filename)
-                if filepath:
-                    video_paths.append(filepath)
+                if download:
+                    filename = f"threads_{post_code}_{i}.{ext}"
+                    filepath = self.download_media(url=media_url, filename=filename)
+                    if filepath:
+                        video_paths.append(filepath)
             else:
                 image_urls.append(media_url)
 
@@ -402,12 +423,24 @@ class ThreadsDownloader(BaseModel):
             quote_count=post.quote_count,
             reshare_count=post.reshare_count,
             taken_at=taken_at,
+            parents=parents or [],
         )
+
+    def parse(self, url: str) -> ThreadsOutput:
+        post, parent_posts = self.extract_post_data(url=url)
+        if not post:
+            return ThreadsOutput()
+
+        parents = [
+            self._build_output(post=parent, url=self._post_url(post=parent), download=False)
+            for parent in parent_posts
+        ]
+        return self._build_output(post=post, url=url, download=True, parents=parents)
 
 
 if __name__ == "__main__":
     test_url = "https://www.threads.com/@lift4life_nickson/post/DXy_VeVmSGK"
     # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
-    with downloader.parse(test_url) as result:
+    with downloader.parse(url=test_url) as result:
         console.print(result)

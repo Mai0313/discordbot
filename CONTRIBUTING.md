@@ -154,7 +154,7 @@ uv run pytest -vv
 ### Existing Test Coverage
 
 - **VideoDownloader**: parametrized integration tests with URLs from X, Facebook, TikTok
-- **ThreadsDownloader**: parametrized integration tests with 7 different Threads.net URLs
+- **ThreadsDownloader**: parametrized integration tests with 9 different Threads.net URLs (including a reply with a multi-level parent chain), plus offline unit tests for the reply-chain extraction logic
 
 ## CI/CD
 

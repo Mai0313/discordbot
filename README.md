@@ -39,7 +39,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 
 ### Threads Parsing
 
-Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos.
+Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos. If the link points to a reply, the bot also walks the reply chain and shows the original post plus intermediate replies in the same message, with a grey-scale gradient stripe (light → dark) so each layer is easy to tell apart. Only the post the user pasted has its videos attached; ancestor videos are surfaced as an inline link hint to avoid mixing files across layers.
 
 ### Video Downloading
 

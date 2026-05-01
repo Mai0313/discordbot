@@ -17,7 +17,9 @@ _HELP_CONTENT = {
         "threads": (
             "**Threads Parser**\n"
             "Paste a Threads.net link and I'll automatically "
-            "extract the content with media for you."
+            "extract the content with media for you. "
+            "Reply links also pull in the original post and any intermediate replies "
+            "as context, with a grey gradient stripe so each layer is easy to tell apart."
         ),
         "video": (
             "**Video Download** — `/download_video`\n"
@@ -43,7 +45,12 @@ _HELP_CONTENT = {
             "- 請我生成圖片或影片\n"
             "- 傳送長文 / 網址請我做摘要"
         ),
-        "threads": ("**Threads 解析**\n貼上 Threads.net 的連結，我會自動擷取內容與媒體。"),
+        "threads": (
+            "**Threads 解析**\n"
+            "貼上 Threads.net 的連結，我會自動擷取內容與媒體。"
+            "如果是回覆的連結，我也會把原始貼文與中間每一層回覆一起帶出來當作上下文，"
+            "並用灰階漸層色帶區分層級。"
+        ),
         "video": (
             "**影片下載** — `/download_video`\n"
             "支援從 YouTube、Facebook、Instagram、X、TikTok 等平台下載影片。"
@@ -71,6 +78,8 @@ _HELP_CONTENT = {
         "threads": (
             "**Threads パーサー**\n"
             "Threads.net のリンクを貼ると、自動的にコンテンツとメディアを取得します。"
+            "返信へのリンクの場合は、元の投稿と途中の返信もすべて文脈として展開し、"
+            "グレースケールのグラデーションで各レイヤーを区別します。"
         ),
         "video": (
             "**動画ダウンロード** — `/download_video`\n"
