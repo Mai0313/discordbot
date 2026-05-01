@@ -186,8 +186,7 @@ class ReplyGeneratorCogs(commands.Cog):
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("image/"):
                 content_parts.append(await self._image_to_part(source=attachment))
-            elif "gemini" in DEFAULT_FAST_MODEL or "gemini" in DEFAULT_SLOW_MODEL:
-                # Gemini can handle non-image attachments as files with data URIs.
+            else:
                 # video/*, application/pdf, text/plain, application/json, etc.
                 content_parts.append(await self._file_attachment_to_part(attachment=attachment))
 
