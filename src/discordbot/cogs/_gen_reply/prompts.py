@@ -45,10 +45,10 @@ ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
 
 Classification rules:
-- IMAGE: the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, OR the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
+- IMAGE: the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, OR the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it. Only applies when the requested content is safe and policy-compliant.
 - VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
 - SUMMARY: the user explicitly asks the bot to summarize, recap, or give a summary of the recent chat, conversation, or messages.
-- QA: everything else — normal questions, image analysis, captioning, or discussions about art that do NOT ask the bot to actually generate or edit an image. QA is also the default whenever no other category clearly applies.
+- QA: everything else — normal questions, image analysis, captioning, or discussions about art that do NOT ask the bot to actually generate or edit an image. QA is also the default whenever no other category clearly applies. Additionally, classify as QA if an image or video request contains adult, explicit, sexual, pornographic, violent, hateful, or otherwise policy-violating content, so the bot can respond with an appropriate refusal.
 
 Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
 """
