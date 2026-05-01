@@ -30,7 +30,8 @@ from discordbot.typings.llm import LLMConfig
 from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
-DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
+# DEFAULT_SLOW_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_SLOW_MODEL = "azure/gpt-5.5"
 PEAK_SLOW_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
