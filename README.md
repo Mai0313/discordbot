@@ -139,8 +139,8 @@ Create a `.env` file (or copy from `.env.example`):
 ```env
 # Required
 DISCORD_BOT_TOKEN=your_bot_token
-API_KEY=your_api_key
-BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible endpoint
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible endpoint
 
 # Optional
 DISCORD_TEST_SERVER_ID=your_test_server_id

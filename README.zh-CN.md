@@ -139,8 +139,8 @@ uv run python scripts/artale_data.py
 ```env
 # 必需
 DISCORD_BOT_TOKEN=你的机器人token
-API_KEY=你的api密钥
-BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 兼容端点
+OPENAI_API_KEY=你的api密钥
+OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 兼容端点
 
 # 可选
 DISCORD_TEST_SERVER_ID=你的测试服务器id

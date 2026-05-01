@@ -60,7 +60,7 @@ src/discordbot/
 ├── typings/                 # Pydantic configuration models
 │   ├── config.py            # DiscordConfig
 │   ├── database.py          # SQLite / PostgreSQL / Redis configs
-│   └── llm.py               # LLM endpoint config (BASE_URL / API_KEY)
+│   └── llm.py               # LLM endpoint config (OPENAI_BASE_URL / OPENAI_API_KEY)
 └── utils/
     ├── downloader.py        # yt-dlp video downloader wrapper
     └── threads.py           # Threads.net content scraper
@@ -97,7 +97,7 @@ data/
 - **Async**: Built on nextcord with async/await patterns throughout.
 - **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig`, `LLMConfig`, `DatabaseConfig`).
 - **Logging**: `setup_logging()` in `discordbot/__init__.py` configures `logfire` (local console only, `send_to_logfire=False`) and tees stdout to `./data/logs/<timestamp>.log` for each run. `nextcord.state` logs are forwarded into logfire too.
-- **LLM client**: A single `AsyncOpenAI` client (`base_url=BASE_URL`, `api_key=API_KEY`) issues all chat / image / video calls. The endpoint is OpenAI-compatible — typically a Litellm proxy that fronts Gemini / Claude / OpenAI / etc.
+- **LLM client**: A single `AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) issues all chat / image / video calls. The endpoint is OpenAI-compatible — typically a Litellm proxy that fronts Gemini / Claude / OpenAI / etc.
 - **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) via `client.responses.create` and dispatches to the matching handler. All chat / route / caption calls use the **OpenAI Responses API** (not Chat Completions); the slow reply path enables model-specific tools (Gemini → `googleSearch` + `urlContext`; Claude → `web_search_*` + `web_fetch_*`; others → OpenAI `web_search`) and streams the answer event-by-event (`response.output_text.delta`). Each response ends with a Discord-quoted footer (`> **{model}** ⬆ in ⬇ out $cost`) where the cost comes from `litellm.model_cost`. Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error).
 - **Trigger rule**: In DMs the bot always responds; in guilds it only responds when the message text contains `<@bot_id>` (a reply-notification alone is ignored, so users replying to a Threads embed or a download result won't accidentally summon the bot).
 - **Attachment ingestion**: `_get_attachments` routes each attachment by `content_type`: `image/*` → PIL resize + JPEG re-encode → `input_image`; everything else (`video/*`, `application/pdf`, `text/plain`, etc.) → raw bytes → base64 data URI → `input_file`. Stickers and embed images/thumbnails (preferring `media.discordapp.net` proxy URLs) always go through the image path.
