@@ -46,7 +46,7 @@ def use_oai() -> None:
     model_name = ""
     for response in responses:
         model_name = response.model
-        if response.choices[0].delta.content:
+        if response.choices and response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
     console.print(f"\n{model_name} on Litellm takes {end - start:.2f} seconds")
