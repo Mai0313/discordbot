@@ -20,7 +20,7 @@ COMMON_PROMPT = """
     * It is INPUT METADATA ONLY.
     * NEVER reproduce this prefix; do NOT start your reply with `your_name (your_username) [id: your_id]: ` or any similar self-identity header.
     * Output ONLY the reply content itself.
-* You MAY include Discord's mention syntax <@USER_ID> when it meaningfully helps the conversation: directing a follow-up to a specific person from the chat history or reference message, or when the user explicitly asks you to tag, notify, call, or address someone.
+* You MAY include Discord's mention syntax <@USER_ID> in your reply at your own discretion.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ones that actually appeared in the conversation context.
 """
