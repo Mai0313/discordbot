@@ -1,3 +1,8 @@
+"""Constants for MapleStory cog.
+
+This module contains string templates used for formatting Discord embeds.
+"""
+
 MONSTER_ATTR_TEMPLATE = """\
 **等級**: {level}
 **HP**: {hp:,}

@@ -13,6 +13,11 @@ URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\
 
 class ThreadsCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        """Initializes the ThreadsCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
         self.output_folder = Path("./data/threads")
         self.output_folder.mkdir(parents=True, exist_ok=True)
@@ -21,6 +26,7 @@ class ThreadsCogs(commands.Cog):
     async def _handle_reaction(
         self, message: Message, emoji: str, previous_emoji: str | None = None
     ) -> None:
+        """Handles adding and removing reactions on a message."""
         if previous_emoji and self.bot.user:
             with contextlib.suppress(Exception):
                 await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
@@ -43,6 +49,7 @@ class ThreadsCogs(commands.Cog):
 
     @staticmethod
     def _build_post_embed(output: ThreadsOutput, *, color: Color) -> Embed:
+        """Builds an embed for a single Threads post."""
         embed = Embed(
             description=output.text, url=output.url, color=color, timestamp=output.taken_at
         )
@@ -61,6 +68,7 @@ class ThreadsCogs(commands.Cog):
         return embed
 
     def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
+        """Builds a list of embeds for a Threads post and its parents."""
         # Discord caps a single message at 10 embeds. We always keep the current post's main
         # embed; the rest of the budget is split between ancestor context (oldest → newest)
         # and extra image embeds for the current post. Context wins over extra images when
@@ -102,6 +110,11 @@ class ThreadsCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
+        """Listens for messages and parses Threads links.
+
+        Args:
+            message: The message that was sent.
+        """
         if message.author.bot:
             return
 
@@ -158,4 +171,9 @@ class ThreadsCogs(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Adds the ThreadsCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(ThreadsCogs(bot), override=True)

@@ -26,26 +26,36 @@ class MapleStoryCogs(commands.Cog):
     """楓之谷 Artale 資料查詢"""
 
     def __init__(self, bot: commands.Bot, data_dir: Path = DEFAULT_DATA_DIR):
+        """Initializes the MapleStoryCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+            data_dir: The directory where game data is stored.
+        """
         self.bot = bot
         self.data_dir = data_dir
         self.service = MapleStoryService.from_directory(data_dir)
 
     def _ensure_data(self) -> bool:
+        """Ensures that game data is loaded."""
         if self.service.has_data():
             return True
         self.service.reload(self.data_dir)
         return self.service.has_data()
 
     def _translate(self, category: str, name: str) -> str:
+        """Translates a game string based on category and name."""
         return self.service.translate(category=category, name=name)
 
     async def _send_error(self, interaction: Interaction) -> None:
+        """Sends a generic error message to the user."""
         embed = Embed(
             title=":x: 錯誤", description="無法載入資料，請聯絡管理員。", color=_ERROR_COLOR
         )
         await interaction.followup.send(embed=embed)
 
     async def _send_not_found(self, interaction: Interaction, kind: str, query: str) -> None:
+        """Sends a 'not found' message to the user."""
         embed = Embed(
             title=":mag: 搜尋結果",
             description=f"找不到名稱包含「{query}」的{kind}。",
@@ -78,6 +88,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for monster information in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the monster to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -128,6 +144,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for equipment in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the equipment to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -182,6 +204,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for scrolls in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the scroll to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -236,6 +264,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for NPCs in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the NPC to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -285,6 +319,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for quests in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the quest to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -337,6 +377,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for maps in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the map to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -391,6 +437,12 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
+        """Searches for item drop sources in MapleStory.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            name: The name of the item to search for.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -438,6 +490,11 @@ class MapleStoryCogs(commands.Cog):
         },
     )
     async def maple_stats(self, interaction: Interaction) -> None:
+        """Gets MapleStory database statistics.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
         await interaction.response.defer()
         if not self._ensure_data():
             return await self._send_error(interaction)
@@ -449,4 +506,9 @@ class MapleStoryCogs(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Adds the MapleStoryCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(MapleStoryCogs(bot))

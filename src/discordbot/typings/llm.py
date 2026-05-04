@@ -6,6 +6,13 @@ dotenv.load_dotenv()
 
 
 class LLMConfig(BaseSettings):
+    """Configuration settings for LLM integration, reading from environment variables.
+
+    Attributes:
+        base_url: The base URL for the OpenAI API or compatible endpoint.
+        api_key: The API key for authentication.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     base_url: str = Field(
         ...,

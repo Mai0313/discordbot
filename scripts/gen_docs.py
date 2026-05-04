@@ -159,6 +159,7 @@ class DocsGenerator(BaseModel):
     )
 
     def _get_all_files(self, suffix: str) -> list[Path]:
+        """Gets all files with the specified suffixes recursively."""
         targets = [s.strip() for s in suffix.split(",")]
         all_files: list[Path] = []
         for target in targets:
@@ -169,11 +170,7 @@ class DocsGenerator(BaseModel):
     @computed_field
     @cached_property
     def source_files(self) -> list[Path]:
-        """Computed property that returns the source path as a Path object.
-
-        Returns:
-            Path: The source path.
-        """
+        """The list of resolved source files to process."""
         if self.source_path.is_dir():
             if self.output_path.exists():
                 shutil.rmtree(self.output_path.absolute())
@@ -193,6 +190,7 @@ class DocsGenerator(BaseModel):
         return all_files
 
     async def _prepare_docs_path(self, file: Path) -> Path:
+        """Prepares the output directory for the given file and returns the output path."""
         # 因為多層結構的資料夾 我們希望他可以依然放在對應的資料夾內
         filename = file.with_suffix(".md").name
         if file.parent.as_posix() != ".":
@@ -205,6 +203,7 @@ class DocsGenerator(BaseModel):
         return docs_path
 
     async def _gen_python_docs(self, file: Path) -> str:
+        """Generates markdown documentation for a Python file."""
         docs_path = await self._prepare_docs_path(file=file)
         if self.mode == "file":
             note_content = f"::: {file.with_suffix('').as_posix().replace('/', '.')}\n"
@@ -227,6 +226,7 @@ class DocsGenerator(BaseModel):
         return docs_path.as_posix()
 
     async def _gen_notebook_docs(self, file: Path) -> str:
+        """Generates markdown documentation for a Jupyter notebook."""
         docs_path = await self._prepare_docs_path(file=file)
         # 讀取 notebook 檔案
         async with await anyio.open_file(file, encoding="utf-8") as f:
@@ -290,6 +290,7 @@ class DocsGenerator(BaseModel):
         return await asyncio.gather(*tasks)
 
     async def gen_docs(self) -> None:
+        """Generates per-module markdown pages from the source files."""
         with Progress() as progress:
             total_files = len(self.source_files)
             task = progress.add_task(f"[green]Generating {total_files}...", total=total_files)

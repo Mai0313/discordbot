@@ -22,6 +22,14 @@ class MessageLogger(BaseModel):
 
     @staticmethod
     def sanitize_text(s: str | None) -> str:
+        """Sanitizes text by removing control characters (null bytes).
+
+        Args:
+            s: The string to sanitize.
+
+        Returns:
+            The sanitized string, or an empty string if input was None.
+        """
         if s is None:
             return ""
         return CONTROL_CHARS_RE.sub("", s)
@@ -29,6 +37,7 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def table_name(self) -> str:
+        """The database table name for this message."""
         if isinstance(self.message.channel, DMChannel):
             return f"DM_{self.message.author.id}"
         return f"channel_{self.message.channel.id}"
@@ -36,6 +45,7 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def channel_name_or_author_name(self) -> str:
+        """The channel name or author name for DM."""
         if isinstance(self.message.channel, DMChannel):
             author_name = self.message.author.display_name
             return f"DM_{author_name}_{self.message.author.id}"
@@ -44,23 +54,27 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def channel_id_or_author_id(self) -> str:
+        """The channel ID or author ID for DM."""
         if isinstance(self.message.channel, DMChannel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
     async def _save_attachments(self) -> list[str]:
+        """Extracts attachment URLs from the message."""
         attachment_urls = []
         for attachment in self.message.attachments:
             attachment_urls.append(attachment.url)
         return attachment_urls
 
     async def _save_stickers(self) -> list[str]:
+        """Extracts sticker URLs from the message."""
         sticker_urls = []
         for sticker in self.message.stickers:
             sticker_urls.append(sticker.url)
         return sticker_urls
 
     async def _save_messages(self) -> None:
+        """Saves the message data to the SQLite database."""
         attachment_paths = await self._save_attachments()
         sticker_paths = await self._save_stickers()
         data_dict = {
@@ -85,6 +99,7 @@ class MessageLogger(BaseModel):
         )
 
     async def log(self) -> None:
+        """Logs the message if it's not from a bot."""
         try:
             if self.message.author.bot:
                 return
@@ -95,18 +110,38 @@ class MessageLogger(BaseModel):
 
 class LogMessageCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
+        """Initializes the LogMessageCog instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
+        """Listens for messages and logs them asynchronously.
+
+        Args:
+            message: The message that was sent.
+        """
         if message.author.bot:
             return
         asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
 
     @commands.Cog.listener()
     async def on_command_completion(self, context: commands.Context) -> None:
+        """Listens for command completions and logs the message that triggered it.
+
+        Args:
+            context: The context of the command.
+        """
         asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Adds the LogMessageCog to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(LogMessageCog(bot))

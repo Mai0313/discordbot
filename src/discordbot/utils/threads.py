@@ -26,6 +26,7 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def clean_url(self) -> str:
+        """The cleaned and normalised URL."""
         parsed = urlparse(self.raw_url)
         netloc = parsed.netloc
         if netloc in ("www.threads.com", "threads.com"):
@@ -35,6 +36,7 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def post_code(self) -> str:
+        """The post short code extracted from the URL."""
         parsed = urlparse(self.raw_url)
         path_parts = parsed.path.strip("/").split("/")
         return path_parts[-1] if path_parts else ""
@@ -90,6 +92,7 @@ class MediaContainer(BaseModel):
 
     @property
     def media_urls(self) -> list[str]:
+        """The list of media URLs extracted from the container."""
         urls: list[str] = []
         if self.carousel_media:
             for item in self.carousel_media:
@@ -157,6 +160,7 @@ class Post(MediaContainer):
 
     @property
     def caption_text(self) -> str:
+        """The extracted caption text or fallback link preview title."""
         if self.text_post_app_info and self.text_post_app_info.text_fragments:
             fragments_text = "".join(
                 f.plaintext for f in self.text_post_app_info.text_fragments.fragments
@@ -173,30 +177,37 @@ class Post(MediaContainer):
 
     @property
     def author_name(self) -> str:
+        """The username of the post author."""
         return self.user.username if self.user else ""
 
     @property
     def author_icon_url(self) -> str:
+        """The profile picture URL of the post author."""
         return self.user.profile_pic_url if self.user else ""
 
     @property
     def reply_count(self) -> int:
+        """The number of direct replies to the post."""
         return (self.text_post_app_info.direct_reply_count or 0) if self.text_post_app_info else 0
 
     @property
     def repost_count(self) -> int:
+        """The number of reposts."""
         return (self.text_post_app_info.repost_count or 0) if self.text_post_app_info else 0
 
     @property
     def quote_count(self) -> int:
+        """The number of quote posts."""
         return (self.text_post_app_info.quote_count or 0) if self.text_post_app_info else 0
 
     @property
     def reshare_count(self) -> int:
+        """The total reshare count."""
         return (self.text_post_app_info.reshare_count or 0) if self.text_post_app_info else 0
 
     @property
     def media_urls(self) -> list[str]:
+        """The list of media URLs, including linked inline media and link preview images."""
         urls = super().media_urls
         app_info = self.text_post_app_info
         if app_info and app_info.linked_inline_media:
@@ -219,11 +230,19 @@ class ThreadData(BaseModel):
     thread_items: list[ThreadItem] = Field(default_factory=list)
 
     def find_post_with_parents(self, post_code: str) -> tuple[Post | None, list[Post]]:
-        """Return the matching post and the chronologically-ordered ancestors before it.
+        """Returns the matching post and the chronologically-ordered ancestors before it.
 
         Threads stores an entire reply chain (root → direct parent → target) in a single
-        ``thread_items`` list, oldest first. Everything appearing before the target item is
+        `thread_items` list, oldest first. Everything appearing before the target item is
         therefore an ancestor of it.
+
+        Args:
+            post_code: The short code of the target post.
+
+        Returns:
+            A tuple containing:
+                - The matching Post instance if found, else None.
+                - A list of ancestor Post instances, ordered oldest to newest.
         """
         for index, item in enumerate(self.thread_items):
             if item.post and item.post.code == post_code:
@@ -259,6 +278,7 @@ class ThreadsOutput(BaseModel):
     )
 
     def unlink(self) -> None:
+        """Deletes downloaded video files for this post and its parents."""
         for path in self.video_paths:
             path.unlink(missing_ok=True)
         for parent in self.parents:
@@ -293,6 +313,7 @@ class ThreadsDownloader(BaseModel):
     # -- HTTP -----------------------------------------------------------------
 
     def _fetch_html(self, url: str) -> str:
+        """Fetches the HTML content of the given URL."""
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
         try:
             response = requests.get(url, headers=headers, timeout=15)
@@ -305,6 +326,7 @@ class ThreadsDownloader(BaseModel):
 
     @staticmethod
     def _find_keys(obj: dict | list | str | float | None, key: str) -> list:
+        """Recursively searches for all occurrences of a key in a JSON-like object."""
         results: list = []
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -318,6 +340,7 @@ class ThreadsDownloader(BaseModel):
         return results
 
     def _parse_post_from_html(self, html: str, post_code: str) -> tuple[Post | None, list[Post]]:
+        """Parses the post and its parents from the SJS script tags in the HTML."""
         for match in _SJS_PATTERN.finditer(string=html):
             text = match.group(1)
             if "thread_items" not in text:
@@ -342,6 +365,7 @@ class ThreadsDownloader(BaseModel):
 
     @staticmethod
     def _determine_extension(media_url: str) -> str:
+        """Determines the file extension from a media URL."""
         path_lower = urlparse(media_url).path.lower()
         if ".jpg" in path_lower or ".jpeg" in path_lower:
             return "jpg"
@@ -356,6 +380,18 @@ class ThreadsDownloader(BaseModel):
         return "mp4"
 
     def download_media(self, url: str, filename: str) -> Path | None:
+        """Downloads media from the given URL to the output folder.
+
+        Args:
+            url: The URL of the media to download.
+            filename: The name to save the file as.
+
+        Returns:
+            The Path to the downloaded file.
+
+        Raises:
+            RuntimeError: If the download fails.
+        """
         try:
             headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"}
             response = requests.get(url, headers=headers, stream=True, timeout=15)
@@ -374,13 +410,23 @@ class ThreadsDownloader(BaseModel):
     # -- Public API -----------------------------------------------------------
 
     def extract_post_data(self, url: str) -> tuple[Post | None, list[Post]]:
+        """Extracts post data and its parents from a Threads URL.
+
+        Args:
+            url: The raw Threads post URL.
+
+        Returns:
+            A tuple containing:
+                - The extracted Post instance if found, else None.
+                - A list of ancestor Post instances.
+        """
         threads_url = ThreadsURL(raw_url=url)
         html = self._fetch_html(url=threads_url.clean_url)
         return self._parse_post_from_html(html=html, post_code=threads_url.post_code)
 
     @staticmethod
     def _post_url(post: Post) -> str:
-        """Reconstruct a canonical Threads URL from a post's author handle and code."""
+        """Reconstructs a canonical Threads URL from a post's author handle and code."""
         username = post.author_name
         code = post.code
         if username and code:
@@ -390,6 +436,7 @@ class ThreadsDownloader(BaseModel):
     def _build_output(
         self, post: Post, url: str, *, download: bool, parents: list[ThreadsOutput] | None = None
     ) -> ThreadsOutput:
+        """Builds a ThreadsOutput object from a Post object."""
         post_code = post.code or "unknown"
         image_urls: list[str] = []
         video_urls: list[str] = []
@@ -427,6 +474,14 @@ class ThreadsDownloader(BaseModel):
         )
 
     def parse(self, url: str) -> ThreadsOutput:
+        """Parses a Threads post URL and returns the extracted data.
+
+        Args:
+            url: The Threads post URL.
+
+        Returns:
+            A ThreadsOutput instance containing the extracted data.
+        """
         post, parent_posts = self.extract_post_data(url=url)
         if not post:
             return ThreadsOutput()

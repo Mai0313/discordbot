@@ -1,3 +1,9 @@
+"""Service for interacting with MapleStory data.
+
+This module provides the `MapleStoryService` class which handles loading,
+caching, and searching MapleStory data from JSON files.
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +21,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
+    """Loads a JSON file and validates it against a Pydantic model."""
     try:
         with path.open(encoding="utf-8") as f:
             raw = json.load(f)
@@ -27,6 +34,7 @@ def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
 
 
 def _load_translations(data_dir: Path) -> dict[str, dict[str, str]]:
+    """Loads translations from translations.json."""
     path = data_dir / "translations.json"
     try:
         with path.open(encoding="utf-8") as f:
@@ -39,6 +47,7 @@ class MapleStoryService:
     """Encapsulates all Artale data lookups with caching."""
 
     def __init__(self) -> None:
+        """Initializes the MapleStoryService with empty data and caches."""
         self._monsters: list[Monster] = []
         self._equipment: list[Equipment] = []
         self._scrolls: list[Scroll] = []
@@ -60,6 +69,14 @@ class MapleStoryService:
 
     @classmethod
     def from_directory(cls, data_dir: Path = DEFAULT_DATA_DIR) -> MapleStoryService:
+        """Creates a service instance and loads data from a directory.
+
+        Args:
+            data_dir: The directory containing the JSON data files.
+
+        Returns:
+            An initialized MapleStoryService instance.
+        """
         svc = cls()
         svc._load_all(data_dir)
         return svc
@@ -67,6 +84,14 @@ class MapleStoryService:
     # Keep backwards compat for existing callers
     @classmethod
     def from_file(cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json") -> MapleStoryService:
+        """Creates a service instance, inferring the directory from a file path.
+
+        Args:
+            file_path: Path to a data file (e.g., monsters.json).
+
+        Returns:
+            An initialized MapleStoryService instance.
+        """
         return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
@@ -89,52 +114,86 @@ class MapleStoryService:
         self._stats = None
 
     def reload(self, data_dir: Path = DEFAULT_DATA_DIR) -> None:
+        """Reloads data from the specified directory.
+
+        Args:
+            data_dir: The directory containing the JSON data files.
+        """
         self._load_all(data_dir)
 
     def has_data(self) -> bool:
+        """Checks if the service has loaded data.
+
+        Returns:
+            True if data is loaded, False otherwise.
+        """
         return bool(self._monsters)
 
     def translate(self, category: str, name: str) -> str:
-        """Translate an English name to Chinese using the translations dict."""
+        """Translates an English name to Chinese using the translations dictionary.
+
+        Args:
+            category: The category of the item (e.g., 'monsters', 'equipment').
+            name: The English name to translate.
+
+        Returns:
+            The translated Chinese name, or the original name if not found.
+        """
         return self._translations.get(category, {}).get(name, name)
 
     # ── Properties ──────────────────────────────────────────────────
 
     @property
     def monsters(self) -> list[Monster]:
+        """The list of loaded monsters."""
         return self._monsters
 
     @property
     def equipment(self) -> list[Equipment]:
+        """The list of loaded equipment."""
         return self._equipment
 
     @property
     def scrolls(self) -> list[Scroll]:
+        """The list of loaded scrolls."""
         return self._scrolls
 
     @property
     def useable(self) -> list[Useable]:
+        """The list of loaded useable items."""
         return self._useable
 
     @property
     def npcs(self) -> list[NPC]:
+        """The list of loaded NPCs."""
         return self._npcs
 
     @property
     def quests(self) -> list[Quest]:
+        """The list of loaded quests."""
         return self._quests
 
     @property
     def maps(self) -> list[MapEntry]:
+        """The list of loaded maps."""
         return self._maps
 
     @property
     def misc(self) -> list[MiscItem]:
+        """The list of loaded misc items."""
         return self._misc
 
     # ── Monster searches ────────────────────────────────────────────
 
     def search_monsters_by_name(self, query: str) -> list[Monster]:
+        """Searches for monsters by name (English or Chinese).
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching Monster objects.
+        """
         key = query.lower()
         if key not in self._monster_cache:
             self._monster_cache[key] = [
@@ -143,6 +202,14 @@ class MapleStoryService:
         return list(self._monster_cache[key])
 
     def get_monster(self, name: str) -> Monster | None:
+        """Gets a specific monster by exact name (English or Chinese).
+
+        Args:
+            name: The exact name of the monster.
+
+        Returns:
+            The Monster object if found, None otherwise.
+        """
         name_lower = name.lower()
         for m in self._monsters:
             if m.name.lower() == name_lower or m.name_zh.lower() == name_lower:
@@ -150,12 +217,28 @@ class MapleStoryService:
         return None
 
     def get_monsters_by_drop(self, item_name: str) -> list[Monster]:
+        """Finds monsters that drop a specific item.
+
+        Args:
+            item_name: The exact name of the item.
+
+        Returns:
+            A list of Monster objects that drop the item.
+        """
         q = item_name.lower()
         return [m for m in self._monsters if any(d.name.lower() == q for d in m.drops.all_items)]
 
     # ── Equipment searches ──────────────────────────────────────────
 
     def search_equipment_by_name(self, query: str) -> list[Equipment]:
+        """Searches for equipment by name.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching Equipment objects.
+        """
         key = query.lower()
         if key not in self._equip_cache:
             self._equip_cache[key] = [
@@ -164,6 +247,14 @@ class MapleStoryService:
         return list(self._equip_cache[key])
 
     def get_equipment(self, name: str) -> Equipment | None:
+        """Gets a specific equipment item by exact name.
+
+        Args:
+            name: The exact name of the equipment.
+
+        Returns:
+            The Equipment object if found, None otherwise.
+        """
         name_lower = name.lower()
         for e in self._equipment:
             if e.name.lower() == name_lower or e.name_zh.lower() == name_lower:
@@ -173,6 +264,14 @@ class MapleStoryService:
     # ── Scroll searches ─────────────────────────────────────────────
 
     def search_scrolls_by_name(self, query: str) -> list[Scroll]:
+        """Searches for scrolls by name.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching Scroll objects.
+        """
         key = query.lower()
         if key not in self._scroll_cache:
             self._scroll_cache[key] = [
@@ -183,6 +282,14 @@ class MapleStoryService:
     # ── NPC searches ────────────────────────────────────────────────
 
     def search_npcs_by_name(self, query: str) -> list[NPC]:
+        """Searches for NPCs by name.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching NPC objects.
+        """
         key = query.lower()
         if key not in self._npc_cache:
             self._npc_cache[key] = [
@@ -193,6 +300,14 @@ class MapleStoryService:
     # ── Quest searches ──────────────────────────────────────────────
 
     def search_quests_by_name(self, query: str) -> list[Quest]:
+        """Searches for quests by name.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching Quest objects.
+        """
         key = query.lower()
         if key not in self._quest_cache:
             self._quest_cache[key] = [
@@ -203,6 +318,14 @@ class MapleStoryService:
     # ── Map searches ────────────────────────────────────────────────
 
     def search_maps_by_name(self, query: str) -> list[MapEntry]:
+        """Searches for maps by name.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A list of matching MapEntry objects.
+        """
         key = query.lower()
         if key not in self._map_cache:
             self._map_cache[key] = [
@@ -213,7 +336,14 @@ class MapleStoryService:
     # ── Cross-type item search ──────────────────────────────────────
 
     def search_items_by_name(self, query: str) -> list[str]:
-        """Search all drop item names across monsters."""
+        """Searches all drop item names across monsters.
+
+        Args:
+            query: The search query string.
+
+        Returns:
+            A sorted list of matching item names.
+        """
         key = query.lower()
         if key not in self._item_cache:
             items_found: set[str] = set()
@@ -231,7 +361,14 @@ class MapleStoryService:
         return list(self._item_cache[key])
 
     def get_item_type(self, item_name: str) -> str:
-        """Determine an item's category from monster drops."""
+        """Determines an item's category from monster drops.
+
+        Args:
+            item_name: The name of the item.
+
+        Returns:
+            A string representing the category ('裝備', '捲軸', '消耗品', '其它', or '未知').
+        """
         for monster in self._monsters:
             for drop in monster.drops.equipment_items:
                 if drop.name == item_name:
@@ -250,6 +387,11 @@ class MapleStoryService:
     # ── Stats ───────────────────────────────────────────────────────
 
     def get_level_distribution(self) -> dict[str, int]:
+        """Gets the distribution of monsters by level range.
+
+        Returns:
+            A dictionary mapping level ranges (e.g., '0-9') to monster counts.
+        """
         dist: dict[str, int] = {}
         for m in self._monsters:
             start = (m.level // 10) * 10
@@ -258,6 +400,11 @@ class MapleStoryService:
         return dist
 
     def get_popular_items(self) -> list[str]:
+        """Gets a list of item names sorted by drop popularity.
+
+        Returns:
+            A list of item names, sorted by the number of monsters that drop them.
+        """
         counts: dict[str, int] = {}
         for m in self._monsters:
             for drop in m.drops.all_items:
@@ -265,6 +412,11 @@ class MapleStoryService:
         return [name for name, _ in sorted(counts.items(), key=lambda x: x[1], reverse=True)]
 
     def get_stats(self) -> MapleStats:
+        """Computes and returns database statistics.
+
+        Returns:
+            A MapleStats object with statistics summary.
+        """
         if self._stats is None:
             self._stats = MapleStats(
                 total_monsters=len(self._monsters),

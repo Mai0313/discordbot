@@ -18,7 +18,7 @@ class DownloadResult(BaseModel):
     filename: Path
 
     def unlink(self) -> None:
-        """Unlink (delete) the downloaded file."""
+        """Deletes the downloaded file."""
         self.filename.unlink(missing_ok=True)
 
     def __enter__(self):
@@ -45,6 +45,7 @@ class VideoDownloader(BaseModel):
     @computed_field
     @cached_property
     def quality_formats(self) -> dict[str, str]:
+        """The map of quality presets to yt-dlp format strings."""
         quality_formats = {
             # Prefer separate video+audio with safe fallbacks to muxed or video-only streams
             "best": "bestvideo*+bestaudio/best/bestvideo*",
@@ -55,13 +56,14 @@ class VideoDownloader(BaseModel):
         return quality_formats
 
     def _default_http_headers(self) -> dict[str, str]:
+        """Returns default HTTP headers for requests."""
         return {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
         }
 
     def _resolve_facebook_share_url(self, url: str) -> str:
-        """Follow redirects for facebook.com/share/... links to obtain the real target."""
+        """Follows redirects for facebook.com/share/... links to obtain the real target."""
         headers = self._default_http_headers()
         with Session() as session:
             for method_name in ("head", "get"):
@@ -84,7 +86,7 @@ class VideoDownloader(BaseModel):
         return url
 
     def _convert_facebook_url(self, url: str) -> str:
-        """Convert Facebook watch URL to reel URL format.
+        """Converts Facebook watch URL to reel URL format.
 
         Example:
             https://www.facebook.com/watch?v=828357636228730
@@ -112,7 +114,16 @@ class VideoDownloader(BaseModel):
         return url
 
     def get_params(self, quality: str, dry_run: bool, url: str | None = None) -> dict[str, Any]:
+        """Returns the yt-dlp configuration parameters.
 
+        Args:
+            quality: The requested quality preset ('best', 'high', 'medium', 'low').
+            dry_run: If True, enables simulation mode.
+            url: Optional URL to determine site-specific headers (e.g., bilibili).
+
+        Returns:
+            A dictionary of yt-dlp parameters.
+        """
         output_path = Path(self.output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -153,6 +164,16 @@ class VideoDownloader(BaseModel):
         return params
 
     def download(self, url: str, quality: str = "best", dry_run: bool = False) -> DownloadResult:
+        """Downloads a video from the given URL.
+
+        Args:
+            url: The URL of the video to download.
+            quality: The requested quality preset.
+            dry_run: If True, simulates the download.
+
+        Returns:
+            A DownloadResult instance containing the title and filename.
+        """
         # Convert Facebook watch URLs to reel format
         url = self._convert_facebook_url(url)
 

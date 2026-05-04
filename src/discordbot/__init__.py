@@ -11,11 +11,15 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class _TeeStream:
+    """A stream that writes to both a console and a file, stripping ANSI codes for the file."""
+
     def __init__(self, console: TextIO, file: TextIO) -> None:
+        """Initialises the _TeeStream with console and file streams."""
         self._console = console
         self._file = file
 
     def write(self, data: str) -> int:
+        """Writes data to both streams."""
         self._console.write(data)
         self._file.write(_ANSI_ESCAPE.sub(repl="", string=data))
         self._console.flush()
@@ -23,14 +27,17 @@ class _TeeStream:
         return len(data)
 
     def flush(self) -> None:
+        """Flushes both streams."""
         self._console.flush()
         self._file.flush()
 
     def isatty(self) -> bool:
+        """Returns True if the console stream is a TTY."""
         return self._console.isatty()
 
 
 def setup_logging() -> None:
+    """Configures logging with logfire, teeing output to a file."""
     started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_path = Path(f"./data/logs/{started_at}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)

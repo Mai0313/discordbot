@@ -26,6 +26,7 @@ config = LLMConfig()
 
 
 def use_oai() -> None:
+    """Tests Gemini model via OpenAI SDK with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     model = "gemini-3.1-pro-preview"
     tools: list[ChatCompletionToolUnionParam] = get_tools(model=model)
@@ -53,6 +54,7 @@ def use_oai() -> None:
 
 
 def use_oai_responses() -> None:
+    """Tests Gemini model via OpenAI Responses API with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     model = "gemini-3.1-pro-preview"
     tools = get_tools(model=model)
@@ -82,6 +84,7 @@ def use_oai_responses() -> None:
 
 
 def use_gemini() -> None:
+    """Tests Gemini model via Google GenAI SDK with streaming and tools."""
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
@@ -117,6 +120,7 @@ def use_gemini() -> None:
 
 
 def use_anthropic() -> None:
+    """Tests Anthropic model via Anthropic SDK with streaming and tools."""
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     model = "claude-haiku-4-5"
     tools = get_tools(model=model)

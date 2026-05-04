@@ -7,6 +7,11 @@ from discordbot.utils.downloader import VideoDownloader
 
 class VideoCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        """Initializes the VideoCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
 
     @nextcord.slash_command(
@@ -37,6 +42,13 @@ class VideoCogs(commands.Cog):
             },
         ),
     ) -> None:
+        """Downloads a video from various platforms and sends it back.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            url: The URL of the video to download.
+            quality: The desired video quality.
+        """
         # 避免互動超時
         await interaction.response.defer()
 
@@ -87,4 +99,9 @@ class VideoCogs(commands.Cog):
 
 # 註冊 Cog
 async def setup(bot: commands.Bot) -> None:
+    """Adds the VideoCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(VideoCogs(bot), override=True)

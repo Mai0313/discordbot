@@ -1,9 +1,17 @@
+"""Pydantic models for MapleStory data.
+
+This module defines the data structures used for monsters, equipment, NPCs,
+quests, maps, etc., loaded from JSON data files.
+"""
+
 from __future__ import annotations
 
 from pydantic import Field, BaseModel, ConfigDict
 
 
 class _Base(BaseModel):
+    """Base model for MapleStory data, ignoring extra fields."""
+
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
@@ -11,37 +19,51 @@ class _Base(BaseModel):
 
 
 class RegionMaps(_Base):
+    """Represents maps within a region."""
+
     region: str
     maps: list[str] = []
 
 
 class AcquisitionMonster(_Base):
+    """Represents a monster that an item can be acquired from."""
+
     name: str
     level: int = 0
 
 
 class AcquisitionNPC(_Base):
+    """Represents an NPC that an item can be acquired from."""
+
     name: str
     price: int = 0
 
 
 class AcquisitionQuest(_Base):
+    """Represents a quest that an item can be acquired from."""
+
     name: str
     level: int = 0
 
 
 class CraftingMaterial(_Base):
+    """Represents a material required for crafting."""
+
     item: str = ""
     quantity: int = 0
 
 
 class CraftingRecipe(_Base):
+    """Represents a crafting recipe."""
+
     npc: str = ""
     output: str = ""
     materials: list[CraftingMaterial] = []
 
 
 class Acquisition(_Base):
+    """Represents all ways an item can be acquired."""
+
     monsters: list[AcquisitionMonster] = []
     npcs: list[AcquisitionNPC] = []
     quests: list[AcquisitionQuest] = []
@@ -52,17 +74,23 @@ class Acquisition(_Base):
 
 
 class DefenseStats(_Base):
+    """Represents monster defense statistics."""
+
     weapon: int = 0
     magic: int = 0
     avoidability: int = 0
 
 
 class AccuracyStats(_Base):
+    """Represents monster accuracy statistics."""
+
     required: int = 0
     decrease: float = 0
 
 
 class DropItem(_Base):
+    """Represents an item dropped by a monster."""
+
     name: str
     level: int = 0
     type: str = ""
@@ -70,6 +98,8 @@ class DropItem(_Base):
 
 
 class MonsterDrops(_Base):
+    """Represents all drops for a monster."""
+
     equipment_items: list[DropItem] = Field(default_factory=list, alias="equipmentItems")
     useable_items: list[DropItem] = Field(default_factory=list, alias="useableItems")
     scrolls: list[DropItem] = Field(default_factory=list, alias="scrolls")
@@ -78,15 +108,20 @@ class MonsterDrops(_Base):
 
     @property
     def all_items(self) -> list[DropItem]:
+        """The list of all drop items."""
         return self.equipment_items + self.useable_items + self.scrolls + self.misc_items
 
 
 class MonsterQuest(_Base):
+    """Represents a quest associated with a monster."""
+
     name: str
     level: int = 0
 
 
 class Monster(_Base):
+    """Represents a MapleStory monster."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     level: int = 0
@@ -102,10 +137,12 @@ class Monster(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the monster."""
         return self.name_zh or self.name
 
     @property
     def all_maps(self) -> list[str]:
+        """The list of all maps the monster appears in."""
         return [m for r in self.region_to_maps_list for m in r.maps]
 
 
@@ -113,11 +150,15 @@ class Monster(_Base):
 
 
 class StatValue(_Base):
+    """Represents a stat value with a middle value and a range."""
+
     middle: int = 0
     range: list[int] = Field(default_factory=list)
 
 
 class EquipmentStats(_Base):
+    """Represents equipment statistics."""
+
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     str_stat: StatValue | None = Field(default=None, alias="str")
@@ -138,7 +179,11 @@ class EquipmentStats(_Base):
     upgrade_slots: int | None = Field(default=None, alias="upgradeSlots")
 
     def non_zero_stats(self) -> list[tuple[str, StatValue]]:
-        """Return (label, value) pairs for stats with non-zero middle."""
+        """Returns (label, value) pairs for stats with non-zero middle.
+
+        Returns:
+            A list of tuples containing the stat label and its value.
+        """
         mapping = [
             ("STR", self.str_stat),
             ("DEX", self.dex),
@@ -159,16 +204,25 @@ class EquipmentStats(_Base):
 
 
 class EquipmentRestriction(_Base):
+    """Represents equipment requirements."""
+
     str_req: int = Field(default=0, alias="str")
     dex: int = 0
     int_req: int = Field(default=0, alias="int")
     luk: int = 0
 
     def has_requirements(self) -> bool:
+        """Checks if there are any stat requirements.
+
+        Returns:
+            True if any requirement is non-zero, False otherwise.
+        """
         return any((self.str_req, self.dex, self.int_req, self.luk))
 
 
 class Equipment(_Base):
+    """Represents a MapleStory equipment item."""
+
     type: str = ""
     name: str
     name_zh: str = Field(default="", alias="nameZh")
@@ -187,6 +241,7 @@ class Equipment(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the equipment."""
         return self.name_zh or self.name
 
 
@@ -194,6 +249,8 @@ class Equipment(_Base):
 
 
 class Scroll(_Base):
+    """Represents a MapleStory scroll."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     stats: dict[str, int] = {}
@@ -202,6 +259,7 @@ class Scroll(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the scroll."""
         return self.name_zh or self.name
 
 
@@ -209,10 +267,14 @@ class Scroll(_Base):
 
 
 class UseableStat(_Base):
+    """Represents a stat value for useable items."""
+
     amount: int = 0
 
 
 class Useable(_Base):
+    """Represents a MapleStory useable item (e.g., potion)."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     type: str = ""
@@ -231,6 +293,7 @@ class Useable(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the useable item."""
         return self.name_zh or self.name
 
 
@@ -238,11 +301,15 @@ class Useable(_Base):
 
 
 class NPCItem(_Base):
+    """Represents an item sold by an NPC."""
+
     name: str
     price: int = 0
 
 
 class NPC(_Base):
+    """Represents a MapleStory NPC."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     type: str = ""
@@ -256,10 +323,12 @@ class NPC(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the NPC."""
         return self.name_zh or self.name
 
     @property
     def all_maps(self) -> list[str]:
+        """The list of all maps the NPC appears in."""
         return [m for r in self.region_to_maps_list for m in r.maps]
 
 
@@ -267,16 +336,22 @@ class NPC(_Base):
 
 
 class HuntTarget(_Base):
+    """Represents a target to hunt for a quest."""
+
     name: str
     quantity: int = 0
 
 
 class CollectItem(_Base):
+    """Represents an item to collect for a quest."""
+
     name: str = ""
     quantity: int = 0
 
 
 class QuestReward(_Base):
+    """Represents rewards for a quest."""
+
     exp: int = 0
     fame: int = 0
     mesos: int = 0
@@ -284,6 +359,8 @@ class QuestReward(_Base):
 
 
 class QuestStep(_Base):
+    """Represents a step in a quest."""
+
     start_npc: str = Field(default="", alias="startNPC")
     monsters_to_hunt: list[HuntTarget] = Field(default_factory=list, alias="monstersToHunt")
     items_to_collect: dict[str, list[CollectItem]] = Field(
@@ -293,6 +370,8 @@ class QuestStep(_Base):
 
 
 class Quest(_Base):
+    """Represents a MapleStory quest."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     frequency: str = ""
@@ -304,6 +383,7 @@ class Quest(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the quest."""
         return self.name_zh or self.name
 
 
@@ -311,17 +391,23 @@ class Quest(_Base):
 
 
 class MapNPC(_Base):
+    """Represents an NPC on a map."""
+
     name: str
     type: str = ""
     sub_map: str = Field(default="", alias="subMap")
 
 
 class MapMonster(_Base):
+    """Represents a monster on a map."""
+
     name: str
     level: int = 0
 
 
 class MapEntry(_Base):
+    """Represents a MapleStory map."""
+
     region: str = ""
     name: str
     name_zh: str = Field(default="", alias="nameZh")
@@ -336,6 +422,7 @@ class MapEntry(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the map."""
         return self.name_zh or self.name
 
 
@@ -343,6 +430,8 @@ class MapEntry(_Base):
 
 
 class MiscItem(_Base):
+    """Represents a miscellaneous item."""
+
     name: str
     name_zh: str = Field(default="", alias="nameZh")
     type: str = ""
@@ -350,6 +439,7 @@ class MiscItem(_Base):
 
     @property
     def display_name(self) -> str:
+        """The display name of the misc item."""
         return self.name_zh or self.name
 
 
@@ -357,6 +447,8 @@ class MiscItem(_Base):
 
 
 class MapleStats(BaseModel):
+    """Represents database statistics."""
+
     total_monsters: int
     total_equipment: int
     total_scrolls: int

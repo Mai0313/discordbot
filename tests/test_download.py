@@ -15,6 +15,7 @@ from discordbot.utils.downloader import VideoDownloader
     ],
 )
 def test_download(url: str) -> None:
+    """Verifies that video download works in dry-run mode for various platforms."""
     downloader = VideoDownloader(output_folder="./data/downloads")
     with downloader.download(url=url, quality="best", dry_run=True) as result:
         assert isinstance(result.title, str)

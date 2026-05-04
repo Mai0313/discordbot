@@ -15,6 +15,7 @@ config = LLMConfig()
 
 
 def main() -> None:
+    """Submits a video generation job, polls for completion, and downloads the result."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     console.print("[bold]Submitting video generation job...[/bold]")

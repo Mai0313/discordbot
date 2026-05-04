@@ -1,3 +1,9 @@
+"""Embed generators for MapleStory cog.
+
+This module provides functions to create Discord embeds for various MapleStory
+entities like monsters, equipment, NPCs, quests, maps, etc.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
@@ -27,14 +33,18 @@ SITE = "https://www.artalemaplestory.com"
 
 
 class TranslateFn(Protocol):
+    """Protocol for translation functions."""
+
     def __call__(self, category: str, name: str) -> str: ...
 
 
 def _identity(category: str, name: str) -> str:
+    """Returns the name as-is."""
     return name
 
 
 def _truncate(text: str, limit: int = 1024) -> str:
+    """Truncates text to a limit, adding an ellipsis if truncated."""
     return text[: limit - 3] + "..." if len(text) > limit else text
 
 
@@ -76,6 +86,15 @@ def _add_acquisition_fields(
 
 
 def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for a monster.
+
+    Args:
+        monster: The monster data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with monster details.
+    """
     embed = Embed(
         title=f"\U0001f432 {monster.display_name}",
         description=f"Lv. {monster.level}",
@@ -151,6 +170,7 @@ def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity
 
 
 def _add_equip_stats(embed: Embed, equip: Equipment) -> None:
+    """Adds equipment stats to the embed."""
     stats = equip.stats.non_zero_stats()
     if not stats:
         return
@@ -163,6 +183,7 @@ def _add_equip_stats(embed: Embed, equip: Equipment) -> None:
 
 
 def _add_equip_requirements(embed: Embed, equip: Equipment) -> None:
+    """Adds equipment requirements to the embed."""
     req = equip.equipment_restriction
     if not req.has_requirements():
         return
@@ -179,6 +200,7 @@ def _add_equip_requirements(embed: Embed, equip: Equipment) -> None:
 
 
 def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
+    """Adds equipment tags to the embed."""
     tags = [
         t
         for t in [
@@ -193,6 +215,15 @@ def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
 
 
 def create_equipment_embed(equip: Equipment, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for an equipment item.
+
+    Args:
+        equip: The equipment data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with equipment details.
+    """
     slug = equip.name.lower().replace(" ", "-")
     type_slug = equip.type.lower().replace(" ", "-")
 
@@ -246,6 +277,15 @@ _STAT_LABELS = {
 
 
 def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for a scroll.
+
+    Args:
+        scroll: The scroll data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with scroll details.
+    """
     embed = Embed(
         title=f"\U0001f4dc {scroll.display_name}",
         description=f"適用: {translate(category='eqType', name=scroll.type)}"
@@ -275,6 +315,15 @@ def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -
 
 
 def create_npc_embed(npc: NPC, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for an NPC.
+
+    Args:
+        npc: The NPC data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with NPC details.
+    """
     npc_type_zh = translate(category="npcType", name=npc.type) if npc.type else ""
     embed = Embed(title=f"\U0001f464 {npc.display_name}", description=npc_type_zh, color=0x00CCFF)
 
@@ -344,6 +393,15 @@ def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
 
 
 def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for a quest.
+
+    Args:
+        quest: The quest data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with quest details.
+    """
     freq = FREQ_ZH.get(quest.frequency, quest.frequency)
     level_text = f"Lv. {quest.lv_lower}"
     if quest.lv_upper:
@@ -372,6 +430,15 @@ def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> E
 
 
 def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity) -> Embed:
+    """Creates an embed for a map.
+
+    Args:
+        map_entry: The map data.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with map details.
+    """
     region_zh = translate(category="region", name=map_entry.region)
     embed = Embed(
         title=f"\U0001f5fa\ufe0f {map_entry.display_name}",
@@ -405,6 +472,16 @@ def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity)
 def create_item_source_embed(
     item_name: str, monsters: Iterable[Monster], *, translate: TranslateFn = _identity
 ) -> Embed:
+    """Creates an embed showing which monsters drop an item.
+
+    Args:
+        item_name: The name of the item.
+        monsters: An iterable of monsters that drop the item.
+        translate: Function to translate names.
+
+    Returns:
+        An Embed object with item source details.
+    """
     monsters_list = list(monsters)
     item_zh = (
         translate(category="equipment", name=item_name)
@@ -430,6 +507,14 @@ def create_item_source_embed(
 
 
 def build_stats_embed(stats: MapleStats) -> Embed:
+    """Builds an embed for database statistics.
+
+    Args:
+        stats: The database statistics.
+
+    Returns:
+        An Embed object with statistics summary.
+    """
     embed = Embed(
         title="\U0001f4ca 楓之谷資料庫統計", description="Artale 楓之谷資料庫概覽", color=0x00FF88
     )

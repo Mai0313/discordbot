@@ -13,6 +13,7 @@ FAST_MODEL = "gemini-flash-latest"
 
 
 def use_chat() -> None:
+    """Tests Azure OpenAI chat completion with streaming."""
     client = AzureOpenAI(
         azure_endpoint=config.base_url, api_version="2024-05-01-preview", api_key=config.api_key
     )
@@ -39,6 +40,7 @@ def use_chat() -> None:
 
 
 def use_responses() -> None:
+    """Tests OpenAI Responses API with streaming and retrieval."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     responses = client.responses.create(

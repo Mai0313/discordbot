@@ -8,6 +8,7 @@ config = LLMConfig()
 
 
 def use_non_streaming() -> None:
+    """Tests fallback mechanism in non-streaming mode."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     responses = client.chat.completions.create(
@@ -21,6 +22,7 @@ def use_non_streaming() -> None:
 
 
 def use_streaming() -> None:
+    """Tests fallback mechanism in streaming mode."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     responses = client.chat.completions.create(

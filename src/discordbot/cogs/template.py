@@ -5,10 +5,20 @@ from nextcord.ext import commands
 
 class TemplateCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        """Initializes the TemplateCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
+        """Listens for messages and handles specific triggers.
+
+        Args:
+            message: The message that was sent.
+        """
         # 忽略來自機器人的訊息
         if message.author.bot:
             return
@@ -28,6 +38,11 @@ class TemplateCogs(commands.Cog):
         nsfw=False,
     )
     async def ping(self, interaction: Interaction) -> None:
+        """Checks the bot's response time.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
         await interaction.response.defer()
         bot_latency = round(self.bot.latency * 1000, 2)  # 取得 API 延遲
 
@@ -47,4 +62,9 @@ class TemplateCogs(commands.Cog):
 
 # 註冊 Cog
 async def setup(bot: commands.Bot) -> None:
+    """Adds the TemplateCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(TemplateCogs(bot), override=True)

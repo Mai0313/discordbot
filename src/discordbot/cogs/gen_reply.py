@@ -78,6 +78,14 @@ def _extract_friendly_error(exc: BaseException) -> str:
 
 
 def get_tools(model: str) -> list[ToolParam]:
+    """Returns the tools available for the specified model.
+
+    Args:
+        model: The name of the model.
+
+    Returns:
+        A list of tools supported by the model.
+    """
     if "gemini" in model:
         return [{"googleSearch": {}}, {"urlContext": {}}]
     if "claude" in model:
@@ -94,20 +102,28 @@ class RouteDecision(BaseModel):
 
 class ReplyGeneratorCogs(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
+        """Initializes the ReplyGeneratorCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
         self.config = LLMConfig()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
+        """The cached AsyncOpenAI client instance."""
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
     async def _get_user_prompt(self, content: str) -> str:
+        """Removes the bot mention from the content and strips whitespace."""
         if self.bot.user:
             content = content.replace(f"<@{self.bot.user.id}>", "")
         return content.strip()
 
     async def _get_cleaned_content(self, message: Message) -> str:
+        """Gets cleaned message content, including embed details if text is empty, and adds author prefix."""
         content = await self._get_user_prompt(content=message.content)
         if not content and message.embeds:
             embed_parts: list[str] = []
@@ -144,6 +160,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return content
 
     async def _image_to_part(self, source: Attachment | StickerItem | str) -> dict[str, Any]:
+        """Converts an image source to a content part for the API."""
         url = source if isinstance(source, str) else source.url
         try:
             if isinstance(source, str):
@@ -163,6 +180,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return {}
 
     async def _file_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
+        """Converts a file attachment to a content part for the API."""
         try:
             file_bytes = await attachment.read()
             b64_data = base64.b64encode(file_bytes).decode()
@@ -180,6 +198,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return {}
 
     async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
+        """Extracts all attachments and images from embeds in a message."""
         content_parts: list[dict[str, Any]] = []
 
         for attachment in message.attachments:
@@ -204,6 +223,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return [part for part in content_parts if part]
 
     async def _process_single_message(self, message: Message) -> dict[str, Any]:
+        """Processes a single message into a content part for history."""
         try:
             content = await self._get_cleaned_content(message=message)
             attachment_parts = await self._get_attachments(message=message)
@@ -230,6 +250,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return {}
 
     async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
+        """Retrieves and processes channel history as context."""
         messages: list[dict[str, Any]] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -257,6 +278,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _get_reference_message(self, message: Message) -> list[dict[str, Any]]:
+        """Retrieves and processes the referenced message if it exists."""
         messages: list[dict[str, Any]] = []
         if message.reference and isinstance(message.reference.resolved, Message):
             messages.append({
@@ -273,6 +295,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
+        """Processes the current message that needs to be answered."""
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -289,6 +312,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
+        """Handles video generation requests."""
         video = await self.client.videos.create(
             model=DEFAULT_VIDEO_MODEL,
             prompt=user_prompt,
@@ -308,6 +332,7 @@ class ReplyGeneratorCogs(commands.Cog):
         await message.reply(content=f"{message.author.mention}", file=video_file)
 
     async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
+        """Handles image generation or editing requests."""
         if message.reference and isinstance(message.reference.resolved, Message):
             own_parts, ref_parts = await asyncio.gather(
                 self._get_attachments(message=message),
@@ -381,6 +406,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_reaction(
         self, message: Message, emoji: str, previous_emoji: str | None = None
     ) -> None:
+        """Handles adding and removing reactions on a message."""
         if previous_emoji and self.bot.user:
             with contextlib.suppress(Exception):
                 await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
@@ -388,6 +414,7 @@ class ReplyGeneratorCogs(commands.Cog):
             await message.add_reaction(emoji=emoji)
 
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
+        """Routes the message to the appropriate handler."""
         message_list: list[dict[str, Any]] = []
 
         reference_messages, current_message = await asyncio.gather(
@@ -421,6 +448,7 @@ class ReplyGeneratorCogs(commands.Cog):
     def _calculate_cost(
         model_name: str, input_tokens: int, output_tokens: int, reasoning_tokens: int
     ) -> float:
+        """Calculates the cost of a model response based on token usage."""
         info = model_cost.get(model_name) or {}
         default_input_rate = info.get("input_cost_per_token", 0)
         input_rate = info.get("input_cost_per_token_priority", default_input_rate)
@@ -432,6 +460,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self, responses: AsyncStream[ResponseStreamEvent], message: Message
     ) -> str:
+        """Handles streaming responses from the API and updates the Discord message."""
         stored_content = ""
         counted_content = 0
         reply: Message | None = None
@@ -496,6 +525,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int
     ) -> None:
+        """Handles generating text replies using history and context."""
         message_list: list[dict[str, Any]] = []
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
@@ -528,6 +558,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
+        """Listens for messages and handles AI reply generation.
+
+        Args:
+            message: The message that was sent.
+        """
         # Ignore messages from bots.
         if message.author.bot:
             return
@@ -600,4 +635,9 @@ class ReplyGeneratorCogs(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Adds the ReplyGeneratorCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)

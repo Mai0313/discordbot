@@ -17,6 +17,7 @@ from discordbot.typings.config import DiscordConfig
 
 class DiscordBot(commands.Bot):
     def __init__(self) -> None:
+        """Initialises the Discord bot with specific intents and configuration."""
         # intents=Intents.default() 只啟用必要的 Intents
         intents = Intents.all()
         intents.members = False
@@ -34,9 +35,11 @@ class DiscordBot(commands.Bot):
         Path("./data").mkdir(parents=True, exist_ok=True)
 
     async def on_connect(self) -> None:
+        """Called when the bot has successfully connected to Discord."""
         logfire.info("Bot Connected", bot_name=self.user.name, bot_id=self.user.id)
 
     async def on_ready(self) -> None:
+        """Called when the bot is ready and has finished basic setup."""
         app_info = await self.application_info()
         await self.setup_hook()
         invite_url = (
@@ -47,9 +50,15 @@ class DiscordBot(commands.Bot):
         logfire.info("Invite Link", invite_url=invite_url)
 
     async def on_guild_available(self, guild: Guild) -> None:
+        """Called when a guild becomes available.
+
+        Args:
+            guild: The Guild instance that became available.
+        """
         return await super().on_guild_available(guild)
 
     async def get_cogs_names(self) -> list[str]:
+        """Returns a list of cog module names found in the cogs directory."""
         cog_path = anyio.Path("./src/discordbot/cogs")
         cog_files = [
             f"discordbot.cogs.{f.stem}"
@@ -59,13 +68,14 @@ class DiscordBot(commands.Bot):
         return cog_files
 
     async def load_cogs(self) -> None:
+        """Loads all cogs found in the cogs directory."""
         cog_files = await self.get_cogs_names()
         self.load_extensions(cog_files, stop_at_error=True)
         logfire.info("Cogs Loaded", cogs=cog_files)
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
-        """Setup the game status task of the bot."""
+        """Periodically updates the bot's game status."""
         statuses = ["your mama"]
         random_status = secrets.choice(statuses)
         await self.change_presence(activity=Game(random_status))
@@ -73,11 +83,11 @@ class DiscordBot(commands.Bot):
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
-        """Before starting the status changing task, we make sure the bot is ready"""
+        """Ensures the bot is ready before starting the status task."""
         await self.wait_until_ready()
 
     async def setup_hook(self) -> None:
-        """This will just be executed when the bot starts the first time."""
+        """Performs async setup before the bot connects."""
         logfire.info(
             "Logged in",
             bot_name=self.user.name,
@@ -95,9 +105,10 @@ class DiscordBot(commands.Bot):
         self.status_task.start()
 
     async def on_message(self, message: Message) -> None:
-        """The code in this event is executed every time someone sends a message, with or without the prefix
+        """Handles incoming messages.
 
-        :param message: The message that was sent.
+        Args:
+            message: The message that was sent.
         """
         if message.author == self.user or message.author.bot:
             return
@@ -105,9 +116,10 @@ class DiscordBot(commands.Bot):
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:
-        """The code in this event is executed every time a normal command has been *successfully* executed.
+        """Handles successful command execution.
 
-        :param context: The context of the command that has been executed.
+        Args:
+            context: The context of the command that was executed.
         """
         full_command_name = context.command.qualified_name
         split = full_command_name.split(" ")
@@ -133,10 +145,11 @@ class DiscordBot(commands.Bot):
         | commands.CommandNotFound
         | Exception,
     ) -> None:
-        """The code in this event is executed every time a normal valid command catches an error.
+        """Handles command errors.
 
-        :param context: The context of the normal command that failed executing.
-        :param error: The error that has been faced.
+        Args:
+            context: The context of the command that failed.
+            error: The exception that was raised.
         """
         if isinstance(error, commands.CommandOnCooldown):
             minutes, seconds = divmod(error.retry_after, 60)
@@ -194,6 +207,7 @@ class DiscordBot(commands.Bot):
 
 
 def main() -> None:
+    """Initialises and runs the Discord bot."""
     setup_logging()
     discord_config = DiscordConfig()
     bot = DiscordBot()

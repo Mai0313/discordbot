@@ -15,10 +15,17 @@ FAST_MODEL = "gemini-flash-latest"
 
 
 class RouteDecision(BaseModel):
+    """Model for structured output of route decisions.
+
+    Attributes:
+        decision: The categorized intent of the user input.
+    """
+
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
 
 
 def use_oai_responses_parse() -> None:
+    """Tests structured output parsing for route decisions using OpenAI API."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     responses = client.responses.parse(

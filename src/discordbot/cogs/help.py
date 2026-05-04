@@ -101,6 +101,11 @@ _SECTIONS = ("ai_chat", "threads", "video", "maplestory", "ping")
 
 class HelpCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
+        """Initializes the HelpCogs instance.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
 
     @nextcord.slash_command(
@@ -114,6 +119,11 @@ class HelpCogs(commands.Cog):
         nsfw=False,
     )
     async def help(self, interaction: Interaction) -> None:
+        """Shows a guide on how to use this bot.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
         await interaction.response.defer(ephemeral=True)
 
         locale = interaction.locale
@@ -138,4 +148,9 @@ class HelpCogs(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Adds the HelpCogs to the bot.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     bot.add_cog(HelpCogs(bot), override=True)

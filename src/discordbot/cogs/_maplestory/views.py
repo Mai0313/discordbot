@@ -1,3 +1,9 @@
+"""Views for MapleStory cog.
+
+This module provides Discord UI views and helper resolvers for interactive
+search results.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
@@ -22,11 +28,13 @@ if TYPE_CHECKING:
 
 
 def _resolve_monster(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves a monster name to an Embed."""
     monster = service.get_monster(name)
     return create_monster_embed(monster=monster, translate=tr) if monster else None
 
 
 def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves an item name to an Embed showing its sources."""
     monsters = service.get_monsters_by_drop(name)
     return (
         create_item_source_embed(item_name=name, monsters=monsters, translate=tr)
@@ -36,31 +44,38 @@ def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Emb
 
 
 def _resolve_equipment(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves an equipment name to an Embed."""
     equip = service.get_equipment(name)
     return create_equipment_embed(equip=equip, translate=tr) if equip else None
 
 
 def _resolve_scroll(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves a scroll name to an Embed."""
     match = next((s for s in service.search_scrolls_by_name(name) if s.name == name), None)
     return create_scroll_embed(scroll=match, translate=tr) if match else None
 
 
 def _resolve_npc(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves an NPC name to an Embed."""
     match = next((n for n in service.search_npcs_by_name(name) if n.name == name), None)
     return create_npc_embed(npc=match, translate=tr) if match else None
 
 
 def _resolve_quest(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves a quest name to an Embed."""
     match = next((q for q in service.search_quests_by_name(name) if q.name == name), None)
     return create_quest_embed(quest=match, translate=tr) if match else None
 
 
 def _resolve_map(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+    """Resolves a map name to an Embed."""
     match = next((m for m in service.search_maps_by_name(name) if m.name == name), None)
     return create_map_embed(map_entry=match, translate=tr) if match else None
 
 
 class _ResolverFn(Protocol):
+    """Protocol for resolver functions."""
+
     def __call__(self, service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None: ...
 
 
@@ -86,6 +101,14 @@ class MapleDropSearchView(View):
         *,
         timeout: float | None = 300,
     ) -> None:
+        """Initializes the search view.
+
+        Args:
+            service: The MapleStoryService instance.
+            search_type: The type of search (e.g., 'monster', 'item').
+            query: The original search query.
+            timeout: Timeout in seconds.
+        """
         super().__init__(timeout=timeout)
         self.service = service
         self.search_type = search_type
@@ -98,6 +121,7 @@ class MapleDropSearchView(View):
         options=[SelectOption(label="載入中...", value="loading")],
     )
     async def select_result(self, select: Select, interaction: Interaction) -> None:
+        """Handles the selection of a search result."""
         await interaction.response.defer()
 
         selected = select.values[0]
@@ -118,4 +142,9 @@ class MapleDropSearchView(View):
             )
 
     def set_options(self, options: list[SelectOption]) -> None:
+        """Sets the options for the select menu, capped at 25.
+
+        Args:
+            options: A list of SelectOption objects.
+        """
         self.select_result.options = options[:25]

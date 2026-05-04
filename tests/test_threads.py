@@ -5,11 +5,12 @@ from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsDownlo
 
 @pytest.fixture
 def downloader() -> ThreadsDownloader:
+    """Provides a ThreadsDownloader instance with a default output folder."""
     return ThreadsDownloader(output_folder="./data/threads")
 
 
 def test_find_post_with_parents_returns_chain_in_order() -> None:
-    """A `thread_items` list from Threads stores the full reply chain oldest-first."""
+    """Verifies that finding a post returns the correct chain of parent posts."""
     chain = ThreadData(
         thread_items=[
             ThreadItem(post=Post(code="ROOT")),
@@ -25,6 +26,7 @@ def test_find_post_with_parents_returns_chain_in_order() -> None:
 
 
 def test_find_post_with_parents_no_match() -> None:
+    """Verifies that finding a non-existent post returns None and empty parents."""
     chain = ThreadData(thread_items=[ThreadItem(post=Post(code="A"))])
     post, parents = chain.find_post_with_parents(post_code="MISSING")
     assert post is None
@@ -32,6 +34,7 @@ def test_find_post_with_parents_no_match() -> None:
 
 
 def test_find_post_with_parents_root_has_no_parents() -> None:
+    """Verifies that the root post of a thread has no parents."""
     chain = ThreadData(thread_items=[ThreadItem(post=Post(code="ROOT"))])
     post, parents = chain.find_post_with_parents(post_code="ROOT")
     assert post is not None
@@ -53,6 +56,7 @@ def test_find_post_with_parents_root_has_no_parents() -> None:
     ],
 )
 def test_parse(downloader: ThreadsDownloader, url: str) -> None:
+    """Verifies that parsing valid Threads URLs returns expected post data."""
     with downloader.parse(url=url) as output:
         assert output.text or output.image_urls or output.video_urls, "post should have content"
         assert output.author_name, "author_name should not be empty"
