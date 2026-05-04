@@ -653,8 +653,6 @@ output-format = "concise"
 # For more info:
 # https://docs.pydantic.dev/logfire/api/logfire/#logfire.configure
 [tool.logfire]
-send_to_logfire = false
-token = false
 project_name = "discordbot"
 trace_sample_rate = 1.0
 console_colors = "auto"
