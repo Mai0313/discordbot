@@ -67,22 +67,17 @@ authors = [
     { name = "Wei", email = "mai@mai0313.com" },
 ]
 dependencies = [
-    "ag2>=0.11.4",
     "anthropic>=0.96.0",
-    "chat-downloader>=0.2.8",
     "google-genai>=1.68.0",
-    "litellm>=1.83.7",
     "logfire>=4.30.0",
     "nextcord[speed]>=3.1.1",
     "openai>=2.30.0",
-    "orjson>=3.11.7",
     "pandas>=3.0.1",
     "pillow>=12.2.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "requests>=2.33.0",
     "rich>=14.3.3",
-    "setuptools>=82.0.1",
     "sqlalchemy>=2.0.48",
     "yt-dlp>=2026.3.17",
 ]

@@ -35,7 +35,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 - **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error)
-- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, and estimated USD cost (computed via `litellm.model_cost`)
+- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, and estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally)
 
 ### Threads Parsing
 

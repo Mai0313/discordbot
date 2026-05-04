@@ -12,20 +12,16 @@ import contextlib
 
 from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
-from litellm import model_cost
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
 from pydantic import BaseModel, ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
-from autogen.agentchat.contrib.img_utils import (
-    get_pil_image,
-    get_image_data,
-    convert_base64_to_data_uri,
-)
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
+from discordbot.utils.model_pricing import get_token_rates
 
 from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
 
@@ -449,13 +445,9 @@ class ReplyGeneratorCogs(commands.Cog):
         model_name: str, input_tokens: int, output_tokens: int, reasoning_tokens: int
     ) -> float:
         """Calculates the cost of a model response based on token usage."""
-        info = model_cost.get(model_name) or {}
-        default_input_rate = info.get("input_cost_per_token", 0)
-        input_rate = info.get("input_cost_per_token_priority", default_input_rate)
-        default_output_rate = info.get("output_cost_per_token", 0)
-        output_rate = info.get("output_cost_per_token_priority", default_output_rate)
+        input_rate, output_rate = get_token_rates(model_name=model_name)
         total_output_tokens = output_tokens + reasoning_tokens
-        return float(input_rate) * input_tokens + float(output_rate) * total_output_tokens
+        return input_rate * input_tokens + output_rate * total_output_tokens
 
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self, responses: AsyncStream[ResponseStreamEvent], message: Message
