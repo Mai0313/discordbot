@@ -5,9 +5,12 @@ from pathlib import Path
 from datetime import datetime
 from importlib.metadata import version
 
+import dotenv
 import logfire
 
+dotenv.load_dotenv()
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+__version__ = version("discordbot")
 
 
 class _TeeStream:
@@ -55,6 +58,3 @@ def setup_logging() -> None:
             output=_TeeStream(console=sys.stdout, file=log_file),
         ),
     )
-
-
-__version__ = version("discordbot")
