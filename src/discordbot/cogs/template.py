@@ -25,7 +25,11 @@ class TemplateCogs(commands.Cog):
 
         # 如果訊息內容是 "debug"，對該訊息按讚
         if message.content.lower() == "debug":
-            await message.add_reaction(":face_with_symbols_over_mouth:")
+            await message.add_reaction("🤬")
+        if message.content.lower() == "可愛捏":
+            await message.add_reaction("↖️")
+        if message.content.lower() == "可爱捏":
+            await message.add_reaction("↖️")
 
     @nextcord.slash_command(
         name="ping",
