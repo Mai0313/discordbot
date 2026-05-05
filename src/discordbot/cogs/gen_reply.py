@@ -41,12 +41,8 @@ if TYPE_CHECKING:
 DEFAULT_FAST_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
 DEFAULT_SLOW_MODEL = ModelSettings(model_name="gemini-pro-latest", model_effort="high")
 PEAK_SLOW_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="high")
-DEFAULT_IMAGE_MODEL = ModelSettings(
-    model_name="gemini-3.1-flash-image-preview", model_effort="none"
-)
-DEFAULT_VIDEO_MODEL = ModelSettings(
-    model_name="veo-3.1-fast-generate-preview", model_effort="none"
-)
+DEFAULT_IMAGE_MODEL = ModelSettings(model_name="gemini-3.1-flash-image-preview", model_effort=None)
+DEFAULT_VIDEO_MODEL = ModelSettings(model_name="veo-3.1-fast-generate-preview", model_effort=None)
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers

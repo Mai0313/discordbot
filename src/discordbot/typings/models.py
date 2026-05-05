@@ -9,11 +9,13 @@ class ModelSettings(BaseModel):
     """Model name and reasoning effort that should be used together."""
 
     model_name: str
-    model_effort: ReasoningEffort
+    model_effort: ReasoningEffort | None
 
     @property
     def reasoning(self) -> Reasoning:
         """Builds Responses API reasoning options for this model."""
+        if self.model_effort is None:
+            raise ValueError("Model effort must be set to build reasoning options.")
         return Reasoning(effort=self.model_effort, summary="auto")
 
 
