@@ -49,7 +49,7 @@ class ModelSettings(BaseModel):
 
 DEFAULT_FAST_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
 DEFAULT_SLOW_MODEL = ModelSettings(model_name="gemini-pro-latest", model_effort="high")
-PEAK_SLOW_MODEL = ModelSettings(model_name="azure/gpt-5.5", model_effort="high")
+PEAK_SLOW_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="high")
 DEFAULT_IMAGE_MODEL = ModelSettings(
     model_name="gemini-3.1-flash-image-preview", model_effort="none"
 )
