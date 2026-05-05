@@ -28,7 +28,7 @@ A feature-rich Discord bot with AI-powered conversations, image and video genera
 Mention the bot (`@bot`) or send a direct message to start a conversation. The AI backend is any OpenAI-compatible endpoint (typically a [LiteLLM](https://github.com/BerriAI/litellm) proxy fronting OpenAI, Google Gemini, Anthropic Claude, etc.), and the bot routes each task to a different model — a fast model for intent routing and image captions, a slow reasoning model for replies and summaries, a dedicated image model for generation/editing, and a video model for short clips. Supported features:
 
 - **Text conversations** powered by the OpenAI Responses API with real-time streaming
-- **Media understanding** — attach images or stickers and ask the bot about them; it also reads images embedded in messages or quoted replies (e.g. a parsed Threads post)
+- **Media understanding** — attach images, stickers, or supported files such as PDFs, text, and JSON, then ask the bot about them; it also reads images embedded in messages or quoted replies (e.g. a parsed Threads post)
 - **Image generation & editing** — ask the bot to draw, create, or edit images (attach an image to modify it)
 - **Video generation** — ask the bot to generate short videos (cooldown between requests)
 - **Chat summarization** — ask the bot to recap the recent conversation
@@ -68,21 +68,21 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 
 ## Commands
 
-| Command                           | Description                                                           |
-| --------------------------------- | --------------------------------------------------------------------- |
-| `@bot <message>`                  | Chat with AI (text, images, generation, summarization, web search)    |
-| _Threads link_                    | Automatically expands Threads.net posts with media                    |
-| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili |
-| `/maple_monster <name>`           | Search MapleStory monsters and drops                                  |
-| `/maple_equip <name>`             | Search MapleStory equipment                                           |
-| `/maple_scroll <name>`            | Search MapleStory scrolls                                             |
-| `/maple_npc <name>`               | Search MapleStory NPCs                                                |
-| `/maple_quest <name>`             | Search MapleStory quests                                              |
-| `/maple_map <name>`               | Search MapleStory maps                                                |
-| `/maple_item <name>`              | Search MapleStory item sources                                        |
-| `/maple_stats`                    | View MapleStory database statistics                                   |
-| `/help`                           | Show bot usage guide                                                  |
-| `/ping`                           | Check bot latency                                                     |
+| Command                           | Description                                                             |
+| --------------------------------- | ----------------------------------------------------------------------- |
+| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search) |
+| _Threads link_                    | Automatically expands Threads.net posts with media                      |
+| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili   |
+| `/maple_monster <name>`           | Search MapleStory monsters and drops                                    |
+| `/maple_equip <name>`             | Search MapleStory equipment                                             |
+| `/maple_scroll <name>`            | Search MapleStory scrolls                                               |
+| `/maple_npc <name>`               | Search MapleStory NPCs                                                  |
+| `/maple_quest <name>`             | Search MapleStory quests                                                |
+| `/maple_map <name>`               | Search MapleStory maps                                                  |
+| `/maple_item <name>`              | Search MapleStory item sources                                          |
+| `/maple_stats`                    | View MapleStory database statistics                                     |
+| `/help`                           | Show bot usage guide                                                    |
+| `/ping`                           | Check bot latency                                                       |
 
 ## Self-Hosting
 
@@ -164,7 +164,7 @@ DISCORD_TEST_SERVER_ID=your_test_server_id
 This bot complies with Discord's Terms of Service and Developer Policy.
 
 - **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite. Data stays on your server and is never shared externally.
-- **API Calls**: Text, images, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is mentioned. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
+- **API Calls**: Text, images, supported file attachments, embedded media, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is responding, such as when it is mentioned in a guild or messaged in DM. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
 - **Opt-out**: Server owners can disable message logging by adjusting the bot configuration.
 

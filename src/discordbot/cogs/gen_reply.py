@@ -3,7 +3,7 @@ import re
 import ast
 import json
 import base64
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import UTC, datetime
 from functools import cached_property
@@ -18,12 +18,19 @@ from pydantic import BaseModel, ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
+from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_file_param import ResponseInputFileParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
+from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.utils.model_pricing import get_token_rates
 
 from ._gen_reply.prompts import BELIEF, IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
@@ -155,7 +162,9 @@ class ReplyGeneratorCogs(commands.Cog):
         content = f"{message.author.display_name} ({message.author.name}) [id: {message.author.id}]: {content}"
         return content
 
-    async def _image_to_part(self, source: Attachment | StickerItem | str) -> dict[str, Any]:
+    async def _image_to_part(
+        self, source: Attachment | StickerItem | str
+    ) -> ResponseInputImageParam | None:
         """Converts an image source to a content part for the API."""
         url = source if isinstance(source, str) else source.url
         try:
@@ -170,12 +179,12 @@ class ReplyGeneratorCogs(commands.Cog):
             downloaded.save(buffer, format="JPEG", quality=85, optimize=True)
             b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             converted = convert_base64_to_data_uri(b64)
-            return {"type": "input_image", "image_url": converted}
+            return ResponseInputImageParam(image_url=converted, detail="auto", type="input_image")
         except Exception:
             logfire.warn(f"Failed to convert image, keeping original URL: {url}")
-            return {}
+            return None
 
-    async def _file_attachment_to_part(self, attachment: Attachment) -> dict[str, Any]:
+    async def _attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
         """Converts a file attachment to a content part for the API."""
         try:
             file_bytes = await attachment.read()
@@ -186,43 +195,50 @@ class ReplyGeneratorCogs(commands.Cog):
                 logfire.warn(
                     f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
                 )
-                return {}
+                return None
             data_uri = f"data:{mime_type};base64,{b64_data}"
-            return {"type": "input_file", "filename": attachment.filename, "file_data": data_uri}
+            return ResponseInputFileParam(
+                filename=attachment.filename, file_data=data_uri, type="input_file"
+            )
         except Exception:
             logfire.warn(f"Failed to download attachment: {attachment.url}")
-            return {}
+            return None
 
-    async def _get_attachments(self, message: Message) -> list[dict[str, Any]]:
-        """Extracts all attachments and images from embeds in a message."""
-        content_parts: list[dict[str, Any]] = []
+    async def _get_attachment_parts(
+        self, message: Message
+    ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
+        """Extracts attachment content parts from a message."""
+        _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("image/"):
-                content_parts.append(await self._image_to_part(source=attachment))
+                _content_parts.append(await self._image_to_part(source=attachment))
             else:
                 # video/*, application/pdf, text/plain, application/json, etc.
-                content_parts.append(await self._file_attachment_to_part(attachment=attachment))
+                _content_parts.append(await self._attachment_to_part(attachment=attachment))
 
         for sticker in message.stickers:
-            content_parts.append(await self._image_to_part(source=sticker))
+            _content_parts.append(await self._image_to_part(source=sticker))
 
         # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
         # since sources like Threads CDN expire and reject requests without specific headers.
         for embed in message.embeds:
             if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                content_parts.append(await self._image_to_part(source=url))
+                _content_parts.append(await self._image_to_part(source=url))
             if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                content_parts.append(await self._image_to_part(source=url))
+                _content_parts.append(await self._image_to_part(source=url))
 
-        return [part for part in content_parts if part]
+        content_parts: list[ResponseInputImageParam | ResponseInputFileParam] = [
+            part for part in _content_parts if part is not None
+        ]
+        return content_parts
 
-    async def _process_single_message(self, message: Message) -> dict[str, Any]:
-        """Processes a single message into a content part for history."""
+    async def _process_single_message(self, message: Message) -> EasyInputMessageParam:
+        """Processes a single Discord message into a Responses API input message."""
         try:
             content = await self._get_cleaned_content(message=message)
-            attachment_parts = await self._get_attachments(message=message)
+            attachment_parts = await self._get_attachment_parts(message=message)
             is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
 
             # No attachments → use EasyInputMessageParam's string-content shorthand.
@@ -231,77 +247,88 @@ class ReplyGeneratorCogs(commands.Cog):
             # (role=assistant rejects an explicit `type: input_text` content part).
             # This preserves the assistant-role weighting for bot text replies.
             if not attachment_parts:
-                return {"role": "assistant" if is_bot else "user", "content": content}
+                return EasyInputMessageParam(
+                    role="assistant" if is_bot else "user", content=content
+                )
 
             # Has attachments → must use a content list with input_text/input_image.
             # role=assistant cannot carry `input_image` (only output_text/refusal),
             # so bot replies that include generated images (from _handle_image_reply)
             # fall back to role=user. The author identity prefix already in `content`
             # preserves bot-vs-user distinction for the model.
-            content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": content}]
-            content_parts.extend(attachment_parts)
-            return {"role": "user", "content": content_parts}
+            return EasyInputMessageParam(
+                role="user",
+                content=[
+                    ResponseInputTextParam(text=content, type="input_text"),
+                    *attachment_parts,
+                ],
+            )
         except Exception as e:
             logfire.warn(f"Failed to process message {message.id}: {e}")
-            return {}
+            return EasyInputMessageParam(role="user", content="")
 
-    async def _get_history_message(self, message: Message, limit: int) -> list[dict[str, Any]]:
+    async def _get_history_message(
+        self, message: Message, limit: int
+    ) -> list[EasyInputMessageParam]:
         """Retrieves and processes channel history as context."""
-        messages: list[dict[str, Any]] = []
+        messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
 
         if hist_messages:
-            tasks = []
+            tasks: list[Awaitable[EasyInputMessageParam]] = []
             for hist_msg in hist_messages:
-                tasks.append(self._process_single_message(message=hist_msg))
-            processed = await asyncio.gather(*tasks)
+                task = self._process_single_message(message=hist_msg)
+                tasks.append(task)
+            processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
 
-            messages.append({
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "==== Chat History that might be helpful for answering. ====",
-                    }
-                ],
-            })
-            for msg in processed:
-                if msg is not None:
-                    messages.append(msg)
+            messages.append(
+                EasyInputMessageParam(
+                    role="system",
+                    content=[
+                        ResponseInputTextParam(
+                            text="==== Chat History that might be helpful for answering. ====",
+                            type="input_text",
+                        )
+                    ],
+                )
+            )
+            messages.extend(processed)
 
         return messages
 
-    async def _get_reference_message(self, message: Message) -> list[dict[str, Any]]:
+    async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
         """Retrieves and processes the referenced message if it exists."""
-        messages: list[dict[str, Any]] = []
+        messages: list[EasyInputMessageParam] = []
         if message.reference and isinstance(message.reference.resolved, Message):
-            messages.append({
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"==== Reference Message from {message.author.display_name} ({message.author.name}) [id: {message.author.id}] that might be helpful for answering. ====",
-                    }
-                ],
-            })
+            messages.append(
+                EasyInputMessageParam(
+                    role="system",
+                    content=[
+                        ResponseInputTextParam(
+                            text=f"==== Reference Message from {message.author.display_name} ({message.author.name}) [id: {message.author.id}] that might be helpful for answering. ====",
+                            type="input_text",
+                        )
+                    ],
+                )
+            )
             reference_msg = await self._process_single_message(message=message.reference.resolved)
             messages.append(reference_msg)
         return messages
 
-    async def _get_current_message(self, message: Message) -> list[dict[str, Any]]:
+    async def _get_current_message(self, message: Message) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ====",
-                    }
+        messages: list[EasyInputMessageParam] = [
+            EasyInputMessageParam(
+                role="system",
+                content=[
+                    ResponseInputTextParam(
+                        text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ====",
+                        type="input_text",
+                    )
                 ],
-            }
+            )
         ]
         current_msg = await self._process_single_message(message=message)
         messages.append(current_msg)
@@ -331,16 +358,17 @@ class ReplyGeneratorCogs(commands.Cog):
         """Handles image generation or editing requests."""
         if message.reference and isinstance(message.reference.resolved, Message):
             own_parts, ref_parts = await asyncio.gather(
-                self._get_attachments(message=message),
-                self._get_attachments(message=message.reference.resolved),
+                self._get_attachment_parts(message=message),
+                self._get_attachment_parts(message=message.reference.resolved),
             )
             attachment_parts = own_parts + ref_parts
         else:
-            attachment_parts = await self._get_attachments(message=message)
+            attachment_parts = await self._get_attachment_parts(message=message)
 
-        data_uris = [
-            part["image_url"] for part in attachment_parts if part.get("type") == "input_image"
-        ]
+        data_uris: list[str] = []
+        for part in attachment_parts:
+            if part.get("type") == "input_image" and (image_url := part.get("image_url")):
+                data_uris.append(image_url)
 
         if data_uris:
             image_bytes_list: list[bytes] = []
@@ -370,29 +398,35 @@ class ReplyGeneratorCogs(commands.Cog):
 
         if not result.data:
             raise ValueError("Image operation returned no results")
-        image_url = convert_base64_to_data_uri(result.data[0].b64_json)
+        image_b64 = result.data[0].b64_json
+        if image_b64 is None:
+            raise ValueError("Image operation returned no b64_json")
+        image_url = convert_base64_to_data_uri(image_b64)
+        image_description_input: list[EasyInputMessageParam] = [
+            EasyInputMessageParam(
+                role="user",
+                content=[
+                    ResponseInputTextParam(
+                        text="Describe this generated image briefly for the Discord reply.",
+                        type="input_text",
+                    ),
+                    ResponseInputImageParam(
+                        image_url=image_url, detail="auto", type="input_image"
+                    ),
+                ],
+            )
+        ]
         image_responses = await self.client.responses.create(
             model=DEFAULT_FAST_MODEL,
             instructions=IMAGE_PROMPT,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "Describe this generated image briefly for the Discord reply.",
-                        },
-                        {"type": "input_image", "image_url": image_url},
-                    ],
-                }
-            ],
+            input=cast("ResponseInputParam", image_description_input),
             reasoning={"effort": "none", "summary": "auto"},
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"mock_testing_fallbacks": False},
         )
         image_description = (image_responses.output_text or "").strip()
-        image_bytes = BytesIO(base64.b64decode(result.data[0].b64_json))
+        image_bytes = BytesIO(base64.b64decode(image_b64))
         image_file = File(fp=image_bytes, filename="generated.png")
 
         await message.reply(
@@ -411,7 +445,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
         """Routes the message to the appropriate handler."""
-        message_list: list[dict[str, Any]] = []
+        message_list: list[EasyInputMessageParam] = []
 
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
@@ -424,7 +458,7 @@ class ReplyGeneratorCogs(commands.Cog):
             responses = await self.client.responses.parse(
                 model=DEFAULT_FAST_MODEL,
                 instructions=ROUTE_PROMPT,
-                input=message_list,
+                input=cast("ResponseInputParam", message_list),
                 text_format=RouteDecision,
                 reasoning={"effort": "none", "summary": "auto"},
                 service_tier="auto",
@@ -518,8 +552,11 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int, context_prompt: str = ""
     ) -> None:
         """Handles generating text replies using history and context."""
-        message_list: list[dict[str, Any]] = [
-            {"role": "developer", "content": [{"type": "input_text", "text": context_prompt}]}
+        message_list: list[EasyInputMessageParam] = [
+            EasyInputMessageParam(
+                role="developer",
+                content=[ResponseInputTextParam(text=context_prompt, type="input_text")],
+            )
         ]
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
@@ -539,7 +576,7 @@ class ReplyGeneratorCogs(commands.Cog):
         responses = await self.client.responses.create(
             model=model,
             instructions=system_prompt,
-            input=message_list,
+            input=cast("ResponseInputParam", message_list),
             reasoning={"effort": "high", "summary": "auto"},
             tools=tools,
             stream=True,
