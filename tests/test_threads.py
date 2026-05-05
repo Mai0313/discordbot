@@ -51,7 +51,6 @@ def test_find_post_with_parents_root_has_no_parents() -> None:
         "https://www.threads.com/@cyj308/post/DVn6dqzjzQf",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?hl=zh-tw",
         "https://www.threads.com/@tpp_taiwan/post/DWWIhcQktP_?xmt=AQF0p6UfiuvtlPVEKZ36kqN7JVKUzuMJUhGDOwfkJK6Rsw",
-        "https://www.threads.com/@lift4life_nickson/post/DXy_VeVmSGK",
         "https://www.threads.com/@babe.0530/post/DXyk3qXGT6o",
     ],
 )

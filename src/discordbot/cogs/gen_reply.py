@@ -18,6 +18,8 @@ from pydantic import BaseModel, ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
+from openai.types.shared.reasoning_effort import ReasoningEffort
+from openai.types.shared_params.reasoning import Reasoning
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -32,11 +34,28 @@ from ._gen_reply.prompts import BELIEF, IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-DEFAULT_FAST_MODEL = "gemini-flash-latest"
-DEFAULT_SLOW_MODEL = "gemini-pro-latest"
-PEAK_SLOW_MODEL = "azure/gpt-5.5"
-DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
-DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+
+class ModelSettings(BaseModel):
+    """Model name and reasoning effort that should be used together."""
+
+    model_name: str
+    model_effort: ReasoningEffort
+
+    @property
+    def reasoning(self) -> Reasoning:
+        """Builds Responses API reasoning options for this model."""
+        return Reasoning(effort=self.model_effort, summary="auto")
+
+
+DEFAULT_FAST_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
+DEFAULT_SLOW_MODEL = ModelSettings(model_name="gemini-pro-latest", model_effort="high")
+PEAK_SLOW_MODEL = ModelSettings(model_name="azure/gpt-5.5", model_effort="high")
+DEFAULT_IMAGE_MODEL = ModelSettings(
+    model_name="gemini-3.1-flash-image-preview", model_effort="none"
+)
+DEFAULT_VIDEO_MODEL = ModelSettings(
+    model_name="veo-3.1-fast-generate-preview", model_effort="none"
+)
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers
@@ -354,7 +373,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video = await self.client.videos.create(
-            model=DEFAULT_VIDEO_MODEL,
+            model=DEFAULT_VIDEO_MODEL.model_name,
             prompt=user_prompt,
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
@@ -395,7 +414,7 @@ class ReplyGeneratorCogs(commands.Cog):
             result = await self.client.images.edit(
                 image=image_bytes_list,
                 prompt=user_prompt,
-                model=DEFAULT_IMAGE_MODEL,
+                model=DEFAULT_IMAGE_MODEL.model_name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -405,7 +424,7 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             result = await self.client.images.generate(
                 prompt=user_prompt,
-                model=DEFAULT_IMAGE_MODEL,
+                model=DEFAULT_IMAGE_MODEL.model_name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -434,10 +453,10 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         ]
         image_responses = await self.client.responses.create(
-            model=DEFAULT_FAST_MODEL,
+            model=DEFAULT_FAST_MODEL.model_name,
             instructions=IMAGE_PROMPT,
             input=cast("ResponseInputParam", image_description_input),
-            reasoning={"effort": "none", "summary": "auto"},
+            reasoning=DEFAULT_FAST_MODEL.reasoning,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"mock_testing_fallbacks": False},
@@ -473,11 +492,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
         try:
             responses = await self.client.responses.parse(
-                model=DEFAULT_FAST_MODEL,
+                model=DEFAULT_FAST_MODEL.model_name,
                 instructions=ROUTE_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=RouteDecision,
-                reasoning={"effort": "none", "summary": "auto"},
+                reasoning=DEFAULT_FAST_MODEL.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
                 extra_body={"mock_testing_fallbacks": False},
@@ -578,13 +597,13 @@ class ReplyGeneratorCogs(commands.Cog):
         # Workaround: gemini-pro-latest is overloaded during UTC 10:00-18:00 on weekdays, swap to the lite model.
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 10 <= now.hour < 17
-        model = PEAK_SLOW_MODEL if is_peak else DEFAULT_SLOW_MODEL
-        tools = get_tools(model=model)
+        model_settings = PEAK_SLOW_MODEL if is_peak else DEFAULT_SLOW_MODEL
+        tools = get_tools(model=model_settings.model_name)
         responses = await self.client.responses.create(
-            model=model,
+            model=model_settings.model_name,
             instructions=system_prompt,
             input=cast("ResponseInputParam", message_list),
-            reasoning={"effort": "high", "summary": "auto"},
+            reasoning=model_settings.reasoning,
             tools=tools,
             stream=True,
             service_tier="auto",

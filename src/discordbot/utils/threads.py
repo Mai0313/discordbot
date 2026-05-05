@@ -687,8 +687,7 @@ class ThreadsDownloader(BaseModel):
 
 
 if __name__ == "__main__":
-    test_url = "https://www.threads.com/@lift4life_nickson/post/DXy_VeVmSGK"
-    # test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
+    test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
     downloader = ThreadsDownloader()
     with downloader.parse(url=test_url) as result:
         console.print(result)
