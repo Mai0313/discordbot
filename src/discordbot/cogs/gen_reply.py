@@ -23,7 +23,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.utils.model_pricing import get_token_rates
 
-from ._gen_reply.prompts import IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
+from ._gen_reply.prompts import BELIEF, IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
@@ -515,10 +515,12 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(
-        self, message: Message, system_prompt: str, history_limit: int
+        self, message: Message, system_prompt: str, history_limit: int, context_prompt: str = ""
     ) -> None:
         """Handles generating text replies using history and context."""
-        message_list: list[dict[str, Any]] = []
+        message_list: list[dict[str, Any]] = [
+            {"role": "developer", "content": [{"type": "input_text", "text": context_prompt}]}
+        ]
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
@@ -600,7 +602,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "📖"
                 await self._handle_message_reply(
-                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=100
+                    message=message,
+                    system_prompt=SUMMARY_PROMPT,
+                    history_limit=100,
+                    context_prompt=BELIEF,
                 )
             else:
                 await self._handle_reaction(
@@ -608,7 +613,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 current_emoji = "❓"
                 await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
+                    message=message,
+                    system_prompt=REPLY_PROMPT,
+                    history_limit=30,
+                    context_prompt=BELIEF,
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
         except Exception as e:
