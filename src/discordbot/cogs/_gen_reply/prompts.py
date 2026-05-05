@@ -21,6 +21,12 @@ Rules:
 * Do NOT restate this BELIEF section or announce that you are using it.
 """
 
+# The sender label rule below is the current mitigation for models starting
+# replies with their own history label, for example
+# "Bot (bot) [id: 123]: ...". The root cause lives in
+# ReplyGeneratorCogs._get_cleaned_content, where bot-authored history rows are
+# still formatted with the same label shape as user messages. Keep this prompt
+# guard unless that formatting is changed.
 COMMON_PROMPT = """
 * You can use Google Search or URL Context tools to get more information if you do not know the answer or information.
 * Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable.
