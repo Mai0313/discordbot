@@ -14,6 +14,13 @@ console = get_console()
 
 
 class DownloadResult(BaseModel):
+    """Represents a downloaded video file.
+
+    Attributes:
+        title: Video title reported by yt-dlp.
+        filename: Local path of the downloaded file.
+    """
+
     title: str
     filename: Path
 
@@ -22,7 +29,11 @@ class DownloadResult(BaseModel):
         self.filename.unlink(missing_ok=True)
 
     def __enter__(self):
-        """Enter the context manager."""
+        """Enters the context manager.
+
+        Returns:
+            This download result.
+        """
         return self
 
     def __exit__(
@@ -31,11 +42,25 @@ class DownloadResult(BaseModel):
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ):
-        """Exit the context manager and cleanup."""
+        """Exits the context manager and deletes the downloaded file.
+
+        Args:
+            exc_type: Exception type raised inside the context, if any.
+            exc_val: Exception value raised inside the context, if any.
+            exc_tb: Traceback raised inside the context, if any.
+        """
         self.unlink()
 
 
 class VideoDownloader(BaseModel):
+    """Downloads videos with yt-dlp and local project defaults.
+
+    Attributes:
+        output_folder: Directory where downloaded files are written.
+        max_retries: Configured maximum retry count.
+        share_resolve_timeout: Timeout in seconds for resolving Facebook share URLs.
+    """
+
     output_folder: str = Field(default="./data/downloads", description="Download folder")
     max_retries: int = Field(default=5)
     share_resolve_timeout: int = Field(
@@ -45,7 +70,11 @@ class VideoDownloader(BaseModel):
     @computed_field
     @cached_property
     def quality_formats(self) -> dict[str, str]:
-        """The map of quality presets to yt-dlp format strings."""
+        """The map of quality presets to yt-dlp format strings.
+
+        Returns:
+            Preset names mapped to yt-dlp format selectors.
+        """
         quality_formats = {
             # Prefer separate video+audio with safe fallbacks to muxed or video-only streams
             "best": "bestvideo*+bestaudio/best/bestvideo*",

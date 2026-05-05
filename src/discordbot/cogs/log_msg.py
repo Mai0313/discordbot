@@ -17,6 +17,12 @@ _sql_engine: Engine = create_engine(url="sqlite:///data/messages.db")
 
 
 class MessageLogger(BaseModel):
+    """Persists a Discord message and its metadata to SQLite.
+
+    Attributes:
+        message: The Discord message being logged.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: Message
 
@@ -37,7 +43,12 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def table_name(self) -> str:
-        """The database table name for this message."""
+        """The database table name for this message.
+
+        Returns:
+            A DM-specific table name for direct messages, otherwise a
+            channel-specific table name.
+        """
         if isinstance(self.message.channel, DMChannel):
             return f"DM_{self.message.author.id}"
         return f"channel_{self.message.channel.id}"
@@ -45,7 +56,12 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def channel_name_or_author_name(self) -> str:
-        """The channel name or author name for DM."""
+        """The channel name or DM author label for this message.
+
+        Returns:
+            A label containing the DM author display name and ID for direct
+            messages, otherwise the channel name and ID.
+        """
         if isinstance(self.message.channel, DMChannel):
             author_name = self.message.author.display_name
             return f"DM_{author_name}_{self.message.author.id}"
@@ -54,7 +70,11 @@ class MessageLogger(BaseModel):
     @computed_field
     @property
     def channel_id_or_author_id(self) -> str:
-        """The channel ID or author ID for DM."""
+        """The channel ID or DM author ID for this message.
+
+        Returns:
+            The author ID for direct messages, otherwise the channel ID.
+        """
         if isinstance(self.message.channel, DMChannel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
@@ -109,6 +129,12 @@ class MessageLogger(BaseModel):
 
 
 class LogMessageCog(commands.Cog):
+    """Logs Discord messages and completed command messages.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+    """
+
     def __init__(self, bot: commands.Bot) -> None:
         """Initializes the LogMessageCog instance.
 

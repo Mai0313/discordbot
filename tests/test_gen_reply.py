@@ -7,18 +7,26 @@ from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 
 
 class FakeReply:
+    """Provides a fake reply object that records edited content."""
+
     def __init__(self) -> None:
+        """Initializes the fake reply with empty content."""
         self.content = ""
 
     async def edit(self, *, content: str) -> None:
+        """Records the replacement content passed to edit."""
         self.content = content
 
 
 class FakeMessage:
+    """Provides a fake message object that records created replies."""
+
     def __init__(self) -> None:
+        """Initializes the fake message with no recorded replies."""
         self.replies: list[FakeReply] = []
 
     async def reply(self, *, content: str) -> FakeReply:
+        """Creates and records a fake reply with the requested content."""
         reply = FakeReply()
         reply.content = content
         self.replies.append(reply)

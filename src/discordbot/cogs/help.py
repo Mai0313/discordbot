@@ -100,6 +100,12 @@ _SECTIONS = ("ai_chat", "threads", "video", "maplestory", "ping")
 
 
 class HelpCogs(commands.Cog):
+    """Provides the localized help slash command.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+    """
+
     def __init__(self, bot: commands.Bot):
         """Initializes the HelpCogs instance.
 

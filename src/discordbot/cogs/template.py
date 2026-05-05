@@ -4,6 +4,12 @@ from nextcord.ext import commands
 
 
 class TemplateCogs(commands.Cog):
+    """Provides simple message reactions and the ping slash command.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+    """
+
     def __init__(self, bot: commands.Bot):
         """Initializes the TemplateCogs instance.
 

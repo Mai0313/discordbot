@@ -170,7 +170,14 @@ class DocsGenerator(BaseModel):
     @computed_field
     @cached_property
     def source_files(self) -> list[Path]:
-        """The list of resolved source files to process."""
+        """The source files selected for documentation generation.
+
+        Returns:
+            Source files under `source_path`, excluding configured entries and
+            default skipped paths when `source_path` is a directory. Returns the
+            single source file when `source_path` is a file, or an empty list
+            when it is neither a valid file nor directory.
+        """
         if self.source_path.is_dir():
             if self.output_path.exists():
                 shutil.rmtree(self.output_path.absolute())

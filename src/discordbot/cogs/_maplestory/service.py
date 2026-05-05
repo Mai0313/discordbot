@@ -95,6 +95,7 @@ class MapleStoryService:
         return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
+        """Loads all MapleStory JSON data and resets derived caches."""
         self._monsters = _load_json(path=data_dir / "monsters.json", model=Monster)
         self._equipment = _load_json(path=data_dir / "equipment.json", model=Equipment)
         self._scrolls = _load_json(path=data_dir / "scrolls.json", model=Scroll)
@@ -145,42 +146,74 @@ class MapleStoryService:
 
     @property
     def monsters(self) -> list[Monster]:
-        """The list of loaded monsters."""
+        """Returns the loaded monsters.
+
+        Returns:
+            The loaded monster models.
+        """
         return self._monsters
 
     @property
     def equipment(self) -> list[Equipment]:
-        """The list of loaded equipment."""
+        """Returns the loaded equipment.
+
+        Returns:
+            The loaded equipment models.
+        """
         return self._equipment
 
     @property
     def scrolls(self) -> list[Scroll]:
-        """The list of loaded scrolls."""
+        """Returns the loaded scrolls.
+
+        Returns:
+            The loaded scroll models.
+        """
         return self._scrolls
 
     @property
     def useable(self) -> list[Useable]:
-        """The list of loaded useable items."""
+        """Returns the loaded useable items.
+
+        Returns:
+            The loaded useable item models.
+        """
         return self._useable
 
     @property
     def npcs(self) -> list[NPC]:
-        """The list of loaded NPCs."""
+        """Returns the loaded NPCs.
+
+        Returns:
+            The loaded NPC models.
+        """
         return self._npcs
 
     @property
     def quests(self) -> list[Quest]:
-        """The list of loaded quests."""
+        """Returns the loaded quests.
+
+        Returns:
+            The loaded quest models.
+        """
         return self._quests
 
     @property
     def maps(self) -> list[MapEntry]:
-        """The list of loaded maps."""
+        """Returns the loaded maps.
+
+        Returns:
+            The loaded map models.
+        """
         return self._maps
 
     @property
     def misc(self) -> list[MiscItem]:
-        """The list of loaded misc items."""
+        """Returns the loaded misc items.
+
+        Returns:
+            The loaded miscellaneous item models.
+        """
         return self._misc
 
     # ── Monster searches ────────────────────────────────────────────
