@@ -12,6 +12,14 @@ URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\
 
 
 class ThreadsCogs(commands.Cog):
+    """Expands Threads links into Discord embeds and media attachments.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+        output_folder: Directory where downloaded Threads media is stored.
+        downloader: Downloader used to parse Threads posts and fetch media.
+    """
+
     def __init__(self, bot: commands.Bot):
         """Initializes the ThreadsCogs instance.
 

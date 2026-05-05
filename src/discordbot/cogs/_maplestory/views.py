@@ -76,7 +76,18 @@ def _resolve_map(service: MapleStoryService, name: str, tr: TranslateFn) -> Embe
 class _ResolverFn(Protocol):
     """Protocol for resolver functions."""
 
-    def __call__(self, service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None: ...
+    def __call__(self, service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
+        """Resolves a search result name into a Discord embed.
+
+        Args:
+            service: Service used to look up MapleStory data.
+            name: Selected result name to resolve.
+            tr: Translation function passed to embed builders.
+
+        Returns:
+            The embed for the selected result, or None when no match is found.
+        """
+        ...
 
 
 _RESOLVERS: dict[str, _ResolverFn] = {
@@ -121,7 +132,12 @@ class MapleDropSearchView(View):
         options=[SelectOption(label="載入中...", value="loading")],
     )
     async def select_result(self, select: Select, interaction: Interaction) -> None:
-        """Handles the selection of a search result."""
+        """Handles the selection of a search result.
+
+        Args:
+            select: Select menu that contains the chosen result value.
+            interaction: Discord interaction that triggered the callback.
+        """
         await interaction.response.defer()
 
         selected = select.values[0]

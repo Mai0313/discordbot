@@ -19,14 +19,23 @@ console = get_console()
 
 
 class ThreadsURL(BaseModel):
-    """Parses and normalises a Threads post URL."""
+    """Parses and normalises a Threads post URL.
+
+    Attributes:
+        raw_url: Original Threads URL provided by the caller.
+    """
 
     raw_url: str
 
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """The cleaned and normalised URL."""
+        """The cleaned and normalised URL.
+
+        Returns:
+            URL with ``threads.com`` hosts normalised to ``www.threads.net`` and
+            query parameters removed.
+        """
         parsed = urlparse(self.raw_url)
         netloc = parsed.netloc
         if netloc in ("www.threads.com", "threads.com"):
@@ -36,7 +45,12 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def post_code(self) -> str:
-        """The post short code extracted from the URL."""
+        """The post short code extracted from the URL.
+
+        Returns:
+            The last path segment from the raw URL, or an empty string for an
+            empty path.
+        """
         parsed = urlparse(self.raw_url)
         path_parts = parsed.path.strip("/").split("/")
         return path_parts[-1] if path_parts else ""
@@ -48,29 +62,67 @@ class ThreadsURL(BaseModel):
 
 
 class User(BaseModel):
+    """Represents a Threads user.
+
+    Attributes:
+        username: User handle.
+        profile_pic_url: Profile picture URL.
+    """
+
     username: str = Field(default="", description="Username handle")
     profile_pic_url: str = Field(default="", description="Profile picture URL")
 
 
 class Caption(BaseModel):
+    """Represents caption text attached to a Threads post.
+
+    Attributes:
+        text: Caption text content.
+    """
+
     text: str = Field(default="", description="Caption text content")
 
 
 class VideoVersion(BaseModel):
+    """Represents an available video rendition.
+
+    Attributes:
+        url: Video file URL.
+    """
+
     url: str = Field(default="", description="Video file URL")
 
 
 class ImageCandidate(BaseModel):
+    """Represents an available image rendition.
+
+    Attributes:
+        url: Image URL.
+    """
+
     url: str = Field(default="", description="Image URL")
 
 
 class ImageVersions2(BaseModel):
+    """Holds available image renditions for a media object.
+
+    Attributes:
+        candidates: Available image resolutions.
+    """
+
     candidates: list[ImageCandidate] = Field(
         default_factory=list, description="Available image resolutions"
     )
 
 
 class CarouselMedia(BaseModel):
+    """Represents one media item in a Threads carousel.
+
+    Attributes:
+        video_versions: Available video renditions.
+        image_versions2: Available image renditions.
+    """
+
     video_versions: list[VideoVersion] | None = Field(
         default=None, description="Available video versions"
     )
@@ -80,6 +132,14 @@ class CarouselMedia(BaseModel):
 
 
 class MediaContainer(BaseModel):
+    """Contains media fields shared by posts and linked inline media.
+
+    Attributes:
+        carousel_media: Carousel media items.
+        video_versions: Available video renditions.
+        image_versions2: Available image renditions.
+    """
+
     carousel_media: list[CarouselMedia] | None = Field(
         default=None, description="Carousel media items"
     )
@@ -92,7 +152,12 @@ class MediaContainer(BaseModel):
 
     @property
     def media_urls(self) -> list[str]:
-        """The list of media URLs extracted from the container."""
+        """The list of media URLs extracted from the container.
+
+        Returns:
+            First media URL from each carousel item, or the first standalone
+            video or image URL, with empty values removed.
+        """
         urls: list[str] = []
         if self.carousel_media:
             for item in self.carousel_media:
@@ -108,27 +173,66 @@ class MediaContainer(BaseModel):
 
 
 class Fragment(BaseModel):
+    """Represents one text fragment from Threads structured text.
+
+    Attributes:
+        plaintext: Plain text content of the fragment.
+    """
+
     plaintext: str = Field(default="", description="Plain text content of the fragment")
 
 
 class TextFragments(BaseModel):
+    """Holds ordered structured text fragments.
+
+    Attributes:
+        fragments: Ordered list of text fragments.
+    """
+
     fragments: list[Fragment] = Field(
         default_factory=list, description="Ordered list of text fragments"
     )
 
 
 class LinkPreviewAttachment(BaseModel):
+    """Represents metadata for a link preview attachment.
+
+    Attributes:
+        title: Title shown in the link preview.
+        image_url: Image shown in the link preview.
+        url: Original link preview URL.
+    """
+
     title: str = Field(default="", description="Title shown in the link preview")
     image_url: str = Field(default="", description="Image shown in the link preview")
     url: str = Field(default="", description="Original link preview URL")
 
 
 class LinkedInlineMedia(MediaContainer):
+    """Represents media attached through a link preview.
+
+    Attributes:
+        code: Linked media short code.
+        caption: Linked media caption.
+    """
+
     code: str = Field(default="", description="Linked media short code")
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
 class TextPostAppInfo(BaseModel):
+    """Represents Threads-specific post metadata and engagement fields.
+
+    Attributes:
+        direct_reply_count: Number of direct replies.
+        repost_count: Number of reposts.
+        quote_count: Number of quote posts.
+        reshare_count: Total reshare count.
+        text_fragments: Structured text fragments with links or mentions.
+        link_preview_attachment: Preview metadata for shared links.
+        linked_inline_media: Inline media attached through a link preview.
+    """
+
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
     repost_count: int | None = Field(default=None, description="Number of reposts")
     quote_count: int | None = Field(default=None, description="Number of quote posts")
@@ -145,7 +249,16 @@ class TextPostAppInfo(BaseModel):
 
 
 class Post(MediaContainer):
-    """Represents a single Threads post parsed from the API JSON."""
+    """Represents a single Threads post parsed from the API JSON.
+
+    Attributes:
+        code: Post short code used in URLs.
+        caption: Post caption.
+        user: Post author.
+        text_post_app_info: Threads-specific post info and engagement metrics.
+        like_count: Number of likes.
+        taken_at: Post creation timestamp as a Unix epoch.
+    """
 
     code: str = Field(default="", description="Post short code used in URLs")
     caption: Caption | None = Field(default=None, description="Post caption")
@@ -160,7 +273,12 @@ class Post(MediaContainer):
 
     @property
     def caption_text(self) -> str:
-        """The extracted caption text or fallback link preview title."""
+        """The extracted caption text or fallback link preview title.
+
+        Returns:
+            Structured text fragments, caption text, link preview title, or an
+            empty string in that priority order.
+        """
         if self.text_post_app_info and self.text_post_app_info.text_fragments:
             fragments_text = "".join(
                 f.plaintext for f in self.text_post_app_info.text_fragments.fragments
@@ -177,37 +295,67 @@ class Post(MediaContainer):
 
     @property
     def author_name(self) -> str:
-        """The username of the post author."""
+        """The username of the post author.
+
+        Returns:
+            Author username, or an empty string when author data is missing.
+        """
         return self.user.username if self.user else ""
 
     @property
     def author_icon_url(self) -> str:
-        """The profile picture URL of the post author."""
+        """The profile picture URL of the post author.
+
+        Returns:
+            Author profile picture URL, or an empty string when author data is
+            missing.
+        """
         return self.user.profile_pic_url if self.user else ""
 
     @property
     def reply_count(self) -> int:
-        """The number of direct replies to the post."""
+        """The number of direct replies to the post.
+
+        Returns:
+            Direct reply count, or 0 when engagement data is missing.
+        """
         return (self.text_post_app_info.direct_reply_count or 0) if self.text_post_app_info else 0
 
     @property
     def repost_count(self) -> int:
-        """The number of reposts."""
+        """The number of reposts.
+
+        Returns:
+            Repost count, or 0 when engagement data is missing.
+        """
         return (self.text_post_app_info.repost_count or 0) if self.text_post_app_info else 0
 
     @property
     def quote_count(self) -> int:
-        """The number of quote posts."""
+        """The number of quote posts.
+
+        Returns:
+            Quote post count, or 0 when engagement data is missing.
+        """
         return (self.text_post_app_info.quote_count or 0) if self.text_post_app_info else 0
 
     @property
     def reshare_count(self) -> int:
-        """The total reshare count."""
+        """The total reshare count.
+
+        Returns:
+            Reshare count, or 0 when engagement data is missing.
+        """
         return (self.text_post_app_info.reshare_count or 0) if self.text_post_app_info else 0
 
     @property
     def media_urls(self) -> list[str]:
-        """The list of media URLs, including linked inline media and link preview images."""
+        """The list of media URLs, including inline media and link preview images.
+
+        Returns:
+            Deduplicated non-empty media URLs from post media, linked inline
+            media, or the link preview image fallback.
+        """
         urls = super().media_urls
         app_info = self.text_post_app_info
         if app_info and app_info.linked_inline_media:
@@ -223,10 +371,22 @@ class Post(MediaContainer):
 
 
 class ThreadItem(BaseModel):
+    """Represents one item in a Threads reply chain.
+
+    Attributes:
+        post: Parsed post for this thread item.
+    """
+
     post: Post | None = Field(default=None)
 
 
 class ThreadData(BaseModel):
+    """Represents Threads reply-chain data extracted from HTML JSON.
+
+    Attributes:
+        thread_items: Ordered thread items from the embedded JSON.
+    """
+
     thread_items: list[ThreadItem] = Field(default_factory=list)
 
     def find_post_with_parents(self, post_code: str) -> tuple[Post | None, list[Post]]:
@@ -257,7 +417,24 @@ class ThreadData(BaseModel):
 
 
 class ThreadsOutput(BaseModel):
-    """Output model for Threads downloader."""
+    """Output model for Threads downloader.
+
+    Attributes:
+        text: Extracted post text.
+        url: Source Threads URL.
+        image_urls: Image URLs extracted from the post.
+        video_urls: Video URLs extracted from the post.
+        video_paths: Local paths of downloaded videos.
+        author_name: Post author username.
+        author_icon_url: Post author profile picture URL.
+        like_count: Number of likes.
+        reply_count: Number of direct replies.
+        repost_count: Number of reposts.
+        quote_count: Number of quote posts.
+        reshare_count: Total reshare count.
+        taken_at: Post creation time.
+        parents: Ancestor posts in the reply chain, ordered oldest to newest.
+    """
 
     text: str = Field(default="")
     url: str = Field(default="")
@@ -284,15 +461,27 @@ class ThreadsOutput(BaseModel):
         for parent in self.parents:
             parent.unlink()
 
-    def __enter__(self):  # noqa: D105
+    def __enter__(self):
+        """Enters the context manager.
+
+        Returns:
+            This output object.
+        """
         return self
 
-    def __exit__(  # noqa: D105
+    def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ):
+        """Exits the context manager and deletes downloaded video files.
+
+        Args:
+            exc_type: Exception type raised inside the context, if any.
+            exc_val: Exception value raised inside the context, if any.
+            exc_tb: Traceback raised inside the context, if any.
+        """
         self.unlink()
 
 
@@ -306,7 +495,11 @@ _SJS_PATTERN = re.compile(
 
 
 class ThreadsDownloader(BaseModel):
-    """A downloader for extracting text and media from Threads.net posts."""
+    """A downloader for extracting text and media from Threads.net posts.
+
+    Attributes:
+        output_folder: Directory where downloaded media files are written.
+    """
 
     output_folder: str = Field(default="./data/threads")
 

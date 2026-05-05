@@ -40,9 +40,17 @@ def get_pil_image(image_file: str) -> Image.Image:
 
 
 @overload
-def get_image_data(image_file: str, use_b64: Literal[True] = ...) -> str: ...
+def get_image_data(image_file: str, use_b64: Literal[True] = ...) -> str:  # noqa: D418
+    """Returns image data as a base64 string."""
+    ...
+
+
 @overload
-def get_image_data(image_file: str, use_b64: Literal[False]) -> bytes: ...
+def get_image_data(image_file: str, use_b64: Literal[False]) -> bytes:  # noqa: D418
+    """Returns image data as raw bytes."""
+    ...
+
+
 def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
     """Returns the underlying bytes of an image (or base64-encoded form).
 
@@ -57,6 +65,13 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
         image_file: URL or data URI.
         use_b64: When ``True`` (default) return a base64 ``str``; when ``False``
             return raw ``bytes``.
+
+    Returns:
+        Base64-encoded image data when ``use_b64`` is True, otherwise raw image
+        bytes.
+
+    Raises:
+        ValueError: ``image_file`` is not a supported URL or image data URI.
     """
     if match := _DATA_URI_RE.match(string=image_file):
         payload = image_file[match.end() :]
@@ -76,6 +91,12 @@ def convert_base64_to_data_uri(base64_image: str) -> str:
 
     Sniffs the MIME type from the first 12 decoded bytes (enough for every
     format we recognise). Falls back to ``image/jpeg`` for unknown payloads.
+
+    Args:
+        base64_image: Base64-encoded image payload without a data URI prefix.
+
+    Returns:
+        A data URI containing the detected image MIME type and original payload.
     """
     header = base64.b64decode(s=base64_image[:16])
     if header.startswith(b"\xff\xd8\xff"):

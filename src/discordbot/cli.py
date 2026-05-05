@@ -16,6 +16,13 @@ from discordbot.typings.config import DiscordConfig
 
 
 class DiscordBot(commands.Bot):
+    """Discord bot configured with project-specific intents and cogs.
+
+    Attributes:
+        discord_config: Runtime Discord configuration loaded from settings.
+        logger: Logger used by Nextcord state events.
+    """
+
     def __init__(self) -> None:
         """Initialises the Discord bot with specific intents and configuration."""
         # intents=Intents.default() 只啟用必要的 Intents
@@ -58,7 +65,12 @@ class DiscordBot(commands.Bot):
         return await super().on_guild_available(guild)
 
     async def get_cogs_names(self) -> list[str]:
-        """Returns a list of cog module names found in the cogs directory."""
+        """Returns cog module names found in the cogs directory.
+
+        Returns:
+            Fully-qualified module names for non-dunder Python files under the
+            cogs directory.
+        """
         cog_path = anyio.Path("./src/discordbot/cogs")
         cog_files = [
             f"discordbot.cogs.{f.stem}"

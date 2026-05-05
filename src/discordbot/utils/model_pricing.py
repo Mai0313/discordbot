@@ -70,6 +70,12 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
     Prefers the priority-tier rates when present (e.g. Gemini's burst pricing
     via the ``*_priority`` suffix). Returns ``(0.0, 0.0)`` for unknown models
     so the reply footer shows ``$0.00000000`` instead of an estimate.
+
+    Args:
+        model_name: Model identifier to look up in the cached price table.
+
+    Returns:
+        Input and output token rates for the model.
     """
     info = _load_model_prices().get(model_name) or {}
     default_input = info.get("input_cost_per_token", 0)

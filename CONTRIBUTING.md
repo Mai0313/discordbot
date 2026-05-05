@@ -46,7 +46,7 @@ src/discordbot/
 │   ├── _gen_reply/
 │   │   └── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / HISTORY prompts
 │   ├── help.py              # /help slash command (localized guide)
-│   ├── log_msg.py           # Message logging to SQLite (PostgreSQL ready)
+│   ├── log_msg.py           # Message logging to SQLite
 │   ├── maplestory.py        # /maple_* slash commands (8 commands)
 │   ├── _maplestory/
 │   │   ├── constants.py     # Display templates for stats
@@ -59,17 +59,17 @@ src/discordbot/
 │   └── video.py             # /download_video slash command
 ├── typings/                 # Pydantic configuration models
 │   ├── config.py            # DiscordConfig
-│   ├── database.py          # SQLite / PostgreSQL / Redis configs
 │   └── llm.py               # LLM endpoint config (OPENAI_BASE_URL / OPENAI_API_KEY)
 └── utils/
     ├── downloader.py        # yt-dlp video downloader wrapper
+    ├── images.py            # Image URL / data URI conversion helpers
+    ├── model_pricing.py     # LiteLLM model price cache and lookup helpers
     └── threads.py           # Threads.net content scraper
 
 scripts/
 ├── artale_data.py           # Scrape Artale MapleStory data from artalemaplestory.com
 ├── gen_docs.py              # Generate mkdocstrings reference pages
 ├── gpt.py                   # Azure GPT-5.4 sandbox comparing chat.completions vs responses API
-├── migrate.py               # Database migration helper (SQLite → PostgreSQL)
 ├── prompt_dev.py            # Prompt iteration / evaluation sandbox (OpenAI / Gemini / Anthropic SDK)
 ├── route_dev.py             # Route-classifier sandbox — client.responses.parse + Pydantic RouteDecision
 ├── test_fallback.py         # Sandbox for testing Litellm fallback behavior
@@ -189,7 +189,6 @@ uv run pytest -vv
 | ---------------------------------------- | --------------------------------------------------------------------- |
 | `uv run discordbot`                      | Run the bot                                                           |
 | `uv run python scripts/artale_data.py`   | Update MapleStory Artale data from `artalemaplestory.com`             |
-| `uv run python scripts/migrate.py`       | Migrate logged messages from SQLite to PostgreSQL                     |
 | `uv run python scripts/prompt_dev.py`    | Iterate prompts against OpenAI / Gemini / Anthropic SDKs              |
 | `uv run python scripts/gpt.py`           | Azure GPT-5.4 sandbox — compare chat.completions vs responses APIs    |
 | `uv run python scripts/route_dev.py`     | Route-classifier sandbox using `responses.parse` + Pydantic           |

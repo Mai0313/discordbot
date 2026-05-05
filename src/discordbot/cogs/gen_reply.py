@@ -100,10 +100,23 @@ def get_tools(model: str) -> list[ToolParam]:
 
 
 class RouteDecision(BaseModel):
+    """Structured routing decision returned by the model.
+
+    Attributes:
+        decision: The reply mode selected for the incoming Discord message.
+    """
+
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
 
 
 class ReplyGeneratorCogs(commands.Cog):
+    """Generates AI replies for Discord messages.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+        config: The LLM client configuration loaded for reply generation.
+    """
+
     def __init__(self, bot: commands.Bot) -> None:
         """Initializes the ReplyGeneratorCogs instance.
 
@@ -115,7 +128,11 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client instance."""
+        """The cached AsyncOpenAI client instance.
+
+        Returns:
+            A configured AsyncOpenAI client reused across reply requests.
+        """
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 

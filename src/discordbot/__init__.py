@@ -17,12 +17,24 @@ class _TeeStream:
     """A stream that writes to both a console and a file, stripping ANSI codes for the file."""
 
     def __init__(self, console: TextIO, file: TextIO) -> None:
-        """Initialises the _TeeStream with console and file streams."""
+        """Initialises the stream wrapper.
+
+        Args:
+            console: Stream that receives the original data.
+            file: Stream that receives data with ANSI escape sequences removed.
+        """
         self._console = console
         self._file = file
 
     def write(self, data: str) -> int:
-        """Writes data to both streams."""
+        """Writes data to both streams and flushes them.
+
+        Args:
+            data: Text to write.
+
+        Returns:
+            The length of the original text.
+        """
         self._console.write(data)
         self._file.write(_ANSI_ESCAPE.sub(repl="", string=data))
         self._console.flush()
@@ -35,7 +47,11 @@ class _TeeStream:
         self._file.flush()
 
     def isatty(self) -> bool:
-        """Returns True if the console stream is a TTY."""
+        """Returns whether the console stream is attached to a TTY.
+
+        Returns:
+            True if the console stream reports that it is a TTY.
+        """
         return self._console.isatty()
 
 

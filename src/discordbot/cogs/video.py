@@ -6,6 +6,12 @@ from discordbot.utils.downloader import VideoDownloader
 
 
 class VideoCogs(commands.Cog):
+    """Downloads videos from slash command requests.
+
+    Attributes:
+        bot: The Discord bot instance that owns this cog.
+    """
+
     def __init__(self, bot: commands.Bot):
         """Initializes the VideoCogs instance.
 

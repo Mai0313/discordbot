@@ -35,7 +35,17 @@ SITE = "https://www.artalemaplestory.com"
 class TranslateFn(Protocol):
     """Protocol for translation functions."""
 
-    def __call__(self, category: str, name: str) -> str: ...
+    def __call__(self, category: str, name: str) -> str:
+        """Translates a MapleStory entity name for a category.
+
+        Args:
+            category: Translation category to look up.
+            name: Source name to translate.
+
+        Returns:
+            The translated name, or an implementation-defined fallback.
+        """
+        ...
 
 
 def _identity(category: str, name: str) -> str:
