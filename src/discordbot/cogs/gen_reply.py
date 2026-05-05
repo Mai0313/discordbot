@@ -524,10 +524,11 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Handles generating text replies using history and context."""
         message_list: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(
-                role="user",
-                content=[ResponseInputTextParam(text=context_prompt, type="input_text")],
-            )
+            # Temp skip since this belief is too strong in responses and causes refusal to answer; revisit after prompt tuning.
+            # EasyInputMessageParam(
+            #     role="user",
+            #     content=[ResponseInputTextParam(text=context_prompt, type="input_text")],
+            # )
         ]
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
