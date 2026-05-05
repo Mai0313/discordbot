@@ -475,13 +475,10 @@ class ReplyGeneratorCogs(commands.Cog):
             return "QA"
 
     @staticmethod
-    def _calculate_cost(
-        model_name: str, input_tokens: int, output_tokens: int, reasoning_tokens: int
-    ) -> float:
+    def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
         """Calculates the cost of a model response based on token usage."""
         input_rate, output_rate = get_token_rates(model_name=model_name)
-        total_output_tokens = output_tokens + reasoning_tokens
-        return input_rate * input_tokens + output_rate * total_output_tokens
+        return input_rate * input_tokens + output_rate * output_tokens
 
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self, responses: AsyncStream[ResponseStreamEvent], message: Message
@@ -494,7 +491,6 @@ class ReplyGeneratorCogs(commands.Cog):
         model_name = ""
         input_tokens = 0
         output_tokens = 0
-        reasoning_tokens = 0
         used_web_search = False
 
         async for response in responses:
@@ -503,9 +499,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 if response.response.usage:
                     input_tokens = response.response.usage.input_tokens
                     output_tokens = response.response.usage.output_tokens
-                    reasoning_tokens = (
-                        response.response.usage.output_tokens_details.reasoning_tokens
-                    )
             elif response.type == "response.output_text.annotation.added":
                 used_web_search = True
             elif response.type == "response.output_text.delta":
@@ -526,10 +519,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     counted_content = 0
 
         cost = self._calculate_cost(
-            model_name=model_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            reasoning_tokens=reasoning_tokens,
+            model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
