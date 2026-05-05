@@ -525,7 +525,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Handles generating text replies using history and context."""
         message_list: list[EasyInputMessageParam] = [
             EasyInputMessageParam(
-                role="developer",
+                role="user",
                 content=[ResponseInputTextParam(text=context_prompt, type="input_text")],
             )
         ]
