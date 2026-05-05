@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 DEFAULT_FAST_MODEL = "gemini-flash-latest"
 DEFAULT_SLOW_MODEL = "gemini-pro-latest"
-PEAK_SLOW_MODEL = "gemini-pro-latest"
+PEAK_SLOW_MODEL = "azure/gpt-5.5"
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 
