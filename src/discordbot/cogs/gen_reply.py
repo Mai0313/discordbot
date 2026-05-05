@@ -1,7 +1,5 @@
 from io import BytesIO
 import re
-import ast
-import json
 import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
@@ -14,12 +12,10 @@ from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.tool_param import ToolParam
-from openai.types.shared.reasoning_effort import ReasoningEffort
-from openai.types.shared_params.reasoning import Reasoning
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -27,24 +23,19 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
+from discordbot.typings.models import ModelSettings, RouteDecision
 from discordbot.utils.model_pricing import get_token_rates
-
-from ._gen_reply.prompts import BELIEF, IMAGE_PROMPT, REPLY_PROMPT, ROUTE_PROMPT, SUMMARY_PROMPT
+from discordbot.cogs._gen_reply.prompts import (
+    BELIEF,
+    IMAGE_PROMPT,
+    REPLY_PROMPT,
+    ROUTE_PROMPT,
+    SUMMARY_PROMPT,
+)
+from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
-
-
-class ModelSettings(BaseModel):
-    """Model name and reasoning effort that should be used together."""
-
-    model_name: str
-    model_effort: ReasoningEffort
-
-    @property
-    def reasoning(self) -> Reasoning:
-        """Builds Responses API reasoning options for this model."""
-        return Reasoning(effort=self.model_effort, summary="auto")
 
 
 DEFAULT_FAST_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
@@ -61,42 +52,6 @@ DEFAULT_VIDEO_MODEL = ModelSettings(
 # which stops Discord from rendering the actual mention. Strip those wrappers
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
-
-# LiteLLM surfaces upstream provider errors as a chain like
-# `litellm.X: litellm.Y: VertexException - b'{"error": {"message": "..."}}'`,
-# where the provider's actual JSON body is embedded as a Python bytes literal.
-_BYTES_LITERAL_RE = re.compile(pattern=r"b'((?:[^'\\]|\\.)*)'", flags=re.DOTALL)
-
-
-def _extract_friendly_error(exc: BaseException) -> str:
-    """Surface the innermost provider error message from a LiteLLM-wrapped APIError.
-
-    OpenAI's streaming layer constructs `APIError(message=error["message"], ...)`
-    from the upstream SSE event; when LiteLLM is the upstream, that `message` is
-    the wrapped exception chain with the provider response stuffed inside as a
-    `b'...'` Python literal. Walk every embedded bytes literal, parse it as
-    JSON, and return `error.message` (or top-level `message`). Fall back to
-    `str(exc)` when nothing parses, so we never lose the original signal.
-    """
-    raw = str(exc)
-    for match in _BYTES_LITERAL_RE.finditer(string=raw):
-        try:
-            decoded = ast.literal_eval(node_or_string=match.group(0)).decode(
-                encoding="utf-8", errors="replace"
-            )
-            data = json.loads(s=decoded)
-        except (SyntaxError, ValueError, TypeError, AttributeError):
-            continue
-        if isinstance(data, dict):
-            error = data.get("error")
-            if isinstance(error, dict):
-                inner = error.get("message")
-                if isinstance(inner, str) and inner:
-                    return inner
-            top = data.get("message")
-            if isinstance(top, str) and top:
-                return top
-    return raw
 
 
 def get_tools(model: str) -> list[ToolParam]:
@@ -116,16 +71,6 @@ def get_tools(model: str) -> list[ToolParam]:
             {"type": "web_fetch_20260209", "name": "web_fetch"},
         ]
     return [{"type": "web_search"}]
-
-
-class RouteDecision(BaseModel):
-    """Structured routing decision returned by the model.
-
-    Attributes:
-        decision: The reply mode selected for the incoming Discord message.
-    """
-
-    decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -690,7 +635,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 error_embed = Embed(
                     title="Something went wrong",
-                    description=f"```\n{_extract_friendly_error(exc=e)}\n```",
+                    description=f"```\n{extract_friendly_error(exc=e)}\n```",
                     color=0xED4245,
                 )
                 error_embed.set_footer(text=type(e).__name__)
