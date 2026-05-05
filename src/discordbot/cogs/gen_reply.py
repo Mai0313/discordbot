@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 DEFAULT_FAST_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
 DEFAULT_SLOW_MODEL = ModelSettings(model_name="gemini-pro-latest", model_effort="high")
-PEAK_SLOW_MODEL = ModelSettings(model_name="gemini-flash-latest", model_effort="high")
+PEAK_SLOW_MODEL = ModelSettings(model_name="azure/gpt-5.5", model_effort="high")
 DEFAULT_IMAGE_MODEL = ModelSettings(model_name="gemini-3.1-flash-image-preview", model_effort=None)
 DEFAULT_VIDEO_MODEL = ModelSettings(model_name="veo-3.1-fast-generate-preview", model_effort=None)
 
@@ -191,8 +191,12 @@ class ReplyGeneratorCogs(commands.Cog):
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             if content_type.startswith("image/"):
                 _content_parts.append(await self._image_to_part(source=attachment))
+            elif content_type.startswith("video/"):
+                # temp disable video attachments since gpt-5.5 doesn't support them.
+                # _content_parts.append(await self._attachment_to_part(attachment=attachment))
+                pass
             else:
-                # video/*, application/pdf, text/plain, application/json, etc.
+                # application/pdf, text/plain, application/json, etc.
                 _content_parts.append(await self._attachment_to_part(attachment=attachment))
 
         for sticker in message.stickers:
