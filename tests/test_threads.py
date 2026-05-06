@@ -56,7 +56,9 @@ def test_find_post_with_parents_root_has_no_parents() -> None:
 )
 def test_parse(downloader: ThreadsDownloader, url: str) -> None:
     """Verifies that parsing valid Threads URLs returns expected post data."""
-    with downloader.parse(url=url) as output:
-        assert output.text or output.image_urls or output.video_urls, "post should have content"
-        assert output.author_name, "author_name should not be empty"
-        assert output.taken_at is not None, "taken_at should not be None"
+    with downloader.parse(url=url) as results:
+        assert results, "should yield at least one post"
+        target = results[-1]
+        assert target.text or target.image_urls or target.video_urls, "post should have content"
+        assert target.author_name, "author_name should not be empty"
+        assert target.taken_at is not None, "taken_at should not be None"

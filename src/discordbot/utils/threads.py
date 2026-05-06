@@ -1,10 +1,11 @@
 import re
 import json
-import types
 from pathlib import Path
 from datetime import UTC, datetime
 from functools import cached_property
+import contextlib
 from urllib.parse import urlparse
+from collections.abc import Iterator
 
 from rich import get_console
 from pydantic import Field, BaseModel, computed_field
@@ -417,7 +418,7 @@ class ThreadData(BaseModel):
 
 
 class ThreadsOutput(BaseModel):
-    """Output model for Threads downloader.
+    """Output model for a single Threads post.
 
     Attributes:
         text: Extracted post text.
@@ -433,7 +434,6 @@ class ThreadsOutput(BaseModel):
         quote_count: Number of quote posts.
         reshare_count: Total reshare count.
         taken_at: Post creation time.
-        parents: Ancestor posts in the reply chain, ordered oldest to newest.
     """
 
     text: str = Field(default="")
@@ -449,40 +449,11 @@ class ThreadsOutput(BaseModel):
     quote_count: int = Field(default=0)
     reshare_count: int = Field(default=0)
     taken_at: datetime | None = Field(default=None, description="Post creation time")
-    parents: list["ThreadsOutput"] = Field(
-        default_factory=list,
-        description="Ancestor posts in the reply chain, ordered oldest (root) → newest (direct parent)",
-    )
 
     def unlink(self) -> None:
-        """Deletes downloaded video files for this post and its parents."""
+        """Deletes downloaded video files for this post."""
         for path in self.video_paths:
             path.unlink(missing_ok=True)
-        for parent in self.parents:
-            parent.unlink()
-
-    def __enter__(self):
-        """Enters the context manager.
-
-        Returns:
-            This output object.
-        """
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ):
-        """Exits the context manager and deletes downloaded video files.
-
-        Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
-        """
-        self.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +597,7 @@ class ThreadsDownloader(BaseModel):
             return f"https://www.threads.com/@{username}/post/{code}"
         return ""
 
-    def _build_output(
-        self, post: Post, url: str, *, download: bool, parents: list[ThreadsOutput] | None = None
-    ) -> ThreadsOutput:
+    def _build_output(self, post: Post, url: str, *, download: bool) -> ThreadsOutput:
         """Builds a ThreadsOutput object from a Post object."""
         post_code = post.code or "unknown"
         image_urls: list[str] = []
@@ -663,31 +632,42 @@ class ThreadsDownloader(BaseModel):
             quote_count=post.quote_count,
             reshare_count=post.reshare_count,
             taken_at=taken_at,
-            parents=parents or [],
         )
 
-    def parse(self, url: str) -> ThreadsOutput:
-        """Parses a Threads post URL and returns the extracted data.
+    @contextlib.contextmanager
+    def parse(self, url: str) -> Iterator[list[ThreadsOutput]]:
+        """Parses a Threads post URL and yields the reply chain.
+
+        The yielded list is ordered ``[root, ..., direct_parent, target]``. The
+        target post (last element) has its videos downloaded into
+        ``output_folder``; ancestor posts do not. Downloaded video files are
+        removed when the context manager exits.
 
         Args:
             url: The Threads post URL.
 
-        Returns:
-            A ThreadsOutput instance containing the extracted data.
+        Yields:
+            Ordered posts in the reply chain. Empty when no post is found.
         """
         post, parent_posts = self.extract_post_data(url=url)
-        if not post:
-            return ThreadsOutput()
-
-        parents = [
-            self._build_output(post=parent, url=self._post_url(post=parent), download=False)
-            for parent in parent_posts
-        ]
-        return self._build_output(post=post, url=url, download=True, parents=parents)
+        results: list[ThreadsOutput] = []
+        if post:
+            for parent in parent_posts:
+                results.append(
+                    self._build_output(
+                        post=parent, url=self._post_url(post=parent), download=False
+                    )
+                )
+            results.append(self._build_output(post=post, url=url, download=True))
+        try:
+            yield results
+        finally:
+            for output in results:
+                output.unlink()
 
 
 if __name__ == "__main__":
-    test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
+    test_url = "https://www.threads.com/@allenlen0926/post/DVoRoGRmpI7?hl=zh-tw"
     downloader = ThreadsDownloader()
-    with downloader.parse(url=test_url) as result:
-        console.print(result)
+    with downloader.parse(url=test_url) as results:
+        console.print(results)

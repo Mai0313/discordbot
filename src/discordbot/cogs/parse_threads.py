@@ -75,18 +75,23 @@ class ThreadsCogs(commands.Cog):
         embed.set_footer(text=" | ".join(footer_parts))
         return embed
 
-    def _build_embeds(self, result: ThreadsOutput) -> list[Embed]:
-        """Builds a list of embeds for a Threads post and its parents."""
-        # Discord caps a single message at 10 embeds. We always keep the current post's main
+    def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
+        """Builds a list of embeds for a Threads reply chain.
+
+        Args:
+            results: Ordered chain ``[root, ..., direct_parent, target]``.
+        """
+        # Discord caps a single message at 10 embeds. We always keep the target post's main
         # embed; the rest of the budget is split between ancestor context (oldest → newest)
-        # and extra image embeds for the current post. Context wins over extra images when
-        # the chain is deep — that's the whole point of fetching the chain.
+        # and extra image embeds for the target. Context wins over extra images when the
+        # chain is deep — that's the whole point of fetching the chain.
         max_embeds = 10
         embeds: list[Embed] = []
-        chain_depth = len(result.parents) + 1
+        *parents, target = results
+        chain_depth = len(results)
 
-        for i, parent in enumerate(result.parents):
-            if len(embeds) >= max_embeds - 1:  # leave one slot for the current post's main embed
+        for i, parent in enumerate(parents):
+            if len(embeds) >= max_embeds - 1:  # leave one slot for the target post's main embed
                 break
             parent_embed = self._build_post_embed(
                 output=parent, color=self._gradient_color(index=i, total=chain_depth)
@@ -101,16 +106,16 @@ class ThreadsCogs(commands.Cog):
             embeds.append(parent_embed)
 
         main_embed = self._build_post_embed(
-            output=result, color=self._gradient_color(index=chain_depth - 1, total=chain_depth)
+            output=target, color=self._gradient_color(index=chain_depth - 1, total=chain_depth)
         )
-        if result.image_urls:
-            main_embed.set_image(url=result.image_urls[0])
+        if target.image_urls:
+            main_embed.set_image(url=target.image_urls[0])
         embeds.append(main_embed)
 
-        # Subsequent images of the current post share the same URL so Discord visually groups them.
+        # Subsequent images of the target post share the same URL so Discord visually groups them.
         remaining = max_embeds - len(embeds)
-        for img_url in result.image_urls[1 : 1 + remaining]:
-            extra = Embed(url=result.url)
+        for img_url in target.image_urls[1 : 1 + remaining]:
+            extra = Embed(url=target.url)
             extra.set_image(url=img_url)
             embeds.append(extra)
 
@@ -135,14 +140,15 @@ class ThreadsCogs(commands.Cog):
         await self._handle_reaction(message=message, emoji=current_emoji)
 
         try:
-            with self.downloader.parse(url) as result:
-                if not result.text and not result.video_paths and not result.image_urls:
+            with self.downloader.parse(url) as results:
+                if not results:
                     await self._handle_reaction(
                         message=message, emoji="⚠️", previous_emoji=current_emoji
                     )
                     return
 
-                total_size = sum(f.stat().st_size for f in result.video_paths if f.exists())
+                target = results[-1]
+                total_size = sum(f.stat().st_size for f in target.video_paths if f.exists())
                 # Discord measures the full multipart request body, not just file bytes,
                 # so reserve 1 MiB for the multipart envelope + embeds JSON. Pull the
                 # actual per-guild limit from nextcord (boost tier 2/3 raises it to 50/100 MiB);
@@ -152,8 +158,8 @@ class ThreadsCogs(commands.Cog):
 
                 if (
                     total_size > max_size
-                    or len(result.video_paths) + len(result.image_urls) > 10
-                    or len(result.text) > 4096
+                    or len(target.video_paths) + len(target.image_urls) > 10
+                    or len(target.text) > 4096
                 ):
                     await self._handle_reaction(
                         message=message, emoji="⚠️", previous_emoji=current_emoji
@@ -162,11 +168,11 @@ class ThreadsCogs(commands.Cog):
 
                 files = [
                     File(fp=str(path), filename=path.name)
-                    for path in result.video_paths
+                    for path in target.video_paths
                     if path.exists()
                 ]
 
-                embeds = self._build_embeds(result=result)
+                embeds = self._build_embeds(results=results)
 
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
