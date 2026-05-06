@@ -21,7 +21,6 @@ uv run pre-commit run -a              # the canonical “is this OK to ship” c
 uv run ruff check . --fix
 uv run ruff format .
 uv run mypy src
-uv run ty check src                   # Astral's type checker; most rules set to error
 
 # Make shortcuts
 make fmt           # == pre-commit run -a
