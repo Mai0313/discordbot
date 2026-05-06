@@ -28,16 +28,16 @@ config = LLMConfig()
 def use_oai() -> None:
     """Tests Gemini model via OpenAI SDK with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = "gemini-3.1-pro-preview"
-    tools: list[ChatCompletionToolUnionParam] = ModelSettings(name=model, effort=None).tools
+    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
+    tools: list[ChatCompletionToolUnionParam] = model.tools
     start = time.time()
     responses = client.chat.completions.create(
-        model=model,
+        model=model.name,
         messages=[
             {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
             {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
         ],
-        reasoning_effort="medium",
+        reasoning_effort=model.effort,
         stream=True,
         stream_options={"include_usage": True},
         tools=tools,
@@ -56,16 +56,15 @@ def use_oai() -> None:
 def use_oai_responses() -> None:
     """Tests Gemini model via OpenAI Responses API with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = "gemini-3.1-pro-preview"
-    tools = ModelSettings(name=model, effort=None).tools
+    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
     start = time.time()
     responses = client.responses.create(
-        model=model,
+        model=model.name,
         instructions=REPLY_PROMPT,
         input=[{"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]}],
-        reasoning={"effort": "medium", "summary": "auto"},
+        reasoning=model.reasoning,
         stream=True,
-        tools=tools,
+        tools=model.tools,
         extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
@@ -91,15 +90,18 @@ def use_gemini() -> None:
             base_url=config.base_url, extra_body={"mock_testing_fallbacks": False}
         ),
     )
+    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
     start = time.time()
     responses = client.models.generate_content_stream(
-        model="gemini-3.1-pro-preview",
+        model=model.name,
         contents=[
             {"role": "user", "parts": [{"text": REPLY_PROMPT}]},
             {"role": "user", "parts": [{"text": "為何 37 是質數?"}]},
         ],
         config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(include_thoughts=True, thinking_level="MEDIUM"),
+            thinking_config=ThinkingConfig(
+                include_thoughts=True, thinking_level=model.effort.upper()
+            ),
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
     )
@@ -122,11 +124,10 @@ def use_gemini() -> None:
 def use_anthropic() -> None:
     """Tests Anthropic model via Anthropic SDK with streaming and tools."""
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
-    model = "claude-haiku-4-5"
-    tools = ModelSettings(name=model, effort=None).tools
+    model = ModelSettings(name="claude-haiku-4-5", effort="medium")
     start = time.time()
     with client.messages.stream(
-        model=model,
+        model=model.name,
         max_tokens=16000,
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
@@ -134,7 +135,7 @@ def use_anthropic() -> None:
             {"role": "user", "content": REPLY_PROMPT},
             {"role": "user", "content": "為何 37 是質數?"},
         ],
-        tools=tools,
+        tools=model.tools,
     ) as responses:
         model_name = ""
         for response in responses:
