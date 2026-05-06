@@ -83,3 +83,25 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
     default_output = info.get("output_cost_per_token", 0)
     output_rate = info.get("output_cost_per_token_priority", default_output)
     return float(input_rate), float(output_rate)
+
+
+def get_supported_modalities(model_name: str) -> set[str]:
+    """Returns the input modalities accepted by ``model_name``.
+
+    Reads ``supported_modalities`` from the cached LiteLLM price table. The
+    field is unevenly populated upstream (Claude entries omit it entirely,
+    some Gemini variants only set the per-modality booleans), so when it is
+    missing or empty we default to ``{"text", "image"}`` — the safe baseline
+    that virtually every modern multimodal LLM accepts.
+
+    Args:
+        model_name: Model identifier to look up in the cached price table.
+
+    Returns:
+        Set of modality strings (e.g. ``{"text", "image", "audio", "video"}``).
+    """
+    info = _load_model_prices().get(model_name) or {}
+    modalities = info.get("supported_modalities") or []
+    if not modalities:
+        return {"text", "image"}
+    return set(modalities)

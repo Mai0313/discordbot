@@ -92,19 +92,19 @@ class ReplyGeneratorCogs(commands.Cog):
     @property
     def image_model(self) -> ModelSettings:
         """The image generation/edit model used by `images.generate` and `images.edit`."""
-        image_model = ModelSettings(model_name="gemini-3.1-flash-image-preview", model_effort=None)
+        image_model = ModelSettings(name="gemini-3.1-flash-image-preview", effort=None)
         return image_model
 
     @property
     def video_model(self) -> ModelSettings:
         """The video generation model used by `videos.create`."""
-        video_model = ModelSettings(model_name="veo-3.1-fast-generate-preview", model_effort=None)
+        video_model = ModelSettings(name="veo-3.1-fast-generate-preview", effort=None)
         return video_model
 
     @property
     def fast_model(self) -> ModelSettings:
         """The fast model used for routing decisions and image captioning."""
-        fast_model = ModelSettings(model_name="gemini-flash-latest", model_effort="none")
+        fast_model = ModelSettings(name="gemini-flash-latest", effort="none")
         return fast_model
 
     @property
@@ -113,8 +113,8 @@ class ReplyGeneratorCogs(commands.Cog):
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 10 <= now.hour < 17
         if is_peak:
-            return ModelSettings(model_name="gemini-3.1-flash-lite-preview", model_effort="high")
-        return ModelSettings(model_name="gemini-pro-latest", model_effort="high")
+            return ModelSettings(name="gemini-3.1-flash-lite-preview", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     async def _get_user_prompt(self, content: str) -> str:
         """Removes the bot mention from the content and strips whitespace."""
@@ -204,7 +204,15 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_attachment_parts(
         self, message: Message
     ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
-        """Extracts attachment content parts from a message."""
+        """Extracts attachment content parts from a message.
+
+        Video attachments are skipped when the slow model (the one that
+        actually consumes the heaviest payload) does not accept them; routing
+        and image-edit paths inherit the same gate, which is fine because the
+        former classifies intent without inspecting frames and the latter
+        downstream-filters to ``input_image`` anyway.
+        """
+        modalities = self.slow_model.input_modalities
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
@@ -212,7 +220,11 @@ class ReplyGeneratorCogs(commands.Cog):
             if content_type.startswith("image/"):
                 _content_parts.append(await self._image_to_part(source=attachment))
             elif content_type.startswith("video/"):
-                # Only Gemini models support video input, if using gpt or claude, we need to skip this.
+                if "video" not in modalities:
+                    logfire.warn(
+                        f"Skipping video attachment for {self.slow_model.name}: {attachment.filename}"
+                    )
+                    continue
                 _content_parts.append(await self._attachment_to_part(attachment=attachment))
             else:
                 # application/pdf, text/plain, application/json, etc.
@@ -337,7 +349,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video = await self.client.videos.create(
-            model=self.video_model.model_name,
+            model=self.video_model.name,
             prompt=user_prompt,
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
@@ -378,7 +390,7 @@ class ReplyGeneratorCogs(commands.Cog):
             result = await self.client.images.edit(
                 image=image_bytes_list,
                 prompt=user_prompt,
-                model=self.image_model.model_name,
+                model=self.image_model.name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -388,7 +400,7 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             result = await self.client.images.generate(
                 prompt=user_prompt,
-                model=self.image_model.model_name,
+                model=self.image_model.name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -417,7 +429,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         ]
         image_responses = await self.client.responses.create(
-            model=self.fast_model.model_name,
+            model=self.fast_model.name,
             instructions=IMAGE_PROMPT,
             input=cast("ResponseInputParam", image_description_input),
             reasoning=self.fast_model.reasoning,
@@ -456,7 +468,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         try:
             responses = await self.client.responses.parse(
-                model=self.fast_model.model_name,
+                model=self.fast_model.name,
                 instructions=ROUTE_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=RouteDecision,
@@ -559,9 +571,9 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        tools = get_tools(model=self.slow_model.model_name)
+        tools = get_tools(model=self.slow_model.name)
         responses = await self.client.responses.create(
-            model=self.slow_model.model_name,
+            model=self.slow_model.name,
             instructions=system_prompt,
             input=cast("ResponseInputParam", message_list),
             reasoning=self.slow_model.reasoning,
