@@ -15,7 +15,6 @@ from nextcord import File, Embed, Message, Attachment, StickerItem
 from pydantic import ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
-from openai.types.responses.tool_param import ToolParam
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -41,25 +40,6 @@ if TYPE_CHECKING:
 # which stops Discord from rendering the actual mention. Strip those wrappers
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
-
-
-def get_tools(model: str) -> list[ToolParam]:
-    """Returns the tools available for the specified model.
-
-    Args:
-        model: The name of the model.
-
-    Returns:
-        A list of tools supported by the model.
-    """
-    if "gemini" in model:
-        return [{"googleSearch": {}}, {"urlContext": {}}]
-    if "claude" in model:
-        return [
-            {"type": "web_search_20260209", "name": "web_search"},
-            {"type": "web_fetch_20260209", "name": "web_fetch"},
-        ]
-    return [{"type": "web_search"}]
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -557,13 +537,12 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        tools = get_tools(model=self.slow_model.name)
         responses = await self.client.responses.create(
             model=self.slow_model.name,
             instructions=system_prompt,
             input=cast("ResponseInputParam", message_list),
             reasoning=self.slow_model.reasoning,
-            tools=tools,
+            tools=self.slow_model.tools,
             stream=True,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},

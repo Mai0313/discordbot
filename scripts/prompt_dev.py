@@ -15,7 +15,7 @@ from google.genai.types import (
 )
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs.gen_reply import get_tools
+from discordbot.typings.models import ModelSettings
 from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ def use_oai() -> None:
     """Tests Gemini model via OpenAI SDK with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     model = "gemini-3.1-pro-preview"
-    tools: list[ChatCompletionToolUnionParam] = get_tools(model=model)
+    tools: list[ChatCompletionToolUnionParam] = ModelSettings(name=model, effort=None).tools
     start = time.time()
     responses = client.chat.completions.create(
         model=model,
@@ -57,7 +57,7 @@ def use_oai_responses() -> None:
     """Tests Gemini model via OpenAI Responses API with streaming and tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     model = "gemini-3.1-pro-preview"
-    tools = get_tools(model=model)
+    tools = ModelSettings(name=model, effort=None).tools
     start = time.time()
     responses = client.responses.create(
         model=model,
@@ -123,7 +123,7 @@ def use_anthropic() -> None:
     """Tests Anthropic model via Anthropic SDK with streaming and tools."""
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     model = "claude-haiku-4-5"
-    tools = get_tools(model=model)
+    tools = ModelSettings(name=model, effort=None).tools
     start = time.time()
     with client.messages.stream(
         model=model,

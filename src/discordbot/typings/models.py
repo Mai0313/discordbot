@@ -1,6 +1,7 @@
 from typing import Literal
 
 from pydantic import BaseModel
+from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
 
@@ -24,6 +25,18 @@ class ModelSettings(BaseModel):
     def input_modalities(self) -> set[str]:
         """Input modalities this model accepts, derived from the LiteLLM price table."""
         return get_supported_modalities(model_name=self.name)
+
+    @property
+    def tools(self) -> list[ToolParam]:
+        """Built-in tools (web search / URL context / fetch) wired to this model's provider."""
+        if "gemini" in self.name:
+            return [{"googleSearch": {}}, {"urlContext": {}}]
+        if "claude" in self.name:
+            return [
+                {"type": "web_search_20260209", "name": "web_search"},
+                {"type": "web_fetch_20260209", "name": "web_fetch"},
+            ]
+        return [{"type": "web_search"}]
 
 
 class RouteDecision(BaseModel):
