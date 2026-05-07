@@ -412,12 +412,12 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _handle_reaction(
-        self, message: Message, emoji: str, previous_emoji: str | None = None
+        self, message: Message, emoji: str, previous: str | None = None
     ) -> None:
         """Handles adding and removing reactions on a message."""
-        if previous_emoji and self.bot.user:
+        if previous and self.bot.user:
             with contextlib.suppress(Exception):
-                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
+                await message.remove_reaction(emoji=previous, member=self.bot.user)
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
 
@@ -577,30 +577,24 @@ class ReplyGeneratorCogs(commands.Cog):
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
+            await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
             await message.reply(content="?")
             return
 
         try:
-            await self._handle_reaction(message=message, emoji="🔀", previous_emoji=current_emoji)
+            await self._handle_reaction(message=message, emoji="🔀", previous=current_emoji)
             current_emoji = "🔀"
             route = await self._route_message(message=message)
             if route == "IMAGE":
-                await self._handle_reaction(
-                    message=message, emoji="🎨", previous_emoji=current_emoji
-                )
+                await self._handle_reaction(message=message, emoji="🎨", previous=current_emoji)
                 current_emoji = "🎨"
                 await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
-                await self._handle_reaction(
-                    message=message, emoji="🎬", previous_emoji=current_emoji
-                )
+                await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
                 current_emoji = "🎬"
                 await self._handle_video_generation(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
-                await self._handle_reaction(
-                    message=message, emoji="📖", previous_emoji=current_emoji
-                )
+                await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
                 current_emoji = "📖"
                 await self._handle_message_reply(
                     message=message,
@@ -609,9 +603,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     history_limit=200,
                 )
             else:
-                await self._handle_reaction(
-                    message=message, emoji="❓", previous_emoji=current_emoji
-                )
+                await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
                 current_emoji = "❓"
                 await self._handle_message_reply(
                     message=message,
@@ -619,13 +611,11 @@ class ReplyGeneratorCogs(commands.Cog):
                     context_prompt=BELIEF,
                     history_limit=200,
                 )
-            await self._handle_reaction(message=message, emoji="🆗", previous_emoji=current_emoji)
+            await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:
             logfire.error("Failed to generate reply", _exc_info=True)
             with contextlib.suppress(Exception):
-                await self._handle_reaction(
-                    message=message, emoji="❌", previous_emoji=current_emoji
-                )
+                await self._handle_reaction(message=message, emoji="❌", previous=current_emoji)
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
