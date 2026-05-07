@@ -91,7 +91,7 @@ class ReplyGeneratorCogs(commands.Cog):
     def slow_model(self) -> ModelSettings:
         """Selects the slow model based on time of day to avoid overload periods; `gemini-pro-latest` is overloaded during UTC 10:00-17:00 on weekdays, swap to the lite model."""
         now = datetime.now(UTC)
-        is_peak = now.weekday() < 5 and 10 <= now.hour < 17
+        is_peak = now.weekday() < 5 and 9 <= now.hour < 17
         if is_peak:
             return ModelSettings(name="gemini-3.1-flash-lite-preview", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
