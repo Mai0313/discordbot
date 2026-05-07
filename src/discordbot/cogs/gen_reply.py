@@ -608,7 +608,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message,
                     system_prompt=REPLY_PROMPT,
                     context_prompt=BELIEF,
-                    history_limit=30,
+                    history_limit=100,
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:
