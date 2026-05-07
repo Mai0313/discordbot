@@ -93,7 +93,7 @@ class ReplyGeneratorCogs(commands.Cog):
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 9 <= now.hour < 17
         if is_peak:
-            return ModelSettings(name="azure/gpt-5.4", effort="high")
+            return ModelSettings(name="gemini-3.1-flash-lite-preview", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     async def _get_user_prompt(self, content: str) -> str:
@@ -608,7 +608,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message,
                     system_prompt=REPLY_PROMPT,
                     context_prompt=BELIEF,
-                    history_limit=100,
+                    history_limit=30,
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:
