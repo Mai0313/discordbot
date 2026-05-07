@@ -184,48 +184,63 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(f"Failed to download attachment: {attachment.url}")
             return None
 
+    @staticmethod
+    def _required_modality(content_type: str) -> Literal["image", "video", "audio"]:
+        """Maps a MIME type to the input modality the model must accept.
+
+        Document-style files (PDF / text / json / ...) collapse to ``image``
+        because LiteLLM's ``supported_modalities`` exposes no separate document
+        bucket, and every multimodal model that takes ``input_image`` also
+        accepts inline ``input_file`` payloads.
+        """
+        if content_type.startswith("video/"):
+            return "video"
+        if content_type.startswith("audio/"):
+            return "audio"
+        return "image"
+
     async def _get_attachment_parts(
         self, message: Message
     ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
         """Extracts attachment content parts from a message.
 
-        Video attachments are skipped when the slow model (the one that
-        actually consumes the heaviest payload) does not accept them; routing
-        and image-edit paths inherit the same gate, which is fine because the
-        former classifies intent without inspecting frames and the latter
-        downstream-filters to ``input_image`` anyway.
+        Each attachment is mapped to the modality it requires
+        (image / video / audio) and skipped when the slow model — the heaviest
+        consumer of the payload — does not list that modality. Routing and
+        image-edit paths inherit the same gate so a text-only slow model
+        produces zero attachment parts everywhere.
 
         Note: ``message.snapshots`` (Discord's forward feature) is intentionally
         not walked here for the same reason as in ``_get_cleaned_content``;
         revisit if forwarded media becomes a common path.
         """
+        modalities = self.slow_model.input_modalities
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            required = self._required_modality(content_type=content_type)
+            if required not in modalities:
+                logfire.warn(
+                    f"Skipping {required} attachment for {self.slow_model.name}: {attachment.filename}"
+                )
+                continue
             if content_type.startswith("image/"):
                 _content_parts.append(await self._image_to_part(source=attachment))
-            elif content_type.startswith("video/"):
-                if "video" not in self.slow_model.input_modalities:
-                    logfire.warn(
-                        f"Skipping video attachment for {self.slow_model.name}: {attachment.filename}"
-                    )
-                    continue
-                _content_parts.append(await self._attachment_to_part(attachment=attachment))
             else:
-                # application/pdf, text/plain, application/json, etc.
                 _content_parts.append(await self._attachment_to_part(attachment=attachment))
 
-        for sticker in message.stickers:
-            _content_parts.append(await self._image_to_part(source=sticker))
+        if "image" in modalities:
+            for sticker in message.stickers:
+                _content_parts.append(await self._image_to_part(source=sticker))
 
-        # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
-        # since sources like Threads CDN expire and reject requests without specific headers.
-        for embed in message.embeds:
-            if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                _content_parts.append(await self._image_to_part(source=url))
-            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                _content_parts.append(await self._image_to_part(source=url))
+            # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
+            # since sources like Threads CDN expire and reject requests without specific headers.
+            for embed in message.embeds:
+                if embed.image and (url := embed.image.proxy_url or embed.image.url):
+                    _content_parts.append(await self._image_to_part(source=url))
+                if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
+                    _content_parts.append(await self._image_to_part(source=url))
 
         content_parts: list[ResponseInputImageParam | ResponseInputFileParam] = [
             part for part in _content_parts if part is not None
