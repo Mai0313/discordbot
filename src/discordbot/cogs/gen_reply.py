@@ -102,27 +102,44 @@ class ReplyGeneratorCogs(commands.Cog):
             content = content.replace(f"<@{self.bot.user.id}>", "")
         return content.strip()
 
+    @staticmethod
+    def _extract_embed_text(embeds: list[Embed]) -> str:
+        """Joins author / title / description / fields / footer text from embeds."""
+        embed_parts: list[str] = []
+        for embed in embeds:
+            parts: list[str] = []
+            if embed.author and embed.author.name:
+                parts.append(f"Author: {embed.author.name}")
+            if embed.title:
+                parts.append(f"Title: {embed.title}")
+            if embed.description:
+                parts.append(embed.description)
+            for field in embed.fields:
+                parts.append(f"{field.name}: {field.value}")
+            if embed.footer and embed.footer.text:
+                parts.append(f"Footer: {embed.footer.text}")
+            if parts:
+                embed_parts.append("\n".join(parts))
+        return "\n\n".join(embed_parts)
+
     async def _get_cleaned_content(self, message: Message) -> str:
-        """Gets cleaned message content, including embed details if text is empty, and adds author prefix."""
+        """Returns the textual content of a message without the author prefix.
+
+        Falls back through the available text sources in this order: raw content
+        with the bot mention stripped, embed-derived text, and system event
+        description (for join/pin/thread-created style events). The author prefix
+        is added later in ``_process_single_message`` so it can be skipped for
+        ``role=assistant``.
+
+        Note: ``message.snapshots`` (Discord's forward feature) is intentionally
+        not walked here because that workflow is rare in practice. Add it back
+        if forwarded messages become a common path.
+        """
         content = await self._get_user_prompt(content=message.content)
         if not content and message.embeds:
-            embed_parts: list[str] = []
-            for embed in message.embeds:
-                parts: list[str] = []
-                if embed.author and embed.author.name:
-                    parts.append(f"Author: {embed.author.name}")
-                if embed.title:
-                    parts.append(f"Title: {embed.title}")
-                if embed.description:
-                    parts.append(embed.description)
-                for field in embed.fields:
-                    parts.append(f"{field.name}: {field.value}")
-                if embed.footer and embed.footer.text:
-                    parts.append(f"Footer: {embed.footer.text}")
-                if parts:
-                    embed_parts.append("\n".join(parts))
-            content = "\n\n".join(embed_parts)
-        content = f"{message.author.display_name} ({message.author.name}) [id: {message.author.id}]: {content}"
+            content = self._extract_embed_text(embeds=list(message.embeds))
+        if not content and message.is_system():
+            content = message.system_content
         return content
 
     async def _image_to_part(
@@ -177,6 +194,10 @@ class ReplyGeneratorCogs(commands.Cog):
         and image-edit paths inherit the same gate, which is fine because the
         former classifies intent without inspecting frames and the latter
         downstream-filters to ``input_image`` anyway.
+
+        Note: ``message.snapshots`` (Discord's forward feature) is intentionally
+        not walked here for the same reason as in ``_get_cleaned_content``;
+        revisit if forwarded media becomes a common path.
         """
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
@@ -218,25 +239,32 @@ class ReplyGeneratorCogs(commands.Cog):
             attachment_parts = await self._get_attachment_parts(message=message)
             is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
 
+            # Bot's own history without attachments → role=assistant carries identity,
+            # so the sender-prefix is dropped here. Without this, the model sees its
+            # own past replies prefixed with `Bot (bot) [id: ...]:` and learns to mimic
+            # that header, which leaks into output despite the prompt-level guard.
+            if is_bot and not attachment_parts:
+                return EasyInputMessageParam(role="assistant", content=content)
+
+            prefixed = (
+                f"{message.author.display_name} ({message.author.name}) "
+                f"[id: {message.author.id}]: {content}"
+            )
+
             # No attachments → use EasyInputMessageParam's string-content shorthand.
-            # The SDK serializes it as `output_text` for role=assistant and as
-            # `input_text` for role=user, which satisfies GPT-5.4's strict rule
-            # (role=assistant rejects an explicit `type: input_text` content part).
-            # This preserves the assistant-role weighting for bot text replies.
+            # The SDK serializes it as `input_text` for role=user, which satisfies
+            # GPT-5.4's strict rule about content-part types per role.
             if not attachment_parts:
-                return EasyInputMessageParam(
-                    role="assistant" if is_bot else "user", content=content
-                )
+                return EasyInputMessageParam(role="user", content=prefixed)
 
             # Has attachments → must use a content list with input_text/input_image.
             # role=assistant cannot carry `input_image` (only output_text/refusal),
             # so bot replies that include generated images (from _handle_image_reply)
-            # fall back to role=user. The author identity prefix already in `content`
-            # preserves bot-vs-user distinction for the model.
+            # fall back to role=user; the author prefix above preserves bot identity.
             return EasyInputMessageParam(
                 role="user",
                 content=[
-                    ResponseInputTextParam(text=content, type="input_text"),
+                    ResponseInputTextParam(text=prefixed, type="input_text"),
                     *attachment_parts,
                 ],
             )
@@ -276,22 +304,53 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
-        """Retrieves and processes the referenced message if it exists."""
+        """Walks the reference chain up to depth 3 and renders each link as context.
+
+        Output ordering is oldest → newest so that the model reads the conversation
+        in chronological order and the most direct reply (depth 1) appears closest
+        to the current message. A visited set guards against cycles.
+        """
+        chain: list[Message] = []
+        visited: set[int] = {message.id}
+        current = message
+        while (
+            len(chain) < 3
+            and current.reference
+            and isinstance(current.reference.resolved, Message)
+            and current.reference.resolved.id not in visited
+        ):
+            ref = current.reference.resolved
+            visited.add(ref.id)
+            chain.append(ref)
+            current = ref
+
+        if not chain:
+            return []
+
+        tasks: list[Awaitable[EasyInputMessageParam]] = []
+        for ref in chain:
+            task = self._process_single_message(message=ref)
+            tasks.append(task)
+        processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
+
         messages: list[EasyInputMessageParam] = []
-        if message.reference and isinstance(message.reference.resolved, Message):
+        for ref, processed_ref in zip(reversed(chain), reversed(processed), strict=True):
             messages.append(
                 EasyInputMessageParam(
                     role="system",
                     content=[
                         ResponseInputTextParam(
-                            text=f"==== Reference Message from {message.author.display_name} ({message.author.name}) [id: {message.author.id}] that might be helpful for answering. ====",
+                            text=(
+                                f"==== Reference Message from {ref.author.display_name} "
+                                f"({ref.author.name}) [id: {ref.author.id}] that might be helpful "
+                                "for answering. ===="
+                            ),
                             type="input_text",
                         )
                     ],
                 )
             )
-            reference_msg = await self._process_single_message(message=message.reference.resolved)
-            messages.append(reference_msg)
+            messages.append(processed_ref)
         return messages
 
     async def _get_current_message(self, message: Message) -> list[EasyInputMessageParam]:
@@ -405,10 +464,8 @@ class ReplyGeneratorCogs(commands.Cog):
         image_description = (image_responses.output_text or "").strip()
         image_bytes = BytesIO(base64.b64decode(image_b64))
         image_file = File(fp=image_bytes, filename="generated.png")
-
-        await message.reply(
-            content=f"{message.author.mention} {image_description}", file=image_file
-        )
+        final_content = f"{message.author.mention} {image_description}"
+        await message.reply(content=final_content, file=image_file)
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous: str | None = None
