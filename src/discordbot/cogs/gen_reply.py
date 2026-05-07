@@ -93,7 +93,7 @@ class ReplyGeneratorCogs(commands.Cog):
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 9 <= now.hour < 17
         if is_peak:
-            return ModelSettings(name="gemini-3.1-flash-lite-preview", effort="high")
+            return ModelSettings(name="azure/gpt-5.4", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     async def _get_user_prompt(self, content: str) -> str:
@@ -178,7 +178,6 @@ class ReplyGeneratorCogs(commands.Cog):
         former classifies intent without inspecting frames and the latter
         downstream-filters to ``input_image`` anyway.
         """
-        modalities = self.slow_model.input_modalities
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
@@ -186,7 +185,7 @@ class ReplyGeneratorCogs(commands.Cog):
             if content_type.startswith("image/"):
                 _content_parts.append(await self._image_to_part(source=attachment))
             elif content_type.startswith("video/"):
-                if "video" not in modalities:
+                if "video" not in self.slow_model.input_modalities:
                     logfire.warn(
                         f"Skipping video attachment for {self.slow_model.name}: {attachment.filename}"
                     )
