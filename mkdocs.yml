@@ -16,7 +16,10 @@ nav:
   - Reference:
       - discordbot:
           - cogs:
+              - _auto_unmute:
+                  - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
               - _gen_reply:
+                  - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
               - _maplestory:
                   - constants: Reference/discordbot/cogs/_maplestory/constants.md
@@ -24,6 +27,7 @@ nav:
                   - models: Reference/discordbot/cogs/_maplestory/models.md
                   - service: Reference/discordbot/cogs/_maplestory/service.md
                   - views: Reference/discordbot/cogs/_maplestory/views.md
+              - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
               - gen_reply: Reference/discordbot/cogs/gen_reply.md
               - help: Reference/discordbot/cogs/help.md
               - log_msg: Reference/discordbot/cogs/log_msg.md
@@ -34,8 +38,11 @@ nav:
           - typings:
               - config: Reference/discordbot/typings/config.md
               - llm: Reference/discordbot/typings/llm.md
+              - models: Reference/discordbot/typings/models.md
           - utils:
               - downloader: Reference/discordbot/utils/downloader.md
+              - images: Reference/discordbot/utils/images.md
+              - model_pricing: Reference/discordbot/utils/model_pricing.md
               - threads: Reference/discordbot/utils/threads.md
           - cli: Reference/discordbot/cli.md
   - Scripts:

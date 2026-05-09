@@ -23,7 +23,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings, RouteDecision
-from discordbot.utils.model_pricing import get_token_rates
+from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._gen_reply.prompts import (
     BELIEF,
     IMAGE_PROMPT,
@@ -214,7 +214,7 @@ class ReplyGeneratorCogs(commands.Cog):
         not walked here for the same reason as in ``_get_cleaned_content``;
         revisit if forwarded media becomes a common path.
         """
-        modalities = self.slow_model.input_modalities
+        modalities = get_supported_modalities(model_name=self.slow_model.name)
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
