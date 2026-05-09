@@ -13,7 +13,9 @@ from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
 from pydantic import ValidationError
+from nextcord.ui import View
 from nextcord.ext import commands
+from nextcord.utils import MISSING
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -24,6 +26,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings, RouteDecision
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
+from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._gen_reply.prompts import (
     BELIEF,
     IMAGE_PROMPT,
@@ -385,7 +388,9 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
+    async def _handle_video_generation(
+        self, message: Message, user_prompt: str, view: View | None = None
+    ) -> None:
         """Handles video generation requests."""
         video = await self.client.videos.create(
             model=self.video_model.name,
@@ -403,9 +408,13 @@ class ReplyGeneratorCogs(commands.Cog):
             video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
         )
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
-        await message.reply(content=f"{message.author.mention}", file=video_file)
+        await message.reply(
+            content=f"{message.author.mention}", file=video_file, view=view or MISSING
+        )
 
-    async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
+    async def _handle_image_reply(
+        self, message: Message, user_prompt: str, view: View | None = None
+    ) -> None:
         """Handles image generation or editing requests."""
         if message.reference and isinstance(message.reference.resolved, Message):
             own_parts, ref_parts = await asyncio.gather(
@@ -480,7 +489,7 @@ class ReplyGeneratorCogs(commands.Cog):
         image_bytes = BytesIO(base64.b64decode(image_b64))
         image_file = File(fp=image_bytes, filename="generated.png")
         final_content = f"{message.author.mention} {image_description}"
-        await message.reply(content=final_content, file=image_file)
+        await message.reply(content=final_content, file=image_file, view=view or MISSING)
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous: str | None = None
@@ -530,7 +539,10 @@ class ReplyGeneratorCogs(commands.Cog):
         return input_rate * input_tokens + output_rate * output_tokens
 
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
-        self, responses: AsyncStream[ResponseStreamEvent], message: Message
+        self,
+        responses: AsyncStream[ResponseStreamEvent],
+        message: Message,
+        view: View | None = None,
     ) -> str:
         """Handles streaming responses from the API and updates the Discord message."""
         stored_content = ""
@@ -572,15 +584,19 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
-        usage_footer = f"\n> **{model_name}** ⬆ {input_tokens:,} ⬇ {output_tokens:,} ${cost:.8f}"
+        usage_footer = (
+            f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}"
+        )
         stored_content += usage_footer
 
-        # Final update to ensure complete message is displayed
+        # Final update to ensure complete message is displayed; the regenerate
+        # view is attached only on this terminal write so intermediate streaming
+        # edits don't briefly flash the button.
         if reply is None:
-            await message.reply(content=stored_content)
+            await message.reply(content=stored_content, view=view or MISSING)
         else:
             with contextlib.suppress(Exception):
-                await reply.edit(content=stored_content)
+                await reply.edit(content=stored_content, view=view or MISSING)
 
         if used_web_search:
             await self._handle_reaction(message=message, emoji="🌐")
@@ -588,7 +604,12 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(
-        self, message: Message, system_prompt: str, context_prompt: str, history_limit: int
+        self,
+        message: Message,
+        system_prompt: str,
+        context_prompt: str,
+        history_limit: int,
+        view: View | None = None,
     ) -> None:
         """Handles generating text replies using history and context."""
         message_list: list[EasyInputMessageParam] = [
@@ -620,7 +641,7 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"mock_testing_fallbacks": False},
         )
 
-        await self._handle_streaming(responses=responses, message=message)
+        await self._handle_streaming(responses=responses, message=message, view=view)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -656,14 +677,17 @@ class ReplyGeneratorCogs(commands.Cog):
             await self._handle_reaction(message=message, emoji="🔀", previous=current_emoji)
             current_emoji = "🔀"
             route = await self._route_message(message=message)
+            view = RegenerateView(cog=self, original_message=message)
             if route == "IMAGE":
                 await self._handle_reaction(message=message, emoji="🎨", previous=current_emoji)
                 current_emoji = "🎨"
-                await self._handle_image_reply(message=message, user_prompt=user_prompt)
+                await self._handle_image_reply(message=message, user_prompt=user_prompt, view=view)
             elif route == "VIDEO":
                 await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
                 current_emoji = "🎬"
-                await self._handle_video_generation(message=message, user_prompt=user_prompt)
+                await self._handle_video_generation(
+                    message=message, user_prompt=user_prompt, view=view
+                )
             elif route == "SUMMARY":
                 await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
                 current_emoji = "📖"
@@ -672,6 +696,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     system_prompt=SUMMARY_PROMPT,
                     context_prompt=BELIEF,
                     history_limit=100,
+                    view=view,
                 )
             else:
                 await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
@@ -681,6 +706,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     system_prompt=REPLY_PROMPT,
                     context_prompt=BELIEF,
                     history_limit=30,
+                    view=view,
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:

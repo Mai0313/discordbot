@@ -2,20 +2,23 @@ from types import SimpleNamespace
 from collections.abc import AsyncIterator
 
 import pytest
+from nextcord.ui import View
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 
 
 class FakeReply:
-    """Provides a fake reply object that records edited content."""
+    """Provides a fake reply object that records edited content and attached view."""
 
     def __init__(self) -> None:
-        """Initializes the fake reply with empty content."""
+        """Initializes the fake reply with empty content and no attached view."""
         self.content = ""
+        self.view: View | None = None
 
-    async def edit(self, *, content: str) -> None:
-        """Records the replacement content passed to edit."""
+    async def edit(self, *, content: str, view: View | None = None) -> None:
+        """Records the replacement content and view passed to edit."""
         self.content = content
+        self.view = view
 
 
 class FakeMessage:
@@ -25,10 +28,11 @@ class FakeMessage:
         """Initializes the fake message with no recorded replies."""
         self.replies: list[FakeReply] = []
 
-    async def reply(self, *, content: str) -> FakeReply:
-        """Creates and records a fake reply with the requested content."""
+    async def reply(self, *, content: str, view: View | None = None) -> FakeReply:
+        """Creates and records a fake reply with the requested content and view."""
         reply = FakeReply()
         reply.content = content
+        reply.view = view
         self.replies.append(reply)
         return reply
 
@@ -62,5 +66,5 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     result = await cog._handle_streaming(responses=_stream_events(), message=message)
 
-    assert result == "hello from stream\n> **gemini-pro-latest** ⬆ 12 ⬇ 34 $0.00000000"
+    assert result == "hello from stream\n\n-# gemini-pro-latest · ⬆ 12 ⬇ 34 · $0.00000000"
     assert message.replies[0].content == result
