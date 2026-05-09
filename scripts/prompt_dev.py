@@ -24,47 +24,25 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
+# Mirror the @property value in cogs/gen_reply.py. slow_model has a time-of-day
+# dispatch in production (peak hours swap to gemini-3.1-flash-lite-preview); for
+# dev we pin to the off-peak default — swap manually when testing peak behaviour.
+SLOW_MODEL = ModelSettings(name="gemini-pro-latest", effort="high")
 
-def use_oai() -> None:
-    """Tests Gemini model via OpenAI SDK with streaming and tools."""
+
+def gen_reply(user_prompt: str) -> None:
+    """Mirrors `_handle_message_reply` in cogs/gen_reply.py — Responses API + streaming + tools."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
-    tools: list[ChatCompletionToolUnionParam] = model.tools
-    start = time.time()
-    responses = client.chat.completions.create(
-        model=model.name,
-        messages=[
-            {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
-            {"role": "user", "content": [{"type": "text", "text": "為何 37 是質數?"}]},
-        ],
-        reasoning_effort=model.effort,
-        stream=True,
-        stream_options={"include_usage": True},
-        tools=tools,
-        service_tier="priority",
-        extra_body={"mock_testing_fallbacks": False},
-    )
-    model_name = ""
-    for response in responses:
-        model_name = response.model
-        if response.choices and response.choices[0].delta.content:
-            console.print(response.choices[0].delta.content, end="")
-    end = time.time()
-    console.print(f"\n{model_name} on Litellm takes {end - start:.2f} seconds")
-
-
-def use_oai_responses() -> None:
-    """Tests Gemini model via OpenAI Responses API with streaming and tools."""
-    client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
     start = time.time()
     responses = client.responses.create(
-        model=model.name,
+        model=SLOW_MODEL.name,
         instructions=REPLY_PROMPT,
-        input=[{"role": "user", "content": [{"type": "input_text", "text": "為何 37 是質數?"}]}],
-        reasoning=model.reasoning,
+        input=[{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
+        reasoning=SLOW_MODEL.reasoning,
+        tools=SLOW_MODEL.tools,
         stream=True,
-        tools=model.tools,
+        service_tier="auto",
+        extra_headers={"x-litellm-end-user-id": "prompt_dev"},
         extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
@@ -82,25 +60,52 @@ def use_oai_responses() -> None:
     console.print(f"\n{model_name} on Litellm (Responses API) takes {end - start:.2f} seconds")
 
 
-def use_gemini() -> None:
-    """Tests Gemini model via Google GenAI SDK with streaming and tools."""
+def gen_reply_chat(user_prompt: str) -> None:
+    """Same prompt + tools as the deployed flow, but routed through Chat Completions for comparison."""
+    client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    tools: list[ChatCompletionToolUnionParam] = SLOW_MODEL.tools
+    start = time.time()
+    responses = client.chat.completions.create(
+        model=SLOW_MODEL.name,
+        messages=[
+            {"role": "system", "content": [{"type": "text", "text": REPLY_PROMPT}]},
+            {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+        ],
+        reasoning_effort=SLOW_MODEL.effort,
+        stream=True,
+        stream_options={"include_usage": True},
+        tools=tools,
+        service_tier="auto",
+        extra_headers={"x-litellm-end-user-id": "prompt_dev"},
+        extra_body={"mock_testing_fallbacks": False},
+    )
+    model_name = ""
+    for response in responses:
+        model_name = response.model
+        if response.choices and response.choices[0].delta.content:
+            console.print(response.choices[0].delta.content, end="")
+    end = time.time()
+    console.print(f"\n{model_name} on Litellm (Chat Completions) takes {end - start:.2f} seconds")
+
+
+def gen_reply_gemini(user_prompt: str) -> None:
+    """Same prompt as the deployed flow, but bypasses LiteLLM via the native Gemini SDK."""
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
             base_url=config.base_url, extra_body={"mock_testing_fallbacks": False}
         ),
     )
-    model = ModelSettings(name="gemini-3.1-pro-preview", effort="medium")
     start = time.time()
     responses = client.models.generate_content_stream(
-        model=model.name,
+        model=SLOW_MODEL.name,
         contents=[
             {"role": "user", "parts": [{"text": REPLY_PROMPT}]},
-            {"role": "user", "parts": [{"text": "為何 37 是質數?"}]},
+            {"role": "user", "parts": [{"text": user_prompt}]},
         ],
         config=GenerateContentConfig(
             thinking_config=ThinkingConfig(
-                include_thoughts=True, thinking_level=model.effort.upper()
+                include_thoughts=True, thinking_level=SLOW_MODEL.effort.upper()
             ),
             tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
         ),
@@ -121,20 +126,22 @@ def use_gemini() -> None:
     console.print(f"\n{model_name} on Gemini SDK takes {end - start:.2f} seconds")
 
 
-def use_anthropic() -> None:
-    """Tests Anthropic model via Anthropic SDK with streaming and tools."""
-    client = Anthropic(base_url=config.base_url, api_key=config.api_key)
+def gen_reply_anthropic(user_prompt: str) -> None:
+    """Same prompt as the deployed flow, but routed through the native Anthropic SDK.
+
+    slow_model is Gemini in production, so this path pins its own Claude model
+    rather than reusing SLOW_MODEL — useful purely for comparing how Claude
+    answers the same question with the same system prompt and tools.
+    """
     model = ModelSettings(name="claude-haiku-4-5", effort="medium")
+    client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     with client.messages.stream(
         model=model.name,
         max_tokens=16000,
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
-        messages=[
-            {"role": "user", "content": REPLY_PROMPT},
-            {"role": "user", "content": "為何 37 是質數?"},
-        ],
+        messages=[{"role": "user", "content": user_prompt}],
         tools=model.tools,
     ) as responses:
         model_name = ""
@@ -152,7 +159,7 @@ def use_anthropic() -> None:
 
 
 if __name__ == "__main__":
-    # use_oai()
-    use_oai_responses()
-    # use_gemini()
-    # use_anthropic()
+    # gen_reply_chat(user_prompt="為何 37 是質數?")
+    gen_reply(user_prompt="為何 37 是質數?")
+    # gen_reply_gemini(user_prompt="為何 37 是質數?")
+    # gen_reply_anthropic(user_prompt="為何 37 是質數?")
