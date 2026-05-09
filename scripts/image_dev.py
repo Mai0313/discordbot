@@ -85,10 +85,11 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     )
     image_description = (image_responses.output_text or "").strip()
 
+    model_name = IMAGE_MODEL.name
+    if "/" in model_name:
+        model_name = model_name.split("/")[-1]
     output_path = Path(
-        f"edited_{IMAGE_MODEL.name}.png"
-        if image_path is not None
-        else f"generated_{IMAGE_MODEL.name}.png"
+        f"edited_{model_name}.png" if image_path is not None else f"{model_name}.png"
     )
     output_path.write_bytes(data=base64.b64decode(s=image_b64))
 
