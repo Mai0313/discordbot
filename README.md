@@ -34,8 +34,9 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 - **Chat summarization** — ask the bot to recap the recent conversation
 - **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
-- **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error)
+- **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if the model used web search, or ❌ on error)
 - **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, and estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally)
+- **Auto-unmute** — if a moderator times the bot out, it lifts its own timeout, identifies the moderator from the audit log, and posts a single AI reply in the most recently active channel
 
 ### Threads Parsing
 

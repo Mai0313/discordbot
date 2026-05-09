@@ -42,9 +42,13 @@ src/discordbot/
 ├── __init__.py              # setup_logging() — configures logfire and tees stdout to ./data/logs/<timestamp>.log
 ├── cli.py                   # Main bot entry point (DiscordBot class)
 ├── cogs/                    # Command modules (auto-loaded, excluding __-prefixed files)
+│   ├── auto_unmute.py       # Detects when the bot itself is timed out, clears the timeout, posts an AI reply
+│   ├── _auto_unmute/
+│   │   └── prompts.py       # UNMUTE_PROMPT
 │   ├── gen_reply.py         # AI chat — @mention/DM trigger, routing, streaming via OpenAI Responses API
 │   ├── _gen_reply/
-│   │   └── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / HISTORY prompts
+│   │   ├── exceptions.py    # extract_friendly_error() — pulls the readable text out of nested LiteLLM/OpenAI errors
+│   │   └── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / BELIEF / PERSONA prompts
 │   ├── help.py              # /help slash command (localized guide)
 │   ├── log_msg.py           # Message logging to SQLite
 │   ├── maplestory.py        # /maple_* slash commands (8 commands)
@@ -57,13 +61,14 @@ src/discordbot/
 │   ├── parse_threads.py     # Threads.net auto-parser
 │   ├── template.py          # /ping and utility reactions
 │   └── video.py             # /download_video slash command
-├── typings/                 # Pydantic configuration models
-│   ├── config.py            # DiscordConfig
-│   └── llm.py               # LLM endpoint config (OPENAI_BASE_URL / OPENAI_API_KEY)
+├── typings/                 # Pydantic configuration & shared models
+│   ├── config.py            # DiscordConfig (DISCORD_BOT_TOKEN, DISCORD_TEST_SERVER_ID)
+│   ├── llm.py               # LLMConfig (OPENAI_BASE_URL, OPENAI_API_KEY)
+│   └── models.py            # ModelSettings (name, effort, reasoning, input_modalities, tools) and RouteDecision
 └── utils/
     ├── downloader.py        # yt-dlp video downloader wrapper
     ├── images.py            # Image URL / data URI conversion helpers
-    ├── model_pricing.py     # LiteLLM model price cache and lookup helpers
+    ├── model_pricing.py     # LiteLLM price-table cache; get_token_rates() and get_supported_modalities()
     └── threads.py           # Threads.net content scraper
 
 scripts/
@@ -95,24 +100,26 @@ data/
 
 - **Cog-based**: Each feature is a separate cog in `cogs/`. The bot auto-discovers and loads all `.py` files in the directory (excluding `__` prefixed files). Helper packages live in sibling `_<cog>/` folders so they are not auto-loaded.
 - **Async**: Built on nextcord with async/await patterns throughout.
-- **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig`, `LLMConfig`, `DatabaseConfig`).
+- **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig` in `typings/config.py`, `LLMConfig` in `typings/llm.py`). Shared model abstractions like `ModelSettings` and `RouteDecision` live in `typings/models.py`.
 - **Logging**: `setup_logging()` in `discordbot/__init__.py` configures `logfire` (local console only, `send_to_logfire=False`) and tees stdout to `./data/logs/<timestamp>.log` for each run. `nextcord.state` logs are forwarded into logfire too.
-- **LLM client**: A single `AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) issues all chat / image / video calls. The endpoint is OpenAI-compatible — typically a Litellm proxy that fronts Gemini / Claude / OpenAI / etc.
-- **AI Routing**: The `gen_reply` cog uses a fast model to classify user intent (QA, IMAGE, VIDEO, SUMMARY) via `client.responses.parse` and dispatches to the matching handler. All chat / route / caption calls use the **OpenAI Responses API** (not Chat Completions); the slow reply path enables model-specific tools (Gemini → `googleSearch` + `urlContext`; Claude → `web_search_*` + `web_fetch_*`; others → OpenAI `web_search`) and streams the answer event-by-event (`response.output_text.delta`). Each response ends with a Discord-quoted footer (`> **{model}** ⬆ in ⬇ out $cost`) where the cost comes from `litellm.model_cost`. Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, or ❌ on error).
+- **LLM client**: Each cog that talks to the model owns a `cached_property AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) — currently `gen_reply` and `auto_unmute`. The endpoint is OpenAI-compatible, typically a [Litellm](https://github.com/BerriAI/litellm) proxy fronting Gemini / Claude / OpenAI / etc., so model swaps are just a string change.
+- **Model abstraction**: Models are not raw strings. `ModelSettings(name, effort)` (in `typings/models.py`) bundles the model identifier, reasoning effort, the right `tools` shape per provider (Gemini `googleSearch` + `urlContext`, Claude `web_search_*` + `web_fetch_*`, others OpenAI `web_search`), and `input_modalities` (read from the LiteLLM price table). `gen_reply` exposes `fast_model` / `slow_model` / `image_model` / `video_model` as properties; `slow_model` is time-of-day dispatched (UTC weekdays 09:00–17:00 falls back to a lite model to avoid the Gemini Pro overload window).
+- **AI Routing**: The `gen_reply` cog uses the fast model to classify user intent (`IMAGE` / `VIDEO` / `QA` / `SUMMARY`) via `client.responses.parse(text_format=RouteDecision)` and dispatches to the matching handler. All chat / route / caption calls use the **OpenAI Responses API** (not Chat Completions). The slow reply path streams the answer event-by-event (`response.output_text.delta`), strips Gemini's leading `\n\n\n` quirk, and ends with a Discord-quoted footer (`> **{model}** ⬆ in ⬇ out $cost`) where the cost comes from `discordbot.utils.model_pricing.get_token_rates` (a lazy fetch of the upstream LiteLLM `model_prices_and_context_window.json`, cached at `data/model_prices.json`). Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if web search fired, or ❌ on error).
 - **Trigger rule**: In DMs the bot always responds; in guilds it only responds when the message text contains `<@bot_id>` (a reply-notification alone is ignored, so users replying to a Threads embed or a download result won't accidentally summon the bot).
-- **Responses API input shape**: Build request messages with `EasyInputMessageParam` and `ResponseInputTextParam` / `ResponseInputImageParam` / `ResponseInputFileParam`, then cast to `ResponseInputParam` only at the `client.responses.*` call. Text-only bot messages may keep `role=assistant` with string content; any message that carries image or file parts must use `role=user` because assistant content cannot carry `input_image` or `input_file`.
-- **Attachment ingestion**: `_get_attachment_parts` routes each attachment by `content_type`: `image/*` → PIL resize + JPEG re-encode → `input_image`; everything else (`video/*`, `application/pdf`, `text/plain`, etc.) → raw bytes → base64 data URI → `input_file`. Stickers and embed images/thumbnails (preferring `media.discordapp.net` proxy URLs) always go through the image path.
+- **Responses API input shape**: Build request messages with `EasyInputMessageParam` and `ResponseInputTextParam` / `ResponseInputImageParam` / `ResponseInputFileParam`, then cast to `ResponseInputParam` only at the `client.responses.*` call. Text-only bot messages may keep `role=assistant` with string content; any message that carries image or file parts must use `role=user` because assistant content cannot carry `input_image` or `input_file`. Separator / header messages (`==== Chat History ====` etc.) use `role=system` (compatible with Gemini/Claude via LiteLLM); the real system prompt is delivered through `instructions=`.
+- **Attachment ingestion**: `_get_attachment_parts` first gates each attachment against `slow_model.input_modalities` — anything the slow model can't accept (e.g. video on a text-only model) is dropped before any LLM call. Surviving attachments are routed by `content_type`: `image/*` → PIL resize + JPEG re-encode → `input_image`; everything else (`video/*`, `application/pdf`, `text/plain`, etc.) → raw bytes → base64 data URI → `input_file`. Stickers and embed images/thumbnails (preferring `media.discordapp.net` proxy URLs) always go through the image path.
+- **Auto-unmute**: A separate cog (`auto_unmute.py`) watches `on_member_update` for the bot itself transitioning into a future-dated `communication_disabled_until`, walks the recent audit log to find the moderator, clears the timeout via `member.edit(timeout=None, …)`, and posts a single AI sass-reply through its own `AsyncOpenAI` client. Reply target is the last channel a human spoke in (per guild), with `system_channel` as a fallback — Discord's `member_update` audit entry doesn't carry a channel.
 
 ## Code Standards
 
 ### Tooling
 
-| Tool           | Purpose                                   |
-| -------------- | ----------------------------------------- |
-| **Ruff**       | Linting and formatting (line length: 99)  |
-| **mypy**       | Type checking with Pydantic plugin        |
-| **ty**         | Astral's type checker (error-level rules) |
-| **pre-commit** | Runs all checks automatically on commit   |
+| Tool           | Purpose                                                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Ruff**       | Linting and formatting (line length: 99)                                                                                     |
+| **mypy**       | Type checking with the Pydantic plugin (runs in pre-commit)                                                                  |
+| **ty**         | Astral's type checker — installed as a dev dep, **not** in pre-commit. Run `uvx ty check src` manually for a second opinion. |
+| **pre-commit** | Runs Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, etc. on commit                                                   |
 
 ### Style
 
@@ -132,7 +139,7 @@ uv run pre-commit install
 uv run pre-commit run -a
 ```
 
-Hooks include: Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, nbstripout, uv-sync, uv-lock.
+Hooks include: Ruff (check + format), mypy, ShellCheck, mdformat, codespell, gitleaks, nbstripout, uv-sync, uv-lock, plus standard hygiene hooks (`check-yaml`, `check-toml`, `detect-private-key`, `end-of-file-fixer`, `trailing-whitespace`, …).
 
 ## Testing
 

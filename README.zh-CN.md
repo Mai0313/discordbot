@@ -34,8 +34,9 @@
 - **聊天摘要** — 请机器人总结近期对话内容
 - **网络搜索与 URL 读取** — 机器人会自动使用模型对应的工具（Gemini 的 `googleSearch` + `urlContext`、Claude 的 `web_search` + `web_fetch`，或 OpenAI 的 `web_search`）获取最新信息
 - **用户标记** — 请机器人通知或转告近期对话中的其他成员（例如「帮我跟 @alice 说我会晚到」），只要该成员曾出现在近期聊天记录中即可被标记
-- **进度反应** — 以 emoji reaction 显示实时处理状态（🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗，出错时显示 ❌）
-- **回复脚注** — 每次 AI 回复会在末端以 Discord 引用格式（`>`）显示 model 名称、input/output token 数量与预估 USD 费用（通过 `litellm.model_cost` 计算）
+- **进度反应** — 以 emoji reaction 显示实时处理状态（🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗，模型用到 web search 时加 🌐，出错时显示 ❌）
+- **回复脚注** — 每次 AI 回复会在末端以 Discord 引用格式（`>`）显示 model 名称、input/output token 数量与预估 USD 费用（从上游 LiteLLM 的 price table 计算，首次查询时下载并缓存在本地）
+- **自动解除 timeout** — 如果有 moderator 把机器人 timeout，机器人会自动解除 timeout、从 audit log 识别出对方是谁，并在最近有人聊天的频道回一句 AI 生成的回复
 
 ### Threads 解析
 
