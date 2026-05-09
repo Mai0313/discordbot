@@ -220,15 +220,15 @@ class ReplyGeneratorCogs(commands.Cog):
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             required = self._required_modality(content_type=content_type)
-            if required not in modalities:
+            if required in modalities:
+                if content_type.startswith("image/"):
+                    _content_parts.append(await self._image_to_part(source=attachment))
+                else:
+                    _content_parts.append(await self._attachment_to_part(attachment=attachment))
+            else:
                 logfire.warn(
                     f"Skipping {required} attachment for {self.slow_model.name}: {attachment.filename}"
                 )
-                continue
-            if content_type.startswith("image/"):
-                _content_parts.append(await self._image_to_part(source=attachment))
-            else:
-                _content_parts.append(await self._attachment_to_part(attachment=attachment))
 
         if "image" in modalities:
             for sticker in message.stickers:
