@@ -61,6 +61,7 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     bet: int,
     delta: int,
     new_balance: int,
+    house_balance: int,
     dealer_line: str,
     outcome_label: str,
     color: int,
@@ -82,7 +83,10 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     delta_text = f"{delta:+,}" if delta != 0 else "0"
     allin_note = " · 已自動 all-in" if is_allin else ""
     embed.set_footer(
-        text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}{allin_note}"
+        text=(
+            f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,} · "
+            f"莊家餘額 {house_balance:+,}{allin_note}"
+        )
     )
     return embed
 
@@ -245,6 +249,7 @@ class BlackjackView(ui.View):
             bet=self.hand.bet,
             delta=settlement.delta,
             new_balance=settlement.new_balance,
+            house_balance=settlement.house_balance,
             dealer_line=banter,
             outcome_label=outcome_label,
             color=color,

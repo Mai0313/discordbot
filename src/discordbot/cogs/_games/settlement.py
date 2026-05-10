@@ -21,6 +21,7 @@ class BlackjackSettlement:
         delta: Net point change relative to the withdrawn bet.
         payout: Gross amount credited back to the player after the upfront bet withdrawal.
         new_balance: Player balance after crediting the payout.
+        house_balance: Dealer ledger balance after mirroring the player's net change.
         detail: Short game-state summary for the dealer AI prompt.
     """
 
@@ -28,6 +29,7 @@ class BlackjackSettlement:
     delta: int
     payout: int
     new_balance: int
+    house_balance: int
     detail: str
 
 
@@ -78,11 +80,12 @@ async def settle_blackjack_round(
     outcome, delta = settle(hand=hand)
     payout = blackjack_payout(bet=hand.bet, delta=delta)
     new_balance = await settle_game(user_id=player_id, name=player_account_name, delta=payout)
-    await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
+    house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
     return BlackjackSettlement(
         outcome=outcome,
         delta=delta,
         payout=payout,
         new_balance=new_balance,
+        house_balance=house_balance,
         detail=blackjack_detail(hand=hand),
     )

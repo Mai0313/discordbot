@@ -198,7 +198,7 @@ class GamesCogs(commands.Cog):
             user_id=interaction.user.id, name=interaction.user.name, delta=payout
         )
         delta = payout - bet
-        await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
+        house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
         detail = f"玩家骰 {result.player_total} 點, 莊家骰 {result.dealer_total} 點"
         banter = await self.dealer.settle(
             author_name=interaction.user.name,
@@ -225,7 +225,10 @@ class GamesCogs(commands.Cog):
         delta_text = f"{delta:+,}" if delta != 0 else "0"
         allin_note = " · 已自動 all-in" if is_allin else ""
         final.set_footer(
-            text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}{allin_note}"
+            text=(
+                f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,} · "
+                f"莊家餘額 {house_balance:+,}{allin_note}"
+            )
         )
         await message.edit(embed=final)
 
@@ -311,6 +314,7 @@ class GamesCogs(commands.Cog):
                 bet=bet,
                 delta=settlement.delta,
                 new_balance=settlement.new_balance,
+                house_balance=settlement.house_balance,
                 dealer_line=banter,
                 outcome_label=outcome_label,
                 color=color,

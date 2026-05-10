@@ -253,4 +253,5 @@ async def test_settle_blackjack_round_updates_player_and_house() -> None:
     assert settlement.delta == 50
     assert settlement.payout == 100
     assert settlement.new_balance == 150
+    assert settlement.house_balance == -50
     assert await database.get_balance(user_id=99) == -50
