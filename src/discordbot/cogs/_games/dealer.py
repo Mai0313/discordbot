@@ -64,7 +64,13 @@ class DealerAI:
         return text or fallback
 
     async def taunt_bet(
-        self, *, player_name: str, balance_after_bet: int, bet: int, game: GameKind
+        self,
+        *,
+        author_name: str,
+        player_name: str,
+        balance_after_bet: int,
+        bet: int,
+        game: GameKind,
     ) -> str:
         """Returns a single line ribbing the player for the size of their bet."""
         game_label = "比大小骰子" if game == "dice" else "21 點"
@@ -78,12 +84,13 @@ class DealerAI:
             instructions=DEALER_TAUNT_BET_PROMPT,
             user_text=user_text,
             fallback=_FALLBACK_BET,
-            end_user_id=f"dealer-bet-{player_name}",
+            end_user_id=author_name,
         )
 
     async def settle(  # noqa: PLR0913 -- the round summary needs every field for the prompt
         self,
         *,
+        author_name: str,
         player_name: str,
         outcome: SettleOutcome,
         bet: int,
@@ -123,10 +130,12 @@ class DealerAI:
             instructions=DEALER_SETTLE_PROMPT,
             user_text=user_text,
             fallback=fallback,
-            end_user_id=f"dealer-settle-{player_name}",
+            end_user_id=author_name,
         )
 
-    async def hint(self, *, player_name: str, player_total: int, dealer_visible: int) -> str:
+    async def hint(
+        self, *, author_name: str, player_name: str, player_total: int, dealer_visible: int
+    ) -> str:
         """Returns a single line nudging the player during a Blackjack hit/stand decision."""
         user_text = (
             f"玩家: {player_name}\n"
@@ -137,5 +146,5 @@ class DealerAI:
             instructions=DEALER_HINT_PROMPT,
             user_text=user_text,
             fallback=_FALLBACK_HINT,
-            end_user_id=f"dealer-hint-{player_name}",
+            end_user_id=author_name,
         )

@@ -91,17 +91,19 @@ class BlackjackView(ui.View):
         dealer: AI dealer used for inline banter.
         hand: Mutable round state.
         owner_id: Discord user ID allowed to press the buttons.
+        author_name: Discord username used as the litellm end-user-id (ASCII-safe).
         player_name: Display name used in the embed.
         balance_after_bet: Player's balance immediately after the bet was deducted.
         message: Reference to the rendered Discord message; set on first edit.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- view needs every field for dealer + embed render
         self,
         *,
         dealer: DealerAI,
         hand: BlackjackHand,
         owner_id: int,
+        author_name: str,
         player_name: str,
         balance_after_bet: int,
     ) -> None:
@@ -111,6 +113,7 @@ class BlackjackView(ui.View):
             dealer: AI dealer used for inline banter.
             hand: Round state.
             owner_id: Discord user ID allowed to interact.
+            author_name: Discord username used as the litellm end-user-id.
             player_name: Display name used in the embed.
             balance_after_bet: Player balance after the bet was withdrawn.
         """
@@ -118,6 +121,7 @@ class BlackjackView(ui.View):
         self.dealer = dealer
         self.hand = hand
         self.owner_id = owner_id
+        self.author_name = author_name
         self.player_name = player_name
         self.balance_after_bet = balance_after_bet
         self.message: Message | None = None
@@ -149,6 +153,7 @@ class BlackjackView(ui.View):
             await self._finalize(message=interaction.message, hint=None)
             return
         hint = await self.dealer.hint(
+            author_name=self.author_name,
             player_name=self.player_name,
             player_total=self.hand.player_total(),
             dealer_visible=dealer_visible_value(hand=self.hand),
@@ -190,6 +195,7 @@ class BlackjackView(ui.View):
         else:
             detail = f"玩家 {self.hand.player_total()} 點 vs 莊家 {self.hand.dealer_total()} 點"
         banter = await self.dealer.settle(
+            author_name=self.author_name,
             player_name=self.player_name,
             outcome=outcome,
             bet=self.hand.bet,

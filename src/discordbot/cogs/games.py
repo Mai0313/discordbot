@@ -127,6 +127,7 @@ class GamesCogs(commands.Cog):
         )
 
         taunt = await self.dealer.taunt_bet(
+            author_name=interaction.user.name,
             player_name=interaction.user.display_name,
             balance_after_bet=balance_after_bet,
             bet=bet,
@@ -165,6 +166,7 @@ class GamesCogs(commands.Cog):
         delta = payout - bet
         detail = f"玩家骰 {result.player_total} 點, 莊家骰 {result.dealer_total} 點"
         banter = await self.dealer.settle(
+            author_name=interaction.user.name,
             player_name=interaction.user.display_name,
             outcome=result.outcome,
             bet=bet,
@@ -236,6 +238,7 @@ class GamesCogs(commands.Cog):
         hand.deal_initial()
 
         taunt = await self.dealer.taunt_bet(
+            author_name=interaction.user.name,
             player_name=interaction.user.display_name,
             balance_after_bet=balance_after_bet,
             bet=bet,
@@ -257,6 +260,7 @@ class GamesCogs(commands.Cog):
             else:
                 detail = f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
             banter = await self.dealer.settle(
+                author_name=interaction.user.name,
                 player_name=interaction.user.display_name,
                 outcome=outcome,
                 bet=bet,
@@ -290,6 +294,7 @@ class GamesCogs(commands.Cog):
             dealer=self.dealer,
             hand=hand,
             owner_id=interaction.user.id,
+            author_name=interaction.user.name,
             player_name=interaction.user.display_name,
             balance_after_bet=balance_after_bet,
         )

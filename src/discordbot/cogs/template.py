@@ -2,6 +2,7 @@ import nextcord
 from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
+
 class TemplateCogs(commands.Cog):
     """Provides simple message reactions and the ping slash command.
 
