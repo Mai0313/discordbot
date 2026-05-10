@@ -83,6 +83,11 @@ async def _create_schema(engine: AsyncEngine) -> None:
 asyncio.run(main=_create_schema(engine=_engine))
 
 
+def open_session() -> AsyncSession:
+    """Creates an async session bound to the current economy database engine."""
+    return AsyncSession(bind=_engine, expire_on_commit=False)
+
+
 async def _get_or_create(session: AsyncSession, user_id: int, name: str) -> UserAccount:
     """Returns the account row for ``user_id``, creating it on first sight.
 
@@ -107,7 +112,7 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
     can pass raw token counts (which can be 0 for cached responses) without
     a guard.
     """
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
         if amount > 0:
             account.balance += amount
@@ -128,7 +133,7 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
     if requested_bet <= 0:
         return None
 
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         while True:
             account = await session.get(entity=UserAccount, ident=user_id)
             if account is None or account.balance <= 0:
@@ -166,7 +171,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
     the gross payout here when the round resolves. Losses are still clamped at
     zero so a stale caller never leaves a player in the red.
     """
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
         new_balance = max(account.balance + delta, 0)
         applied_delta = new_balance - account.balance
@@ -188,7 +193,7 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
     should surface as a negative balance, with `total_earned` /
     `total_spent` accumulating gross flows in each direction.
     """
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
         account.balance += delta
         if delta > 0:
@@ -201,7 +206,7 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
 
 async def get_balance(user_id: int) -> int:
     """Returns the current balance, or 0 if the user has never been seen."""
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         account = await session.get(entity=UserAccount, ident=user_id)
         if account is None:
             return 0
@@ -210,7 +215,7 @@ async def get_balance(user_id: int) -> int:
 
 async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
     """Returns ``(name, balance, total_earned, total_spent)`` or ``None`` if unseen."""
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         account = await session.get(entity=UserAccount, ident=user_id)
         if account is None:
             return None
@@ -229,7 +234,7 @@ async def transfer(
     """
     if amount <= 0 or sender_id == receiver_id:
         return False
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         while True:
             sender = await _get_or_create(session=session, user_id=sender_id, name=sender_name)
             if sender.balance < amount:
@@ -278,7 +283,7 @@ async def top_n(
     own house ledger row) before applying the limit, so the leaderboard
     always shows real players.
     """
-    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+    async with open_session() as session:
         stmt = select(UserAccount).order_by(desc(UserAccount.balance))
         if exclude_user_ids:
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
