@@ -28,9 +28,7 @@ class DiscordBot(commands.Bot):
         intents.members = False
         intents.presences = False
         super().__init__(
-            intents=intents,
-            help_command=None,
-            description="A Discord bot made with Nextcord.",
+            intents=intents, help_command=None, description="A Discord bot made with Nextcord."
         )
         self.discord_config = DiscordConfig()
         self.logger = logging.getLogger("nextcord.state")
