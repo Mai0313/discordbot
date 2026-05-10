@@ -27,6 +27,7 @@ from discordbot.utils.images import get_pil_image, get_image_data, convert_base6
 from discordbot.typings.models import ModelSettings, RouteDecision
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._gen_reply.views import RegenerateView
+from discordbot.cogs._economy.database import add_balance
 from discordbot.cogs._gen_reply.prompts import (
     BELIEF,
     IMAGE_PROMPT,
@@ -538,6 +539,14 @@ class ReplyGeneratorCogs(commands.Cog):
         input_rate, output_rate = get_token_rates(model_name=model_name)
         return input_rate * input_tokens + output_rate * output_tokens
 
+    @staticmethod
+    async def _award_chat_points(*, user_id: int, name: str, amount: int) -> None:
+        """Persists chat-reward points; swallows DB errors so they never abort the reply."""
+        try:
+            await add_balance(user_id=user_id, name=name, amount=amount)
+        except Exception:
+            logfire.warn("Failed to award chat points", _exc_info=True)
+
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self,
         responses: AsyncStream[ResponseStreamEvent],
@@ -583,10 +592,19 @@ class ReplyGeneratorCogs(commands.Cog):
             model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
+        # Award chat points equal to total tokens used. Fire-and-forget so a
+        # transient SQLite hiccup never delays the streamed reply; any error
+        # surfaces through logfire rather than failing the whole response.
+        total_tokens = input_tokens + output_tokens
+        if total_tokens > 0:
+            asyncio.create_task(  # noqa: RUF006
+                coro=self._award_chat_points(
+                    user_id=message.author.id, name=message.author.name, amount=total_tokens
+                )
+            )
+
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
-        usage_footer = (
-            f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}"
-        )
+        usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · +{total_tokens} 點"
         stored_content += usage_footer
 
         # Final update to ensure complete message is displayed; the regenerate
