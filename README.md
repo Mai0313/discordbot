@@ -40,7 +40,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 
 ### Threads Parsing
 
-Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos. If the link points to a reply, the bot also walks the reply chain and shows the original post plus intermediate replies in the same message, with a grey-scale gradient stripe (light → dark) so each layer is easy to tell apart. Only the post the user pasted has its videos attached; ancestor videos are surfaced as an inline link hint to avoid mixing files across layers. Sharing a working Threads link earns the poster points (see *Points & Casino Games* below).
+Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos. If the link points to a reply, the bot also walks the reply chain and shows the original post plus intermediate replies in the same message, with a grey-scale gradient stripe (light → dark) so each layer is easy to tell apart. Only the post the user pasted has its videos attached; ancestor videos are surfaced as an inline link hint to avoid mixing files across layers.
 
 ### Video Downloading
 
@@ -50,19 +50,14 @@ Use `/download_video` to download videos from multiple platforms:
 - Quality options: Best, High (1080p), Medium (720p), Low (480p)
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
-- Successful downloads award points to the caller (see *Points & Casino Games* below)
 
 ### Points & Casino Games
 
 The bot keeps a **persistent, cross-server point balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
-**Earning points:**
+**Earning points:** every streaming AI reply awards points equal to its `total_tokens` (input + output), shown in the reply footer. Chatting with the bot is currently the only way to earn — Threads parsing and `/download_video` deliberately don't pay.
 
-- **Chat with the bot** — every streaming AI reply awards points equal to its `total_tokens` (input + output). The exact amount is shown in the reply footer.
-- **`/download_video`** — successful downloads pay `10 + round(file_size_mb)`, capped at 100, and the reward is appended to the success message.
-- **Threads links** — when the bot successfully expands a Threads.net link, the **person who posted the link** earns `10 + videos × 5 + images × 2`. A 1-hour per-`(user, URL)` cooldown blocks copy-paste farming.
-
-**Spending points:** the casino games take a bet up-front and pay out when the round resolves. The dealer is an AI that taunts the bet and reacts to the result with one short line.
+**Spending points:** the casino games take a bet up-front and pay out when the round resolves. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label.
 
 | Slash command      | Game                                                                                                                  |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -72,8 +67,9 @@ The bot keeps a **persistent, cross-server point balance** for every Discord acc
 **Managing points:**
 
 - `/balance` — show your current balance.
-- `/leaderboard` — global Top 10 across every server the bot is in.
+- `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
 - `/give <member> <amount>` — transfer points to another member (no self-transfer, no bots).
+- `/house` — show the dealer's accumulated win/loss across `/dice` and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's running balance can go negative when the casino is losing overall.
 
 ### MapleStory Artale Database
 
@@ -103,6 +99,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/give <member> <amount>`         | Transfer points to another member                                       |
 | `/dice <bet>`                     | Roll three dice against the AI dealer                                   |
 | `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons against the AI dealer     |
+| `/house`                          | Show the dealer's accumulated win/loss across `/dice` and `/blackjack`  |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                    |
 | `/maple_equip <name>`             | Search MapleStory equipment                                             |
 | `/maple_scroll <name>`            | Search MapleStory scrolls                                               |
