@@ -4,8 +4,6 @@ import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption, SelectOption
 from nextcord.ext import commands
 
-from discordbot.typings.config import FAST_SYNC_GUILD_IDS
-
 from ._maplestory.views import MapleDropSearchView
 from ._maplestory.embeds import (
     create_map_embed,
@@ -75,8 +73,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷怪物資訊",
             Locale.ja: "メイプルストーリーのモンスター情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_monster(
         self,
@@ -133,8 +129,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷裝備資訊",
             Locale.ja: "メイプルストーリーの装備情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_equip(
         self,
@@ -195,8 +189,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷捲軸資訊",
             Locale.ja: "メイプルストーリーの巻物情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_scroll(
         self,
@@ -257,8 +249,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷 NPC 資訊",
             Locale.ja: "メイプルストーリーのNPC情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_npc(
         self,
@@ -314,8 +304,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷任務資訊",
             Locale.ja: "メイプルストーリーのクエスト情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_quest(
         self,
@@ -374,8 +362,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷地圖資訊",
             Locale.ja: "メイプルストーリーのマップ情報を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_map(
         self,
@@ -436,8 +422,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "搜尋楓之谷物品的掉落來源",
             Locale.ja: "メイプルストーリーのアイテムドロップ元を検索",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_item(
         self,
@@ -504,8 +488,6 @@ class MapleStoryCogs(commands.Cog):
             Locale.zh_TW: "顯示楓之谷資料庫統計資訊",
             Locale.ja: "メイプルストーリーデータベース統計を表示",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
     )
     async def maple_stats(self, interaction: Interaction) -> None:
         """Gets MapleStory database statistics.

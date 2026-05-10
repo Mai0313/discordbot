@@ -2,8 +2,6 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
-from discordbot.typings.config import FAST_SYNC_GUILD_IDS
-
 _HELP_CONTENT = {
     "default": {
         "title": "Bot Guide",
@@ -124,8 +122,6 @@ class HelpCogs(commands.Cog):
             Locale.zh_TW: "顯示機器人的使用指南。",
             Locale.ja: "ボットの使い方ガイドを表示します。",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
         nsfw=False,
     )
     async def help(self, interaction: Interaction) -> None:

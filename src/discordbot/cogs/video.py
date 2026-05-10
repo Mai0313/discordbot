@@ -5,7 +5,6 @@ import nextcord
 from nextcord import File, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from discordbot.typings.config import FAST_SYNC_GUILD_IDS
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.cogs._economy.database import add_balance
 
@@ -66,8 +65,6 @@ class VideoCogs(commands.Cog):
             Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)。",
             Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
         nsfw=False,
     )
     async def download_video(

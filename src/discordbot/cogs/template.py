@@ -2,9 +2,6 @@ import nextcord
 from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
-from discordbot.typings.config import FAST_SYNC_GUILD_IDS
-
-
 class TemplateCogs(commands.Cog):
     """Provides simple message reactions and the ping slash command.
 
@@ -47,8 +44,6 @@ class TemplateCogs(commands.Cog):
             Locale.zh_TW: "測試機器人的回應時間。",
             Locale.ja: "ボットの応答速度をテストします。",
         },
-        guild_ids=FAST_SYNC_GUILD_IDS,
-        force_global=True,
         nsfw=False,
     )
     async def ping(self, interaction: Interaction) -> None:
