@@ -56,6 +56,7 @@ class EconomyCogs(commands.Cog):
             description=f"{interaction.user.mention} 目前持有 **{amount:,}** 點。",
             color=_BALANCE_COLOR,
         )
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.set_footer(text="跟機器人聊天可以累積點數, 輸入 /dice 或 /blackjack 來下注。")
         await interaction.followup.send(embed=embed)
 

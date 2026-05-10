@@ -78,7 +78,8 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "requests>=2.33.0",
     "rich>=14.3.3",
-    "sqlalchemy>=2.0.48",
+    "sqlalchemy[asyncio]>=2.0.48",
+    "aiosqlite>=0.20.0",
     "yt-dlp>=2026.3.17",
 ]
 readme = "README.md"

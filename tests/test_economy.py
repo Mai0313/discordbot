@@ -1,27 +1,28 @@
 """Tests for the economy persistence layer."""
 
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy import database
 
 
 @pytest.fixture(autouse=True)
-def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """Replaces the module-level engine with a per-test SQLite file.
 
     Each test gets a fresh DB so writes never leak between tests, and the
     real ``data/economy.db`` is left alone.
     """
     db_path = tmp_path / "economy.db"
-    engine = create_engine(url=f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    database._Base.metadata.create_all(bind=engine)
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(database._Base.metadata.create_all)
     monkeypatch.setattr(target=database, name="_engine", value=engine)
     yield
-    engine.dispose()
+    await engine.dispose()
 
 
 async def test_add_balance_creates_user() -> None:
