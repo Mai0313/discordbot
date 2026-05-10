@@ -6,40 +6,10 @@ from nextcord import File, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
-from discordbot.cogs._economy.database import add_balance
-
-_BASE_REWARD = 10
-_REWARD_CAP = 100
 
 # Hard-cap aligned with the unboosted Discord upload limit. The downloader
 # already retries at low quality once when this is exceeded.
 _DISCORD_FILE_LIMIT_BYTES = 25 * 1024 * 1024
-
-
-def _reward_for(file_size_mb: float) -> int:
-    """Calculates the point reward for a successful download.
-
-    Base reward plus one point per MB downloaded, capped at ``_REWARD_CAP``
-    so a single 1080p clip can't drain the leaderboard.
-    """
-    return min(_BASE_REWARD + round(file_size_mb), _REWARD_CAP)
-
-
-async def _award_silently(*, user_id: int, name: str, amount: int) -> int | None:
-    """Persists the reward and returns the new balance; logs and returns ``None`` on DB failure."""
-    try:
-        return await add_balance(user_id=user_id, name=name, amount=amount)
-    except Exception:
-        logfire.warn("Failed to award video download points", _exc_info=True)
-        return None
-
-
-def _success_text(file_size_mb: float, reward: int | None) -> str:
-    """Builds the final message body, appending the reward suffix only on a real DB write."""
-    base = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
-    if reward is None:
-        return base
-    return f"{base} · 獲得 {reward:,} 點數"
 
 
 class VideoCogs(commands.Cog):
@@ -86,13 +56,6 @@ class VideoCogs(commands.Cog):
         ),
     ) -> None:
         """Downloads a video from various platforms and sends it back.
-
-        The status message (downloading / re-encoding / failure) lives on the
-        deferred placeholder via ``edit_original_message``; the final video
-        file is delivered as a new followup so we never have to mix
-        ``content=`` and ``file=`` in a single edit — that combination
-        sometimes drops the new content on Discord's side, which is why the
-        reward suffix was vanishing on success.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -145,29 +108,15 @@ class VideoCogs(commands.Cog):
     async def _deliver(
         self, *, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
     ) -> None:
-        """Awards points, then sends the file as a fresh followup with the reward suffix.
+        """Sends the downloaded file as a fresh followup and collapses the placeholder.
 
-        We deliberately do NOT call ``edit_original_message(file=…, content=…)``
-        here — that combination has dropped the ``content`` (i.e. the reward
-        suffix) on the Discord side when the multipart file payload is
-        attached. Sending the result as a separate followup keeps the
-        ``content`` reliable, and the placeholder is collapsed away by the
-        final ``edit_original_message`` call.
+        ``interaction.edit_original_message(content=…, file=…)`` drops
+        ``content`` when a multipart file payload is attached, so we send the
+        file as a separate followup and then collapse the original placeholder
+        to a checkmark.
         """
-        reward = _reward_for(file_size_mb=file_size_mb)
-        awarded: int | None = None
-        if interaction.user is not None:
-            awarded = await _award_silently(
-                user_id=interaction.user.id, name=interaction.user.name, amount=reward
-            )
-        # Show only what we actually persisted: omit the reward suffix when
-        # the DB write failed, so we never promise points the user can't see.
-        body = _success_text(
-            file_size_mb=file_size_mb, reward=reward if awarded is not None else None
-        )
+        body = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
         await interaction.followup.send(content=body, file=File(fp=file_path, filename=file_name))
-        # Collapse the "downloading..." placeholder into a brief checkmark so
-        # the channel doesn't keep two near-identical bot messages around.
         with contextlib.suppress(Exception):
             await interaction.edit_original_message(content="✅")
 
