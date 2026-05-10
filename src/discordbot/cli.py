@@ -32,7 +32,7 @@ class DiscordBot(commands.Bot):
         )
         self.discord_config = DiscordConfig()
         self.logger = logging.getLogger("nextcord.state")
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.WARNING)
         self.logger.addHandler(LogfireLoggingHandler())
         Path("./data").mkdir(parents=True, exist_ok=True)
         # Cogs are loaded synchronously so application_commands is populated
