@@ -31,15 +31,4 @@ class DiscordConfig(BaseSettings):
     )
 
 
-# Guilds where slash commands are registered for instant rollout.
-#
-# Global slash-command sync (``guild_ids=None``) takes up to an hour to
-# propagate; pinning a command to these guilds makes it available immediately.
-# Module-level (not on ``DiscordConfig``) on purpose — ``@nextcord.slash_command(...)``
-# is a decorator evaluated at import time, so the value has to be a plain
-# constant rather than something that needs a ``BaseSettings`` instance.
-# Edit this list directly to change the target guilds.
-FAST_SYNC_GUILD_IDS: list[int] = [981592566208282634, 1143289646042853487]
-
-
-__all__ = ["FAST_SYNC_GUILD_IDS", "DiscordConfig"]
+__all__ = ["DiscordConfig"]
