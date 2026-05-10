@@ -18,9 +18,18 @@ nav:
           - cogs:
               - _auto_unmute:
                   - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
+              - _economy:
+                  - database: Reference/discordbot/cogs/_economy/database.md
+              - _games:
+                  - blackjack: Reference/discordbot/cogs/_games/blackjack.md
+                  - dealer: Reference/discordbot/cogs/_games/dealer.md
+                  - dice: Reference/discordbot/cogs/_games/dice.md
+                  - prompts: Reference/discordbot/cogs/_games/prompts.md
+                  - views: Reference/discordbot/cogs/_games/views.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
+                  - views: Reference/discordbot/cogs/_gen_reply/views.md
               - _maplestory:
                   - constants: Reference/discordbot/cogs/_maplestory/constants.md
                   - embeds: Reference/discordbot/cogs/_maplestory/embeds.md
@@ -28,6 +37,8 @@ nav:
                   - service: Reference/discordbot/cogs/_maplestory/service.md
                   - views: Reference/discordbot/cogs/_maplestory/views.md
               - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
+              - economy: Reference/discordbot/cogs/economy.md
+              - games: Reference/discordbot/cogs/games.md
               - gen_reply: Reference/discordbot/cogs/gen_reply.md
               - help: Reference/discordbot/cogs/help.md
               - log_msg: Reference/discordbot/cogs/log_msg.md
@@ -49,6 +60,7 @@ nav:
       - artale_data: Scripts/artale_data.md
       - gen_docs: Scripts/gen_docs.md
       - gpt: Scripts/gpt.md
+      - image_dev: Scripts/image_dev.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md

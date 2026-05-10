@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a points economy with casino mini-games, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -35,12 +35,12 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 - **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if the model used web search, or ❌ on error)
-- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, and estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally)
+- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally), and how many points the user just earned this turn
 - **Auto-unmute** — if a moderator times the bot out, it lifts its own timeout, identifies the moderator from the audit log, and posts a single AI reply in the most recently active channel
 
 ### Threads Parsing
 
-Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos. If the link points to a reply, the bot also walks the reply chain and shows the original post plus intermediate replies in the same message, with a grey-scale gradient stripe (light → dark) so each layer is easy to tell apart. Only the post the user pasted has its videos attached; ancestor videos are surfaced as an inline link hint to avoid mixing files across layers.
+Paste a Threads.net link and the bot automatically expands it — displaying the post text, images, engagement stats, and downloading any attached videos. If the link points to a reply, the bot also walks the reply chain and shows the original post plus intermediate replies in the same message, with a grey-scale gradient stripe (light → dark) so each layer is easy to tell apart. Only the post the user pasted has its videos attached; ancestor videos are surfaced as an inline link hint to avoid mixing files across layers. Sharing a working Threads link earns the poster points (see *Points & Casino Games* below).
 
 ### Video Downloading
 
@@ -50,6 +50,30 @@ Use `/download_video` to download videos from multiple platforms:
 - Quality options: Best, High (1080p), Medium (720p), Low (480p)
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
+- Successful downloads award points to the caller (see *Points & Casino Games* below)
+
+### Points & Casino Games
+
+The bot keeps a **persistent, cross-server point balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
+
+**Earning points:**
+
+- **Chat with the bot** — every streaming AI reply awards points equal to its `total_tokens` (input + output). The exact amount is shown in the reply footer.
+- **`/download_video`** — successful downloads pay `10 + round(file_size_mb)`, capped at 100, and the reward is appended to the success message.
+- **Threads links** — when the bot successfully expands a Threads.net link, the **person who posted the link** earns `10 + videos × 5 + images × 2`. A 1-hour per-`(user, URL)` cooldown blocks copy-paste farming.
+
+**Spending points:** the casino games take a bet up-front and pay out when the round resolves. The dealer is an AI that taunts the bet and reacts to the result with one short line.
+
+| Slash command      | Game                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `/dice <bet>`      | Three dice vs three dice; bigger total wins (push refunds the bet).                                                   |
+| `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit. |
+
+**Managing points:**
+
+- `/balance` — show your current balance.
+- `/leaderboard` — global Top 10 across every server the bot is in.
+- `/give <member> <amount>` — transfer points to another member (no self-transfer, no bots).
 
 ### MapleStory Artale Database
 
@@ -74,6 +98,11 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search) |
 | _Threads link_                    | Automatically expands Threads.net posts with media                      |
 | `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili   |
+| `/balance`                        | Show your current point balance (cross-server)                          |
+| `/leaderboard`                    | Global Top 10 point holders                                             |
+| `/give <member> <amount>`         | Transfer points to another member                                       |
+| `/dice <bet>`                     | Roll three dice against the AI dealer                                   |
+| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons against the AI dealer     |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                    |
 | `/maple_equip <name>`             | Search MapleStory equipment                                             |
 | `/maple_scroll <name>`            | Search MapleStory scrolls                                               |
@@ -164,7 +193,8 @@ DISCORD_TEST_SERVER_ID=your_test_server_id
 
 This bot complies with Discord's Terms of Service and Developer Policy.
 
-- **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite. Data stays on your server and is never shared externally.
+- **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite (`data/messages.db`). Data stays on your server and is never shared externally.
+- **Points Database**: Per-user point balances live in a separate local SQLite file (`data/economy.db`). Only the Discord user ID, the most recently seen username, and balance counters are stored. Balances are shared across every server the bot runs in.
 - **API Calls**: Text, images, supported file attachments, embedded media, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is responding, such as when it is mentioned in a guild or messaged in DM. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
 - **Opt-out**: Server owners can disable message logging by adjusting the bot configuration.

@@ -73,11 +73,44 @@ Flow per `on_message`:
     - `VIDEO` → `client.videos.create` + poll until `completed`, then upload the MP4 as a `File`.
     - `SUMMARY` → slow path with `SUMMARY_PROMPT` and `history_limit=100`.
     - `QA` → slow path with `REPLY_PROMPT` and `history_limit=30`.
-4. **Slow path** (`_handle_message_reply` → `_handle_streaming`) streams `response.output_text.delta`, appends a footer `> **{model}** ⬆ {in} ⬇ {out} ${cost:.8f}` whose rates come from `discordbot.utils.model_pricing.get_token_rates`. It builds Discord messages lazily: the first 30 chars create a `reply`, subsequent chunks `edit` it. If the stream emits any `response.output_text.annotation.added` event (i.e. the model invoked web search / `googleSearch`), a `🌐` reaction is added on top of the `🆗`.
+4. **Slow path** (`_handle_message_reply` → `_handle_streaming`) streams `response.output_text.delta`, appends a footer `-# {model} · ⬆ {in} ⬇ {out} · ${cost:.8f} · +{total_tokens} 點數` whose rates come from `discordbot.utils.model_pricing.get_token_rates`. The trailing `+N 點數` is the chat-economy reward for this turn — `_handle_streaming` fire-and-forgets `_award_chat_points` (which calls `add_balance` from `cogs/_economy/database.py`) the moment the `response.completed` event lands, with `total_tokens = input + output`; failures only surface through `logfire.warn` so a SQLite hiccup never blocks the user-visible reply. It builds Discord messages lazily: the first 30 chars create a `reply`, subsequent chunks `edit` it. If the stream emits any `response.output_text.annotation.added` event (i.e. the model invoked web search / `googleSearch`), a `🌐` reaction is added on top of the `🆗`.
 5. **Tools are model-specific** — `ModelSettings.tools` (in `typings/models.py`) returns Gemini's `googleSearch` + `urlContext`, Claude's `web_search_*` + `web_fetch_*`, or OpenAI's `web_search`, dispatched by substring match on `name`. When adding support for a new provider, extend that property.
 6. **Progress UX**: `_handle_reaction` manipulates reactions on the **user's** message — never sends an intermediate status message. Expect the sequence 🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗 (plus 🌐 if web search fired, or ❌ on error). Preserve this; it's the agreed UX.
 7. **Attachment ingestion** (`_get_attachment_parts`) is gated by `get_supported_modalities(model_name=slow_model.name)` — attachments whose modality (image / video / audio, with documents collapsed to "image") the slow model doesn't accept are skipped before any LLM call, so a text-only slow model produces zero attachment parts everywhere. The function returns OpenAI SDK typed content parts (`ResponseInputImageParam` or `ResponseInputFileParam`) and filters failed conversions. It routes each surviving attachment by `content_type`: `image/*` → `_image_to_part` (PIL resize to 1568×1568, JPEG re-encode at quality 85, sent as `data:` URI via `input_image`); everything else (`video/*`, `application/pdf`, `text/plain`, `application/json`, …) → `_attachment_to_part` (raw bytes → base64 data URI, sent as `input_file` with `filename`). Stickers and embed images/thumbnails always go through `_image_to_part`; for embeds the `media.discordapp.net` `proxy_url` is preferred over the origin URL since CDN links expire.
 8. History / reference / current messages are fetched in parallel via `asyncio.gather`; keep that pattern — the tasks list is built in a `for` loop on its own line, then gathered. Avoid collapsing into a comprehension.
+
+### Economy (`cogs/economy.py` + `cogs/_economy/database.py`)
+
+Persistent point balances back the chat reward, the casino games, and the `/balance` / `/leaderboard` / `/give` slash commands.
+
+- **DB**: a separate SQLite file at `data/economy.db` (NOT `messages.db`). The engine is a module-level singleton in `cogs/_economy/database.py:_engine` — same lesson as `log_msg.py:_sql_engine`, do not move it onto a per-instance `cached_property`. `connect_args={"check_same_thread": False}` is required because the sync ORM calls run inside `asyncio.to_thread`.
+- **Schema**: `UserAccount(user_id PK, name, balance, total_earned, total_spent, updated_at)`. **There is no `guild_id`** — points are intentionally cross-server, so the same Discord user has one balance shared across every guild the bot is in. `/leaderboard` is therefore also a global Top 10, not per-guild.
+- **API surface** (all async wrappers around `_*_sync` functions, dispatched via `asyncio.to_thread` so the event loop never blocks on SQLite I/O):
+    - `add_balance(user_id, name, amount)` — chat / video / Threads rewards
+    - `settle_game(user_id, name, delta)` — game payouts; clamps to ≥ 0 (we never let a stale session leave a negative balance)
+    - `transfer(sender_id, sender_name, receiver_id, receiver_name, amount)` — atomic two-row write inside one transaction; rejects self-transfer, non-positive amounts, and insufficient funds
+    - `top_n(limit)` — `/leaderboard` data source
+- **Bet flow for games**: bets are withdrawn up-front via `settle_game(delta=-bet)`, then the round resolves and `settle_game(delta=payout)` credits back `bet + delta` (so a regular win pays `2 * bet`, push pays `bet`, loss pays `0`, natural Blackjack pays `int(bet * 2.5)`). Withdrawing first is what stops a single user firing two `/dice bet:100` commands in parallel from double-spending the same balance.
+
+### Games (`cogs/games.py` + `cogs/_games/`)
+
+Slash commands `/dice` and `/blackjack`, each one game-per-invocation against an AI dealer. Players act independently — there's no lobby, no shared table, no need to "start a game"; whoever runs the slash command is in their own session.
+
+- **Pure rules** live in `cogs/_games/dice.py` (`play_dice`, `render_rolls`, infinite-shoe RNG) and `cogs/_games/blackjack.py` (`BlackjackHand`, `hand_value`, `is_blackjack`, `is_bust`, `settle`). These are side-effect-free; tests inject `random.Random(x=seed)` for determinism, while the cog uses `random.SystemRandom()` in production.
+- **`BlackjackView`** (`cogs/_games/views.py`) drives the `Hit` / `Stand` flow. `interaction_check` restricts the buttons to the original `owner_id`; `on_timeout` auto-stands so a walk-away still settles. `_finalize` calls `settle()` for the outcome, credits `bet + delta` via `settle_game`, and asks `DealerAI.settle` for one closing line.
+- **Dealer banter** is `cogs/_games/dealer.py:DealerAI`, a thin wrapper around the same `AsyncOpenAI` client + `gemini-flash-latest` (effort=`none`) that `gen_reply.fast_model` uses. Three entry points — `taunt_bet` (game start), `settle` (round end), `hint` (per-Hit during Blackjack) — each falls back to a hard-coded line when the LLM call fails so the round never stalls on AI hiccups. Prompts live in `cogs/_games/prompts.py` (`DEALER_PERSONA`, `DEALER_TAUNT_BET_PROMPT`, `DEALER_SETTLE_PROMPT`, `DEALER_HINT_PROMPT`).
+- **`GamesCogs.dealer`** is a `cached_property` so the `DealerAI` (and the underlying `AsyncOpenAI` client) is built lazily on first command. Same pattern as `ReplyGeneratorCogs.client` and `AutoUnmuteCogs.client` — three independent clients are intentional, not a deduplication target.
+
+### Threads parsing (`cogs/parse_threads.py`)
+
+Listener that watches every `on_message` for a Threads URL (regex on `threads.net` / `threads.com`) and replies with parsed embeds + downloaded videos. Two reward-related details to know:
+
+- **Reward target is `message.author`**, not the bot caller — the cog has no caller. Successful parses pay `10 + videos*5 + images*2` to the person who shared the link, fire-and-forget via `_award_silently`.
+- **Cooldown is in-memory**: `self._recent_awards: dict[(user_id, url), datetime]` on the cog instance, gated by `_claim_award_slot`. Same `(user, URL)` is locked out for `_AWARD_COOLDOWN` (1 hour); writes opportunistically sweep stale entries so the dict can't grow unbounded. The state resets on bot restart — that's an explicit trade-off, not a bug, since the cooldown only needs to deter trivial copy-paste farming.
+
+### Video downloader (`cogs/video.py`)
+
+`/download_video` slash command around `discordbot.utils.downloader.VideoDownloader` (yt-dlp). Reward = `min(10 + round(file_size_mb), 100)` and is **awaited** (not fire-and-forget) so the success message can show `· 獲得 N 點數` only when the DB write actually succeeded — `_send_success` reads back `awarded` from `_award_silently` and only appends the suffix on success. The single `_send_success` helper is shared between the direct download path and the "file too big, retrying at low quality" fallback path; do not duplicate the message-build logic in those branches.
 
 ### Auto-unmute (`cogs/auto_unmute.py` + `cogs/_auto_unmute/prompts.py`)
 
@@ -119,6 +152,8 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 - `data/maplestory/` — Artale JSON dataset consumed by `cogs/maplestory.py` (via `cogs/_maplestory/service.py`).
 - `data/downloads/`, `data/threads/` — ephemeral media scratch space; `cogs/video.py` and `cogs/parse_threads.py` clean up after themselves.
 - `data/messages.db` — the SQLite message log (when using the default config).
+- `data/economy.db` — the SQLite point-balance store written by `cogs/_economy/database.py`. One row per Discord user, no `guild_id` (cross-server balances).
+- `data/model_prices.json` — cached LiteLLM price table fetched lazily by `discordbot.utils.model_pricing`.
 
 ## Coding conventions
 
@@ -181,6 +216,10 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 - **`message.snapshots` (Discord's forward feature) is intentionally NOT walked** by `_get_cleaned_content` or `_get_attachment_parts`. Forwards are rare in practice and adding them would double the per-message work; the comments in those methods are the canonical reminder. Revisit if forwarded media becomes common.
 - **`BELIEF` (in `_gen_reply/prompts.py`) is currently disabled** in `_handle_message_reply` — the call to inject it as a `context_prompt` is commented out because the model treated it as too prescriptive and refused benign requests. The argument still flows through the function signature for the day someone re-enables it after prompt tuning; don't delete the parameter just because it's unused.
 - **`is_dm` short-circuit**: in DMs the bot always responds; in guilds it requires a literal `<@bot_id>` substring in `message.content`. A Discord *reply notification* puts the bot in `message.mentions` without writing the mention into `content`, so the content check is what prevents the bot from summoning itself when a user replies to its own Threads embed or video result.
+- **Points are cross-server, on purpose.** `UserAccount` is keyed by `user_id` alone — no `guild_id`. Same Discord user → one balance shared across every guild the bot is in, and `/leaderboard` is global Top 10. If you're tempted to add per-guild scoping, that's a schema change (probably a separate `(user_id, guild_id)` membership table joined into the leaderboard query) — don't try to retrofit it via app-side filters.
+- **Bets are withdrawn up-front, payouts credit `bet + delta`.** The view-level `_finalize` and `GamesCogs.dice` both rely on this — if you ever change `settle()` in `cogs/_games/blackjack.py` to return absolute payout instead of a delta, the call sites will silently double-pay. Tests in `tests/test_blackjack.py` lock down the delta semantics.
+- **Threads award cooldown is in-memory and per-cog-instance.** `ThreadsCogs._recent_awards` resets on bot restart. That's the deliberate scope — it deters copy-paste farming, not a real anti-abuse system. If you need persistence (e.g. surviving restarts), promote it to `data/economy.db` with a new table; do not reach into `messages.db`.
+- **Dealer AI is best-effort.** `DealerAI._ask` returns a hard-coded fallback string on any exception; never let a missing AI line block the round resolution or the DB write. If you add a new dealer entry point, give it a fallback line in `cogs/_games/dealer.py` next to `_FALLBACK_*`.
 
 ## Helper skills (use when relevant)
 

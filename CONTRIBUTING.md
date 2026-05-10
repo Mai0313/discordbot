@@ -45,10 +45,21 @@ src/discordbot/
 │   ├── auto_unmute.py       # Detects when the bot itself is timed out, clears the timeout, posts an AI reply
 │   ├── _auto_unmute/
 │   │   └── prompts.py       # UNMUTE_PROMPT
+│   ├── economy.py           # /balance, /leaderboard, /give slash commands
+│   ├── _economy/
+│   │   └── database.py      # Per-user point balance store (SQLite) — async wrappers around SQLAlchemy ORM
+│   ├── games.py             # /dice and /blackjack slash commands (single-player vs AI dealer)
+│   ├── _games/
+│   │   ├── blackjack.py     # Pure Blackjack rules: BlackjackHand, hand_value, settle, render_hand
+│   │   ├── dealer.py        # DealerAI — fast-model wrapper for taunt_bet / settle / hint banter
+│   │   ├── dice.py          # play_dice helper + render_rolls
+│   │   ├── prompts.py       # DEALER_* prompts
+│   │   └── views.py         # BlackjackView (Hit / Stand buttons) + embed builders
 │   ├── gen_reply.py         # AI chat — @mention/DM trigger, routing, streaming via OpenAI Responses API
 │   ├── _gen_reply/
 │   │   ├── exceptions.py    # extract_friendly_error() — pulls the readable text out of nested LiteLLM/OpenAI errors
-│   │   └── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / BELIEF / PERSONA prompts
+│   │   ├── prompts.py       # REPLY / ROUTE / SUMMARY / IMAGE / BELIEF / PERSONA prompts
+│   │   └── views.py         # RegenerateView — single-button view for re-running an AI reply
 │   ├── help.py              # /help slash command (localized guide)
 │   ├── log_msg.py           # Message logging to SQLite
 │   ├── maplestory.py        # /maple_* slash commands (8 commands)
@@ -58,9 +69,9 @@ src/discordbot/
 │   │   ├── models.py        # Pydantic data models
 │   │   ├── service.py       # Data loading, search logic, caching
 │   │   └── views.py         # Interactive UI components (dropdown select)
-│   ├── parse_threads.py     # Threads.net auto-parser
+│   ├── parse_threads.py     # Threads.net auto-parser; awards points to the user who shared the link
 │   ├── template.py          # /ping and utility reactions
-│   └── video.py             # /download_video slash command
+│   └── video.py             # /download_video slash command; awards points on successful download
 ├── typings/                 # Pydantic configuration & shared models
 │   ├── config.py            # DiscordConfig (DISCORD_BOT_TOKEN, DISCORD_TEST_SERVER_ID)
 │   ├── llm.py               # LLMConfig (OPENAI_BASE_URL, OPENAI_API_KEY)
@@ -93,7 +104,10 @@ data/
 │   ├── misc.json
 │   └── useable.json
 ├── downloads/               # Temporary video download storage
-└── threads/                 # Downloaded Threads.net media
+├── threads/                 # Downloaded Threads.net media
+├── messages.db              # SQLite message log written by cogs/log_msg.py
+├── economy.db               # SQLite point-balance store (cross-server, no guild_id) written by cogs/_economy/database.py
+└── model_prices.json        # Cached LiteLLM price table fetched by utils/model_pricing.py
 ```
 
 ### Architecture
@@ -102,7 +116,9 @@ data/
 - **Async**: Built on nextcord with async/await patterns throughout.
 - **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig` in `typings/config.py`, `LLMConfig` in `typings/llm.py`). Shared model abstractions like `ModelSettings` and `RouteDecision` live in `typings/models.py`.
 - **Logging**: `setup_logging()` in `discordbot/__init__.py` configures `logfire` (local console only, `send_to_logfire=False`) and tees stdout to `./data/logs/<timestamp>.log` for each run. `nextcord.state` logs are forwarded into logfire too.
-- **LLM client**: Each cog that talks to the model owns a `cached_property AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) — currently `gen_reply` and `auto_unmute`. The endpoint is OpenAI-compatible, typically a [Litellm](https://github.com/BerriAI/litellm) proxy fronting Gemini / Claude / OpenAI / etc., so model swaps are just a string change.
+- **LLM client**: Each cog that talks to the model owns a `cached_property AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) — currently `gen_reply`, `auto_unmute`, and `games` (whose `DealerAI` reuses the cog's client for dealer banter). The endpoint is OpenAI-compatible, typically a [Litellm](https://github.com/BerriAI/litellm) proxy fronting Gemini / Claude / OpenAI / etc., so model swaps are just a string change.
+- **Economy**: Per-user point balances live in a separate SQLite (`data/economy.db`) managed by `cogs/_economy/database.py`. The schema is keyed by Discord `user_id` only — **no `guild_id`**, so balances and the `/leaderboard` are intentionally cross-server. Sync ORM helpers (`_add_balance_sync`, `_settle_game_sync`, `_transfer_sync`, `_top_n_sync`) are wrapped with `asyncio.to_thread` to keep the event loop responsive.
+- **Game flow**: `/dice` and `/blackjack` (in `cogs/games.py`) deduct the bet up-front via `settle_game(delta=-bet)`, run pure-rule helpers from `cogs/_games/{dice,blackjack}.py`, then credit `bet + delta` back when the round resolves. `BlackjackView` (`cogs/_games/views.py`) drives Hit/Stand buttons and auto-stands on timeout. `DealerAI` (`cogs/_games/dealer.py`) wraps the fast model for `taunt_bet` / `settle` / `hint` banter; every entry point falls back to a hard-coded line on LLM failure so the round always resolves.
 - **Model abstraction**: Models are not raw strings. `ModelSettings(name, effort)` (in `typings/models.py`) bundles the model identifier, reasoning effort, and the right `tools` shape per provider (Gemini `googleSearch` + `urlContext`, Claude `web_search_*` + `web_fetch_*`, others OpenAI `web_search`). Accepted input modalities are looked up separately via `get_supported_modalities()` from `utils/model_pricing.py` so `typings/` stays free of `utils/` imports. `gen_reply` exposes `fast_model` / `slow_model` / `image_model` / `video_model` as properties; `slow_model` is time-of-day dispatched (UTC weekdays 09:00–17:00 falls back to a lite model to avoid the Gemini Pro overload window).
 - **AI Routing**: The `gen_reply` cog uses the fast model to classify user intent (`IMAGE` / `VIDEO` / `QA` / `SUMMARY`) via `client.responses.parse(text_format=RouteDecision)` and dispatches to the matching handler. All chat / route / caption calls use the **OpenAI Responses API** (not Chat Completions). The slow reply path streams the answer event-by-event (`response.output_text.delta`), strips Gemini's leading `\n\n\n` quirk, and ends with a Discord-quoted footer (`> **{model}** ⬆ in ⬇ out $cost`) where the cost comes from `discordbot.utils.model_pricing.get_token_rates` (a lazy fetch of the upstream LiteLLM `model_prices_and_context_window.json`, cached at `data/model_prices.json`). Processing progress is shown via emoji reactions on the user's message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if web search fired, or ❌ on error).
 - **Trigger rule**: In DMs the bot always responds; in guilds it only responds when the message text contains `<@bot_id>` (a reply-notification alone is ignored, so users replying to a Threads embed or a download result won't accidentally summon the bot).
@@ -163,6 +179,11 @@ uv run pytest -vv
 
 - **VideoDownloader**: parametrized integration tests with URLs from X, Facebook, TikTok
 - **ThreadsDownloader**: parametrized integration tests with 9 different Threads.net URLs (including a reply with a multi-level parent chain), plus offline unit tests for the reply-chain extraction logic
+- **Economy DB** (`tests/test_economy.py`): per-test isolated SQLite via monkeypatched `_engine`; covers add / settle clamping / transfer atomicity / leaderboard ordering / cooldown rejection edges
+- **Blackjack rules** (`tests/test_blackjack.py`): hand-value math (aces, face cards, double-ace demotion), natural Blackjack pays 1.5x, double-Blackjack push, player-bust, dealer-bust, dealer keeps drawing below 17
+- **Dice** (`tests/test_dice.py`): seeded RNG determinism, face range, outcome ↔ totals invariant
+- **Reward formulas** (`tests/test_video_reward.py`, `tests/test_threads_reward.py`): video reward `min(10 + round(MB), 100)`, success-text DB-failure suffix gating, Threads (user, URL) cooldown claim / expiry / cross-user independence
+- **Streaming footer** (`tests/test_gen_reply.py`): regression test for `_handle_streaming` building the `+N 點數` reward suffix and tolerating LiteLLM `output_tokens_details=null`
 
 ## CI/CD
 
