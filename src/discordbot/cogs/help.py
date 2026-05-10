@@ -157,7 +157,7 @@ class HelpCogs(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the HelpCogs to the bot.
 
     Args:

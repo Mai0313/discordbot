@@ -164,7 +164,7 @@ class LogMessageCog(commands.Cog):
         asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the LogMessageCog to the bot.
 
     Args:

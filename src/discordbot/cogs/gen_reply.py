@@ -740,7 +740,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 await message.reply(content=None, embed=error_embed)
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the ReplyGeneratorCogs to the bot.
 
     Args:

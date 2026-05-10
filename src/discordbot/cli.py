@@ -4,7 +4,6 @@ from pathlib import Path
 import secrets
 import platform
 
-import anyio
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
@@ -25,12 +24,10 @@ class DiscordBot(commands.Bot):
 
     def __init__(self) -> None:
         """Initialises the Discord bot with specific intents and configuration."""
-        # intents=Intents.default() 只啟用必要的 Intents
         intents = Intents.all()
         intents.members = False
         intents.presences = False
         super().__init__(
-            # command_prefix=commands.when_mentioned_or("!"),
             intents=intents,
             help_command=None,
             description="A Discord bot made with Nextcord.",
@@ -40,19 +37,56 @@ class DiscordBot(commands.Bot):
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(LogfireLoggingHandler())
         Path("./data").mkdir(parents=True, exist_ok=True)
+        # Cogs are loaded synchronously so application_commands is populated
+        # before the gateway connects. Each cog's setup() must also be sync:
+        # load_extension fires async setups via asyncio.create_task() without
+        # awaiting, so an async setup would still be pending when on_ready
+        # triggers sync_all_application_commands(), making the first sync see
+        # zero commands and register nothing with Discord.
+        self._load_cogs_sync()
+        self._initial_setup_done = False
+
+    def _load_cogs_sync(self) -> None:
+        """Loads all cogs found in the cogs directory."""
+        cog_dir = Path(__file__).parent / "cogs"
+        cog_files = [
+            f"discordbot.cogs.{f.stem}"
+            for f in cog_dir.glob("*.py")
+            if not f.stem.startswith("__")
+        ]
+        self.load_extensions(cog_files, stop_at_error=True)
+        logfire.info("Cogs Loaded", cogs=cog_files)
 
     async def on_connect(self) -> None:
         """Called when the bot has successfully connected to Discord."""
         logfire.info("Bot Connected", bot_name=self.user.name, bot_id=self.user.id)
 
     async def on_ready(self) -> None:
-        """Called when the bot is ready and has finished basic setup."""
+        """Called when the bot is ready; performs first-time-only setup.
+
+        ``on_ready`` re-fires on every gateway reconnect/resume, so the body
+        is gated on ``_initial_setup_done`` to keep sync + status_task.start
+        idempotent.
+        """
+        if self._initial_setup_done:
+            return
+        self._initial_setup_done = True
+
+        logfire.info(
+            "Logged in",
+            bot_name=self.user.name,
+            discord_version=nextcord.__version__,
+            python_version=platform.python_version(),
+            system=f"{platform.system()} {platform.release()} ({os.name})",
+        )
+
+        await self.sync_all_application_commands()
+        self.status_task.start()
+
         app_info = await self.application_info()
-        await self.setup_hook()
         invite_url = (
             f"https://discord.com/oauth2/authorize?client_id={app_info.id}&permissions=8&scope=bot"
         )
-
         logfire.info("Bot Started", bot_name=self.user.name, bot_id=self.user.id)
         logfire.info("Invite Link", invite_url=invite_url)
 
@@ -63,27 +97,6 @@ class DiscordBot(commands.Bot):
             guild: The Guild instance that became available.
         """
         return await super().on_guild_available(guild)
-
-    async def get_cogs_names(self) -> list[str]:
-        """Returns cog module names found in the cogs directory.
-
-        Returns:
-            Fully-qualified module names for non-dunder Python files under the
-            cogs directory.
-        """
-        cog_path = anyio.Path("./src/discordbot/cogs")
-        cog_files = [
-            f"discordbot.cogs.{f.stem}"
-            async for f in cog_path.glob("*.py")
-            if not f.stem.startswith("__")
-        ]
-        return cog_files
-
-    async def load_cogs(self) -> None:
-        """Loads all cogs found in the cogs directory."""
-        cog_files = await self.get_cogs_names()
-        self.load_extensions(cog_files, stop_at_error=True)
-        logfire.info("Cogs Loaded", cogs=cog_files)
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
@@ -97,24 +110,6 @@ class DiscordBot(commands.Bot):
     async def before_status_task(self) -> None:
         """Ensures the bot is ready before starting the status task."""
         await self.wait_until_ready()
-
-    async def setup_hook(self) -> None:
-        """Performs async setup before the bot connects."""
-        logfire.info(
-            "Logged in",
-            bot_name=self.user.name,
-            discord_version=nextcord.__version__,
-            python_version=platform.python_version(),
-            system=f"{platform.system()} {platform.release()} ({os.name})",
-        )
-        await self.load_cogs()
-        guild_id = None
-        if self.discord_config.discord_test_server_id:
-            guild_id = self.get_guild(self.discord_config.discord_test_server_id)
-            if isinstance(guild_id, Guild):
-                await self.sync_application_commands(guild_id=guild_id.id)
-        await self.sync_all_application_commands()
-        self.status_task.start()
 
     async def on_message(self, message: Message) -> None:
         """Handles incoming messages.

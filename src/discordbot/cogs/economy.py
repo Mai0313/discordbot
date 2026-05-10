@@ -197,7 +197,7 @@ class EconomyCogs(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the EconomyCogs to the bot.
 
     Args:

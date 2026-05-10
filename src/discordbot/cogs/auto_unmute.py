@@ -177,7 +177,7 @@ class AutoUnmuteCogs(commands.Cog):
         return (responses.output_text or "").strip()
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the AutoUnmuteCogs to the bot.
 
     Args:

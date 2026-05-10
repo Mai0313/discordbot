@@ -252,7 +252,7 @@ class MapleStoryCogs(commands.Cog):
     @nextcord.slash_command(
         name="maple_npc",
         description="Search for NPCs in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷NPC", Locale.ja: "メイプルNPC"},
+        name_localizations={Locale.zh_TW: "楓之谷npc", Locale.ja: "メイプルnpc"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷 NPC 資訊",
             Locale.ja: "メイプルストーリーのNPC情報を検索",
@@ -523,7 +523,7 @@ class MapleStoryCogs(commands.Cog):
         return None
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the MapleStoryCogs to the bot.
 
     Args:

@@ -176,7 +176,7 @@ class VideoCogs(commands.Cog):
 
 
 # 註冊 Cog
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the VideoCogs to the bot.
 
     Args:

@@ -308,7 +308,7 @@ class GamesCogs(commands.Cog):
         view.message = message
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the GamesCogs to the bot.
 
     Args:

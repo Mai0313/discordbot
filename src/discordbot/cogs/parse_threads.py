@@ -250,7 +250,7 @@ class ThreadsCogs(commands.Cog):
                 )
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     """Adds the ThreadsCogs to the bot.
 
     Args:
