@@ -57,12 +57,12 @@ The bot keeps a **persistent, cross-server point balance** for every Discord acc
 
 **Earning points:** every streaming AI reply awards points equal to its `total_tokens` (input + output), shown in the reply footer. Chatting with the bot is currently the only way to earn — Threads parsing and `/download_video` deliberately don't pay.
 
-**Spending points:** the casino games take a bet up-front and pay out when the round resolves. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label.
+**Spending points:** the casino games take a bet up-front and pay out when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero balance rejects the round. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
 
-| Slash command      | Game                                                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `/dice <bet>`      | Three dice vs three dice; bigger total wins (push refunds the bet).                                                   |
-| `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit. |
+| Slash command      | Game                                                                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/dice <bet>`      | Three dice vs three dice; bigger total wins (push refunds the bet).                                                                                      |
+| `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit using only the visible dealer card. |
 
 **Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack wins immediately and pays 1.5×; a dealer natural Blackjack settles immediately unless the player also has Blackjack, in which case the hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
@@ -71,7 +71,7 @@ The bot keeps a **persistent, cross-server point balance** for every Discord acc
 - `/balance` — show your current balance.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
 - `/give <member> <amount>` — transfer points to another member (no self-transfer, no bots).
-- `/house` — show the dealer's accumulated win/loss across `/dice` and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's running balance can go negative when the casino is losing overall.
+- `/house` — show the dealer's accumulated win/loss across `/dice` and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
 ### MapleStory Artale Database
 

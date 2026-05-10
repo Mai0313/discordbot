@@ -315,7 +315,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently() -> None:
     dealer = _DealerStub()
     message = _MessageStub()
     view = BlackjackView(
-        dealer=dealer,  # type: ignore[arg-type]
+        dealer=dealer,
         hand=hand,
         owner_id=1,
         author_name="alice",

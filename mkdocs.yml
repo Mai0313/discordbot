@@ -24,7 +24,9 @@ nav:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dice: Reference/discordbot/cogs/_games/dice.md
+                  - presentation: Reference/discordbot/cogs/_games/presentation.md
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
+                  - settlement: Reference/discordbot/cogs/_games/settlement.md
                   - views: Reference/discordbot/cogs/_games/views.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
