@@ -109,6 +109,26 @@ def _settle_game_sync(user_id: int, name: str, delta: int) -> int:
         return account.balance
 
 
+def _house_settle_sync(user_id: int, name: str, delta: int) -> int:
+    """Records a dealer-side settlement; balance may go negative.
+
+    Used to track the bot's casino P&L over time. The dealer has effectively
+    infinite funds (it backs every bet), so unlike `_settle_game_sync` we
+    deliberately do *not* clamp at zero — a long-running losing streak should
+    surface as a negative balance, with `total_earned` / `total_spent`
+    accumulating gross flows in each direction.
+    """
+    with Session(bind=_engine) as session:
+        account = _get_or_create(session=session, user_id=user_id, name=name)
+        account.balance += delta
+        if delta > 0:
+            account.total_earned += delta
+        elif delta < 0:
+            account.total_spent += -delta
+        session.commit()
+        return account.balance
+
+
 def _get_balance_sync(user_id: int) -> int:
     """Returns the current balance, or 0 if the user has never been seen."""
     with Session(bind=_engine) as session:
@@ -116,6 +136,15 @@ def _get_balance_sync(user_id: int) -> int:
         if account is None:
             return 0
         return account.balance
+
+
+def _get_account_sync(user_id: int) -> tuple[str, int, int, int] | None:
+    """Returns ``(name, balance, total_earned, total_spent)`` or ``None`` if unseen."""
+    with Session(bind=_engine) as session:
+        account = session.get(entity=UserAccount, ident=user_id)
+        if account is None:
+            return None
+        return (account.name, account.balance, account.total_earned, account.total_spent)
 
 
 def _transfer_sync(
@@ -143,10 +172,18 @@ def _transfer_sync(
         return True
 
 
-def _top_n_sync(limit: int) -> list[tuple[int, str, int]]:
-    """Returns up to ``limit`` accounts ordered by balance descending."""
+def _top_n_sync(limit: int, exclude_user_ids: tuple[int, ...]) -> list[tuple[int, str, int]]:
+    """Returns up to ``limit`` accounts ordered by balance descending.
+
+    ``exclude_user_ids`` filters out specific accounts (notably the bot's own
+    house ledger row) before applying the limit, so the leaderboard always
+    shows real players.
+    """
     with Session(bind=_engine) as session:
-        stmt = select(UserAccount).order_by(desc(UserAccount.balance)).limit(limit=limit)
+        stmt = select(UserAccount).order_by(desc(UserAccount.balance))
+        if exclude_user_ids:
+            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
+        stmt = stmt.limit(limit=limit)
         rows = session.execute(statement=stmt).scalars()
         return [(row.user_id, row.name, row.balance) for row in rows]
 
@@ -161,9 +198,19 @@ async def settle_game(*, user_id: int, name: str, delta: int) -> int:
     return await asyncio.to_thread(_settle_game_sync, user_id, name, delta)
 
 
+async def house_settle(*, user_id: int, name: str, delta: int) -> int:
+    """Async wrapper: records a dealer-side settlement (allows negative balance)."""
+    return await asyncio.to_thread(_house_settle_sync, user_id, name, delta)
+
+
 async def get_balance(*, user_id: int) -> int:
     """Async wrapper: reads the current balance (0 if missing)."""
     return await asyncio.to_thread(_get_balance_sync, user_id)
+
+
+async def get_account(*, user_id: int) -> tuple[str, int, int, int] | None:
+    """Async wrapper: reads the full account row, or ``None`` if unseen."""
+    return await asyncio.to_thread(_get_account_sync, user_id)
 
 
 async def transfer(
@@ -175,6 +222,8 @@ async def transfer(
     )
 
 
-async def top_n(*, limit: int = 10) -> list[tuple[int, str, int]]:
+async def top_n(
+    *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
+) -> list[tuple[int, str, int]]:
     """Async wrapper: returns the top ``limit`` accounts by balance."""
-    return await asyncio.to_thread(_top_n_sync, limit)
+    return await asyncio.to_thread(_top_n_sync, limit, exclude_user_ids)

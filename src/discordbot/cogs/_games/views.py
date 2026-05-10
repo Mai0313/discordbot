@@ -13,7 +13,7 @@ from discordbot.cogs._games.blackjack import (
     is_blackjack,
     dealer_visible_value,
 )
-from discordbot.cogs._economy.database import settle_game
+from discordbot.cogs._economy.database import settle_game, house_settle
 
 _IN_PROGRESS_COLOR = 0x5865F2
 _WIN_COLOR = 0x57F287
@@ -32,17 +32,24 @@ def _format_dealer_line(hand: BlackjackHand, hide_hole: bool) -> str:
 
 
 def build_in_progress_embed(
-    *, player_name: str, hand: BlackjackHand, balance_after_bet: int, dealer_line: str
+    *,
+    dealer_name: str,
+    player_name: str,
+    hand: BlackjackHand,
+    balance_after_bet: int,
+    dealer_line: str,
 ) -> Embed:
     """Builds the embed shown while the player is still acting."""
     embed = Embed(
         title=":black_joker: 21 點 - 進行中",
-        description=f"莊家：{dealer_line}",
+        description=f"{dealer_name}：{dealer_line}",
         color=_IN_PROGRESS_COLOR,
     )
     embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name="莊家的牌", value=_format_dealer_line(hand=hand, hide_hole=True), inline=False
+        name=f"{dealer_name} 的牌",
+        value=_format_dealer_line(hand=hand, hide_hole=True),
+        inline=False,
     )
     embed.set_footer(text=f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}")
     return embed
@@ -50,6 +57,7 @@ def build_in_progress_embed(
 
 def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     *,
+    dealer_name: str,
     player_name: str,
     hand: BlackjackHand,
     bet: int,
@@ -62,12 +70,14 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     """Builds the embed for a finished round."""
     embed = Embed(
         title=f":black_joker: 21 點 - {outcome_label}",
-        description=f"莊家：{dealer_line}",
+        description=f"{dealer_name}：{dealer_line}",
         color=color,
     )
     embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name="莊家的牌", value=_format_dealer_line(hand=hand, hide_hole=False), inline=False
+        name=f"{dealer_name} 的牌",
+        value=_format_dealer_line(hand=hand, hide_hole=False),
+        inline=False,
     )
     delta_text = f"{delta:+,}" if delta != 0 else "0"
     embed.set_footer(text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}")
@@ -93,6 +103,8 @@ class BlackjackView(ui.View):
         owner_id: Discord user ID allowed to press the buttons.
         author_name: Discord username used as the litellm end-user-id (ASCII-safe).
         player_name: Display name used in the embed.
+        dealer_id: Discord user ID of the bot itself (used for the house ledger).
+        dealer_name: Display name of the bot, surfaced in embeds and the house ledger row.
         balance_after_bet: Player's balance immediately after the bet was deducted.
         message: Reference to the rendered Discord message; set on first edit.
     """
@@ -105,6 +117,8 @@ class BlackjackView(ui.View):
         owner_id: int,
         author_name: str,
         player_name: str,
+        dealer_id: int,
+        dealer_name: str,
         balance_after_bet: int,
     ) -> None:
         """Initialises the view.
@@ -115,6 +129,8 @@ class BlackjackView(ui.View):
             owner_id: Discord user ID allowed to interact.
             author_name: Discord username used as the litellm end-user-id.
             player_name: Display name used in the embed.
+            dealer_id: Discord user ID of the bot itself (house ledger key).
+            dealer_name: Bot's display name; shown in embeds and stored on the house ledger row.
             balance_after_bet: Player balance after the bet was withdrawn.
         """
         super().__init__(timeout=180)
@@ -123,6 +139,8 @@ class BlackjackView(ui.View):
         self.owner_id = owner_id
         self.author_name = author_name
         self.player_name = player_name
+        self.dealer_id = dealer_id
+        self.dealer_name = dealer_name
         self.balance_after_bet = balance_after_bet
         self.message: Message | None = None
 
@@ -159,6 +177,7 @@ class BlackjackView(ui.View):
             dealer_visible=dealer_visible_value(hand=self.hand),
         )
         embed = build_in_progress_embed(
+            dealer_name=self.dealer_name,
             player_name=self.player_name,
             hand=self.hand,
             balance_after_bet=self.balance_after_bet,
@@ -181,11 +200,16 @@ class BlackjackView(ui.View):
         The bet was already withdrawn before the view was created, so we credit
         back ``bet + delta`` here: ``2 * bet`` on a regular win, ``2.5 * bet``
         on a natural Blackjack, ``bet`` on a push, and ``0`` on a loss.
+
+        We also mirror the player's net change into the bot's house ledger
+        (negated, since dealer P&L is the inverse of player P&L), so global
+        casino performance is always visible via ``/house``.
         """
         outcome, delta = settle(hand=self.hand)
         outcome_label, color = _OUTCOME_PRESENTATION[outcome]
         payout = max(self.hand.bet + delta, 0)
         new_balance = await settle_game(user_id=self.owner_id, name=self.player_name, delta=payout)
+        await house_settle(user_id=self.dealer_id, name=self.dealer_name, delta=-delta)
         if is_blackjack(cards=self.hand.player):
             detail = f"玩家 21 點 Blackjack, 莊家 {self.hand.dealer_total()} 點"
         elif is_bust(cards=self.hand.player):
@@ -207,6 +231,7 @@ class BlackjackView(ui.View):
         if hint:
             banter = f"{hint}\n\n{banter}"
         embed = build_final_embed(
+            dealer_name=self.dealer_name,
             player_name=self.player_name,
             hand=self.hand,
             bet=self.hand.bet,

@@ -15,7 +15,7 @@ from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.blackjack import BlackjackHand, settle, is_blackjack
-from discordbot.cogs._economy.database import get_balance, settle_game
+from discordbot.cogs._economy.database import get_balance, settle_game, house_settle
 
 _DICE_IN_PROGRESS_COLOR = 0x5865F2
 _WIN_COLOR = 0x57F287
@@ -62,6 +62,19 @@ class GamesCogs(commands.Cog):
     def dealer(self) -> DealerAI:
         """The cached DealerAI instance reused across commands."""
         return DealerAI(client=self.client, model=self.dealer_model)
+
+    def _dealer_identity(self) -> tuple[int, str]:
+        """Returns ``(dealer_id, dealer_name)`` from the bot's own user record.
+
+        Slash commands only fire after the gateway has connected, so
+        ``self.bot.user`` is guaranteed non-None at call time. We still fall
+        back to a synthetic id / "莊家" name to keep type-narrowing clean and
+        to avoid blowing up the round if Discord briefly returns no client
+        user (e.g. mid-reconnect).
+        """
+        if self.bot.user is None:
+            return (0, "莊家")
+        return (self.bot.user.id, self.bot.user.display_name)
 
     async def _reject_invalid_bet(
         self, *, interaction: Interaction, balance: int, bet: int
@@ -120,6 +133,8 @@ class GamesCogs(commands.Cog):
         if await self._reject_invalid_bet(interaction=interaction, balance=balance, bet=bet):
             return
 
+        dealer_id, dealer_name = self._dealer_identity()
+
         # Withdraw the bet up-front so a concurrent /dice or /blackjack from
         # the same player can't double-spend the same balance.
         balance_after_bet = await settle_game(
@@ -136,7 +151,7 @@ class GamesCogs(commands.Cog):
 
         in_progress = Embed(
             title=":game_die: 比大小 - 下注",
-            description=f"莊家：{taunt}",
+            description=f"{dealer_name}：{taunt}",
             color=_DICE_IN_PROGRESS_COLOR,
         )
         in_progress.add_field(name="下注", value=f"{bet:,} 點", inline=True)
@@ -164,6 +179,7 @@ class GamesCogs(commands.Cog):
             user_id=interaction.user.id, name=interaction.user.name, delta=payout
         )
         delta = payout - bet
+        await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
         detail = f"玩家骰 {result.player_total} 點, 莊家骰 {result.dealer_total} 點"
         banter = await self.dealer.settle(
             author_name=interaction.user.name,
@@ -178,7 +194,7 @@ class GamesCogs(commands.Cog):
 
         final = Embed(
             title=f":game_die: 比大小 - {outcome_label}",
-            description=f"莊家：{banter}",
+            description=f"{dealer_name}：{banter}",
             color=color,
         )
         final.add_field(
@@ -186,7 +202,9 @@ class GamesCogs(commands.Cog):
             value=render_rolls(rolls=result.player_rolls),
             inline=False,
         )
-        final.add_field(name="莊家", value=render_rolls(rolls=result.dealer_rolls), inline=False)
+        final.add_field(
+            name=dealer_name, value=render_rolls(rolls=result.dealer_rolls), inline=False
+        )
         delta_text = f"{delta:+,}" if delta != 0 else "0"
         final.set_footer(text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}")
         await message.edit(embed=final)
@@ -230,6 +248,8 @@ class GamesCogs(commands.Cog):
         if await self._reject_invalid_bet(interaction=interaction, balance=balance, bet=bet):
             return
 
+        dealer_id, dealer_name = self._dealer_identity()
+
         balance_after_bet = await settle_game(
             user_id=interaction.user.id, name=interaction.user.name, delta=-bet
         )
@@ -253,6 +273,7 @@ class GamesCogs(commands.Cog):
             new_balance = await settle_game(
                 user_id=interaction.user.id, name=interaction.user.name, delta=payout
             )
+            await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
             if is_blackjack(cards=hand.player) and is_blackjack(cards=hand.dealer):
                 detail = "雙方都是 Blackjack, 平手"
             elif is_blackjack(cards=hand.player):
@@ -278,6 +299,7 @@ class GamesCogs(commands.Cog):
                 "dealer_bust": ("莊家爆牌, 你贏了", _WIN_COLOR),
             }[outcome]
             embed = build_final_embed(
+                dealer_name=dealer_name,
                 player_name=interaction.user.display_name,
                 hand=hand,
                 bet=bet,
@@ -296,9 +318,12 @@ class GamesCogs(commands.Cog):
             owner_id=interaction.user.id,
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
             balance_after_bet=balance_after_bet,
         )
         embed = build_in_progress_embed(
+            dealer_name=dealer_name,
             player_name=interaction.user.display_name,
             hand=hand,
             balance_after_bet=balance_after_bet,

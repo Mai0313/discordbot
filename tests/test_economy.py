@@ -121,3 +121,37 @@ async def test_top_n_orders_by_balance_descending() -> None:
     await database.add_balance(user_id=3, name="carol", amount=50)
     rows = await database.top_n(limit=2)
     assert rows == [(2, "bob", 300), (1, "alice", 100)]
+
+
+async def test_top_n_excludes_specified_users() -> None:
+    """Excluded user IDs (e.g. the bot's house ledger) must not appear in the result."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    await database.add_balance(user_id=2, name="bob", amount=300)
+    await database.add_balance(user_id=99, name="house", amount=999)
+    rows = await database.top_n(limit=10, exclude_user_ids=(99,))
+    assert (99, "house", 999) not in rows
+    assert rows[0] == (2, "bob", 300)
+
+
+async def test_house_settle_allows_negative_balance() -> None:
+    """House ledger keeps a true running net even when the dealer is down."""
+    await database.house_settle(user_id=99, name="house", delta=-500)
+    assert await database.get_balance(user_id=99) == -500
+
+
+async def test_house_settle_accumulates_gross_flows() -> None:
+    """Wins and losses both accumulate gross totals, not just the net balance."""
+    await database.house_settle(user_id=99, name="house", delta=200)
+    await database.house_settle(user_id=99, name="house", delta=-300)
+    account = await database.get_account(user_id=99)
+    assert account is not None
+    name, balance, total_earned, total_spent = account
+    assert name == "house"
+    assert balance == -100
+    assert total_earned == 200
+    assert total_spent == 300
+
+
+async def test_get_account_returns_none_for_unseen_user() -> None:
+    """Unknown users return None instead of a synthetic zero row."""
+    assert await database.get_account(user_id=12345) is None

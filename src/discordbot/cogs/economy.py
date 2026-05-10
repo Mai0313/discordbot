@@ -4,11 +4,12 @@ import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
-from discordbot.cogs._economy.database import top_n, transfer, get_balance
+from discordbot.cogs._economy.database import top_n, transfer, get_account, get_balance
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
 _TRANSFER_COLOR = 0x5865F2
+_HOUSE_COLOR = 0xEB459E
 _ERROR_COLOR = 0xED4245
 
 _LEADERBOARD_LIMIT = 10
@@ -75,7 +76,10 @@ class EconomyCogs(commands.Cog):
             interaction: The interaction that triggered the command.
         """
         await interaction.response.defer()
-        rows = await top_n(limit=_LEADERBOARD_LIMIT)
+        # Exclude the bot's own house-ledger row so the casino's house P&L
+        # never crowds out real players on the leaderboard.
+        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
+        rows = await top_n(limit=_LEADERBOARD_LIMIT, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
                 title=":trophy: 點數排行榜",
@@ -187,6 +191,58 @@ class EconomyCogs(commands.Cog):
             ),
             color=_TRANSFER_COLOR,
         )
+        await interaction.followup.send(embed=embed)
+
+    @nextcord.slash_command(
+        name="house",
+        description="Show the dealer's running win/loss across every game.",
+        name_localizations={Locale.zh_TW: "莊家戰績", Locale.ja: "ディーラー戦績"},
+        description_localizations={
+            Locale.zh_TW: "顯示莊家在所有遊戲累積的輸贏 (跨伺服器)。",
+            Locale.ja: "ディーラーの全サーバー累計の勝敗を表示します。",
+        },
+        nsfw=False,
+    )
+    async def house(self, interaction: Interaction) -> None:
+        """Shows the bot's accumulated dealer P&L across `/dice` and `/blackjack`.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer()
+        if self.bot.user is None:
+            await interaction.followup.send(
+                embed=Embed(
+                    title=":x: 無法查詢",
+                    description="目前無法取得機器人身份。",
+                    color=_ERROR_COLOR,
+                )
+            )
+            return
+
+        account = await get_account(user_id=self.bot.user.id)
+        # No row yet means nobody's played a round; show a fresh-house view
+        # rather than treating it as an error.
+        name = self.bot.user.display_name
+        if account is None:
+            balance, total_earned, total_spent = 0, 0, 0
+        else:
+            _, balance, total_earned, total_spent = account
+            name = name or account[0]
+
+        if balance > 0:
+            verdict = f"莊家目前淨贏 **{balance:,}** 點。"
+        elif balance < 0:
+            verdict = f"莊家目前淨虧 **{abs(balance):,}** 點。"
+        else:
+            verdict = "莊家目前剛好打平。"
+
+        embed = Embed(
+            title=f":game_die: {name} - 莊家戰績", description=verdict, color=_HOUSE_COLOR
+        )
+        embed.add_field(name="莊家從玩家身上贏到", value=f"{total_earned:,} 點", inline=True)
+        embed.add_field(name="莊家賠給玩家", value=f"{total_spent:,} 點", inline=True)
+        embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負。")
         await interaction.followup.send(embed=embed)
 
 
