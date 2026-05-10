@@ -1,5 +1,7 @@
 import re
+import asyncio
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 import contextlib
 
 import logfire
@@ -7,8 +9,21 @@ from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
+from discordbot.cogs._economy.database import add_balance
 
 URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
+
+# Reward formula: base + per-video bonus + per-image bonus.
+# Plain-text-only Threads links still earn the base because the parsed embed
+# saves everyone in the channel a click.
+_THREADS_BASE_REWARD = 10
+_THREADS_VIDEO_BONUS = 5
+_THREADS_IMAGE_BONUS = 2
+
+# A user can re-post the same Threads URL after this window without their
+# previous award blocking the new one. Stored in-memory; resets on bot restart,
+# which is fine — the cooldown only exists to stop trivial copy-paste farming.
+_AWARD_COOLDOWN = timedelta(hours=1)
 
 
 class ThreadsCogs(commands.Cog):
@@ -30,6 +45,35 @@ class ThreadsCogs(commands.Cog):
         self.output_folder = Path("./data/threads")
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
+        # (user_id, url) -> last awarded timestamp (UTC). Opportunistically
+        # cleaned on every write so the dict can't grow unbounded.
+        self._recent_awards: dict[tuple[int, str], datetime] = {}
+
+    def _claim_award_slot(self, *, user_id: int, url: str) -> bool:
+        """Returns True only when this (user, URL) pair is past its cooldown.
+
+        Idempotently records the new timestamp on True, so the next call within
+        the cooldown window returns False until the entry expires.
+        """
+        now = datetime.now(tz=UTC)
+        cutoff = now - _AWARD_COOLDOWN
+        # Drop expired entries on the way in; this caps the dict to ~ active
+        # users * recent URLs, avoiding a separate sweep task.
+        stale = [key for key, ts in self._recent_awards.items() if ts < cutoff]
+        for key in stale:
+            del self._recent_awards[key]
+        if (user_id, url) in self._recent_awards:
+            return False
+        self._recent_awards[(user_id, url)] = now
+        return True
+
+    @staticmethod
+    async def _award_silently(*, user_id: int, name: str, amount: int) -> None:
+        """Persists the reward; failures only surface through logfire."""
+        try:
+            await add_balance(user_id=user_id, name=name, amount=amount)
+        except Exception:
+            logfire.warn("Failed to award Threads share points", _exc_info=True)
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous_emoji: str | None = None
@@ -181,6 +225,23 @@ class ThreadsCogs(commands.Cog):
                 await self._handle_reaction(
                     message=message, emoji="🆗", previous_emoji=current_emoji
                 )
+
+                # Reward the user who shared the link — they did the curation.
+                # Cooldown gates per (user, URL) so the same person can't farm
+                # by re-posting the same Threads post within an hour.
+                if self._claim_award_slot(user_id=message.author.id, url=url):
+                    video_count = sum(1 for f in target.video_paths if f.exists())
+                    image_count = len(target.image_urls)
+                    points = (
+                        _THREADS_BASE_REWARD
+                        + video_count * _THREADS_VIDEO_BONUS
+                        + image_count * _THREADS_IMAGE_BONUS
+                    )
+                    asyncio.create_task(  # noqa: RUF006
+                        coro=self._award_silently(
+                            user_id=message.author.id, name=message.author.name, amount=points
+                        )
+                    )
         except Exception:
             logfire.error("Failed to send Threads message", _exc_info=True)
             with contextlib.suppress(Exception):

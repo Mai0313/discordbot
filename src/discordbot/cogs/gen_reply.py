@@ -604,7 +604,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
-        usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · +{total_tokens} 點"
+        usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · +{total_tokens:,} 點數"
         stored_content += usage_footer
 
         # Final update to ensure complete message is displayed; the regenerate

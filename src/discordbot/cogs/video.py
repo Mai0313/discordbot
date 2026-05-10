@@ -1,8 +1,41 @@
+import contextlib
+
+import logfire
 import nextcord
 from nextcord import File, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
+from discordbot.cogs._economy.database import add_balance
+
+_BASE_REWARD = 10
+_REWARD_CAP = 100
+
+
+def _reward_for(file_size_mb: float) -> int:
+    """Calculates the point reward for a successful download.
+
+    Base reward plus one point per MB downloaded, capped at ``_REWARD_CAP``
+    so a single 1080p clip can't drain the leaderboard.
+    """
+    return min(_BASE_REWARD + round(file_size_mb), _REWARD_CAP)
+
+
+async def _award_silently(*, user_id: int, name: str, amount: int) -> int | None:
+    """Persists the reward; logs and returns ``None`` on DB failure."""
+    try:
+        return await add_balance(user_id=user_id, name=name, amount=amount)
+    except Exception:
+        logfire.warn("Failed to award video download points", _exc_info=True)
+        return None
+
+
+def _success_text(file_size_mb: float, awarded: int | None) -> str:
+    """Builds the final message body with the reward suffix when DB write succeeded."""
+    base = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
+    if awarded is None:
+        return base
+    return f"{base} · 獲得 {awarded:,} 點數"
 
 
 class VideoCogs(commands.Cog):
@@ -82,12 +115,11 @@ class VideoCogs(commands.Cog):
                                     content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                                 )
                             else:
-                                await interaction.edit_original_message(
-                                    content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                                    file=File(
-                                        fp=str(low_result.filename),
-                                        filename=low_result.filename.name,
-                                    ),
+                                await self._send_success(
+                                    interaction=interaction,
+                                    file_size_mb=file_size_mb,
+                                    file_path=str(low_result.filename),
+                                    file_name=low_result.filename.name,
                                 )
                     else:
                         # 已經是低畫質但仍然過大
@@ -95,12 +127,36 @@ class VideoCogs(commands.Cog):
                             content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
                         )
                 else:
-                    await interaction.edit_original_message(
-                        content=f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB",
-                        file=File(fp=str(result.filename), filename=result.filename.name),
+                    await self._send_success(
+                        interaction=interaction,
+                        file_size_mb=file_size_mb,
+                        file_path=str(result.filename),
+                        file_name=result.filename.name,
                     )
         except Exception:
-            await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")
+            with contextlib.suppress(Exception):
+                await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")
+
+    async def _send_success(
+        self, *, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
+    ) -> None:
+        """Awards points and edits the original message with the reward suffix."""
+        awarded: int | None = None
+        if interaction.user is not None:
+            awarded = await _award_silently(
+                user_id=interaction.user.id,
+                name=interaction.user.name,
+                amount=_reward_for(file_size_mb=file_size_mb),
+            )
+        # The message body shows the actual reward we recorded; if the DB write
+        # failed we omit the suffix rather than promising points the user can't see.
+        await interaction.edit_original_message(
+            content=_success_text(
+                file_size_mb=file_size_mb,
+                awarded=_reward_for(file_size_mb=file_size_mb) if awarded is not None else None,
+            ),
+            file=File(fp=file_path, filename=file_name),
+        )
 
 
 # 註冊 Cog
