@@ -110,7 +110,9 @@ Listener that watches every `on_message` for a Threads URL (regex on `threads.ne
 
 ### Video downloader (`cogs/video.py`)
 
-`/download_video` slash command around `discordbot.utils.downloader.VideoDownloader` (yt-dlp). Reward = `min(10 + round(file_size_mb), 100)` and is **awaited** (not fire-and-forget) so the success message can show `· 獲得 N 點數` only when the DB write actually succeeded — `_send_success` reads back `awarded` from `_award_silently` and only appends the suffix on success. The single `_send_success` helper is shared between the direct download path and the "file too big, retrying at low quality" fallback path; do not duplicate the message-build logic in those branches.
+`/download_video` slash command around `discordbot.utils.downloader.VideoDownloader` (yt-dlp). Reward = `min(10 + round(file_size_mb), 100)` and is **awaited** (not fire-and-forget) so the success message can show `· 獲得 N 點數` only when the DB write actually succeeded — `_deliver` reads back `awarded` from `_award_silently` and only appends the suffix on success. The single `_deliver` helper is shared between the direct download path and the "file too big, retrying at low quality" fallback path; do not duplicate the message-build logic in those branches.
+
+**Status messages and the file are delivered through different mechanisms on purpose.** Progress / failure text rides on the deferred placeholder via `interaction.edit_original_message(content=...)` — pure text, no file. The final video file goes out as a fresh `interaction.followup.send(content=..., file=...)`, and the placeholder is collapsed to `"✅"`. The earlier implementation tried to push both the file and the reward suffix in a single `edit_original_message(content=..., file=...)` call, but Discord drops the `content` field when a multipart file payload is attached — so the reward text silently vanished. Do not collapse `_deliver` back into `edit_original_message(file=...)`.
 
 ### Auto-unmute (`cogs/auto_unmute.py` + `cogs/_auto_unmute/prompts.py`)
 
@@ -221,6 +223,7 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 - **Bets are withdrawn up-front, payouts credit `bet + delta`.** The view-level `_finalize` and `GamesCogs.dice` both rely on this — if you ever change `settle()` in `cogs/_games/blackjack.py` to return absolute payout instead of a delta, the call sites will silently double-pay. Tests in `tests/test_blackjack.py` lock down the delta semantics.
 - **Threads award cooldown is in-memory and per-cog-instance.** `ThreadsCogs._recent_awards` resets on bot restart. That's the deliberate scope — it deters copy-paste farming, not a real anti-abuse system. If you need persistence (e.g. surviving restarts), promote it to `data/economy.db` with a new table; do not reach into `messages.db`.
 - **Dealer AI is best-effort.** `DealerAI._ask` returns a hard-coded fallback string on any exception; never let a missing AI line block the round resolution or the DB write. If you add a new dealer entry point, give it a fallback line in `cogs/_games/dealer.py` next to `_FALLBACK_*`.
+- **`interaction.edit_original_message(content=…, file=…)` drops `content` when a multipart file payload is attached.** This silently bit the video downloader's reward suffix — the file uploaded fine, the content reverted to its previous value. Fix: edit the placeholder with text only, then send the file as a separate `interaction.followup.send(content=…, file=…)`. `cogs/video.py:_deliver` is the canonical pattern; do not regress it back into a single `edit_original_message(file=…)` call.
 
 ## Helper skills (use when relevant)
 

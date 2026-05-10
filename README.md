@@ -176,6 +176,10 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible endpoint
 DISCORD_TEST_SERVER_ID=your_test_server_id
 ```
 
+### Slash Command Guild Pinning
+
+`/balance`, `/leaderboard`, `/give`, `/dice`, and `/blackjack` are pinned to a fixed list of guild IDs in `src/discordbot/typings/config.py:FAST_SYNC_GUILD_IDS` so they appear instantly (global slash-command sync takes up to an hour to propagate). The default list contains the maintainer's two working guilds — **edit that list to include your own guild IDs before running, otherwise these five commands will not show up in your server**. Other commands (`@bot` chat, `/download_video`, `/maple_*`, `/help`, `/ping`) sync globally and are unaffected.
+
 ## Platform-Specific Notes
 
 ### Bilibili
