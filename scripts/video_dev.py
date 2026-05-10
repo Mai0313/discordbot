@@ -17,11 +17,18 @@ POLL_INTERVAL = 5
 
 
 def gen_video(user_prompt: str) -> None:
-    """Mirrors `_handle_video_generation` in cogs/gen_reply.py.
+    """Runs the dev video generation flow and saves the MP4 result.
 
-    Same model, same `extra_headers`, same poll loop, same `download_content`
-    step. The MP4 is written next to the script instead of being uploaded back
-    to Discord.
+    Mirrors `_handle_video_generation` in `cogs/gen_reply.py` by submitting a
+    video job, polling until it completes or fails, downloading the completed
+    video, and writing it to `generated.mp4`. Prints job status, polling
+    progress, the saved path, and elapsed time to the console.
+
+    Args:
+        user_prompt: Prompt to send to the video generation endpoint.
+
+    Raises:
+        RuntimeError: The video job ended in a non-completed status.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 

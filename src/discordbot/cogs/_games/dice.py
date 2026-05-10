@@ -29,12 +29,26 @@ class DiceResult:
 
 
 def roll_dice(rng: Random) -> tuple[int, ...]:
-    """Rolls ``DICE_PER_SIDE`` six-sided dice and returns the values."""
+    """Rolls one side's dice.
+
+    Args:
+        rng: Random source used to generate each die value.
+
+    Returns:
+        The rolled values in order.
+    """
     return tuple(rng.randint(a=1, b=DICE_FACES) for _ in range(DICE_PER_SIDE))
 
 
 def play_dice(rng: Random) -> DiceResult:
-    """Rolls one round of player-vs-dealer compare-the-total dice."""
+    """Rolls one player-vs-dealer dice round.
+
+    Args:
+        rng: Random source used for both sides.
+
+    Returns:
+        The rolls, totals, and player-facing outcome.
+    """
     player_rolls = roll_dice(rng=rng)
     dealer_rolls = roll_dice(rng=rng)
     player_total = sum(player_rolls)
@@ -58,6 +72,13 @@ _DICE_FACE_EMOJI: dict[int, str] = {1: "⚀", 2: "⚁", 3: "⚂", 4: "⚃", 5: "
 
 
 def render_rolls(rolls: tuple[int, ...]) -> str:
-    """Formats a dice roll tuple with unicode die faces and the running total."""
+    """Formats dice rolls with unicode die faces and total.
+
+    Args:
+        rolls: Die values to render.
+
+    Returns:
+        A display string containing die faces and the sum.
+    """
     faces = " ".join(_DICE_FACE_EMOJI[value] for value in rolls)
     return f"{faces}  (= {sum(rolls)})"

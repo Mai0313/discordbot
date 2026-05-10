@@ -14,14 +14,28 @@ class ModelSettings(BaseModel):
 
     @property
     def reasoning(self) -> Reasoning:
-        """Builds Responses API reasoning options for this model."""
+        """Responses API reasoning options for this model.
+
+        Returns:
+            Reasoning options using this model's configured effort and an
+            automatic reasoning summary.
+
+        Raises:
+            ValueError: The model has no reasoning effort configured.
+        """
         if self.effort is None:
             raise ValueError("Model effort must be set to build reasoning options.")
         return Reasoning(effort=self.effort, summary="auto")
 
     @property
     def tools(self) -> list[ToolParam]:
-        """Built-in tools (web search / URL context / fetch) wired to this model's provider."""
+        """Built-in tool payloads for this model's provider.
+
+        Returns:
+            Gemini models receive googleSearch and urlContext tools. Claude
+            models receive web_search and web_fetch tools. Other models
+            receive the OpenAI web_search tool.
+        """
         if "gemini" in self.name:
             return [{"googleSearch": {}}, {"urlContext": {}}]
         if "claude" in self.name:

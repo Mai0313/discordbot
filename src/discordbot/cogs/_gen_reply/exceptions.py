@@ -17,6 +17,13 @@ def extract_friendly_error(exc: BaseException) -> str:
     `b'...'` Python literal. Walk every embedded bytes literal, parse it as
     JSON, and return `error.message` (or top-level `message`). Fall back to
     `str(exc)` when nothing parses, so we never lose the original signal.
+
+    Args:
+        exc: The exception whose string form may contain embedded provider JSON.
+
+    Returns:
+        The first nested provider message found in an embedded JSON bytes literal,
+        or `str(exc)` if no provider message can be extracted.
     """
     raw = str(exc)
     for match in _BYTES_LITERAL_RE.finditer(string=raw):

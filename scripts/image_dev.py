@@ -20,12 +20,20 @@ FAST_MODEL = ModelSettings(name="gemini-flash-latest", effort="none")
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
-    """Mirrors `_handle_image_reply` in cogs/gen_reply.py.
+    """Runs the dev image generation or edit flow and saves the PNG result.
 
-    When `image_path` is provided the script calls `client.images.edit`,
-    otherwise `client.images.generate`. The result then feeds into a captioning
-    pass through `client.responses.create` + IMAGE_PROMPT, exactly like the
-    deployed flow.
+    Mirrors `_handle_image_reply` in `cogs/gen_reply.py` by calling the
+    configured LiteLLM image endpoint, then captioning the resulting image with
+    `client.responses.create` and `IMAGE_PROMPT`. Prints progress, the saved
+    path, the caption, and elapsed time to the console.
+
+    Args:
+        user_prompt: Prompt to send to the image generation or edit endpoint.
+        image_path: Optional image to edit. When omitted, generates a new image.
+
+    Raises:
+        ValueError: The image endpoint returned no image data or no `b64_json`
+            payload.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 

@@ -1,12 +1,12 @@
 """Persistent point-balance store for the economy cog.
 
-The engine is a module-level `AsyncEngine` singleton — putting
+The engine is a module-level `AsyncEngine` singleton. Putting
 `create_async_engine()` on a per-instance `cached_property` would leak the
 connection pool, dialect cache, and inspector cache for every Discord
 interaction (the same lesson `cogs/log_msg.py` captures for the sync engine
 it still uses for pandas `to_sql`).
 
-We use `aiosqlite` so every DB call stays on the event loop — no
+We use `aiosqlite` so every DB call stays on the event loop: no
 `asyncio.to_thread` shim, no separate `_*_sync` helpers. Each operation
 opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
@@ -84,7 +84,11 @@ asyncio.run(main=_create_schema(engine=_engine))
 
 
 def open_session() -> AsyncSession:
-    """Creates an async session bound to the current economy database engine."""
+    """Creates an async session bound to the current economy database engine.
+
+    Returns:
+        An `AsyncSession` using the current module-level `_engine`.
+    """
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
@@ -120,11 +124,19 @@ def _apply_balance_delta(account: UserAccount, delta: int, *, allow_negative: bo
 
 
 async def add_balance(user_id: int, name: str, amount: int) -> int:
-    """Adds ``amount`` to the user balance; returns the new balance.
+    """Adds points to the user balance.
 
     Non-positive amounts no-op and return the existing balance so callers
     can pass raw token counts (which can be 0 for cached responses) without
     a guard.
+
+    Args:
+        user_id: Discord user ID to credit.
+        name: Last-seen Discord username to store on the account.
+        amount: Number of points to add.
+
+    Returns:
+        The user's current balance after the operation.
     """
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
@@ -135,13 +147,21 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
 
 
 async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | None:
-    """Atomically withdraws a wager and returns the effective bet.
+    """Atomically withdraws a wager.
 
     Bets larger than the current balance are clamped to the full available
     balance (auto all-in). The conditional update protects against stale
     balance reads from concurrent game commands, so the same points cannot be
-    spent twice. Returns None when the user has no spendable balance or the
-    requested bet is non-positive.
+    spent twice.
+
+    Args:
+        user_id: Discord user ID placing the wager.
+        name: Last-seen Discord username to store on the account.
+        requested_bet: Requested wager amount in points.
+
+    Returns:
+        The withdrawn wager details, or `None` when the user has no spendable
+        balance or the requested bet is not positive.
     """
     if requested_bet <= 0:
         return None
@@ -178,11 +198,19 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
 
 
 async def settle_game(user_id: int, name: str, delta: int) -> int:
-    """Applies a signed balance adjustment and returns the new balance.
+    """Applies a signed player balance adjustment.
 
     Casino commands withdraw the bet up front with `place_bet()` and then pass
     the gross payout here when the round resolves. Losses are still clamped at
     zero so a stale caller never leaves a player in the red.
+
+    Args:
+        user_id: Discord user ID whose balance is adjusted.
+        name: Last-seen Discord username to store on the account.
+        delta: Signed point adjustment to apply.
+
+    Returns:
+        The user's current balance after settlement.
     """
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
@@ -192,13 +220,21 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
 
 
 async def house_settle(user_id: int, name: str, delta: int) -> int:
-    """Records a dealer-side settlement; balance may go negative.
+    """Records a dealer-side settlement.
 
     Used to track the bot's casino P&L over time. The dealer has effectively
     infinite funds (it backs every bet), so unlike `settle_game` we
-    deliberately do *not* clamp at zero — a long-running losing streak
+    deliberately do not clamp at zero. A long-running losing streak
     should surface as a negative balance, with `total_earned` /
     `total_spent` accumulating gross flows in each direction.
+
+    Args:
+        user_id: Discord user ID for the dealer ledger row.
+        name: Last-seen display name to store on the ledger row.
+        delta: Signed point adjustment to apply.
+
+    Returns:
+        The dealer ledger balance after settlement, which may be negative.
     """
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
@@ -208,7 +244,14 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
 
 
 async def get_balance(user_id: int) -> int:
-    """Returns the current balance, or 0 if the user has never been seen."""
+    """Returns the current balance for a user.
+
+    Args:
+        user_id: Discord user ID to look up.
+
+    Returns:
+        The current balance, or 0 if the user has never been seen.
+    """
     async with open_session() as session:
         account = await session.get(entity=UserAccount, ident=user_id)
         if account is None:
@@ -217,7 +260,15 @@ async def get_balance(user_id: int) -> int:
 
 
 async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
-    """Returns ``(name, balance, total_earned, total_spent)`` or ``None`` if unseen."""
+    """Returns the stored account snapshot for a user.
+
+    Args:
+        user_id: Discord user ID to look up.
+
+    Returns:
+        A `(name, balance, total_earned, total_spent)` tuple, or `None` if the
+        user has never been seen.
+    """
     async with open_session() as session:
         account = await session.get(entity=UserAccount, ident=user_id)
         if account is None:
@@ -228,12 +279,23 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
 async def transfer(
     *, sender_id: int, sender_name: str, receiver_id: int, receiver_name: str, amount: int
 ) -> bool:
-    """Atomically moves ``amount`` from sender to receiver.
+    """Atomically moves points from sender to receiver.
 
     Returns False (and rolls back) when the sender is the receiver, the
     amount is non-positive, or the sender lacks funds. Both rows are
     upserted in the same transaction so a crash mid-transfer can't
     double-credit or vanish points.
+
+    Args:
+        sender_id: Discord user ID to debit.
+        sender_name: Last-seen Discord username to store on the sender account.
+        receiver_id: Discord user ID to credit.
+        receiver_name: Last-seen Discord username to store on the receiver account.
+        amount: Number of points to transfer.
+
+    Returns:
+        True when the transfer committed, or False when validation failed or
+        the sender had insufficient funds.
     """
     if amount <= 0 or sender_id == receiver_id:
         return False
@@ -281,11 +343,18 @@ async def transfer(
 async def top_n(
     *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int]]:
-    """Returns up to ``limit`` accounts ordered by balance descending.
+    """Returns accounts ordered by balance descending.
 
     ``exclude_user_ids`` filters out specific accounts (notably the bot's
     own house ledger row) before applying the limit, so the leaderboard
     always shows real players.
+
+    Args:
+        limit: Maximum number of accounts to return.
+        exclude_user_ids: User IDs to filter out before applying the limit.
+
+    Returns:
+        `(user_id, name, balance)` tuples ordered by balance descending.
     """
     async with open_session() as session:
         stmt = select(UserAccount).order_by(desc(UserAccount.balance))

@@ -26,12 +26,21 @@ config = LLMConfig()
 
 # Mirror the @property value in cogs/gen_reply.py. slow_model has a time-of-day
 # dispatch in production (peak hours swap to gemini-3.1-flash-lite-preview); for
-# dev we pin to the off-peak default — swap manually when testing peak behaviour.
+# dev we pin to the off-peak default. Swap manually when testing peak behaviour.
 SLOW_MODEL = ModelSettings(name="gemini-pro-latest", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:
-    """Mirrors `_handle_message_reply` in cogs/gen_reply.py — Responses API + streaming + tools."""
+    """Streams a dev reply through the LiteLLM Responses API.
+
+    Mirrors `_handle_message_reply` in `cogs/gen_reply.py` by sending
+    `REPLY_PROMPT`, the configured slow model, reasoning settings, and model
+    tools through `client.responses.create`. Prints reasoning deltas dimmed,
+    output text deltas as they stream, and elapsed time to the console.
+
+    Args:
+        user_prompt: User message to send as the single prompt input.
+    """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     responses = client.responses.create(
@@ -61,7 +70,16 @@ def gen_reply(user_prompt: str) -> None:
 
 
 def gen_reply_chat(user_prompt: str) -> None:
-    """Same prompt + tools as the deployed flow, but routed through Chat Completions for comparison."""
+    """Streams a dev reply through LiteLLM Chat Completions.
+
+    Uses the same `REPLY_PROMPT`, configured slow model, reasoning effort, and
+    tools as the deployed reply flow, but sends them through
+    `client.chat.completions.create` for comparison. Prints streamed text and
+    elapsed time to the console.
+
+    Args:
+        user_prompt: User message to send as the single prompt input.
+    """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     tools: list[ChatCompletionToolUnionParam] = SLOW_MODEL.tools
     start = time.time()
@@ -89,7 +107,16 @@ def gen_reply_chat(user_prompt: str) -> None:
 
 
 def gen_reply_gemini(user_prompt: str) -> None:
-    """Same prompt as the deployed flow, but bypasses LiteLLM via the native Gemini SDK."""
+    """Streams a dev reply through the native Gemini SDK.
+
+    Sends `REPLY_PROMPT` and the user prompt through
+    `client.models.generate_content_stream` using the configured slow model,
+    thinking config, Google Search, and URL context tools. Prints thought parts
+    dimmed, answer text as it streams, and elapsed time to the console.
+
+    Args:
+        user_prompt: User message to send as the comparison prompt.
+    """
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
@@ -127,11 +154,15 @@ def gen_reply_gemini(user_prompt: str) -> None:
 
 
 def gen_reply_anthropic(user_prompt: str) -> None:
-    """Same prompt as the deployed flow, but routed through the native Anthropic SDK.
+    """Streams a dev reply through the native Anthropic SDK.
 
-    slow_model is Gemini in production, so this path pins its own Claude model
-    rather than reusing SLOW_MODEL — useful purely for comparing how Claude
-    answers the same question with the same system prompt and tools.
+    Uses `REPLY_PROMPT` with a pinned Claude model instead of `SLOW_MODEL`, then
+    streams responses from `client.messages.stream` with adaptive thinking and
+    the model's tool configuration. Prints thinking deltas dimmed, answer text
+    as it streams, and elapsed time to the console.
+
+    Args:
+        user_prompt: User message to send as the comparison prompt.
     """
     model = ModelSettings(name="claude-haiku-4-5", effort="medium")
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)

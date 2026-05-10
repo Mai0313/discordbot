@@ -65,7 +65,23 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 async def modify_balance(
     *, user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
 ) -> BalanceChange:
-    """Applies a signed balance adjustment and returns a summary."""
+    """Applies a manual economy balance adjustment.
+
+    Opens an economy database session, fetches or creates the user's
+    `UserAccount`, clamps the resulting balance at zero unless negative
+    balances are explicitly allowed, updates lifetime earned or spent totals,
+    and commits the transaction. Dry runs roll back instead of writing changes.
+
+    Args:
+        user_id: Discord user ID whose account should be adjusted.
+        name: Display name to store when creating or updating the account.
+        delta: Signed amount to add to the current balance.
+        allow_negative: Whether the resulting balance may go below zero.
+        dry_run: Whether to compute and return the change without committing it.
+
+    Returns:
+        A `BalanceChange` summary describing the requested and applied change.
+    """
     async with database.open_session() as session:
         account = await session.get(entity=UserAccount, ident=user_id)
         created = account is None
@@ -152,7 +168,14 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """CLI entry point."""
+    """Runs the manual balance adjustment CLI.
+
+    Parses command-line arguments, applies the requested balance change, and
+    prints a human-readable summary to the console.
+
+    Args:
+        argv: Optional argument sequence to parse instead of `sys.argv`.
+    """
     asyncio.run(main=_async_main(argv=argv))
 
 

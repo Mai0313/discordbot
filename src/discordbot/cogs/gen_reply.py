@@ -75,25 +75,44 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @property
     def image_model(self) -> ModelSettings:
-        """The image generation/edit model used by `images.generate` and `images.edit`."""
+        """The model settings for image generation and editing.
+
+        Returns:
+            Model settings used with `images.generate` and `images.edit`.
+        """
         image_model = ModelSettings(name="gemini-3.1-flash-image-preview", effort=None)
         return image_model
 
     @property
     def video_model(self) -> ModelSettings:
-        """The video generation model used by `videos.create`."""
+        """The model settings for video generation.
+
+        Returns:
+            Model settings used with `videos.create`.
+        """
         video_model = ModelSettings(name="veo-3.1-fast-generate-preview", effort=None)
         return video_model
 
     @property
     def fast_model(self) -> ModelSettings:
-        """The fast model used for routing decisions and image captioning."""
+        """The model settings for lightweight reply-generation tasks.
+
+        Returns:
+            Fast model settings used for routing decisions and image captions.
+        """
         fast_model = ModelSettings(name="gemini-flash-latest", effort="none")
         return fast_model
 
     @property
     def slow_model(self) -> ModelSettings:
-        """Selects the slow model based on time of day to avoid overload periods; `gemini-pro-latest` is overloaded during UTC 10:00-17:00 on weekdays, swap to the lite model."""
+        """The model settings for full text replies and summaries.
+
+        Uses the lite model during UTC weekday 09:00 to 17:00 and the pro
+        model outside that peak window.
+
+        Returns:
+            Slow-path model settings for reply and summary generation.
+        """
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 9 <= now.hour < 17
         if is_peak:
@@ -209,8 +228,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """Extracts attachment content parts from a message.
 
         Each attachment is mapped to the modality it requires
-        (image / video / audio) and skipped when the slow model — the heaviest
-        consumer of the payload — does not list that modality. Routing and
+        (image / video / audio) and skipped when the slow model, the heaviest
+        consumer of the payload, does not list that modality. Routing and
         image-edit paths inherit the same gate so a text-only slow model
         produces zero attachment parts everywhere.
 
@@ -530,7 +549,7 @@ class ReplyGeneratorCogs(commands.Cog):
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
-            logfire.warn("RouteDecision parse failed — model returned no text; defaulting to QA")
+            logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
             return "QA"
 
     @staticmethod

@@ -29,7 +29,15 @@ class RegenerateView(ui.View):
         self.original_message = original_message
 
     async def interaction_check(self, interaction: Interaction) -> bool:
-        """Restricts the button to the original message author."""
+        """Restricts the button to the original message author.
+
+        Args:
+            interaction: The interaction representing the button click.
+
+        Returns:
+            True when the clicking user is the original message author. False
+            after sending an ephemeral denial when the user is missing or differs.
+        """
         if interaction.user is None or interaction.user.id != self.original_message.author.id:
             await interaction.response.send_message(
                 content="只有原作者可以重新生成喔", ephemeral=True

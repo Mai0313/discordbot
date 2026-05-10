@@ -37,9 +37,15 @@ class Card:
 def draw_card(rng: Random) -> Card:
     """Draws a single card from a notional infinite shoe.
 
-    Using an infinite shoe (independent draws) intentionally — we avoid having
+    Using an infinite shoe (independent draws) intentionally, we avoid having
     to track a deck across hands, and the mathematical edge difference is
     negligible at this stake level.
+
+    Args:
+        rng: Random source used to choose rank and suit.
+
+    Returns:
+        The drawn card.
     """
     rank = rng.choice(seq=_RANKS)
     suit = rng.choice(seq=_SUITS)
@@ -47,11 +53,17 @@ def draw_card(rng: Random) -> Card:
 
 
 def hand_value(cards: list[Card]) -> int:
-    """Returns the best Blackjack value for ``cards``.
+    """Returns the best Blackjack value for a hand.
 
     Aces start at 11 each and are demoted to 1 one at a time while the total
     is over 21. Returns the over-21 total when no aces remain to demote, so
     callers can detect a bust by checking ``> 21``.
+
+    Args:
+        cards: Cards to evaluate.
+
+    Returns:
+        Best total for the hand under Blackjack ace rules.
     """
     total = 0
     aces = 0
@@ -70,12 +82,26 @@ def hand_value(cards: list[Card]) -> int:
 
 
 def is_blackjack(cards: list[Card]) -> bool:
-    """Returns True only for a natural Blackjack (exactly two cards summing to 21)."""
+    """Returns whether a hand is a natural Blackjack.
+
+    Args:
+        cards: Cards to evaluate.
+
+    Returns:
+        True only when the hand has exactly two cards summing to 21.
+    """
     return len(cards) == _BLACKJACK_HAND_SIZE and hand_value(cards=cards) == _BLACKJACK_TARGET
 
 
 def is_bust(cards: list[Card]) -> bool:
-    """Returns True when ``cards`` total more than 21."""
+    """Returns whether a hand is over 21.
+
+    Args:
+        cards: Cards to evaluate.
+
+    Returns:
+        True when the hand total is greater than 21.
+    """
     return hand_value(cards=cards) > _BLACKJACK_TARGET
 
 
@@ -106,7 +132,13 @@ class BlackjackHand:
             self.finished = True
 
     def hit(self) -> Card:
-        """Draws one card for the player and ends the round on a bust."""
+        """Draws one card for the player.
+
+        Ends the round if the player's hand busts.
+
+        Returns:
+            The card drawn for the player.
+        """
         card = draw_card(rng=self.rng)
         self.player.append(card)
         if is_bust(cards=self.player):
@@ -120,11 +152,19 @@ class BlackjackHand:
         self.finished = True
 
     def player_total(self) -> int:
-        """Current best total for the player's hand."""
+        """Returns the current best total for the player's hand.
+
+        Returns:
+            Best total for the player's hand.
+        """
         return hand_value(cards=self.player)
 
     def dealer_total(self) -> int:
-        """Current best total for the dealer's hand."""
+        """Returns the current best total for the dealer's hand.
+
+        Returns:
+            Best total for the dealer's hand.
+        """
         return hand_value(cards=self.dealer)
 
 
@@ -137,8 +177,15 @@ def settle(hand: BlackjackHand) -> tuple[OutcomeLabel, int]:
     - push returns 0;
     - loss returns ``-bet``.
 
+    Args:
+        hand: Finished Blackjack hand to settle.
+
+    Returns:
+        A tuple of `(outcome, delta)`, where `delta` is the player's net point
+        change relative to the withdrawn bet.
+
     Raises:
-        ValueError: if the hand isn't finished yet.
+        ValueError: The hand is not finished yet.
     """
     if not hand.finished:
         raise ValueError("Cannot settle an unfinished Blackjack hand")
@@ -170,7 +217,15 @@ def settle(hand: BlackjackHand) -> tuple[OutcomeLabel, int]:
 
 
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:
-    """Formats a hand for display; optionally masks the first card."""
+    """Formats a hand for display.
+
+    Args:
+        cards: Cards to render.
+        hide_first: Whether to replace the first card with a hidden-card marker.
+
+    Returns:
+        A space-separated display string for the hand.
+    """
     if hide_first and cards:
         rest = " ".join(str(card) for card in cards[1:])
         return f"🂠 {rest}".strip()
@@ -178,7 +233,17 @@ def render_hand(cards: list[Card], hide_first: bool = False) -> str:
 
 
 def dealer_visible_value(hand: BlackjackHand) -> int:
-    """Numeric value of the dealer's visible card (used for AI hint context)."""
+    """Returns the numeric value of the dealer's visible card.
+
+    The second dealer card is visible while the first card is hidden. If only
+    one card exists, that card is treated as visible.
+
+    Args:
+        hand: Blackjack hand containing the dealer cards.
+
+    Returns:
+        The visible card's Blackjack value, or 0 when the dealer has no cards.
+    """
     if not hand.dealer:
         return 0
     up = hand.dealer[1] if len(hand.dealer) > 1 else hand.dealer[0]

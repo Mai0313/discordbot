@@ -72,7 +72,19 @@ class DealerAI:
         bet: int,
         game: GameKind,
     ) -> str:
-        """Returns a single line ribbing the player for the size of their bet."""
+        """Returns a dealer line for a newly placed bet.
+
+        Args:
+            author_name: Discord username used as the LiteLLM end-user ID.
+            player_name: Display name to include in the prompt.
+            balance_after_bet: Player balance after the wager was withdrawn.
+            bet: Effective bet amount in points.
+            game: Game type for the prompt.
+
+        Returns:
+            A trimmed model-generated line, or the fallback line on request
+            failure or empty output.
+        """
         game_label = "比大小骰子" if game == "dice" else "21 點"
         user_text = (
             f"遊戲: {game_label}\n"
@@ -99,7 +111,22 @@ class DealerAI:
         game: GameKind,
         detail: str,
     ) -> str:
-        """Returns a single line reacting to the round result."""
+        """Returns a dealer line for a finished round.
+
+        Args:
+            author_name: Discord username used as the LiteLLM end-user ID.
+            player_name: Display name to include in the prompt.
+            outcome: Player-facing outcome label.
+            bet: Effective bet amount in points.
+            delta: Player net point change for the round.
+            new_balance: Player balance after settlement.
+            game: Game type for the prompt.
+            detail: Game-state detail text to include in the prompt.
+
+        Returns:
+            A trimmed model-generated line, or an outcome-specific fallback line
+            on request failure or empty output.
+        """
         game_label = "比大小骰子" if game == "dice" else "21 點"
         outcome_label = {
             "win": "玩家贏",
@@ -136,7 +163,18 @@ class DealerAI:
     async def hint(
         self, *, author_name: str, player_name: str, player_total: int, dealer_visible: int
     ) -> str:
-        """Returns a single line nudging the player during a Blackjack hit/stand decision."""
+        """Returns a dealer hint for a Blackjack hit-or-stand decision.
+
+        Args:
+            author_name: Discord username used as the LiteLLM end-user ID.
+            player_name: Display name to include in the prompt.
+            player_total: Current player hand total.
+            dealer_visible: Visible dealer card value.
+
+        Returns:
+            A trimmed model-generated line, or the fallback hint on request
+            failure or empty output.
+        """
         user_text = (
             f"玩家: {player_name}\n"
             f"玩家當前手牌總點數: {player_total}\n"

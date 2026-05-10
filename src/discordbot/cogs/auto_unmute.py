@@ -19,7 +19,7 @@ class AutoUnmuteCogs(commands.Cog):
 
     Per-guild we remember the channel ID where a human last spoke; that's
     where the AI's post-timeout reply lands. We do not track a per-moderator
-    "current channel" — Discord's audit log entry for a timeout does not carry
+    "current channel", Discord's audit log entry for a timeout does not carry
     a channel, and using `last_active_channel` keeps the dict O(guilds).
 
     Attributes:
@@ -39,7 +39,11 @@ class AutoUnmuteCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client instance."""
+        """The cached OpenAI-compatible client for auto-unmute replies.
+
+        Returns:
+            A configured client reused across auto-unmute reply generation.
+        """
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
@@ -47,21 +51,30 @@ class AutoUnmuteCogs(commands.Cog):
     def model(self) -> ModelSettings:
         """Model used to generate the post-timeout reaction.
 
-        Reuses the fast model — this path runs off the user request path, but a
-        heavier model adds cost without buying anything for one short message.
+        Returns:
+            Fast model settings with reasoning disabled for one short message.
         """
         return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Tracks the last channel a human spoke in, per guild."""
+        """Tracks the last channel where a non-bot guild member spoke.
+
+        Args:
+            message: The Discord message emitted by the gateway.
+        """
         if message.guild is None or message.author.bot:
             return
         self._last_active_channel[message.guild.id] = message.channel.id
 
     @commands.Cog.listener()
     async def on_member_update(self, before: Member, after: Member) -> None:
-        """Detects a transition into timeout for the bot itself and self-unmutes."""
+        """Handles transitions where the bot enters a future-dated timeout.
+
+        Args:
+            before: The member snapshot before Discord applied the update.
+            after: The member snapshot after Discord applied the update.
+        """
         if not self.bot.user or after.id != self.bot.user.id:
             return
         before_until = before.communication_disabled_until
@@ -83,7 +96,7 @@ class AutoUnmuteCogs(commands.Cog):
 
         We still post a reply when the audit lookup fails (Forbidden, missing
         entry, or timed-out bots being denied this endpoint per discord-api-docs
-        #6847) — the AI just gripes at an anonymous moderator instead of pinging.
+        #6847), the AI just gripes at an anonymous moderator instead of pinging.
         """
         moderator, reason = await self._lookup_audit(guild=member.guild)
         try:
@@ -115,7 +128,7 @@ class AutoUnmuteCogs(commands.Cog):
         """Walks recent member_update audit entries to find the timeout that hit us.
 
         We scan a small window because nextcord's `AuditLogAction.member_update`
-        bucket also covers nickname / mute / deafen edits — only the entry whose
+        bucket also covers nickname / mute / deafen edits. Only the entry whose
         diff carries `communication_disabled_until` is the one we want.
         """
         bot_user = self.bot.user

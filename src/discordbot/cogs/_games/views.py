@@ -17,10 +17,12 @@ from discordbot.cogs._games.presentation import (
 
 
 def _format_player_line(hand: BlackjackHand) -> str:
+    """Formats the player's hand with its current total."""
     return f"{render_hand(cards=hand.player)} (= {hand.player_total()})"
 
 
 def _format_dealer_line(hand: BlackjackHand, hide_hole: bool) -> str:
+    """Formats the dealer's hand, optionally hiding the hole card."""
     if hide_hole:
         return f"{render_hand(cards=hand.dealer, hide_first=True)} (= ?)"
     return f"{render_hand(cards=hand.dealer)} (= {hand.dealer_total()})"
@@ -35,7 +37,19 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     dealer_line: str,
     is_allin: bool = False,
 ) -> Embed:
-    """Builds the embed shown while the player is still acting."""
+    """Builds the embed shown while the player is still acting.
+
+    Args:
+        dealer_name: Display name used for the dealer field title.
+        player_name: Display name used for the player field title.
+        hand: Current Blackjack hand state.
+        balance_after_bet: Player balance after the wager was withdrawn.
+        dealer_line: Dealer banter shown in the embed description.
+        is_allin: Whether the requested bet was clamped to the full balance.
+
+    Returns:
+        The in-progress Blackjack embed.
+    """
     embed = Embed(
         title=":black_joker: 21 點 - 進行中", description=dealer_line, color=IN_PROGRESS_COLOR
     )
@@ -69,7 +83,25 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     is_allin: bool = False,
     round_note: str | None = None,
 ) -> Embed:
-    """Builds the embed for a finished round."""
+    """Builds the embed for a finished round.
+
+    Args:
+        dealer_name: Display name used for the dealer field title.
+        player_name: Display name used for the player field title.
+        hand: Final Blackjack hand state.
+        bet: Effective bet amount in points.
+        delta: Player net point change for the round.
+        new_balance: Player balance after settlement.
+        house_balance: Dealer ledger balance after settlement.
+        dealer_line: Dealer banter shown in the embed description.
+        outcome_label: Human-readable result label for the embed title.
+        color: Embed color for the outcome.
+        is_allin: Whether the requested bet was clamped to the full balance.
+        round_note: Optional explanation for a round that ended before player action.
+
+    Returns:
+        The final Blackjack embed.
+    """
     embed = Embed(
         title=f":black_joker: 21 點 - {outcome_label}", description=dealer_line, color=color
     )
@@ -150,7 +182,14 @@ class BlackjackView(ui.View):
         self._settled = False
 
     async def interaction_check(self, interaction: Interaction) -> bool:
-        """Restricts the buttons to the original player."""
+        """Restricts the buttons to the original player.
+
+        Args:
+            interaction: Button interaction to authorize.
+
+        Returns:
+            True when the interaction user owns the round, otherwise False.
+        """
         if interaction.user is None or interaction.user.id != self.owner_id:
             await interaction.response.send_message(
                 content="這局不是你的, 別插手。", ephemeral=True
@@ -167,7 +206,15 @@ class BlackjackView(ui.View):
 
     @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary)
     async def hit(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Draws a card; if the hand is still live, asks the dealer for a hint."""
+        """Handles the Hit button.
+
+        Draws a player card, finalizes on bust, or asks the dealer for a hint
+        before updating the in-progress embed.
+
+        Args:
+            _button: Button component that triggered the callback.
+            interaction: Button interaction from Discord.
+        """
         await interaction.response.defer()
         if interaction.message is None:
             return
@@ -193,7 +240,14 @@ class BlackjackView(ui.View):
 
     @ui.button(label="停手", emoji="✋", style=ButtonStyle.secondary)
     async def stand(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Player stops drawing; resolves the dealer's hand and finalises the round."""
+        """Handles the Stand button.
+
+        Resolves the dealer hand and finalizes the round.
+
+        Args:
+            _button: Button component that triggered the callback.
+            interaction: Button interaction from Discord.
+        """
         await interaction.response.defer()
         if interaction.message is None:
             return

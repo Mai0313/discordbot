@@ -56,18 +56,30 @@ class GamesCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client used for dealer banter."""
+        """The cached OpenAI-compatible client used for dealer banter.
+
+        Returns:
+            A configured client reused by the AI dealer.
+        """
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
     @property
     def dealer_model(self) -> ModelSettings:
-        """Fast model used by the AI dealer; matches `gen_reply.fast_model`."""
+        """The model settings used by the AI dealer.
+
+        Returns:
+            Fast model settings with reasoning disabled for dealer banter.
+        """
         return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @cached_property
     def dealer(self) -> DealerAI:
-        """The cached DealerAI instance reused across commands."""
+        """The cached AI dealer reused across game commands.
+
+        Returns:
+            A DealerAI built from the cached client and dealer model settings.
+        """
         return DealerAI(client=self.client, model=self.dealer_model)
 
     def _dealer_identity(self) -> tuple[int, str]:
