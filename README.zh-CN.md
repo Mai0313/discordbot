@@ -176,9 +176,9 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 兼容端点
 DISCORD_TEST_SERVER_ID=你的测试服务器id
 ```
 
-### Slash Command 绑定的 Guild
+### Slash Command Sync
 
-`/balance`、`/leaderboard`、`/give`、`/dice`、`/blackjack` 这 5 个指令会被绑定到 `src/discordbot/typings/config.py:FAST_SYNC_GUILD_IDS` 列出的 guild ID（这样可以即时生效，否则 Discord 全域 slash-command sync 要等最多 1 小时）。默认清单写的是 maintainer 平常用的两个 server — **自己 host 的话请编辑这个 list 换成你自己的 guild ID, 否则这 5 个指令在你的 server 不会出现**。其他指令（`@bot` 聊天、`/download_video`、`/maple_*`、`/help`、`/ping`）走全域 sync，不受影响。
+所有 slash command 都走 Discord 全域注册（没有 per-guild pin）。第一次新增指令时 Discord 端 propagate 最多需要 1 小时；后续编辑既有指令通常几分钟内就会生效。如果新指令在你的 client 上没立刻出现，先试试 `Ctrl+R` 重整，或稍等一下。
 
 ## 各平台注意事项
 

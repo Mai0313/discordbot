@@ -15,12 +15,15 @@ import asyncio
 
 import nextcord
 from nextcord import Client, Intents
+from rich.console import Console
 
 from discordbot.typings.config import DiscordConfig
 
 # Guilds that previously received guild-scoped registrations via the old
 # `FAST_SYNC_GUILD_IDS` constant.
 GUILDS_TO_CLEAR: list[int] = [981592566208282634, 1143289646042853487]
+
+console = Console()
 
 
 async def main() -> None:
@@ -32,19 +35,19 @@ async def main() -> None:
     async def on_ready() -> None:
         app_id = client.application_id
         if app_id is None:
-            print("application_id is None; aborting")
+            console.print("application_id is None; aborting")
             await client.close()
             return
 
         for guild_id in GUILDS_TO_CLEAR:
             try:
                 existing = await client.http.get_guild_commands(app_id, guild_id)
-                print(f"guild {guild_id}: {len(existing)} command(s) before cleanup")
+                console.print(f"guild {guild_id}: {len(existing)} command(s) before cleanup")
                 # Bulk overwrite with an empty list deletes every guild command.
                 await client.http.bulk_upsert_guild_commands(app_id, guild_id, [])
-                print(f"guild {guild_id}: cleared")
+                console.print(f"guild {guild_id}: cleared")
             except nextcord.HTTPException as exc:
-                print(f"guild {guild_id}: failed - {exc}")
+                console.print(f"guild {guild_id}: failed - {exc}")
 
         await client.close()
 

@@ -38,17 +38,18 @@ The pytest config lives under `[tool.pytest.ini_options]` in `pyproject.toml` �
 
 ### Bot runtime (`src/discordbot/cli.py`)
 
-`DiscordBot(commands.Bot)` is the entry point. It enables all intents except `members` and `presences`, registers a 1-minute `status_task`, and on `setup_hook`:
+`DiscordBot(commands.Bot)` is the entry point. It enables all intents except `members` and `presences` and registers a 1-minute `status_task`. Cog discovery + loading runs **synchronously inside `__init__`** (not in an async hook), so every cog's application commands are registered with the bot **before** the gateway connects:
 
-1. Calls `get_cogs_names()` — async-globs `src/discordbot/cogs/*.py` and **skips any file whose stem starts with `__`**. Helper packages live in sibling `_<cog>/` folders (e.g. `_gen_reply/`, `_maplestory/`) precisely so they are *not* loaded as extensions.
-2. Loads every discovered cog via `self.load_extensions(..., stop_at_error=True)`.
-3. Syncs slash commands — test-guild-only first (when `DISCORD_TEST_SERVER_ID` is set, for instant iteration) then globally.
+1. `_load_cogs_sync()` globs `src/discordbot/cogs/*.py` via `pathlib.Path` (skipping any file whose stem starts with `__`) and calls `self.load_extensions(..., stop_at_error=True)`. Helper packages live in sibling `_<cog>/` folders (e.g. `_gen_reply/`, `_maplestory/`) precisely so they are *not* loaded as extensions.
+2. On the first `on_ready` — gated by an `_initial_setup_done` flag so reconnect / resume re-fires are no-ops — the bot calls `sync_all_application_commands()` and starts `status_task`.
+
+**Why cog loading runs in `__init__`, not an async hook:** nextcord's `bot.load_extension(...)` is itself sync, but when it sees an `async def setup(bot)` it dispatches the setup via `asyncio.create_task(...)` and returns *without awaiting*. That left `bot.add_cog(...)` un-executed by the time `sync_all_application_commands()` ran, so the first sync iterated over zero application commands and registered nothing with Discord. The fix is two-part and you should not revert either half: every cog's `setup` is **sync** (`def setup(bot): bot.add_cog(...)`), and the bot loads them inside `__init__` before connecting.
 
 `on_command_error` has pre-built embeds for the common `commands.*` exception types; add new cases there rather than catching in cogs.
 
 ### Cog conventions
 
-- Cog = a `commands.Cog` subclass + a module-level `async def setup(bot): bot.add_cog(..., override=True)`.
+- Cog = a `commands.Cog` subclass + a module-level **sync** `def setup(bot): bot.add_cog(..., override=True)`. The setup must be sync — see "Bot runtime" for the fire-and-forget bug `async def setup` would cause.
 - Every cog is free-standing. Cross-cog calls go through the bot instance or through shared typings, never via direct imports of peer cogs.
 - Slash commands use nextcord's `@nextcord.slash_command(...)` with `name_localizations` / `description_localizations` for `en-US`, `zh-TW`, `ja` — see `cogs/help.py` and `cogs/maplestory.py` for the pattern. Do not add a new user-facing string without its localizations.
 - Helpers that belong to one cog go into a sibling `_<cog>/` package (e.g. `cogs/_gen_reply/prompts.py`). Those paths are deliberately excluded from auto-load.
@@ -128,7 +129,6 @@ When a moderator times out the bot itself, this cog detects the `on_member_updat
 Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasChoices("ENV_NAME")`, so env-var names are explicit. `.env` is auto-loaded via `dotenv.load_dotenv()` at import time.
 
 - `DiscordConfig` (`typings/config.py`) — `DISCORD_BOT_TOKEN` (required), `DISCORD_TEST_SERVER_ID` (optional, enables instant-sync to one guild).
-- `FAST_SYNC_GUILD_IDS` (`typings/config.py`, **module-level constant**, not on `DiscordConfig`) — list of guild IDs that newly added slash commands pin themselves to via `guild_ids=FAST_SYNC_GUILD_IDS`. Lives outside the pydantic settings class because `@nextcord.slash_command(...)` is a decorator evaluated at import time and can't depend on a `BaseSettings` instance. Edit the list in `typings/config.py` to retarget; commands using it become guild-only (instant rollout, but invisible in non-listed guilds).
 - `LLMConfig` (`typings/llm.py`) — `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
 - `ModelSettings` / `RouteDecision` (`typings/models.py`) — not env config but the same package. `ModelSettings(name, effort)` is the unified handle for a model: `name` goes to `client.responses.create(model=…)`, `reasoning` builds the Responses-API reasoning block (`Reasoning(effort=…, summary="auto")`), and `tools` dispatches the right web-search shape per provider. Accepted input modalities are not on `ModelSettings`; callers look them up via `get_supported_modalities(model_name=…)` from `utils/model_pricing.py` to keep `typings/` free of `utils/` imports. `RouteDecision` is the Pydantic schema fed to `client.responses.parse(text_format=…)` for routing.
 
