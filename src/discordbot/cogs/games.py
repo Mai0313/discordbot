@@ -91,6 +91,7 @@ class GamesCogs(commands.Cog):
             Locale.ja: "3個のサイコロで親と勝負し、合計が大きい方が勝ち。",
         },
         guild_ids=FAST_SYNC_GUILD_IDS,
+        force_global=True,
         nsfw=False,
     )
     async def dice(
@@ -200,6 +201,7 @@ class GamesCogs(commands.Cog):
             Locale.ja: "親と21（ブラックジャック）を1ラウンド遊びます。",
         },
         guild_ids=FAST_SYNC_GUILD_IDS,
+        force_global=True,
         nsfw=False,
     )
     async def blackjack(

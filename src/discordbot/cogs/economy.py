@@ -40,6 +40,7 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "現在のポイント残高を確認します。",
         },
         guild_ids=FAST_SYNC_GUILD_IDS,
+        force_global=True,
         nsfw=False,
     )
     async def balance(self, interaction: Interaction) -> None:
@@ -69,6 +70,7 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "サーバーのポイントトップ10を表示します。",
         },
         guild_ids=FAST_SYNC_GUILD_IDS,
+        force_global=True,
         nsfw=False,
     )
     async def leaderboard(self, interaction: Interaction) -> None:
@@ -109,6 +111,7 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "他のメンバーにポイントを送ります。",
         },
         guild_ids=FAST_SYNC_GUILD_IDS,
+        force_global=True,
         nsfw=False,
     )
     async def give(
