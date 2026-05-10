@@ -1,22 +1,19 @@
 """Interactive components for the casino games."""
 
+import asyncio
 import contextlib
 
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.cogs._games.dealer import DealerAI
-from discordbot.cogs._games.blackjack import (
-    OutcomeLabel,
-    BlackjackHand,
-    render_hand,
-    dealer_visible_value,
-)
+from discordbot.cogs._games.blackjack import BlackjackHand, render_hand, dealer_visible_value
 from discordbot.cogs._games.settlement import settle_blackjack_round
-
-_IN_PROGRESS_COLOR = 0x5865F2
-_WIN_COLOR = 0x57F287
-_LOSE_COLOR = 0xED4245
-_PUSH_COLOR = 0xFEE75C
+from discordbot.cogs._games.presentation import (
+    IN_PROGRESS_COLOR,
+    allin_note,
+    settlement_footer,
+    blackjack_outcome_presentation,
+)
 
 
 def _format_player_line(hand: BlackjackHand) -> str:
@@ -40,7 +37,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
 ) -> Embed:
     """Builds the embed shown while the player is still acting."""
     embed = Embed(
-        title=":black_joker: 21 點 - 進行中", description=dealer_line, color=_IN_PROGRESS_COLOR
+        title=":black_joker: 21 點 - 進行中", description=dealer_line, color=IN_PROGRESS_COLOR
     )
     embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
@@ -48,8 +45,12 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
         value=_format_dealer_line(hand=hand, hide_hole=True),
         inline=False,
     )
-    allin_note = " · 已自動 all-in" if is_allin else ""
-    embed.set_footer(text=f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}{allin_note}")
+    embed.set_footer(
+        text=(
+            f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}"
+            f"{allin_note(is_allin=is_allin)}"
+        )
+    )
     return embed
 
 
@@ -80,30 +81,16 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     )
     if round_note:
         embed.add_field(name="提前結束原因", value=round_note, inline=False)
-    delta_text = f"{delta:+,}" if delta != 0 else "0"
-    allin_note = " · 已自動 all-in" if is_allin else ""
     embed.set_footer(
-        text=(
-            f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,} · "
-            f"莊家餘額 {house_balance:+,}{allin_note}"
+        text=settlement_footer(
+            bet=bet,
+            delta=delta,
+            new_balance=new_balance,
+            house_balance=house_balance,
+            is_allin=is_allin,
         )
     )
     return embed
-
-
-_OUTCOME_PRESENTATION: dict[OutcomeLabel, tuple[str, int]] = {
-    "win": ("你贏了", _WIN_COLOR),
-    "lose": ("你輸了", _LOSE_COLOR),
-    "push": ("平手", _PUSH_COLOR),
-    "blackjack": ("Blackjack!", _WIN_COLOR),
-    "player_bust": ("你爆牌了", _LOSE_COLOR),
-    "dealer_bust": ("莊家爆牌, 你贏了", _WIN_COLOR),
-}
-
-
-def blackjack_outcome_presentation(outcome: OutcomeLabel) -> tuple[str, int]:
-    """Returns the final embed label and color for a Blackjack outcome."""
-    return _OUTCOME_PRESENTATION[outcome]
 
 
 class BlackjackView(ui.View):
@@ -159,6 +146,8 @@ class BlackjackView(ui.View):
         self.balance_after_bet = balance_after_bet
         self.is_allin = is_allin
         self.message: Message | None = None
+        self._settlement_lock = asyncio.Lock()
+        self._settled = False
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         """Restricts the buttons to the original player."""
@@ -174,7 +163,7 @@ class BlackjackView(ui.View):
         if self.hand.finished or self.message is None:
             return
         self.hand.stand()
-        await self._finalize(message=self.message, hint=None)
+        await self._finalize(message=self.message)
 
     @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary)
     async def hit(self, _button: ui.Button, interaction: Interaction) -> None:
@@ -184,7 +173,7 @@ class BlackjackView(ui.View):
             return
         self.hand.hit()
         if self.hand.finished:
-            await self._finalize(message=interaction.message, hint=None)
+            await self._finalize(message=interaction.message)
             return
         hint = await self.dealer.hint(
             author_name=self.author_name,
@@ -209,9 +198,9 @@ class BlackjackView(ui.View):
         if interaction.message is None:
             return
         self.hand.stand()
-        await self._finalize(message=interaction.message, hint=None)
+        await self._finalize(message=interaction.message)
 
-    async def _finalize(self, *, message: Message, hint: str | None) -> None:
+    async def _finalize(self, *, message: Message) -> None:
         """Settles DB, asks the dealer for a closing line, and updates the embed.
 
         The bet was already withdrawn before the view was created, so we credit
@@ -222,45 +211,48 @@ class BlackjackView(ui.View):
         (negated, since dealer P&L is the inverse of player P&L), so global
         casino performance is always visible via ``/house``.
         """
-        settlement = await settle_blackjack_round(
-            hand=self.hand,
-            player_id=self.owner_id,
-            player_account_name=self.author_name,
-            dealer_id=self.dealer_id,
-            dealer_name=self.dealer_name,
-        )
-        outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
-        banter = await self.dealer.settle(
-            author_name=self.author_name,
-            player_name=self.player_name,
-            outcome=settlement.outcome,
-            bet=self.hand.bet,
-            delta=settlement.delta,
-            new_balance=settlement.new_balance,
-            game="blackjack",
-            detail=settlement.detail,
-        )
-        if hint:
-            banter = f"{hint}\n\n{banter}"
-        embed = build_final_embed(
-            dealer_name=self.dealer_name,
-            player_name=self.player_name,
-            hand=self.hand,
-            bet=self.hand.bet,
-            delta=settlement.delta,
-            new_balance=settlement.new_balance,
-            house_balance=settlement.house_balance,
-            dealer_line=banter,
-            outcome_label=outcome_label,
-            color=color,
-            is_allin=self.is_allin,
-        )
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
-        self.stop()
-        with contextlib.suppress(Exception):
-            await message.edit(embed=embed, view=self)
+        async with self._settlement_lock:
+            if self._settled:
+                return
+            self._settled = True
+
+            settlement = await settle_blackjack_round(
+                hand=self.hand,
+                player_id=self.owner_id,
+                player_account_name=self.author_name,
+                dealer_id=self.dealer_id,
+                dealer_name=self.dealer_name,
+            )
+            outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
+            banter = await self.dealer.settle(
+                author_name=self.author_name,
+                player_name=self.player_name,
+                outcome=settlement.outcome,
+                bet=self.hand.bet,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
+                game="blackjack",
+                detail=settlement.detail,
+            )
+            embed = build_final_embed(
+                dealer_name=self.dealer_name,
+                player_name=self.player_name,
+                hand=self.hand,
+                bet=self.hand.bet,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
+                house_balance=settlement.house_balance,
+                dealer_line=banter,
+                outcome_label=outcome_label,
+                color=color,
+                is_allin=self.is_allin,
+            )
+            for child in self.children:
+                if isinstance(child, ui.Button):
+                    child.disabled = True
+            self.stop()
+            with contextlib.suppress(Exception):
+                await message.edit(embed=embed, view=self)
 
 
 __all__: list[str] = [

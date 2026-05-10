@@ -105,6 +105,20 @@ async def _get_or_create(session: AsyncSession, user_id: int, name: str) -> User
     return account
 
 
+def _apply_balance_delta(account: UserAccount, delta: int, *, allow_negative: bool = False) -> int:
+    """Applies a signed balance delta and updates gross lifetime totals."""
+    starting_balance = account.balance
+    account.balance = (
+        account.balance + delta if allow_negative else max(account.balance + delta, 0)
+    )
+    applied_delta = account.balance - starting_balance
+    if applied_delta > 0:
+        account.total_earned += applied_delta
+    elif applied_delta < 0:
+        account.total_spent += -applied_delta
+    return account.balance
+
+
 async def add_balance(user_id: int, name: str, amount: int) -> int:
     """Adds ``amount`` to the user balance; returns the new balance.
 
@@ -115,8 +129,7 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
         if amount > 0:
-            account.balance += amount
-            account.total_earned += amount
+            _apply_balance_delta(account=account, delta=amount)
             await session.commit()
         return account.balance
 
@@ -173,13 +186,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
     """
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
-        new_balance = max(account.balance + delta, 0)
-        applied_delta = new_balance - account.balance
-        account.balance = new_balance
-        if applied_delta > 0:
-            account.total_earned += applied_delta
-        elif applied_delta < 0:
-            account.total_spent += -applied_delta
+        _apply_balance_delta(account=account, delta=delta)
         await session.commit()
         return account.balance
 
@@ -195,11 +202,7 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
     """
     async with open_session() as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
-        account.balance += delta
-        if delta > 0:
-            account.total_earned += delta
-        elif delta < 0:
-            account.total_spent += -delta
+        _apply_balance_delta(account=account, delta=delta, allow_negative=True)
         await session.commit()
         return account.balance
 
@@ -250,9 +253,10 @@ async def transfer(
                     total_spent=UserAccount.total_spent + amount,
                     updated_at=datetime.now(tz=UTC),
                 )
+                .returning(UserAccount.balance)
             )
             result = await session.execute(statement=debit_stmt)
-            if result.rowcount != 1:
+            if result.one_or_none() is None:
                 await session.rollback()
                 continue
 

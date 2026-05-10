@@ -9,8 +9,33 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy import database
+from discordbot.cogs._games.views import BlackjackView
 from discordbot.cogs._games.blackjack import Card, BlackjackHand
-from discordbot.cogs._games.settlement import settle_blackjack_round
+from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
+
+
+class _DealerStub:
+    """Minimal dealer stub for BlackjackView settlement tests."""
+
+    def __init__(self) -> None:
+        self.settle_calls = 0
+
+    async def settle(self, **_kwargs: object) -> str:
+        """Returns deterministic banter and tracks settlement calls."""
+        self.settle_calls += 1
+        await asyncio.sleep(delay=0)
+        return "settled"
+
+
+class _MessageStub:
+    """Minimal message stub that records edit calls."""
+
+    def __init__(self) -> None:
+        self.edit_calls = 0
+
+    async def edit(self, **_kwargs: object) -> None:
+        """Records a Discord message edit."""
+        self.edit_calls += 1
 
 
 @pytest.fixture(autouse=True)
@@ -231,6 +256,25 @@ async def test_house_settle_accumulates_gross_flows() -> None:
     assert total_spent == 300
 
 
+async def test_settle_wager_updates_player_and_house() -> None:
+    """Shared wager settlement credits payout and mirrors house P&L."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
+    assert placed is not None
+
+    settlement = await settle_wager(
+        player_id=1,
+        player_account_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+        bet=placed.amount,
+        delta=40,
+    )
+    assert settlement.payout == 80
+    assert settlement.new_balance == 140
+    assert settlement.house_balance == -40
+
+
 async def test_get_account_returns_none_for_unseen_user() -> None:
     """Unknown users return None instead of a synthetic zero row."""
     assert await database.get_account(user_id=12345) is None
@@ -255,3 +299,35 @@ async def test_settle_blackjack_round_updates_player_and_house() -> None:
     assert settlement.new_balance == 150
     assert settlement.house_balance == -50
     assert await database.get_balance(user_id=99) == -50
+
+
+async def test_blackjack_view_finalizes_once_when_called_concurrently() -> None:
+    """Concurrent finalization attempts must not pay out one Blackjack hand twice."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
+    assert placed is not None
+
+    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
+    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    hand.finished = True
+
+    dealer = _DealerStub()
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,  # type: ignore[arg-type]
+        hand=hand,
+        owner_id=1,
+        author_name="alice",
+        player_name="Alice",
+        dealer_id=99,
+        dealer_name="house",
+        balance_after_bet=placed.balance_after,
+    )
+
+    await asyncio.gather(view._finalize(message=message), view._finalize(message=message))
+
+    assert await database.get_balance(user_id=1) == 150
+    assert await database.get_balance(user_id=99) == -50
+    assert dealer.settle_calls == 1
+    assert message.edit_calls == 1

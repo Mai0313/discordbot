@@ -178,10 +178,10 @@ def render_hand(cards: list[Card], hide_first: bool = False) -> str:
 
 
 def dealer_visible_value(hand: BlackjackHand) -> int:
-    """Numeric value of the dealer's up-card (used for AI hint context)."""
+    """Numeric value of the dealer's visible card (used for AI hint context)."""
     if not hand.dealer:
         return 0
-    up = hand.dealer[0]
+    up = hand.dealer[1] if len(hand.dealer) > 1 else hand.dealer[0]
     if up.rank == "A":
         return 11
     if up.rank in ("J", "Q", "K"):

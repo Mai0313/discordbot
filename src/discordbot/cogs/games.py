@@ -12,28 +12,23 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.dice import play_dice, render_rolls
-from discordbot.cogs._games.views import (
-    BlackjackView,
-    build_final_embed,
-    build_in_progress_embed,
-    blackjack_outcome_presentation,
-)
+from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.blackjack import BlackjackHand
-from discordbot.cogs._economy.database import (
-    PlacedBet,
-    place_bet,
-    get_balance,
-    settle_game,
-    house_settle,
+from discordbot.cogs._economy.database import PlacedBet, place_bet, get_balance
+from discordbot.cogs._games.settlement import (
+    settle_wager,
+    settle_blackjack_round,
+    blackjack_early_finish_note,
 )
-from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
-
-_DICE_IN_PROGRESS_COLOR = 0x5865F2
-_WIN_COLOR = 0x57F287
-_LOSE_COLOR = 0xED4245
-_PUSH_COLOR = 0xFEE75C
-_ERROR_COLOR = 0xED4245
+from discordbot.cogs._games.presentation import (
+    ERROR_COLOR,
+    IN_PROGRESS_COLOR,
+    bet_field_value,
+    settlement_footer,
+    dice_outcome_presentation,
+    blackjack_outcome_presentation,
+)
 
 # Short pause between the "place your bet" embed and the dice reveal so the
 # moment lands. Long enough to feel deliberate, short enough not to annoy.
@@ -110,7 +105,7 @@ class GamesCogs(commands.Cog):
                         f"你目前只有 **{balance:,}** 點, 沒有可下注的點數。\n"
                         "跟機器人聊天可以累積點數。"
                     ),
-                    color=_ERROR_COLOR,
+                    color=ERROR_COLOR,
                 )
             )
             return None
@@ -168,10 +163,11 @@ class GamesCogs(commands.Cog):
         )
 
         in_progress = Embed(
-            title=":game_die: 比大小 - 下注", description=taunt, color=_DICE_IN_PROGRESS_COLOR
+            title=":game_die: 比大小 - 下注", description=taunt, color=IN_PROGRESS_COLOR
         )
-        bet_value = f"{bet:,} 點 (已自動 all-in)" if is_allin else f"{bet:,} 點"
-        in_progress.add_field(name="下注", value=bet_value, inline=True)
+        in_progress.add_field(
+            name="下注", value=bet_field_value(bet=bet, is_allin=is_allin), inline=True
+        )
         in_progress.add_field(
             name="下注後餘額", value=f"{placed_bet.balance_after:,} 點", inline=True
         )
@@ -182,34 +178,32 @@ class GamesCogs(commands.Cog):
         result = play_dice(rng=self.rng)
 
         if result.outcome == "win":
-            payout = bet * 2
-            outcome_label = "你贏了"
-            color = _WIN_COLOR
+            delta = bet
         elif result.outcome == "push":
-            payout = bet
-            outcome_label = "平手"
-            color = _PUSH_COLOR
+            delta = 0
         else:
-            payout = 0
-            outcome_label = "你輸了"
-            color = _LOSE_COLOR
+            delta = -bet
 
-        new_balance = await settle_game(
-            user_id=interaction.user.id, name=interaction.user.name, delta=payout
+        settlement = await settle_wager(
+            player_id=interaction.user.id,
+            player_account_name=interaction.user.name,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            bet=bet,
+            delta=delta,
         )
-        delta = payout - bet
-        house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
         detail = f"玩家骰 {result.player_total} 點, 莊家骰 {result.dealer_total} 點"
         banter = await self.dealer.settle(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
             outcome=result.outcome,
             bet=bet,
-            delta=delta,
-            new_balance=new_balance,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
             game="dice",
             detail=detail,
         )
+        outcome_label, color = dice_outcome_presentation(outcome=result.outcome)
 
         final = Embed(
             title=f":game_die: 比大小 - {outcome_label}", description=banter, color=color
@@ -222,12 +216,13 @@ class GamesCogs(commands.Cog):
         final.add_field(
             name=dealer_name, value=render_rolls(rolls=result.dealer_rolls), inline=False
         )
-        delta_text = f"{delta:+,}" if delta != 0 else "0"
-        allin_note = " · 已自動 all-in" if is_allin else ""
         final.set_footer(
-            text=(
-                f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,} · "
-                f"莊家餘額 {house_balance:+,}{allin_note}"
+            text=settlement_footer(
+                bet=bet,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
+                house_balance=settlement.house_balance,
+                is_allin=is_allin,
             )
         )
         await message.edit(embed=final)

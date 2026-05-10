@@ -13,27 +13,36 @@ from discordbot.cogs._economy.database import settle_game, house_settle
 
 
 @dataclass(frozen=True)
-class BlackjackSettlement:
-    """Database-backed settlement result for a finished Blackjack round.
+class WagerSettlement:
+    """Database-backed settlement result for a finished wager.
 
     Attributes:
-        outcome: Player-facing outcome label from the Blackjack rules engine.
         delta: Net point change relative to the withdrawn bet.
         payout: Gross amount credited back to the player after the upfront bet withdrawal.
         new_balance: Player balance after crediting the payout.
         house_balance: Dealer ledger balance after mirroring the player's net change.
-        detail: Short game-state summary for the dealer AI prompt.
     """
 
-    outcome: OutcomeLabel
     delta: int
     payout: int
     new_balance: int
     house_balance: int
+
+
+@dataclass(frozen=True)
+class BlackjackSettlement(WagerSettlement):
+    """Database-backed settlement result for a finished Blackjack round.
+
+    Attributes:
+        outcome: Player-facing outcome label from the Blackjack rules engine.
+        detail: Short game-state summary for the dealer AI prompt.
+    """
+
+    outcome: OutcomeLabel
     detail: str
 
 
-def blackjack_payout(*, bet: int, delta: int) -> int:
+def wager_payout(*, bet: int, delta: int) -> int:
     """Returns the gross payout after an upfront bet withdrawal."""
     return max(bet + delta, 0)
 
@@ -68,6 +77,24 @@ def blackjack_early_finish_note(hand: BlackjackHand) -> str | None:
     return None
 
 
+async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
+    *,
+    player_id: int,
+    player_account_name: str,
+    dealer_id: int,
+    dealer_name: str,
+    bet: int,
+    delta: int,
+) -> WagerSettlement:
+    """Credits player payout and mirrors the net result into the house ledger."""
+    payout = wager_payout(bet=bet, delta=delta)
+    new_balance = await settle_game(user_id=player_id, name=player_account_name, delta=payout)
+    house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
+    return WagerSettlement(
+        delta=delta, payout=payout, new_balance=new_balance, house_balance=house_balance
+    )
+
+
 async def settle_blackjack_round(
     *,
     hand: BlackjackHand,
@@ -78,14 +105,19 @@ async def settle_blackjack_round(
 ) -> BlackjackSettlement:
     """Settles player payout and mirrored house ledger for one finished hand."""
     outcome, delta = settle(hand=hand)
-    payout = blackjack_payout(bet=hand.bet, delta=delta)
-    new_balance = await settle_game(user_id=player_id, name=player_account_name, delta=payout)
-    house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
+    wager = await settle_wager(
+        player_id=player_id,
+        player_account_name=player_account_name,
+        dealer_id=dealer_id,
+        dealer_name=dealer_name,
+        bet=hand.bet,
+        delta=delta,
+    )
     return BlackjackSettlement(
         outcome=outcome,
-        delta=delta,
-        payout=payout,
-        new_balance=new_balance,
-        house_balance=house_balance,
+        delta=wager.delta,
+        payout=wager.payout,
+        new_balance=wager.new_balance,
+        house_balance=wager.house_balance,
         detail=blackjack_detail(hand=hand),
     )

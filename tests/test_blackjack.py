@@ -196,11 +196,11 @@ def test_render_hand_hides_first_card() -> None:
 
 
 def test_dealer_visible_value_uses_up_card() -> None:
-    """The visible value is just the dealer's first (up) card."""
+    """The visible value matches the card not hidden from the player."""
     hand = BlackjackHand(rng=Random(x=0), bet=10)
     hand.dealer = [Card(rank="A", suit="♠"), Card(rank="K", suit="♥")]
-    assert dealer_visible_value(hand=hand) == 11
-    hand.dealer = [Card(rank="K", suit="♠"), Card(rank="A", suit="♥")]
     assert dealer_visible_value(hand=hand) == 10
+    hand.dealer = [Card(rank="K", suit="♠"), Card(rank="A", suit="♥")]
+    assert dealer_visible_value(hand=hand) == 11
     hand.dealer = [Card(rank="7", suit="♠")]
     assert dealer_visible_value(hand=hand) == 7
