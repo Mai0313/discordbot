@@ -15,8 +15,9 @@ monkeypatch `_engine` per-test and every subsequent call sees the swap.
 from typing import Final
 import asyncio
 from datetime import UTC, datetime
+from dataclasses import dataclass
 
-from sqlalchemy import String, Integer, DateTime, desc, select
+from sqlalchemy import String, Integer, DateTime, desc, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -52,6 +53,21 @@ class UserAccount(_Base):
         default=lambda: datetime.now(tz=UTC),
         onupdate=lambda: datetime.now(tz=UTC),
     )
+
+
+@dataclass(frozen=True)
+class PlacedBet:
+    """A successfully withdrawn wager.
+
+    Attributes:
+        amount: Actual amount withdrawn. This may be lower than the requested amount for all-in.
+        balance_after: Account balance after the bet was withdrawn.
+        is_allin: True when the requested bet was clamped to the available balance.
+    """
+
+    amount: int
+    balance_after: int
+    is_allin: bool
 
 
 async def _create_schema(engine: AsyncEngine) -> None:
@@ -100,14 +116,55 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
         return account.balance
 
 
-async def settle_game(user_id: int, name: str, delta: int) -> int:
-    """Applies a signed game outcome (positive = win, negative = loss).
+async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | None:
+    """Atomically withdraws a wager and returns the effective bet.
 
-    The bet is *not* withdrawn upfront by callers — instead they pass the
-    net delta after the round resolves: ``+bet`` on a win, ``-bet`` on a
-    loss, ``0`` on push, ``+round(bet * 0.5)`` on Blackjack on top of the
-    win. Loss is clamped at zero so a stale session never leaves a player
-    in the red.
+    Bets larger than the current balance are clamped to the full available
+    balance (auto all-in). The conditional update protects against stale
+    balance reads from concurrent game commands, so the same points cannot be
+    spent twice. Returns None when the user has no spendable balance or the
+    requested bet is non-positive.
+    """
+    if requested_bet <= 0:
+        return None
+
+    async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
+        while True:
+            account = await session.get(entity=UserAccount, ident=user_id)
+            if account is None or account.balance <= 0:
+                return None
+
+            starting_balance = account.balance
+            effective_bet = min(requested_bet, starting_balance)
+            stmt = (
+                update(UserAccount)
+                .where(UserAccount.user_id == user_id, UserAccount.balance == starting_balance)
+                .values(
+                    name=name or account.name,
+                    balance=UserAccount.balance - effective_bet,
+                    total_spent=UserAccount.total_spent + effective_bet,
+                    updated_at=datetime.now(tz=UTC),
+                )
+                .returning(UserAccount.balance)
+            )
+            result = await session.execute(statement=stmt)
+            row = result.one_or_none()
+            if row is None:
+                await session.rollback()
+                continue
+
+            await session.commit()
+            return PlacedBet(
+                amount=effective_bet, balance_after=row[0], is_allin=effective_bet < requested_bet
+            )
+
+
+async def settle_game(user_id: int, name: str, delta: int) -> int:
+    """Applies a signed balance adjustment and returns the new balance.
+
+    Casino commands withdraw the bet up front with `place_bet()` and then pass
+    the gross payout here when the round resolves. Losses are still clamped at
+    zero so a stale caller never leaves a player in the red.
     """
     async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
         account = await _get_or_create(session=session, user_id=user_id, name=name)
@@ -173,16 +230,43 @@ async def transfer(
     if amount <= 0 or sender_id == receiver_id:
         return False
     async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
-        sender = await _get_or_create(session=session, user_id=sender_id, name=sender_name)
-        if sender.balance < amount:
-            return False
-        receiver = await _get_or_create(session=session, user_id=receiver_id, name=receiver_name)
-        sender.balance -= amount
-        sender.total_spent += amount
-        receiver.balance += amount
-        receiver.total_earned += amount
-        await session.commit()
-        return True
+        while True:
+            sender = await _get_or_create(session=session, user_id=sender_id, name=sender_name)
+            if sender.balance < amount:
+                return False
+
+            starting_balance = sender.balance
+            debit_stmt = (
+                update(UserAccount)
+                .where(UserAccount.user_id == sender_id, UserAccount.balance == starting_balance)
+                .values(
+                    name=sender_name or sender.name,
+                    balance=UserAccount.balance - amount,
+                    total_spent=UserAccount.total_spent + amount,
+                    updated_at=datetime.now(tz=UTC),
+                )
+            )
+            result = await session.execute(statement=debit_stmt)
+            if result.rowcount != 1:
+                await session.rollback()
+                continue
+
+            receiver = await _get_or_create(
+                session=session, user_id=receiver_id, name=receiver_name
+            )
+            credit_stmt = (
+                update(UserAccount)
+                .where(UserAccount.user_id == receiver_id)
+                .values(
+                    name=receiver_name or receiver.name,
+                    balance=UserAccount.balance + amount,
+                    total_earned=UserAccount.total_earned + amount,
+                    updated_at=datetime.now(tz=UTC),
+                )
+            )
+            await session.execute(statement=credit_stmt)
+            await session.commit()
+            return True
 
 
 async def top_n(

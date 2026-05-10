@@ -1,5 +1,7 @@
 """Tests for the economy persistence layer."""
 
+from random import SystemRandom
+import asyncio
 from pathlib import Path
 from collections.abc import AsyncIterator
 
@@ -7,6 +9,8 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy import database
+from discordbot.cogs._games.blackjack import Card, BlackjackHand
+from discordbot.cogs._games.settlement import settle_blackjack_round
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +56,47 @@ async def test_add_balance_refreshes_name() -> None:
     await database.add_balance(user_id=42, name="alice_renamed", amount=10)
     rows = await database.top_n(limit=1)
     assert rows[0][1] == "alice_renamed"
+
+
+async def test_place_bet_withdraws_requested_amount() -> None:
+    """A valid wager is deducted before the game starts."""
+    await database.add_balance(user_id=42, name="alice", amount=100)
+    placed = await database.place_bet(user_id=42, name="alice", requested_bet=40)
+    assert placed == database.PlacedBet(amount=40, balance_after=60, is_allin=False)
+    assert await database.get_balance(user_id=42) == 60
+
+
+async def test_place_bet_clamps_to_available_balance() -> None:
+    """Over-betting turns into an all-in for the remaining balance."""
+    await database.add_balance(user_id=42, name="alice", amount=25)
+    placed = await database.place_bet(user_id=42, name="alice", requested_bet=100)
+    assert placed == database.PlacedBet(amount=25, balance_after=0, is_allin=True)
+
+
+async def test_place_bet_rejects_empty_or_invalid_wager() -> None:
+    """Users with no points, or invalid wager amounts, cannot start a bet."""
+    assert await database.place_bet(user_id=404, name="nobody", requested_bet=10) is None
+    await database.add_balance(user_id=42, name="alice", amount=10)
+    assert await database.place_bet(user_id=42, name="alice", requested_bet=0) is None
+    assert await database.get_balance(user_id=42) == 10
+
+
+async def test_place_bet_prevents_concurrent_double_spend() -> None:
+    """Two simultaneous all-ins must not spend the same balance twice."""
+    await database.add_balance(user_id=42, name="alice", amount=100)
+    results = await asyncio.gather(
+        database.place_bet(user_id=42, name="alice", requested_bet=100),
+        database.place_bet(user_id=42, name="alice", requested_bet=100),
+    )
+    placed = [result for result in results if result is not None]
+    rejected = [result for result in results if result is None]
+    assert placed == [database.PlacedBet(amount=100, balance_after=0, is_allin=False)]
+    assert rejected == [None]
+    assert await database.get_balance(user_id=42) == 0
+    account = await database.get_account(user_id=42)
+    assert account is not None
+    _, _, _, total_spent = account
+    assert total_spent == 100
 
 
 async def test_settle_game_clamps_at_zero() -> None:
@@ -105,6 +150,39 @@ async def test_transfer_rejects_insufficient_balance() -> None:
     assert await database.get_balance(user_id=2) == 0
 
 
+async def test_transfer_prevents_concurrent_double_spend() -> None:
+    """Concurrent transfers from one sender cannot reuse the same points."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    results = await asyncio.gather(
+        database.transfer(
+            sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=80
+        ),
+        database.transfer(
+            sender_id=1, sender_name="alice", receiver_id=3, receiver_name="carol", amount=80
+        ),
+    )
+    assert results.count(True) == 1
+    assert results.count(False) == 1
+    assert await database.get_balance(user_id=1) == 20
+    assert await database.get_balance(user_id=2) + await database.get_balance(user_id=3) == 80
+
+
+async def test_transfer_concurrent_credits_accumulate() -> None:
+    """Concurrent transfers into one receiver must not lose either credit."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    await database.add_balance(user_id=2, name="bob", amount=100)
+    results = await asyncio.gather(
+        database.transfer(
+            sender_id=1, sender_name="alice", receiver_id=3, receiver_name="carol", amount=80
+        ),
+        database.transfer(
+            sender_id=2, sender_name="bob", receiver_id=3, receiver_name="carol", amount=70
+        ),
+    )
+    assert results == [True, True]
+    assert await database.get_balance(user_id=3) == 150
+
+
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1, -1000])
 async def test_transfer_rejects_non_positive(amount: int) -> None:
     """Transfers with non-positive amounts must be rejected."""
@@ -156,3 +234,23 @@ async def test_house_settle_accumulates_gross_flows() -> None:
 async def test_get_account_returns_none_for_unseen_user() -> None:
     """Unknown users return None instead of a synthetic zero row."""
     assert await database.get_account(user_id=12345) is None
+
+
+async def test_settle_blackjack_round_updates_player_and_house() -> None:
+    """Shared Blackjack settlement credits the player and mirrors house P&L."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
+    assert placed is not None
+
+    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
+    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    hand.finished = True
+
+    settlement = await settle_blackjack_round(
+        hand=hand, player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house"
+    )
+    assert settlement.delta == 50
+    assert settlement.payout == 100
+    assert settlement.new_balance == 150
+    assert await database.get_balance(user_id=99) == -50

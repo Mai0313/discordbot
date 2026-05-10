@@ -12,10 +12,22 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.dice import play_dice, render_rolls
-from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
+from discordbot.cogs._games.views import (
+    BlackjackView,
+    build_final_embed,
+    build_in_progress_embed,
+    blackjack_outcome_presentation,
+)
 from discordbot.cogs._games.dealer import DealerAI
-from discordbot.cogs._games.blackjack import BlackjackHand, settle, is_blackjack
-from discordbot.cogs._economy.database import get_balance, settle_game, house_settle
+from discordbot.cogs._games.blackjack import BlackjackHand
+from discordbot.cogs._economy.database import (
+    PlacedBet,
+    place_bet,
+    get_balance,
+    settle_game,
+    house_settle,
+)
+from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
 
 _DICE_IN_PROGRESS_COLOR = 0x5865F2
 _WIN_COLOR = 0x57F287
@@ -76,17 +88,21 @@ class GamesCogs(commands.Cog):
             return (0, "莊家")
         return (self.bot.user.id, self.bot.user.display_name)
 
-    async def _resolve_bet(
-        self, *, interaction: Interaction, balance: int, bet: int
-    ) -> int | None:
-        """Returns the effective bet; auto-clamps an over-bet to the player's balance.
+    async def _place_bet(
+        self, *, interaction: Interaction, requested_bet: int
+    ) -> PlacedBet | None:
+        """Withdraws the effective bet or sends an insufficient-balance embed.
 
-        When the requested bet exceeds the balance, the bet is silently
-        clamped to ``balance`` (auto all-in) so the round still happens.
-        Sends an embed and returns ``None`` only when the player has nothing
-        to wager (``balance <= 0``).
+        `place_bet()` owns the atomic balance check and auto all-in clamp, so
+        slash commands do not make game decisions from stale balances.
         """
-        if balance <= 0:
+        if interaction.user is None:
+            return None
+        placed_bet = await place_bet(
+            user_id=interaction.user.id, name=interaction.user.name, requested_bet=requested_bet
+        )
+        if placed_bet is None:
+            balance = await get_balance(user_id=interaction.user.id)
             await interaction.followup.send(
                 embed=Embed(
                     title=":x: 餘額不足",
@@ -98,7 +114,7 @@ class GamesCogs(commands.Cog):
                 )
             )
             return None
-        return min(bet, balance)
+        return placed_bet
 
     @nextcord.slash_command(
         name="dice",
@@ -135,25 +151,18 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        balance = await get_balance(user_id=interaction.user.id)
-        resolved_bet = await self._resolve_bet(interaction=interaction, balance=balance, bet=bet)
-        if resolved_bet is None:
+        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
+        if placed_bet is None:
             return
-        is_allin = resolved_bet < bet
-        bet = resolved_bet
+        bet = placed_bet.amount
+        is_allin = placed_bet.is_allin
 
         dealer_id, dealer_name = self._dealer_identity()
-
-        # Withdraw the bet up-front so a concurrent /dice or /blackjack from
-        # the same player can't double-spend the same balance.
-        balance_after_bet = await settle_game(
-            user_id=interaction.user.id, name=interaction.user.name, delta=-bet
-        )
 
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
-            balance_after_bet=balance_after_bet,
+            balance_after_bet=placed_bet.balance_after,
             bet=bet,
             game="dice",
         )
@@ -163,7 +172,9 @@ class GamesCogs(commands.Cog):
         )
         bet_value = f"{bet:,} 點 (已自動 all-in)" if is_allin else f"{bet:,} 點"
         in_progress.add_field(name="下注", value=bet_value, inline=True)
-        in_progress.add_field(name="下注後餘額", value=f"{balance_after_bet:,} 點", inline=True)
+        in_progress.add_field(
+            name="下注後餘額", value=f"{placed_bet.balance_after:,} 點", inline=True
+        )
         in_progress.set_footer(text="正在搖骰子...")
         message = await interaction.followup.send(embed=in_progress, wait=True)
 
@@ -253,18 +264,13 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        balance = await get_balance(user_id=interaction.user.id)
-        resolved_bet = await self._resolve_bet(interaction=interaction, balance=balance, bet=bet)
-        if resolved_bet is None:
+        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
+        if placed_bet is None:
             return
-        is_allin = resolved_bet < bet
-        bet = resolved_bet
+        bet = placed_bet.amount
+        is_allin = placed_bet.is_allin
 
         dealer_id, dealer_name = self._dealer_identity()
-
-        balance_after_bet = await settle_game(
-            user_id=interaction.user.id, name=interaction.user.name, delta=-bet
-        )
 
         hand = BlackjackHand(rng=self.rng, bet=bet)
         hand.deal_initial()
@@ -272,7 +278,7 @@ class GamesCogs(commands.Cog):
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
-            balance_after_bet=balance_after_bet,
+            balance_after_bet=placed_bet.balance_after,
             bet=bet,
             game="blackjack",
         )
@@ -280,47 +286,36 @@ class GamesCogs(commands.Cog):
         # Natural Blackjack (or dealer Blackjack) ends the hand before the
         # player gets to act; settle and post the final embed straight away.
         if hand.finished:
-            outcome, delta = settle(hand=hand)
-            payout = max(bet + delta, 0)
-            new_balance = await settle_game(
-                user_id=interaction.user.id, name=interaction.user.name, delta=payout
+            settlement = await settle_blackjack_round(
+                hand=hand,
+                player_id=interaction.user.id,
+                player_account_name=interaction.user.name,
+                dealer_id=dealer_id,
+                dealer_name=dealer_name,
             )
-            await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
-            if is_blackjack(cards=hand.player) and is_blackjack(cards=hand.dealer):
-                detail = "雙方都是 Blackjack, 平手"
-            elif is_blackjack(cards=hand.player):
-                detail = f"玩家 21 點 Blackjack, 莊家 {hand.dealer_total()} 點"
-            else:
-                detail = f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
             banter = await self.dealer.settle(
                 author_name=interaction.user.name,
                 player_name=interaction.user.display_name,
-                outcome=outcome,
+                outcome=settlement.outcome,
                 bet=bet,
-                delta=delta,
-                new_balance=new_balance,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
                 game="blackjack",
-                detail=detail,
+                detail=settlement.detail,
             )
-            outcome_label, color = {
-                "win": ("你贏了", _WIN_COLOR),
-                "lose": ("你輸了", _LOSE_COLOR),
-                "push": ("平手", _PUSH_COLOR),
-                "blackjack": ("Blackjack!", _WIN_COLOR),
-                "player_bust": ("你爆牌了", _LOSE_COLOR),
-                "dealer_bust": ("莊家爆牌, 你贏了", _WIN_COLOR),
-            }[outcome]
+            outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
             embed = build_final_embed(
                 dealer_name=dealer_name,
                 player_name=interaction.user.display_name,
                 hand=hand,
                 bet=bet,
-                delta=delta,
-                new_balance=new_balance,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
                 dealer_line=banter,
                 outcome_label=outcome_label,
                 color=color,
                 is_allin=is_allin,
+                round_note=blackjack_early_finish_note(hand=hand),
             )
             await interaction.followup.send(embed=embed)
             return
@@ -333,14 +328,14 @@ class GamesCogs(commands.Cog):
             player_name=interaction.user.display_name,
             dealer_id=dealer_id,
             dealer_name=dealer_name,
-            balance_after_bet=balance_after_bet,
+            balance_after_bet=placed_bet.balance_after,
             is_allin=is_allin,
         )
         embed = build_in_progress_embed(
             dealer_name=dealer_name,
             player_name=interaction.user.display_name,
             hand=hand,
-            balance_after_bet=balance_after_bet,
+            balance_after_bet=placed_bet.balance_after,
             dealer_line=taunt,
             is_allin=is_allin,
         )

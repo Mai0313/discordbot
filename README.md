@@ -64,6 +64,8 @@ The bot keeps a **persistent, cross-server point balance** for every Discord acc
 | `/dice <bet>`      | Three dice vs three dice; bigger total wins (push refunds the bet).                                                   |
 | `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit. |
 
+**Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack wins immediately and pays 1.5×; a dealer natural Blackjack settles immediately unless the player also has Blackjack, in which case the hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
+
 **Managing points:**
 
 - `/balance` — show your current balance.
@@ -98,7 +100,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/leaderboard`                    | Global Top 10 point holders                                             |
 | `/give <member> <amount>`         | Transfer points to another member                                       |
 | `/dice <bet>`                     | Roll three dice against the AI dealer                                   |
-| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons against the AI dealer     |
+| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately |
 | `/house`                          | Show the dealer's accumulated win/loss across `/dice` and `/blackjack`  |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                    |
 | `/maple_equip <name>`             | Search MapleStory equipment                                             |

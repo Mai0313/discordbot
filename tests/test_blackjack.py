@@ -16,6 +16,7 @@ from discordbot.cogs._games.blackjack import (
     is_blackjack,
     dealer_visible_value,
 )
+from discordbot.cogs._games.settlement import blackjack_early_finish_note
 
 
 def test_hand_value_no_aces() -> None:
@@ -87,6 +88,24 @@ def test_settle_double_blackjack_is_push() -> None:
     outcome, delta = settle(hand=hand)
     assert outcome == "push"
     assert delta == 0
+
+
+def test_blackjack_early_finish_note_explains_dealer_natural() -> None:
+    """A dealer natural Blackjack can end the round before the player acts."""
+    hand = _hand_with(
+        player=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
+        dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
+    )
+    assert blackjack_early_finish_note(hand=hand) == "莊家起手 Blackjack, 依規則本局直接結算。"
+
+
+def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
+    """A non-natural 21 should not be described as an early Blackjack finish."""
+    hand = _hand_with(
+        player=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
+        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
+    )
+    assert blackjack_early_finish_note(hand=hand) is None
 
 
 def test_settle_player_bust_loses_bet() -> None:

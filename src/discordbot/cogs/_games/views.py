@@ -6,14 +6,12 @@ from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.blackjack import (
+    OutcomeLabel,
     BlackjackHand,
-    settle,
-    is_bust,
     render_hand,
-    is_blackjack,
     dealer_visible_value,
 )
-from discordbot.cogs._economy.database import settle_game, house_settle
+from discordbot.cogs._games.settlement import settle_blackjack_round
 
 _IN_PROGRESS_COLOR = 0x5865F2
 _WIN_COLOR = 0x57F287
@@ -67,6 +65,7 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     outcome_label: str,
     color: int,
     is_allin: bool = False,
+    round_note: str | None = None,
 ) -> Embed:
     """Builds the embed for a finished round."""
     embed = Embed(
@@ -78,6 +77,8 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
         value=_format_dealer_line(hand=hand, hide_hole=False),
         inline=False,
     )
+    if round_note:
+        embed.add_field(name="提前結束原因", value=round_note, inline=False)
     delta_text = f"{delta:+,}" if delta != 0 else "0"
     allin_note = " · 已自動 all-in" if is_allin else ""
     embed.set_footer(
@@ -86,7 +87,7 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     return embed
 
 
-_OUTCOME_PRESENTATION: dict[str, tuple[str, int]] = {
+_OUTCOME_PRESENTATION: dict[OutcomeLabel, tuple[str, int]] = {
     "win": ("你贏了", _WIN_COLOR),
     "lose": ("你輸了", _LOSE_COLOR),
     "push": ("平手", _PUSH_COLOR),
@@ -94,6 +95,11 @@ _OUTCOME_PRESENTATION: dict[str, tuple[str, int]] = {
     "player_bust": ("你爆牌了", _LOSE_COLOR),
     "dealer_bust": ("莊家爆牌, 你贏了", _WIN_COLOR),
 }
+
+
+def blackjack_outcome_presentation(outcome: OutcomeLabel) -> tuple[str, int]:
+    """Returns the final embed label and color for a Blackjack outcome."""
+    return _OUTCOME_PRESENTATION[outcome]
 
 
 class BlackjackView(ui.View):
@@ -212,28 +218,23 @@ class BlackjackView(ui.View):
         (negated, since dealer P&L is the inverse of player P&L), so global
         casino performance is always visible via ``/house``.
         """
-        outcome, delta = settle(hand=self.hand)
-        outcome_label, color = _OUTCOME_PRESENTATION[outcome]
-        payout = max(self.hand.bet + delta, 0)
-        new_balance = await settle_game(user_id=self.owner_id, name=self.player_name, delta=payout)
-        await house_settle(user_id=self.dealer_id, name=self.dealer_name, delta=-delta)
-        if is_blackjack(cards=self.hand.player):
-            detail = f"玩家 21 點 Blackjack, 莊家 {self.hand.dealer_total()} 點"
-        elif is_bust(cards=self.hand.player):
-            detail = f"玩家爆牌 {self.hand.player_total()} 點"
-        elif is_bust(cards=self.hand.dealer):
-            detail = f"莊家爆牌 {self.hand.dealer_total()} 點, 玩家 {self.hand.player_total()} 點"
-        else:
-            detail = f"玩家 {self.hand.player_total()} 點 vs 莊家 {self.hand.dealer_total()} 點"
+        settlement = await settle_blackjack_round(
+            hand=self.hand,
+            player_id=self.owner_id,
+            player_account_name=self.author_name,
+            dealer_id=self.dealer_id,
+            dealer_name=self.dealer_name,
+        )
+        outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
         banter = await self.dealer.settle(
             author_name=self.author_name,
             player_name=self.player_name,
-            outcome=outcome,
+            outcome=settlement.outcome,
             bet=self.hand.bet,
-            delta=delta,
-            new_balance=new_balance,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
             game="blackjack",
-            detail=detail,
+            detail=settlement.detail,
         )
         if hint:
             banter = f"{hint}\n\n{banter}"
@@ -242,8 +243,8 @@ class BlackjackView(ui.View):
             player_name=self.player_name,
             hand=self.hand,
             bet=self.hand.bet,
-            delta=delta,
-            new_balance=new_balance,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
             dealer_line=banter,
             outcome_label=outcome_label,
             color=color,
@@ -257,4 +258,9 @@ class BlackjackView(ui.View):
             await message.edit(embed=embed, view=self)
 
 
-__all__: list[str] = ["BlackjackView", "build_final_embed", "build_in_progress_embed"]
+__all__: list[str] = [
+    "BlackjackView",
+    "blackjack_outcome_presentation",
+    "build_final_embed",
+    "build_in_progress_embed",
+]

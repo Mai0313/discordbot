@@ -64,6 +64,8 @@
 | `/dice <下注>`      | 三颗骰子 vs 三颗骰子，总和大者赢（平手退钱）。                                                  |
 | `/blackjack <下注>` | 标准 21 点，附 Hit / Stand button；天生 Blackjack 赔 1.5 倍；玩家每次 hit 庄家会给带刺的 hint。 |
 
+**21 点提前结算规则：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌。玩家起手 Blackjack 会直接赢并赔 1.5 倍；庄家起手 Blackjack 会直接结算，除非玩家同时也是 Blackjack，否则玩家输。这不是任意凑到 21 点都会提前结束，只有起手 natural Blackjack 才会跳过 Hit / Stand。
+
 **管理点数：**
 
 - `/balance` — 查看自己的余额。
@@ -98,7 +100,7 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 | `/leaderboard`                  | 全域点数 Top 10                                               |
 | `/give <成员> <点数>`           | 把点数转给其他成员                                            |
 | `/dice <下注>`                  | 跟 AI 庄家掷三颗骰子比大小                                    |
-| `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button）               |
+| `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button；起手 Blackjack 会直接结算） |
 | `/house`                        | 查看庄家在 `/dice` 与 `/blackjack` 累积的输赢                 |
 | `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                        |
 | `/maple_equip <名称>`           | 搜索枫之谷装备                                                |
