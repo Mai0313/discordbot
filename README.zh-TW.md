@@ -91,27 +91,27 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 
 ## 指令
 
-| 指令                            | 說明                                                          |
-| ------------------------------- | ------------------------------------------------------------- |
-| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）           |
-| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                               |
-| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片 |
-| `/balance`                      | 查看你目前的點數餘額（跨伺服器）                              |
-| `/leaderboard`                  | 全域點數 Top 10                                               |
-| `/give <成員> <點數>`           | 把點數轉給其他成員                                            |
-| `/dice <下注>`                  | 跟 AI 莊家擲三顆骰子比大小                                    |
+| 指令                            | 說明                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                        |
+| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                            |
+| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片              |
+| `/balance`                      | 查看你目前的點數餘額（跨伺服器）                                           |
+| `/leaderboard`                  | 全域點數 Top 10                                                            |
+| `/give <成員> <點數>`           | 把點數轉給其他成員                                                         |
+| `/dice <下注>`                  | 跟 AI 莊家擲三顆骰子比大小                                                 |
 | `/blackjack <下注>`             | 跟 AI 莊家玩一局 21 點（含 Hit / Stand button；起手 Blackjack 會直接結算） |
-| `/house`                        | 查看莊家在 `/dice` 與 `/blackjack` 累積的輸贏                 |
-| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                        |
-| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                |
-| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                |
-| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                |
-| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                |
-| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                |
-| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                            |
-| `/maple_stats`                  | 查看楓之谷資料庫統計                                          |
-| `/help`                         | 顯示機器人使用指南                                            |
-| `/ping`                         | 測試機器人延遲                                                |
+| `/house`                        | 查看莊家在 `/dice` 與 `/blackjack` 累積的輸贏                              |
+| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                     |
+| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                             |
+| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                             |
+| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                             |
+| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                             |
+| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                             |
+| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                         |
+| `/maple_stats`                  | 查看楓之谷資料庫統計                                                       |
+| `/help`                         | 顯示機器人使用指南                                                         |
+| `/ping`                         | 測試機器人延遲                                                             |
 
 ## 自架設
 

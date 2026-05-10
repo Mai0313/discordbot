@@ -91,27 +91,27 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 
 ## Commands
 
-| Command                           | Description                                                             |
-| --------------------------------- | ----------------------------------------------------------------------- |
-| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search) |
-| _Threads link_                    | Automatically expands Threads.net posts with media                      |
-| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili   |
-| `/balance`                        | Show your current point balance (cross-server)                          |
-| `/leaderboard`                    | Global Top 10 point holders                                             |
-| `/give <member> <amount>`         | Transfer points to another member                                       |
-| `/dice <bet>`                     | Roll three dice against the AI dealer                                   |
+| Command                           | Description                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------ |
+| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)              |
+| _Threads link_                    | Automatically expands Threads.net posts with media                                   |
+| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                |
+| `/balance`                        | Show your current point balance (cross-server)                                       |
+| `/leaderboard`                    | Global Top 10 point holders                                                          |
+| `/give <member> <amount>`         | Transfer points to another member                                                    |
+| `/dice <bet>`                     | Roll three dice against the AI dealer                                                |
 | `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately |
-| `/house`                          | Show the dealer's accumulated win/loss across `/dice` and `/blackjack`  |
-| `/maple_monster <name>`           | Search MapleStory monsters and drops                                    |
-| `/maple_equip <name>`             | Search MapleStory equipment                                             |
-| `/maple_scroll <name>`            | Search MapleStory scrolls                                               |
-| `/maple_npc <name>`               | Search MapleStory NPCs                                                  |
-| `/maple_quest <name>`             | Search MapleStory quests                                                |
-| `/maple_map <name>`               | Search MapleStory maps                                                  |
-| `/maple_item <name>`              | Search MapleStory item sources                                          |
-| `/maple_stats`                    | View MapleStory database statistics                                     |
-| `/help`                           | Show bot usage guide                                                    |
-| `/ping`                           | Check bot latency                                                       |
+| `/house`                          | Show the dealer's accumulated win/loss across `/dice` and `/blackjack`               |
+| `/maple_monster <name>`           | Search MapleStory monsters and drops                                                 |
+| `/maple_equip <name>`             | Search MapleStory equipment                                                          |
+| `/maple_scroll <name>`            | Search MapleStory scrolls                                                            |
+| `/maple_npc <name>`               | Search MapleStory NPCs                                                               |
+| `/maple_quest <name>`             | Search MapleStory quests                                                             |
+| `/maple_map <name>`               | Search MapleStory maps                                                               |
+| `/maple_item <name>`              | Search MapleStory item sources                                                       |
+| `/maple_stats`                    | View MapleStory database statistics                                                  |
+| `/help`                           | Show bot usage guide                                                                 |
+| `/ping`                           | Check bot latency                                                                    |
 
 ## Self-Hosting
 

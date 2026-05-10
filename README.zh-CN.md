@@ -91,27 +91,27 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 
 ## 指令
 
-| 指令                            | 说明                                                          |
-| ------------------------------- | ------------------------------------------------------------- |
-| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）           |
-| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                               |
-| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频 |
-| `/balance`                      | 查看你目前的点数余额（跨服务器）                              |
-| `/leaderboard`                  | 全域点数 Top 10                                               |
-| `/give <成员> <点数>`           | 把点数转给其他成员                                            |
-| `/dice <下注>`                  | 跟 AI 庄家掷三颗骰子比大小                                    |
+| 指令                            | 说明                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                        |
+| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                            |
+| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频              |
+| `/balance`                      | 查看你目前的点数余额（跨服务器）                                           |
+| `/leaderboard`                  | 全域点数 Top 10                                                            |
+| `/give <成员> <点数>`           | 把点数转给其他成员                                                         |
+| `/dice <下注>`                  | 跟 AI 庄家掷三颗骰子比大小                                                 |
 | `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button；起手 Blackjack 会直接结算） |
-| `/house`                        | 查看庄家在 `/dice` 与 `/blackjack` 累积的输赢                 |
-| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                        |
-| `/maple_equip <名称>`           | 搜索枫之谷装备                                                |
-| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                |
-| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                |
-| `/maple_quest <名称>`           | 搜索枫之谷任务                                                |
-| `/maple_map <名称>`             | 搜索枫之谷地图                                                |
-| `/maple_item <名称>`            | 搜索枫之谷物品来源                                            |
-| `/maple_stats`                  | 查看枫之谷数据库统计                                          |
-| `/help`                         | 显示机器人使用指南                                            |
-| `/ping`                         | 测试机器人延迟                                                |
+| `/house`                        | 查看庄家在 `/dice` 与 `/blackjack` 累积的输赢                              |
+| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                     |
+| `/maple_equip <名称>`           | 搜索枫之谷装备                                                             |
+| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                             |
+| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                             |
+| `/maple_quest <名称>`           | 搜索枫之谷任务                                                             |
+| `/maple_map <名称>`             | 搜索枫之谷地图                                                             |
+| `/maple_item <名称>`            | 搜索枫之谷物品来源                                                         |
+| `/maple_stats`                  | 查看枫之谷数据库统计                                                       |
+| `/help`                         | 显示机器人使用指南                                                         |
+| `/ping`                         | 测试机器人延迟                                                             |
 
 ## 自托管
 
