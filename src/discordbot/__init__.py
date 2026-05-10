@@ -64,6 +64,7 @@ def setup_logging() -> None:
     logfire.configure(
         send_to_logfire=False,
         scrubbing=False,
+        inspect_arguments=False,
         # We can remove `console` if log is no longer needed to be saved in a file.
         console=logfire.ConsoleOptions(
             colors="auto",
