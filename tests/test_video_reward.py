@@ -21,14 +21,14 @@ def test_reward_for_includes_base_plus_size_capped(file_size_mb: float, expected
 
 
 def test_success_text_omits_reward_suffix_on_db_failure() -> None:
-    """When awarded is None, the body must not promise points."""
-    text = _success_text(file_size_mb=12.3, awarded=None)
+    """When reward is None (DB write failed), the body must not promise points."""
+    text = _success_text(file_size_mb=12.3, reward=None)
     assert "獲得" not in text
     assert "12.3MB" in text
 
 
 def test_success_text_includes_reward_suffix_on_success() -> None:
-    """When awarded is set, the body shows the rewarded amount."""
-    text = _success_text(file_size_mb=12.3, awarded=22)
+    """When reward is set, the body shows the rewarded amount."""
+    text = _success_text(file_size_mb=12.3, reward=22)
     assert "22 點數" in text
     assert "12.3MB" in text

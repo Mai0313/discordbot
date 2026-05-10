@@ -4,6 +4,7 @@ import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.typings.config import FAST_SYNC_GUILD_IDS
 from discordbot.cogs._economy.database import top_n, transfer, get_balance
 
 _BALANCE_COLOR = 0x57F287
@@ -38,6 +39,7 @@ class EconomyCogs(commands.Cog):
             Locale.zh_TW: "查詢你目前的點數餘額。",
             Locale.ja: "現在のポイント残高を確認します。",
         },
+        guild_ids=FAST_SYNC_GUILD_IDS,
         nsfw=False,
     )
     async def balance(self, interaction: Interaction) -> None:
@@ -66,6 +68,7 @@ class EconomyCogs(commands.Cog):
             Locale.zh_TW: "顯示伺服器內點數前 10 名。",
             Locale.ja: "サーバーのポイントトップ10を表示します。",
         },
+        guild_ids=FAST_SYNC_GUILD_IDS,
         nsfw=False,
     )
     async def leaderboard(self, interaction: Interaction) -> None:
@@ -105,6 +108,7 @@ class EconomyCogs(commands.Cog):
             Locale.zh_TW: "把你的點數轉給其他成員。",
             Locale.ja: "他のメンバーにポイントを送ります。",
         },
+        guild_ids=FAST_SYNC_GUILD_IDS,
         nsfw=False,
     )
     async def give(

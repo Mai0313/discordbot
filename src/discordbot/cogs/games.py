@@ -10,6 +10,7 @@ from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.config import FAST_SYNC_GUILD_IDS
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
@@ -89,6 +90,7 @@ class GamesCogs(commands.Cog):
             Locale.zh_TW: "用三顆骰子跟莊家比點數總和, 大的贏。",
             Locale.ja: "3個のサイコロで親と勝負し、合計が大きい方が勝ち。",
         },
+        guild_ids=FAST_SYNC_GUILD_IDS,
         nsfw=False,
     )
     async def dice(
@@ -197,6 +199,7 @@ class GamesCogs(commands.Cog):
             Locale.zh_TW: "跟莊家玩一局 21 點。",
             Locale.ja: "親と21（ブラックジャック）を1ラウンド遊びます。",
         },
+        guild_ids=FAST_SYNC_GUILD_IDS,
         nsfw=False,
     )
     async def blackjack(

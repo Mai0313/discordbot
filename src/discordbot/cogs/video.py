@@ -11,6 +11,10 @@ from discordbot.cogs._economy.database import add_balance
 _BASE_REWARD = 10
 _REWARD_CAP = 100
 
+# Hard-cap aligned with the unboosted Discord upload limit. The downloader
+# already retries at low quality once when this is exceeded.
+_DISCORD_FILE_LIMIT_BYTES = 25 * 1024 * 1024
+
 
 def _reward_for(file_size_mb: float) -> int:
     """Calculates the point reward for a successful download.
@@ -22,7 +26,7 @@ def _reward_for(file_size_mb: float) -> int:
 
 
 async def _award_silently(*, user_id: int, name: str, amount: int) -> int | None:
-    """Persists the reward; logs and returns ``None`` on DB failure."""
+    """Persists the reward and returns the new balance; logs and returns ``None`` on DB failure."""
     try:
         return await add_balance(user_id=user_id, name=name, amount=amount)
     except Exception:
@@ -30,12 +34,12 @@ async def _award_silently(*, user_id: int, name: str, amount: int) -> int | None
         return None
 
 
-def _success_text(file_size_mb: float, awarded: int | None) -> str:
-    """Builds the final message body with the reward suffix when DB write succeeded."""
+def _success_text(file_size_mb: float, reward: int | None) -> str:
+    """Builds the final message body, appending the reward suffix only on a real DB write."""
     base = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
-    if awarded is None:
+    if reward is None:
         return base
-    return f"{base} · 獲得 {awarded:,} 點數"
+    return f"{base} · 獲得 {reward:,} 點數"
 
 
 class VideoCogs(commands.Cog):
@@ -83,80 +87,89 @@ class VideoCogs(commands.Cog):
     ) -> None:
         """Downloads a video from various platforms and sends it back.
 
+        The status message (downloading / re-encoding / failure) lives on the
+        deferred placeholder via ``edit_original_message``; the final video
+        file is delivered as a new followup so we never have to mix
+        ``content=`` and ``file=`` in a single edit — that combination
+        sometimes drops the new content on Discord's side, which is why the
+        reward suffix was vanishing on success.
+
         Args:
             interaction: The interaction that triggered the command.
             url: The URL of the video to download.
             quality: The desired video quality.
         """
-        # 避免互動超時
         await interaction.response.defer()
-
-        # 發送初始狀態訊息並保存引用
-        await interaction.followup.send("🔄 正在下載影片，請稍候...")
+        await interaction.edit_original_message(content="⏳ 正在下載影片，請稍候...")
 
         try:
-            await interaction.edit_original_message(content="⏳ 正在下載...")
             downloader = VideoDownloader(output_folder="./data/downloads")
             with downloader.download(url=url, quality=quality) as result:
-                # 檢查檔案大小是否超過 Discord 限制 (25MB)
                 file_size_mb = result.filename.stat().st_size / 1024 / 1024
-                if result.filename.stat().st_size > 25 * 1024 * 1024:
-                    # 如果檔案過大且不是已經是低畫質，則重新下載低畫質版本
-                    if quality != "low":
-                        await interaction.edit_original_message(
-                            content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
-                        )
-                        # 重新下載低畫質版本
-                        with downloader.download(url=url, quality="low") as low_result:
-                            # 再次檢查檔案大小
-                            file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
-                            if low_result.filename.stat().st_size > 25 * 1024 * 1024:
-                                await interaction.edit_original_message(
-                                    content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
-                                )
-                            else:
-                                await self._send_success(
-                                    interaction=interaction,
-                                    file_size_mb=file_size_mb,
-                                    file_path=str(low_result.filename),
-                                    file_name=low_result.filename.name,
-                                )
-                    else:
-                        # 已經是低畫質但仍然過大
-                        await interaction.edit_original_message(
-                            content=f":x: 下載失敗 \n檔案大小超過 {file_size_mb:.1f}MB"
-                        )
-                else:
-                    await self._send_success(
+                if result.filename.stat().st_size <= _DISCORD_FILE_LIMIT_BYTES:
+                    await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
                         file_path=str(result.filename),
                         file_name=result.filename.name,
                     )
-        except Exception:
-            with contextlib.suppress(Exception):
-                await interaction.edit_original_message(content=":x: 下載失敗 \n檔案無法下載")
+                    return
 
-    async def _send_success(
+                if quality == "low":
+                    await interaction.edit_original_message(
+                        content=f":x: 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                    )
+                    return
+
+                await interaction.edit_original_message(
+                    content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
+                )
+                with downloader.download(url=url, quality="low") as low_result:
+                    file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
+                    if low_result.filename.stat().st_size > _DISCORD_FILE_LIMIT_BYTES:
+                        await interaction.edit_original_message(
+                            content=f":x: 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                        )
+                        return
+                    await self._deliver(
+                        interaction=interaction,
+                        file_size_mb=file_size_mb,
+                        file_path=str(low_result.filename),
+                        file_name=low_result.filename.name,
+                    )
+        except Exception:
+            logfire.warn("Video download failed", _exc_info=True)
+            with contextlib.suppress(Exception):
+                await interaction.edit_original_message(content=":x: 下載失敗\n檔案無法下載")
+
+    async def _deliver(
         self, *, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
     ) -> None:
-        """Awards points and edits the original message with the reward suffix."""
+        """Awards points, then sends the file as a fresh followup with the reward suffix.
+
+        We deliberately do NOT call ``edit_original_message(file=…, content=…)``
+        here — that combination has dropped the ``content`` (i.e. the reward
+        suffix) on the Discord side when the multipart file payload is
+        attached. Sending the result as a separate followup keeps the
+        ``content`` reliable, and the placeholder is collapsed away by the
+        final ``edit_original_message`` call.
+        """
+        reward = _reward_for(file_size_mb=file_size_mb)
         awarded: int | None = None
         if interaction.user is not None:
             awarded = await _award_silently(
-                user_id=interaction.user.id,
-                name=interaction.user.name,
-                amount=_reward_for(file_size_mb=file_size_mb),
+                user_id=interaction.user.id, name=interaction.user.name, amount=reward
             )
-        # The message body shows the actual reward we recorded; if the DB write
-        # failed we omit the suffix rather than promising points the user can't see.
-        await interaction.edit_original_message(
-            content=_success_text(
-                file_size_mb=file_size_mb,
-                awarded=_reward_for(file_size_mb=file_size_mb) if awarded is not None else None,
-            ),
-            file=File(fp=file_path, filename=file_name),
+        # Show only what we actually persisted: omit the reward suffix when
+        # the DB write failed, so we never promise points the user can't see.
+        body = _success_text(
+            file_size_mb=file_size_mb, reward=reward if awarded is not None else None
         )
+        await interaction.followup.send(content=body, file=File(fp=file_path, filename=file_name))
+        # Collapse the "downloading..." placeholder into a brief checkmark so
+        # the channel doesn't keep two near-identical bot messages around.
+        with contextlib.suppress(Exception):
+            await interaction.edit_original_message(content="✅")
 
 
 # 註冊 Cog
