@@ -69,7 +69,7 @@ async def test_handle_streaming_allows_missing_output_token_details(
         assert output_tokens == 34
         return 0.0
 
-    async def fake_award(*, user_id: int, name: str, amount: int) -> None:
+    async def fake_award(user_id: int, name: str, amount: int) -> None:
         # Stub the DB-touching coroutine so the test doesn't write to data/economy.db.
         pass
 

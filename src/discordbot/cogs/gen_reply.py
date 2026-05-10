@@ -540,7 +540,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return input_rate * input_tokens + output_rate * output_tokens
 
     @staticmethod
-    async def _award_chat_points(*, user_id: int, name: str, amount: int) -> None:
+    async def _award_chat_points(user_id: int, name: str, amount: int) -> None:
         """Persists chat-reward points; swallows DB errors so they never abort the reply."""
         try:
             await add_balance(user_id=user_id, name=name, amount=amount)

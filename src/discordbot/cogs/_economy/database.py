@@ -84,7 +84,7 @@ async def _get_or_create(session: AsyncSession, user_id: int, name: str) -> User
     return account
 
 
-async def add_balance(*, user_id: int, name: str, amount: int) -> int:
+async def add_balance(user_id: int, name: str, amount: int) -> int:
     """Adds ``amount`` to the user balance; returns the new balance.
 
     Non-positive amounts no-op and return the existing balance so callers
@@ -100,7 +100,7 @@ async def add_balance(*, user_id: int, name: str, amount: int) -> int:
         return account.balance
 
 
-async def settle_game(*, user_id: int, name: str, delta: int) -> int:
+async def settle_game(user_id: int, name: str, delta: int) -> int:
     """Applies a signed game outcome (positive = win, negative = loss).
 
     The bet is *not* withdrawn upfront by callers — instead they pass the
@@ -122,7 +122,7 @@ async def settle_game(*, user_id: int, name: str, delta: int) -> int:
         return account.balance
 
 
-async def house_settle(*, user_id: int, name: str, delta: int) -> int:
+async def house_settle(user_id: int, name: str, delta: int) -> int:
     """Records a dealer-side settlement; balance may go negative.
 
     Used to track the bot's casino P&L over time. The dealer has effectively
@@ -142,7 +142,7 @@ async def house_settle(*, user_id: int, name: str, delta: int) -> int:
         return account.balance
 
 
-async def get_balance(*, user_id: int) -> int:
+async def get_balance(user_id: int) -> int:
     """Returns the current balance, or 0 if the user has never been seen."""
     async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
         account = await session.get(entity=UserAccount, ident=user_id)
@@ -151,7 +151,7 @@ async def get_balance(*, user_id: int) -> int:
         return account.balance
 
 
-async def get_account(*, user_id: int) -> tuple[str, int, int, int] | None:
+async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
     """Returns ``(name, balance, total_earned, total_spent)`` or ``None`` if unseen."""
     async with AsyncSession(bind=_engine, expire_on_commit=False) as session:
         account = await session.get(entity=UserAccount, ident=user_id)

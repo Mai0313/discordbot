@@ -42,7 +42,7 @@ class ThreadsCogs(commands.Cog):
             await message.add_reaction(emoji=emoji)
 
     @staticmethod
-    def _gradient_color(*, index: int, total: int) -> Color:
+    def _gradient_color(index: int, total: int) -> Color:
         """Greyscale gradient — lightest at index=0 (root), darkest at index=total-1 (leaf).
 
         Both ends stay inside [0x40, 0xC0] so every layer renders a visible stripe; pure black
