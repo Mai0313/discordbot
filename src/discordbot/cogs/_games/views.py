@@ -31,13 +31,14 @@ def _format_dealer_line(hand: BlackjackHand, hide_hole: bool) -> str:
     return f"{render_hand(cards=hand.dealer)} (= {hand.dealer_total()})"
 
 
-def build_in_progress_embed(
+def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every render input
     *,
     dealer_name: str,
     player_name: str,
     hand: BlackjackHand,
     balance_after_bet: int,
     dealer_line: str,
+    is_allin: bool = False,
 ) -> Embed:
     """Builds the embed shown while the player is still acting."""
     embed = Embed(
@@ -49,7 +50,8 @@ def build_in_progress_embed(
         value=_format_dealer_line(hand=hand, hide_hole=True),
         inline=False,
     )
-    embed.set_footer(text=f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}")
+    allin_note = " · 已自動 all-in" if is_allin else ""
+    embed.set_footer(text=f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}{allin_note}")
     return embed
 
 
@@ -64,6 +66,7 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     dealer_line: str,
     outcome_label: str,
     color: int,
+    is_allin: bool = False,
 ) -> Embed:
     """Builds the embed for a finished round."""
     embed = Embed(
@@ -76,7 +79,10 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
         inline=False,
     )
     delta_text = f"{delta:+,}" if delta != 0 else "0"
-    embed.set_footer(text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}")
+    allin_note = " · 已自動 all-in" if is_allin else ""
+    embed.set_footer(
+        text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}{allin_note}"
+    )
     return embed
 
 
@@ -102,6 +108,7 @@ class BlackjackView(ui.View):
         dealer_id: Discord user ID of the bot itself (used for the house ledger).
         dealer_name: Display name of the bot, surfaced in embeds and the house ledger row.
         balance_after_bet: Player's balance immediately after the bet was deducted.
+        is_allin: True when the original bet was clamped down to the player's balance.
         message: Reference to the rendered Discord message; set on first edit.
     """
 
@@ -116,6 +123,7 @@ class BlackjackView(ui.View):
         dealer_id: int,
         dealer_name: str,
         balance_after_bet: int,
+        is_allin: bool = False,
     ) -> None:
         """Initialises the view.
 
@@ -128,6 +136,7 @@ class BlackjackView(ui.View):
             dealer_id: Discord user ID of the bot itself (house ledger key).
             dealer_name: Bot's display name; shown in embeds and stored on the house ledger row.
             balance_after_bet: Player balance after the bet was withdrawn.
+            is_allin: True when the original bet was clamped down to ``balance``.
         """
         super().__init__(timeout=180)
         self.dealer = dealer
@@ -138,6 +147,7 @@ class BlackjackView(ui.View):
         self.dealer_id = dealer_id
         self.dealer_name = dealer_name
         self.balance_after_bet = balance_after_bet
+        self.is_allin = is_allin
         self.message: Message | None = None
 
     async def interaction_check(self, interaction: Interaction) -> bool:
@@ -178,6 +188,7 @@ class BlackjackView(ui.View):
             hand=self.hand,
             balance_after_bet=self.balance_after_bet,
             dealer_line=hint,
+            is_allin=self.is_allin,
         )
         await interaction.message.edit(embed=embed, view=self)
 
@@ -236,6 +247,7 @@ class BlackjackView(ui.View):
             dealer_line=banter,
             outcome_label=outcome_label,
             color=color,
+            is_allin=self.is_allin,
         )
         for child in self.children:
             if isinstance(child, ui.Button):

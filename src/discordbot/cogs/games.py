@@ -76,23 +76,29 @@ class GamesCogs(commands.Cog):
             return (0, "莊家")
         return (self.bot.user.id, self.bot.user.display_name)
 
-    async def _reject_invalid_bet(
+    async def _resolve_bet(
         self, *, interaction: Interaction, balance: int, bet: int
-    ) -> bool:
-        """Sends an embed and returns True when the bet should be rejected."""
-        if bet > balance:
+    ) -> int | None:
+        """Returns the effective bet; auto-clamps an over-bet to the player's balance.
+
+        When the requested bet exceeds the balance, the bet is silently
+        clamped to ``balance`` (auto all-in) so the round still happens.
+        Sends an embed and returns ``None`` only when the player has nothing
+        to wager (``balance <= 0``).
+        """
+        if balance <= 0:
             await interaction.followup.send(
                 embed=Embed(
                     title=":x: 餘額不足",
                     description=(
-                        f"你目前只有 **{balance:,}** 點, 想下注 **{bet:,}** 點。\n"
+                        f"你目前只有 **{balance:,}** 點, 沒有可下注的點數。\n"
                         "跟機器人聊天可以累積點數。"
                     ),
                     color=_ERROR_COLOR,
                 )
             )
-            return True
-        return False
+            return None
+        return min(bet, balance)
 
     @nextcord.slash_command(
         name="dice",
@@ -109,11 +115,11 @@ class GamesCogs(commands.Cog):
         interaction: Interaction,
         bet: int = SlashOption(
             name="bet",
-            description="How many points to wager (1 ~ your current balance).",
+            description="How many points to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: "下注的點數 (1 ~ 目前餘額)。",
-                Locale.ja: "賭けるポイント数 (1 〜 現在の残高)。",
+                Locale.zh_TW: "下注的點數 (超過餘額會自動 all-in)。",
+                Locale.ja: "賭けるポイント数 (残高を超えると自動 all-in)。",
             },
             required=True,
             min_value=1,
@@ -130,8 +136,11 @@ class GamesCogs(commands.Cog):
             return
 
         balance = await get_balance(user_id=interaction.user.id)
-        if await self._reject_invalid_bet(interaction=interaction, balance=balance, bet=bet):
+        resolved_bet = await self._resolve_bet(interaction=interaction, balance=balance, bet=bet)
+        if resolved_bet is None:
             return
+        is_allin = resolved_bet < bet
+        bet = resolved_bet
 
         dealer_id, dealer_name = self._dealer_identity()
 
@@ -152,7 +161,8 @@ class GamesCogs(commands.Cog):
         in_progress = Embed(
             title=":game_die: 比大小 - 下注", description=taunt, color=_DICE_IN_PROGRESS_COLOR
         )
-        in_progress.add_field(name="下注", value=f"{bet:,} 點", inline=True)
+        bet_value = f"{bet:,} 點 (已自動 all-in)" if is_allin else f"{bet:,} 點"
+        in_progress.add_field(name="下注", value=bet_value, inline=True)
         in_progress.add_field(name="下注後餘額", value=f"{balance_after_bet:,} 點", inline=True)
         in_progress.set_footer(text="正在搖骰子...")
         message = await interaction.followup.send(embed=in_progress, wait=True)
@@ -202,7 +212,10 @@ class GamesCogs(commands.Cog):
             name=dealer_name, value=render_rolls(rolls=result.dealer_rolls), inline=False
         )
         delta_text = f"{delta:+,}" if delta != 0 else "0"
-        final.set_footer(text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}")
+        allin_note = " · 已自動 all-in" if is_allin else ""
+        final.set_footer(
+            text=f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,}{allin_note}"
+        )
         await message.edit(embed=final)
 
     @nextcord.slash_command(
@@ -220,11 +233,11 @@ class GamesCogs(commands.Cog):
         interaction: Interaction,
         bet: int = SlashOption(
             name="bet",
-            description="How many points to wager (1 ~ your current balance).",
+            description="How many points to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: "下注的點數 (1 ~ 目前餘額)。",
-                Locale.ja: "賭けるポイント数 (1 〜 現在の残高)。",
+                Locale.zh_TW: "下注的點數 (超過餘額會自動 all-in)。",
+                Locale.ja: "賭けるポイント数 (残高を超えると自動 all-in)。",
             },
             required=True,
             min_value=1,
@@ -241,8 +254,11 @@ class GamesCogs(commands.Cog):
             return
 
         balance = await get_balance(user_id=interaction.user.id)
-        if await self._reject_invalid_bet(interaction=interaction, balance=balance, bet=bet):
+        resolved_bet = await self._resolve_bet(interaction=interaction, balance=balance, bet=bet)
+        if resolved_bet is None:
             return
+        is_allin = resolved_bet < bet
+        bet = resolved_bet
 
         dealer_id, dealer_name = self._dealer_identity()
 
@@ -304,6 +320,7 @@ class GamesCogs(commands.Cog):
                 dealer_line=banter,
                 outcome_label=outcome_label,
                 color=color,
+                is_allin=is_allin,
             )
             await interaction.followup.send(embed=embed)
             return
@@ -317,6 +334,7 @@ class GamesCogs(commands.Cog):
             dealer_id=dealer_id,
             dealer_name=dealer_name,
             balance_after_bet=balance_after_bet,
+            is_allin=is_allin,
         )
         embed = build_in_progress_embed(
             dealer_name=dealer_name,
@@ -324,6 +342,7 @@ class GamesCogs(commands.Cog):
             hand=hand,
             balance_after_bet=balance_after_bet,
             dealer_line=taunt,
+            is_allin=is_allin,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
         view.message = message
