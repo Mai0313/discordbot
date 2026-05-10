@@ -41,9 +41,7 @@ def build_in_progress_embed(
 ) -> Embed:
     """Builds the embed shown while the player is still acting."""
     embed = Embed(
-        title=":black_joker: 21 點 - 進行中",
-        description=f"{dealer_name}：{dealer_line}",
-        color=_IN_PROGRESS_COLOR,
+        title=":black_joker: 21 點 - 進行中", description=dealer_line, color=_IN_PROGRESS_COLOR
     )
     embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
@@ -69,9 +67,7 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
 ) -> Embed:
     """Builds the embed for a finished round."""
     embed = Embed(
-        title=f":black_joker: 21 點 - {outcome_label}",
-        description=f"{dealer_name}：{dealer_line}",
-        color=color,
+        title=f":black_joker: 21 點 - {outcome_label}", description=dealer_line, color=color
     )
     embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
     embed.add_field(

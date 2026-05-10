@@ -150,9 +150,7 @@ class GamesCogs(commands.Cog):
         )
 
         in_progress = Embed(
-            title=":game_die: 比大小 - 下注",
-            description=f"{dealer_name}：{taunt}",
-            color=_DICE_IN_PROGRESS_COLOR,
+            title=":game_die: 比大小 - 下注", description=taunt, color=_DICE_IN_PROGRESS_COLOR
         )
         in_progress.add_field(name="下注", value=f"{bet:,} 點", inline=True)
         in_progress.add_field(name="下注後餘額", value=f"{balance_after_bet:,} 點", inline=True)
@@ -193,9 +191,7 @@ class GamesCogs(commands.Cog):
         )
 
         final = Embed(
-            title=f":game_die: 比大小 - {outcome_label}",
-            description=f"{dealer_name}：{banter}",
-            color=color,
+            title=f":game_die: 比大小 - {outcome_label}", description=banter, color=color
         )
         final.add_field(
             name=f"{interaction.user.display_name}",
