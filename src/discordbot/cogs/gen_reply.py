@@ -123,7 +123,7 @@ class ReplyGeneratorCogs(commands.Cog):
             Slow-path model settings for reply and summary generation.
         """
         now = datetime.now(UTC)
-        is_peak = now.weekday() < 5 and 8 <= now.hour < 15
+        is_peak = now.weekday() < 5 and 8 <= now.hour < 16
         if is_peak:
             return ModelSettings(name="gemini-3.1-flash-lite-preview", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
