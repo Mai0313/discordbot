@@ -62,11 +62,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="leaderboard",
-        description="Show the top point holders on this server.",
+        description="Show the global top point holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: "顯示伺服器內點數前 10 名。",
-            Locale.ja: "サーバーのポイントトップ10を表示します。",
+            Locale.zh_TW: "顯示 global 點數前 10 名。",
+            Locale.ja: "グローバルポイントトップ10を表示します。",
         },
         nsfw=False,
     )
