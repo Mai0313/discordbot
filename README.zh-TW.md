@@ -19,7 +19,7 @@
 
 </div>
 
-功能豐富的 Discord 機器人，具備 AI 智能對話、圖片與影片生成、內容解析、多平台影片下載、點數系統與賭場小遊戲，以及楓之谷遊戲資料庫。支援多國語言。
+功能豐富的 Discord 機器人，具備 AI 智能對話、圖片與影片生成、內容解析、多平台影片下載、虛擬歡樂豆系統與賭場小遊戲，以及楓之谷遊戲資料庫。支援多國語言。
 
 ## 功能
 
@@ -35,7 +35,7 @@
 - **網路搜尋與 URL 讀取** — 機器人會自動使用模型對應的工具（Gemini 的 `googleSearch` + `urlContext`、Claude 的 `web_search` + `web_fetch`，或 OpenAI 的 `web_search`）取得最新資訊
 - **使用者標記** — 請機器人通知或轉告近期對話中的其他成員（例如「幫我跟 @alice 說我會晚到」），只要該成員曾出現在近期聊天紀錄中即可被標記
 - **進度反應** — 以 emoji reaction 顯示即時處理狀態（🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗，模型有用到 web search 時加 🌐，錯誤時顯示 ❌）
-- **回覆附註** — 每次 AI 回覆會在末端以 Discord 引用格式（`>`）顯示 model 名稱、input/output token 數量、預估 USD 費用（從上游 LiteLLM 的 price table 計算，首次查詢時下載並快取在本機），以及這一輪賺到的點數
+- **回覆附註** — 每次 AI 回覆會在末端以 Discord 引用格式（`>`）顯示 model 名稱、input/output token 數量、預估 USD 費用（從上游 LiteLLM 的 price table 計算，首次查詢時下載並快取在本機），以及這一輪賺到的虛擬歡樂豆
 - **自動解除 timeout** — 若有 moderator 把機器人 timeout，機器人會自動解除 timeout、從 audit log 識別出對方是誰，並在最近有人聊天的頻道回一句 AI 生成的回覆
 
 ### Threads 解析
@@ -51,13 +51,13 @@
 - 檔案超過 Discord 25 MB 限制時自動降為低畫質
 - Facebook 分享連結（`facebook.com/share/r/...`）會自動展開
 
-### 點數系統與賭場小遊戲
+### 虛擬歡樂豆系統與賭場小遊戲
 
-機器人會用本機 SQLite (`data/economy.db`) 持久保存每位 Discord 使用者的點數餘額，**點數跨伺服器共用**，同一個帳號在任何 guild 看到的餘額都一樣。
+機器人會用本機 SQLite (`data/economy.db`) 持久保存每位 Discord 使用者的虛擬歡樂豆餘額，**虛擬歡樂豆跨伺服器共用**，同一個帳號在任何 guild 看到的餘額都一樣。
 
-**獲得點數：** 每次 AI 串流回覆會以 `total_tokens` (input + output) 為點數獎勵，實際數字會顯示在回覆 footer。目前只有跟機器人聊天會給點數 — Threads 解析與 `/download_video` 刻意都不付點。
+**獲得虛擬歡樂豆：** 每次 AI 串流回覆會以 `total_tokens` (input + output) 為虛擬歡樂豆獎勵，實際數字會顯示在回覆 footer。目前只有跟機器人聊天會給虛擬歡樂豆 — Threads 解析與 `/download_video` 刻意都不付。
 
-**花用點數：** 賭場遊戲會先扣下注額，結算時再依結果回補。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 時才會拒絕開局。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
+**花用虛擬歡樂豆：** 賭場遊戲會先扣下注額，結算時再依結果回補。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 時才會拒絕開局。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
 
 | Slash command       | 玩法                                                                                                                   |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -66,12 +66,12 @@
 
 **21 點提前結算規則：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌。玩家起手 Blackjack 會直接贏並賠 1.5 倍；莊家起手 Blackjack 會直接結算，除非玩家同時也是 Blackjack，否則玩家輸。這不是任意湊到 21 點都會提前結束，只有起手 natural Blackjack 才會跳過 Hit / Stand。
 
-**管理點數：**
+**管理虛擬歡樂豆：**
 
 - `/balance` — 查看自己的餘額。
 - `/leaderboard` — 機器人所有伺服器的全域 Top 10（莊家自己的帳戶會被排除）。
-- `/give <成員> <金額>` — 把點數轉給其他人（不能轉給自己或機器人）。
-- `/house` — 查看莊家在 `/dice` 與 `/blackjack` 累積的輸贏。莊家資金無上限，所以 ledger balance 可以是負數（代表整體玩家從莊家手上贏走的點數比較多）。
+- `/give <成員> <金額>` — 把虛擬歡樂豆轉給其他人（不能轉給自己或機器人）。
+- `/house` — 查看莊家在 `/dice` 與 `/blackjack` 累積的輸贏。莊家資金無上限，所以 ledger balance 可以是負數（代表整體玩家從莊家手上贏走的虛擬歡樂豆比較多）。
 
 ### 楓之谷 Artale 資料庫
 
@@ -96,9 +96,9 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 | `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                        |
 | _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                            |
 | `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片              |
-| `/balance`                      | 查看你目前的點數餘額（跨伺服器）                                           |
-| `/leaderboard`                  | 全域點數 Top 10                                                            |
-| `/give <成員> <點數>`           | 把點數轉給其他成員                                                         |
+| `/balance`                      | 查看你目前的虛擬歡樂豆餘額（跨伺服器）                                     |
+| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                      |
+| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                   |
 | `/dice <下注>`                  | 跟 AI 莊家擲三顆骰子比大小                                                 |
 | `/blackjack <下注>`             | 跟 AI 莊家玩一局 21 點（含 Hit / Stand button；起手 Blackjack 會直接結算） |
 | `/house`                        | 查看莊家在 `/dice` 與 `/blackjack` 累積的輸贏                              |
@@ -197,7 +197,7 @@ DISCORD_TEST_SERVER_ID=你的測試伺服器id
 本機器人遵守 Discord 服務條款與開發者政策。
 
 - **訊息記錄**：機器人所在頻道的訊息會記錄到本機 SQLite (`data/messages.db`)。資料僅存在你的伺服器，不會外傳。
-- **點數資料庫**：每位使用者的點數餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，只記錄 Discord user ID、最近一次看到的 username，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
+- **虛擬歡樂豆資料庫**：每位使用者的虛擬歡樂豆餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，只記錄 Discord user ID、最近一次看到的 username，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
 - **API 呼叫**：文字、圖片、支援的檔案附件、內嵌媒體，以及發送者身份（目前對話上下文中參與者的 display name、username 與 Discord user ID）僅在機器人需要回覆時才會發送至設定的 LLM API，例如在 guild 被標記或收到 DM 時。user ID 會一併傳入，讓機器人在被要求時可以標記其他成員。不會與其他第三方分享資料。
 - **權限**：機器人需要 Message Content 意圖用於標記聊天和可選的本地記錄。斜線指令與嵌入/附件權限用於互動功能。
 - **停用**：伺服器擁有者可透過調整機器人設定來停用訊息記錄。

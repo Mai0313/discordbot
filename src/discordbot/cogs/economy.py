@@ -1,10 +1,11 @@
-"""Slash commands that surface point balances, the leaderboard, and peer transfers."""
+"""Slash commands that surface point balances, the leaderboard, and transfers."""
 
 import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.cogs._economy.database import top_n, transfer, get_account, get_balance
+from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
@@ -33,11 +34,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="balance",
-        description="Check your current point balance.",
+        description=f"Check your current {CURRENCY_NAME} balance.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: "查詢你目前的點數餘額。",
-            Locale.ja: "現在のポイント残高を確認します。",
+            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額。",
+            Locale.ja: f"現在の{CURRENCY_NAME}残高を確認します。",
         },
         nsfw=False,
     )
@@ -52,21 +53,23 @@ class EconomyCogs(commands.Cog):
             return
         amount = await get_balance(user_id=interaction.user.id)
         embed = Embed(
-            title=":coin: 點數餘額",
-            description=f"{interaction.user.mention} 目前持有 **{amount:,}** 點。",
+            title=f":coin: {CURRENCY_NAME}餘額",
+            description=f"{interaction.user.mention} 目前持有 **{currency_text(amount=amount)}**。",
             color=_BALANCE_COLOR,
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text="跟機器人聊天可以累積點數, 輸入 /dice 或 /blackjack 來下注。")
+        embed.set_footer(
+            text=f"跟機器人聊天可以累積{CURRENCY_NAME}, 輸入 /dice 或 /blackjack 來下注。"
+        )
         await interaction.followup.send(embed=embed)
 
     @nextcord.slash_command(
         name="leaderboard",
-        description="Show the global top point holders.",
+        description=f"Show the global top {CURRENCY_NAME} holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: "顯示 global 點數前 10 名。",
-            Locale.ja: "グローバルポイントトップ10を表示します。",
+            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}前 10 名。",
+            Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
         },
         nsfw=False,
     )
@@ -83,8 +86,8 @@ class EconomyCogs(commands.Cog):
         rows = await top_n(limit=_LEADERBOARD_LIMIT, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
-                title=":trophy: 點數排行榜",
-                description="目前還沒有人有點數。",
+                title=f":trophy: {CURRENCY_NAME}排行榜",
+                description=f"目前還沒有人有{CURRENCY_NAME}。",
                 color=_LEADERBOARD_COLOR,
             )
             await interaction.followup.send(embed=embed)
@@ -95,20 +98,22 @@ class EconomyCogs(commands.Cog):
             prefix = (
                 _LEADERBOARD_MEDALS[index] if index < len(_LEADERBOARD_MEDALS) else f"#{index + 1}"
             )
-            lines.append(f"{prefix} **{name}** — {amount:,} 點")
+            lines.append(f"{prefix} **{name}** — {currency_text(amount=amount)}")
 
         embed = Embed(
-            title=":trophy: 點數排行榜", description="\n".join(lines), color=_LEADERBOARD_COLOR
+            title=f":trophy: {CURRENCY_NAME}排行榜",
+            description="\n".join(lines),
+            color=_LEADERBOARD_COLOR,
         )
         await interaction.followup.send(embed=embed)
 
     @nextcord.slash_command(
         name="give",
-        description="Transfer your points to another member.",
-        name_localizations={Locale.zh_TW: "轉點", Locale.ja: "ポイント送付"},
+        description=f"Transfer your {CURRENCY_NAME} to another member.",
+        name_localizations={Locale.zh_TW: "轉虛擬歡樂豆", Locale.ja: "虛擬歡樂豆送付"},
         description_localizations={
-            Locale.zh_TW: "把你的點數轉給其他成員。",
-            Locale.ja: "他のメンバーにポイントを送ります。",
+            Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員。",
+            Locale.ja: f"他のメンバーに{CURRENCY_NAME}を送ります。",
         },
         nsfw=False,
     )
@@ -117,21 +122,21 @@ class EconomyCogs(commands.Cog):
         interaction: Interaction,
         member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
             name="member",
-            description="The member to receive the points.",
+            description=f"The member to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "受取人"},
             description_localizations={
-                Locale.zh_TW: "要接收點數的成員。",
-                Locale.ja: "ポイントを受け取るメンバー。",
+                Locale.zh_TW: f"要接收{CURRENCY_NAME}的成員。",
+                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバー。",
             },
             required=True,
         ),
         amount: int = SlashOption(
             name="amount",
-            description="How many points to transfer (must be positive).",
-            name_localizations={Locale.zh_TW: "點數", Locale.ja: "ポイント数"},
+            description=f"How much {CURRENCY_NAME} to transfer (must be positive).",
+            name_localizations={Locale.zh_TW: "虛擬歡樂豆", Locale.ja: "虛擬歡樂豆"},
             description_localizations={
-                Locale.zh_TW: "要轉的點數 (必須大於 0)。",
-                Locale.ja: "送るポイント数 (1以上)。",
+                Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)。",
+                Locale.ja: f"送る{CURRENCY_NAME} (1以上)。",
             },
             required=True,
             min_value=1,
@@ -151,13 +156,17 @@ class EconomyCogs(commands.Cog):
         if member.bot:
             await interaction.followup.send(
                 embed=Embed(
-                    title=":x: 轉點失敗", description="不能把點數轉給機器人。", color=_ERROR_COLOR
+                    title=":x: 轉虛擬歡樂豆失敗",
+                    description=f"不能把{CURRENCY_NAME}轉給機器人。",
+                    color=_ERROR_COLOR,
                 )
             )
             return
         if member.id == interaction.user.id:
             await interaction.followup.send(
-                embed=Embed(title=":x: 轉點失敗", description="不能轉給自己。", color=_ERROR_COLOR)
+                embed=Embed(
+                    title=":x: 轉虛擬歡樂豆失敗", description="不能轉給自己。", color=_ERROR_COLOR
+                )
             )
             return
 
@@ -172,9 +181,10 @@ class EconomyCogs(commands.Cog):
             balance_now = await get_balance(user_id=interaction.user.id)
             await interaction.followup.send(
                 embed=Embed(
-                    title=":x: 轉點失敗",
+                    title=":x: 轉虛擬歡樂豆失敗",
                     description=(
-                        f"餘額不足, 你目前只有 **{balance_now:,}** 點, 想轉 **{amount:,}** 點。"
+                        f"餘額不足, 你目前只有 **{currency_text(amount=balance_now)}**, "
+                        f"想轉 **{currency_text(amount=amount)}**。"
                     ),
                     color=_ERROR_COLOR,
                 )
@@ -184,11 +194,12 @@ class EconomyCogs(commands.Cog):
         sender_balance = await get_balance(user_id=interaction.user.id)
         receiver_balance = await get_balance(user_id=member.id)
         embed = Embed(
-            title=":handshake: 轉點成功",
+            title=":handshake: 轉虛擬歡樂豆成功",
             description=(
-                f"{interaction.user.mention} → {member.mention}: **{amount:,}** 點\n"
-                f"你剩下 **{sender_balance:,}** 點, {member.display_name} 現在有 "
-                f"**{receiver_balance:,}** 點。"
+                f"{interaction.user.mention} → {member.mention}: "
+                f"**{currency_text(amount=amount)}**\n"
+                f"你剩下 **{currency_text(amount=sender_balance)}**, {member.display_name} 現在有 "
+                f"**{currency_text(amount=receiver_balance)}**。"
             ),
             color=_TRANSFER_COLOR,
         )
@@ -232,17 +243,19 @@ class EconomyCogs(commands.Cog):
             name = name or account[0]
 
         if balance > 0:
-            verdict = f"莊家目前淨贏 **{balance:,}** 點。"
+            verdict = f"莊家目前淨贏 **{currency_text(amount=balance)}**。"
         elif balance < 0:
-            verdict = f"莊家目前淨虧 **{abs(balance):,}** 點。"
+            verdict = f"莊家目前淨虧 **{currency_text(amount=abs(balance))}**。"
         else:
             verdict = "莊家目前剛好打平。"
 
         embed = Embed(
             title=f":game_die: {name} - 莊家戰績", description=verdict, color=_HOUSE_COLOR
         )
-        embed.add_field(name="莊家從玩家身上贏到", value=f"{total_earned:,} 點", inline=True)
-        embed.add_field(name="莊家賠給玩家", value=f"{total_spent:,} 點", inline=True)
+        embed.add_field(
+            name="莊家從玩家身上贏到", value=currency_text(amount=total_earned), inline=True
+        )
+        embed.add_field(name="莊家賠給玩家", value=currency_text(amount=total_spent), inline=True)
         embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負。")
         await interaction.followup.send(embed=embed)
 

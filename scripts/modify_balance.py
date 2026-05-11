@@ -17,6 +17,7 @@ from rich.console import Console
 
 from discordbot.cogs._economy import database
 from discordbot.cogs._economy.database import UserAccount
+from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 console = Console()
 
@@ -38,7 +39,7 @@ class BalanceChange:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Adjust a Discord user's economy balance by a signed delta."
+        description=f"Adjust a Discord user's {CURRENCY_NAME} balance by a signed delta."
     )
     parser.add_argument("user_id", type=int, help="Discord user ID to modify.")
     parser.add_argument(
@@ -148,10 +149,10 @@ def _print_change(change: BalanceChange) -> None:
     console.print(f"user_id: {change.user_id}")
     console.print(f"name: {change.name}")
     console.print(f"created: {change.created}")
-    console.print(f"before: {change.before:,}")
-    console.print(f"requested_delta: {change.requested_delta:+,}")
-    console.print(f"applied_delta: {change.applied_delta:+,}")
-    console.print(f"after: {change.after:,}")
+    console.print(f"before: {currency_text(amount=change.before)}")
+    console.print(f"requested_delta: {currency_text(amount=change.requested_delta, signed=True)}")
+    console.print(f"applied_delta: {currency_text(amount=change.applied_delta, signed=True)}")
+    console.print(f"after: {currency_text(amount=change.after)}")
 
 
 async def _async_main(argv: Sequence[str] | None = None) -> None:

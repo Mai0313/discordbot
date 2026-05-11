@@ -47,7 +47,8 @@ src/discordbot/
 │   │   └── prompts.py       # UNMUTE_PROMPT
 │   ├── economy.py           # /balance, /leaderboard, /give, /house slash commands
 │   ├── _economy/
-│   │   └── database.py      # Per-user point balance store (SQLite) — native async SQLAlchemy
+│   │   ├── database.py      # Per-user 虛擬歡樂豆 balance store (SQLite) — native async SQLAlchemy
+│   │   └── presentation.py  # Shared 虛擬歡樂豆 display helpers
 │   ├── games.py             # /dice and /blackjack slash commands (single-player vs AI dealer)
 │   ├── _games/
 │   │   ├── blackjack.py     # Pure Blackjack rules: BlackjackHand, hand_value, settle, render_hand
@@ -71,9 +72,9 @@ src/discordbot/
 │   │   ├── models.py        # Pydantic data models
 │   │   ├── service.py       # Data loading, search logic, caching
 │   │   └── views.py         # Interactive UI components (dropdown select)
-│   ├── parse_threads.py     # Threads.net auto-parser (no points awarded)
+│   ├── parse_threads.py     # Threads.net auto-parser (no 虛擬歡樂豆 awarded)
 │   ├── template.py          # /ping and utility reactions
-│   └── video.py             # /download_video slash command (file delivered as a separate followup; no points awarded)
+│   └── video.py             # /download_video slash command (file delivered as a separate followup; no 虛擬歡樂豆 awarded)
 ├── typings/                 # Pydantic configuration & shared models
 │   ├── config.py            # DiscordConfig (DISCORD_BOT_TOKEN, DISCORD_TEST_SERVER_ID)
 │   ├── llm.py               # LLMConfig (OPENAI_BASE_URL, OPENAI_API_KEY)
@@ -108,7 +109,7 @@ data/
 ├── downloads/               # Temporary video download storage
 ├── threads/                 # Downloaded Threads.net media
 ├── messages.db              # SQLite message log written by cogs/log_msg.py
-├── economy.db               # SQLite point-balance store (cross-server, no guild_id) written by cogs/_economy/database.py
+├── economy.db               # SQLite 虛擬歡樂豆 balance store (cross-server, no guild_id) written by cogs/_economy/database.py
 └── model_prices.json        # Cached LiteLLM price table fetched by utils/model_pricing.py
 ```
 
@@ -119,7 +120,7 @@ data/
 - **Config**: Pydantic models + `pydantic-settings` load from `.env` automatically (`DiscordConfig` in `typings/config.py`, `LLMConfig` in `typings/llm.py`). Shared model abstractions like `ModelSettings` and `RouteDecision` live in `typings/models.py`.
 - **Logging**: `setup_logging()` in `discordbot/__init__.py` configures `logfire` (local console only, `send_to_logfire=False`) and tees stdout to `./data/logs/<timestamp>.log` for each run. `nextcord.state` logs are forwarded into logfire too.
 - **LLM client**: Each cog that talks to the model owns a `cached_property AsyncOpenAI` client (`base_url=OPENAI_BASE_URL`, `api_key=OPENAI_API_KEY`) — currently `gen_reply`, `auto_unmute`, and `games` (whose `DealerAI` reuses the cog's client for dealer banter). The endpoint is OpenAI-compatible, typically a [Litellm](https://github.com/BerriAI/litellm) proxy fronting Gemini / Claude / OpenAI / etc., so model swaps are just a string change.
-- **Economy**: Per-user point balances live in a separate SQLite (`data/economy.db`) managed by `cogs/_economy/database.py`. The schema is keyed by Discord `user_id` only — **no `guild_id`**, so balances and the `/leaderboard` are intentionally cross-server. DB access is native async SQLAlchemy with `AsyncSession`; there are no sync ORM helpers or `asyncio.to_thread` wrappers. Only `gen_reply.py` pays points (one per token) — Threads, video, template, and maplestory deliberately do not pay.
+- **Economy**: Per-user 虛擬歡樂豆 balances live in a separate SQLite (`data/economy.db`) managed by `cogs/_economy/database.py`. The schema is keyed by Discord `user_id` only — **no `guild_id`**, so balances and the `/leaderboard` are intentionally cross-server. DB access is native async SQLAlchemy with `AsyncSession`; there are no sync ORM helpers or `asyncio.to_thread` wrappers. Only `gen_reply.py` pays 虛擬歡樂豆 (one per token) — Threads, video, template, and maplestory deliberately do not pay.
 - **Game flow**: `/dice` and `/blackjack` (in `cogs/games.py`) withdraw the bet up-front via `place_bet(...)`, which auto-clamps over-bets to all-in and rejects only zero-balance users. Finished rounds go through `cogs/_games/settlement.py:settle_wager(...)`, which credits `bet + player_delta` back to the player and mirrors `-player_delta` into the bot's house-ledger row via `house_settle(...)`. `BlackjackView` (`cogs/_games/views.py`) drives Hit/Stand buttons, auto-stands on timeout, and uses a lock plus `_settled` flag so concurrent finalization cannot pay the same hand twice. `DealerAI` (`cogs/_games/dealer.py`) wraps the fast model for `taunt_bet` / `settle` / `hint` banter; every entry point falls back to a hard-coded line on LLM failure so the round always resolves. The "dealer" name shown in embeds and the house-ledger row is taken from `bot.user.display_name`.
 - **Game presentation**: `cogs/_games/presentation.py` owns shared colors, outcome labels, auto all-in wording, bet field text, and the final settlement footer. The footer's `莊家餘額` is the dealer ledger balance, not this-round profit, so positive values are formatted without a leading `+`; only the player's round delta is signed.
 - **Slash command sync**: All slash commands are global (no `guild_ids`, no `force_global`). Registration goes through `sync_all_application_commands()` once on the first `on_ready`. Cogs are loaded synchronously in `DiscordBot.__init__` so application commands are populated before the gateway connects, and every cog's `setup` is `def setup(bot)` (sync) — `async def setup` would be fire-and-forgotten by `load_extension` and the first sync would see zero commands.
@@ -186,7 +187,7 @@ uv run pytest -vv
 - **Economy DB** (`tests/test_economy.py`): per-test isolated SQLite via monkeypatched `_engine`; covers add / settle clamping / transfer atomicity / leaderboard ordering with exclude / `house_settle` allowing negative balances / shared wager settlement / duplicate Blackjack finalization guard
 - **Blackjack rules** (`tests/test_blackjack.py`): hand-value math (aces, face cards, double-ace demotion), natural Blackjack pays 1.5x, double-Blackjack push, player-bust, dealer-bust, dealer keeps drawing below 17, and dealer hint visibility matching the shown card
 - **Dice** (`tests/test_dice.py`): seeded RNG determinism, face range, outcome ↔ totals invariant, and settlement footer formatting
-- **Streaming footer** (`tests/test_gen_reply.py`): regression test for `_handle_streaming` building the `+N 點數` reward suffix and tolerating LiteLLM `output_tokens_details=null`
+- **Streaming footer** (`tests/test_gen_reply.py`): regression test for `_handle_streaming` building the `+N 虛擬歡樂豆` reward suffix and tolerating LiteLLM `output_tokens_details=null`
 
 ## CI/CD
 

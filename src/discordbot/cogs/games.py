@@ -29,6 +29,7 @@ from discordbot.cogs._games.presentation import (
     dice_outcome_presentation,
     blackjack_outcome_presentation,
 )
+from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 # Short pause between the "place your bet" embed and the dice reveal so the
 # moment lands. Long enough to feel deliberate, short enough not to annoy.
@@ -114,8 +115,9 @@ class GamesCogs(commands.Cog):
                 embed=Embed(
                     title=":x: 餘額不足",
                     description=(
-                        f"你目前只有 **{balance:,}** 點, 沒有可下注的點數。\n"
-                        "跟機器人聊天可以累積點數。"
+                        f"你目前只有 **{currency_text(amount=balance)}**, "
+                        f"沒有可下注的{CURRENCY_NAME}。\n"
+                        f"跟機器人聊天可以累積{CURRENCY_NAME}。"
                     ),
                     color=ERROR_COLOR,
                 )
@@ -138,11 +140,11 @@ class GamesCogs(commands.Cog):
         interaction: Interaction,
         bet: int = SlashOption(
             name="bet",
-            description="How many points to wager (auto all-ins if over your balance).",
+            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: "下注的點數 (超過餘額會自動 all-in)。",
-                Locale.ja: "賭けるポイント数 (残高を超えると自動 all-in)。",
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
             },
             required=True,
             min_value=1,
@@ -181,7 +183,7 @@ class GamesCogs(commands.Cog):
             name="下注", value=bet_field_value(bet=bet, is_allin=is_allin), inline=True
         )
         in_progress.add_field(
-            name="下注後餘額", value=f"{placed_bet.balance_after:,} 點", inline=True
+            name="下注後餘額", value=currency_text(amount=placed_bet.balance_after), inline=True
         )
         in_progress.set_footer(text="正在搖骰子...")
         message = await interaction.followup.send(embed=in_progress, wait=True)
@@ -254,11 +256,11 @@ class GamesCogs(commands.Cog):
         interaction: Interaction,
         bet: int = SlashOption(
             name="bet",
-            description="How many points to wager (auto all-ins if over your balance).",
+            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: "下注的點數 (超過餘額會自動 all-in)。",
-                Locale.ja: "賭けるポイント数 (残高を超えると自動 all-in)。",
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
             },
             required=True,
             min_value=1,

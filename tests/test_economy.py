@@ -143,7 +143,7 @@ async def test_get_balance_unknown_user_returns_zero() -> None:
     assert await database.get_balance(user_id=999) == 0
 
 
-async def test_transfer_moves_points_between_users() -> None:
+async def test_transfer_moves_currency_between_users() -> None:
     """Successful transfer debits sender and credits receiver atomically."""
     await database.add_balance(user_id=1, name="alice", amount=200)
     ok = await database.transfer(

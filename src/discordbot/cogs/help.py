@@ -2,6 +2,8 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
+from discordbot.cogs._economy.presentation import CURRENCY_NAME
+
 _HELP_CONTENT = {
     "default": {
         "title": "Bot Guide",
@@ -33,10 +35,10 @@ _HELP_CONTENT = {
             "`/maple_item` · `/maple_stats`"
         ),
         "points": (
-            "**Points**\n"
-            "Earn points by chatting with me, then use them across servers.\n"
+            f"**{CURRENCY_NAME}**\n"
+            f"Earn {CURRENCY_NAME} by chatting with me, then use them across servers.\n"
             "`/balance` check your balance · `/leaderboard` show the global top 10\n"
-            "`/give` transfer points · `/house` show the dealer's running P&L"
+            f"`/give` transfer {CURRENCY_NAME} · `/house` show the dealer's running P&L"
         ),
         "games": (
             "**Games**\n"
@@ -75,10 +77,10 @@ _HELP_CONTENT = {
             "`/maple_item` · `/maple_stats`"
         ),
         "points": (
-            "**點數**\n"
-            "跟我聊天可以累積點數，點數跨 server 共用。\n"
+            f"**{CURRENCY_NAME}**\n"
+            f"跟我聊天可以累積{CURRENCY_NAME}，{CURRENCY_NAME}跨 server 共用。\n"
             "`/balance` 查餘額 · `/leaderboard` 看 global 前 10 名\n"
-            "`/give` 轉點 · `/house` 看莊家累積 P&L"
+            "`/give` 轉虛擬歡樂豆 · `/house` 看莊家累積 P&L"
         ),
         "games": (
             "**小遊戲**\n"
@@ -117,10 +119,10 @@ _HELP_CONTENT = {
             "`/maple_item` · `/maple_stats`"
         ),
         "points": (
-            "**ポイント**\n"
-            "チャットでポイントを獲得し、サーバーをまたいで使えます。\n"
+            f"**{CURRENCY_NAME}**\n"
+            f"チャットで{CURRENCY_NAME}を獲得し、サーバーをまたいで使えます。\n"
             "`/balance` 残高確認 · `/leaderboard` グローバルトップ10\n"
-            "`/give` ポイント送付 · `/house` ディーラーの累計損益"
+            f"`/give` {CURRENCY_NAME}送付 · `/house` ディーラーの累計損益"
         ),
         "games": (
             "**ゲーム**\n"

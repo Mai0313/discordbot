@@ -14,6 +14,7 @@ from discordbot.cogs._games.presentation import (
     settlement_footer,
     blackjack_outcome_presentation,
 )
+from discordbot.cogs._economy.presentation import currency_text
 
 
 def _format_player_line(hand: BlackjackHand) -> str:
@@ -61,7 +62,8 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     )
     embed.set_footer(
         text=(
-            f"下注 {hand.bet:,} 點 · 下注後餘額 {balance_after_bet:,}"
+            f"下注 {currency_text(amount=hand.bet)} · "
+            f"下注後餘額 {currency_text(amount=balance_after_bet)}"
             f"{allin_note(is_allin=is_allin)}"
         )
     )

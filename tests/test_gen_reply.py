@@ -81,6 +81,8 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     result = await cog._handle_streaming(responses=_stream_events(), message=message)
 
-    expected = "hello from stream\n\n-# gemini-pro-latest · ⬆ 12 ⬇ 34 · $0.00000000 · +46 點數"
+    expected = (
+        "hello from stream\n\n-# gemini-pro-latest · ⬆ 12 ⬇ 34 · $0.00000000 · +46 虛擬歡樂豆"
+    )
     assert result == expected
     assert message.replies[0].content == result

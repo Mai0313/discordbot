@@ -50,5 +50,5 @@ def test_settlement_footer_does_not_prefix_positive_house_balance() -> None:
     footer = settlement_footer(
         bet=100, delta=-100, new_balance=500, house_balance=1_200, is_allin=False
     )
-    assert "莊家餘額 1,200" in footer
-    assert "莊家餘額 +1,200" not in footer
+    assert "莊家餘額 1,200 虛擬歡樂豆" in footer
+    assert "莊家餘額 +1,200 虛擬歡樂豆" not in footer

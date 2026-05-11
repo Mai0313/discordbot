@@ -12,6 +12,7 @@ from discordbot.cogs._games.prompts import (
     DEALER_SETTLE_PROMPT,
     DEALER_TAUNT_BET_PROMPT,
 )
+from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 GameKind = Literal["dice", "blackjack"]
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
@@ -89,8 +90,8 @@ class DealerAI:
         user_text = (
             f"遊戲: {game_label}\n"
             f"玩家: {player_name}\n"
-            f"下注金額: {bet}\n"
-            f"下注後剩餘餘額: {balance_after_bet}"
+            f"下注金額 ({CURRENCY_NAME}): {bet}\n"
+            f"下注後剩餘餘額 ({CURRENCY_NAME}): {balance_after_bet}"
         )
         return await self._ask(
             instructions=DEALER_TAUNT_BET_PROMPT,
@@ -147,10 +148,10 @@ class DealerAI:
         user_text = (
             f"遊戲: {game_label}\n"
             f"玩家: {player_name}\n"
-            f"下注金額: {bet}\n"
+            f"下注金額 ({CURRENCY_NAME}): {bet}\n"
             f"結果: {outcome_label}\n"
-            f"玩家本局淨變動: {delta:+d} (正為贏, 負為輸)\n"
-            f"玩家結算後餘額: {new_balance}\n"
+            f"玩家本局淨變動 ({CURRENCY_NAME}): {delta:+d} (正為贏, 負為輸)\n"
+            f"玩家結算後餘額 ({CURRENCY_NAME}): {new_balance}\n"
             f"局面細節: {detail}"
         )
         return await self._ask(

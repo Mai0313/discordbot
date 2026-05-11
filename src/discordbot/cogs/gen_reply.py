@@ -35,6 +35,7 @@ from discordbot.cogs._gen_reply.prompts import (
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
 )
+from discordbot.cogs._economy.presentation import currency_text
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
@@ -625,9 +626,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         if new_balance is not None:
-            balance_text = f"{new_balance:,} (+{total_tokens:,}) 點"
+            balance_text = (
+                f"{currency_text(amount=new_balance)} "
+                f"({currency_text(amount=total_tokens, signed=True)})"
+            )
         else:
-            balance_text = f"+{total_tokens:,} 點數"
+            balance_text = currency_text(amount=total_tokens, signed=True)
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
         stored_content += usage_footer
 

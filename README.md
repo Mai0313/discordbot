@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a points economy with casino mini-games, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with casino mini-games, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -35,7 +35,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 - **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if the model used web search, or ❌ on error)
-- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally), and how many points the user just earned this turn
+- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally), and how much 虛擬歡樂豆 the user just earned this turn
 - **Auto-unmute** — if a moderator times the bot out, it lifts its own timeout, identifies the moderator from the audit log, and posts a single AI reply in the most recently active channel
 
 ### Threads Parsing
@@ -51,13 +51,13 @@ Use `/download_video` to download videos from multiple platforms:
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
 
-### Points & Casino Games
+### 虛擬歡樂豆 & Casino Games
 
-The bot keeps a **persistent, cross-server point balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
+The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
-**Earning points:** every streaming AI reply awards points equal to its `total_tokens` (input + output), shown in the reply footer. Chatting with the bot is currently the only way to earn — Threads parsing and `/download_video` deliberately don't pay.
+**Earning 虛擬歡樂豆:** every streaming AI reply awards 虛擬歡樂豆 equal to its `total_tokens` (input + output), shown in the reply footer. Chatting with the bot is currently the only way to earn — Threads parsing and `/download_video` deliberately don't pay.
 
-**Spending points:** the casino games take a bet up-front and pay out when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero balance rejects the round. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
+**Spending 虛擬歡樂豆:** the casino games take a bet up-front and pay out when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero balance rejects the round. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
 
 | Slash command      | Game                                                                                                                                                     |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -66,11 +66,11 @@ The bot keeps a **persistent, cross-server point balance** for every Discord acc
 
 **Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack wins immediately and pays 1.5×; a dealer natural Blackjack settles immediately unless the player also has Blackjack, in which case the hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
-**Managing points:**
+**Managing 虛擬歡樂豆:**
 
 - `/balance` — show your current balance.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
-- `/give <member> <amount>` — transfer points to another member (no self-transfer, no bots).
+- `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
 - `/house` — show the dealer's accumulated win/loss across `/dice` and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
 ### MapleStory Artale Database
@@ -96,9 +96,9 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)              |
 | _Threads link_                    | Automatically expands Threads.net posts with media                                   |
 | `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                |
-| `/balance`                        | Show your current point balance (cross-server)                                       |
-| `/leaderboard`                    | Global Top 10 point holders                                                          |
-| `/give <member> <amount>`         | Transfer points to another member                                                    |
+| `/balance`                        | Show your current 虛擬歡樂豆 balance (cross-server)                                  |
+| `/leaderboard`                    | Global Top 10 虛擬歡樂豆 holders                                                     |
+| `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                |
 | `/dice <bet>`                     | Roll three dice against the AI dealer                                                |
 | `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately |
 | `/house`                          | Show the dealer's accumulated win/loss across `/dice` and `/blackjack`               |
@@ -197,7 +197,7 @@ All slash commands register globally on first start (no per-guild pinning). Disc
 This bot complies with Discord's Terms of Service and Developer Policy.
 
 - **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite (`data/messages.db`). Data stays on your server and is never shared externally.
-- **Points Database**: Per-user point balances live in a separate local SQLite file (`data/economy.db`). Only the Discord user ID, the most recently seen username, and balance counters are stored. Balances are shared across every server the bot runs in.
+- **虛擬歡樂豆 Database**: Per-user 虛擬歡樂豆 balances live in a separate local SQLite file (`data/economy.db`). Only the Discord user ID, the most recently seen username, and balance counters are stored. Balances are shared across every server the bot runs in.
 - **API Calls**: Text, images, supported file attachments, embedded media, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is responding, such as when it is mentioned in a guild or messaged in DM. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
 - **Opt-out**: Server owners can disable message logging by adjusting the bot configuration.

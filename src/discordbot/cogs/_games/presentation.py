@@ -2,6 +2,7 @@
 
 from discordbot.cogs._games.dice import DiceOutcome
 from discordbot.cogs._games.blackjack import OutcomeLabel
+from discordbot.cogs._economy.presentation import currency_text
 
 IN_PROGRESS_COLOR = 0x5865F2
 WIN_COLOR = 0x57F287
@@ -72,7 +73,7 @@ def bet_field_value(*, bet: int, is_allin: bool) -> str:
         A display string for the wager field.
     """
     suffix = " (已自動 all-in)" if is_allin else ""
-    return f"{bet:,} 點{suffix}"
+    return f"{currency_text(amount=bet)}{suffix}"
 
 
 def settlement_footer(
@@ -90,8 +91,9 @@ def settlement_footer(
     Returns:
         Footer text for a final game embed.
     """
-    delta_text = f"{delta:+,}" if delta != 0 else "0"
     return (
-        f"下注 {bet:,} · 本局淨變動 {delta_text} · 餘額 {new_balance:,} · "
-        f"莊家餘額 {house_balance:,}{allin_note(is_allin=is_allin)}"
+        f"下注 {currency_text(amount=bet)} · "
+        f"本局淨變動 {currency_text(amount=delta, signed=True)} · "
+        f"餘額 {currency_text(amount=new_balance)} · "
+        f"莊家餘額 {currency_text(amount=house_balance)}{allin_note(is_allin=is_allin)}"
     )
