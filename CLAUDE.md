@@ -14,8 +14,6 @@ make fmt                         # == pre-commit run -a
 make gen-docs                    # regenerate docs/ from sources
 ```
 
-Pytest is configured under `[tool.pytest.ini_options]` in `pyproject.toml`: asyncio mode `auto`, parallel via `-n=auto`, doctest discovery on modules.
-
 ## Architecture
 
 ### Bot runtime (`src/discordbot/cli.py`)
@@ -158,14 +156,12 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 - **No intermediate one-level aliases** (`usage = responses.usage` → use `responses.usage` directly).
 - **`responses` / `response` naming**: LLM SDK return objects are named `responses` (streaming or not); loop variable is `response`.
 - **LLM latency matters** in the request path. No extra LLM calls for cosmetic improvements; no executor/`asyncio.gather` scaffolding for ~100 ms CPU work without measuring.
-- **Comments**: default to none. Only when the *why* is non-obvious. Never narrate what code says or reference PRs / issues.
+- **Comments**: never narrate what code says or reference PRs / issues.
 - **Docs**: `docs/` is generated; `make gen-docs` regenerates it. Don't hand-edit.
-- **Commits**: Conventional Commits, English.
 
 ## Non-obvious things to remember
 
 - **Do not touch the README badge block.** It may be outdated but is curated.
-- **LiteLLM is how multi-provider works.** `openai` is the only LLM SDK in `src/discordbot/`. To swap providers, change the model string (and `extra_body` if needed). Don't reach for `google-genai` / `anthropic` in the request path.
 - **Prompts live only in `cogs/_gen_reply/prompts.py`.** Service logic stays in `gen_reply.py`; don't mass-extract for symmetry.
 - **`AsyncOpenAI` is a `cached_property`** on each cog that needs it. Lazy construction is intentional — moving it into `__init__` would fail at import time in tests where env vars aren't loaded. Three independent clients is intentional.
 - **Gemini quirk**: when `reasoning.effort != "none"`, the OpenAI-compat layer prepends `\n\n\n` to streamed text. `_handle_streaming` strips leading newlines on the first delta (`content_started` flag) — don't remove that guard.
@@ -181,10 +177,4 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 - **Per-token pricing comes from `utils.model_pricing`**, fetched lazily from upstream LiteLLM JSON and cached at `data/model_prices.json`. If a new model shows `$0.00000000`, the upstream JSON hasn't catalogued it yet — wait or delete the cache to force a refresh. Do NOT hardcode rates in `gen_reply.py`.
 - **`message.snapshots` (Discord forwards) are intentionally NOT walked** by `_get_cleaned_content` or `_get_attachment_parts`. Forwards are rare; doubling per-message work isn't worth it. Revisit if they become common.
 - **`BELIEF` (in `_gen_reply/prompts.py`) is currently disabled** in `_handle_message_reply` — the model treated it as too prescriptive and refused benign requests. The argument still flows through the signature for a future re-enable; don't delete it.
-- **Points are cross-server by design.** `UserAccount` is keyed by `user_id` alone; same Discord user → one balance across every guild. If per-guild scoping is ever needed, it's a schema change (separate `(user_id, guild_id)` membership table) — don't retrofit via app-side filters.
-- **Bets are withdrawn up-front, payouts credit `bet + delta`.** `settle_wager(...)` owns this for both dice and Blackjack. If `settle()` in `cogs/_games/blackjack.py` ever changes to return absolute payout instead of a delta, call sites silently double-pay. Tests in `tests/test_blackjack.py` and `tests/test_economy.py` lock down these semantics.
-- **The dealer is a real `UserAccount` row, deliberately negative-capable.** `settle_wager` mirrors `-player_delta` via `house_settle`, which does *not* clamp at zero. The bot has effectively infinite funds; its row is filtered from `/leaderboard` and surfaced by `/house`. Don't format this balance with a leading `+` — positive balances are still balances, not deltas.
-- **Only `gen_reply.py` pays chat points** (and `economy.py` / `games.py` are the balance / payout flows). `parse_threads.py` and `video.py` previously paid per-action; that was intentionally removed. `template.py` and `maplestory.py` have always been unpaid. Don't re-introduce `add_balance(...)` calls in other cogs.
-- **Dealer AI is best-effort.** `DealerAI._ask` returns a hard-coded fallback string on any exception; missing AI lines never block round resolution or the DB write. New dealer entry points need fallback lines in `dealer.py`.
-- **`interaction.edit_original_message(content=…, file=…)` drops `content` when a file payload is attached.** Use a text-only edit followed by `followup.send(content=…, file=…)`. `cogs/video.py:_deliver` is the canonical pattern.
-- **`is_dm` short-circuit**: in DMs always respond; in guilds require a literal `<@bot_id>` substring in `message.content`. Discord *reply notifications* put the bot in `message.mentions` without writing the mention into `content` — the content check is what prevents self-summoning.
+- **Only `gen_reply.py` pays chat points.** `parse_threads.py` and `video.py` previously paid per-action; that was intentionally removed. `template.py` and `maplestory.py` have always been unpaid. Don't re-introduce `add_balance(...)` calls in other cogs.
