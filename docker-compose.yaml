@@ -8,9 +8,10 @@ services:
     command:
       - uv
       - run
-      - --no-dev
-      - --frozen
       - discordbot
+    environment:
+      UV_NO_DEV: 1
+      UV_FROZEN: 1
     env_file:
       - .env
     volumes:

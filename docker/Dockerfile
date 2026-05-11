@@ -17,9 +17,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg
 
-ENV UV_LINK_MODE=copy \
-    UV_COMPILE_BYTECODE=1
-
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-dev --frozen --no-install-project
