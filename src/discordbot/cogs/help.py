@@ -32,6 +32,18 @@ _HELP_CONTENT = {
             "`/maple_npc` · `/maple_quest` · `/maple_map` · "
             "`/maple_item` · `/maple_stats`"
         ),
+        "points": (
+            "**Points**\n"
+            "Earn points by chatting with me, then use them across servers.\n"
+            "`/balance` check your balance · `/leaderboard` show the global top 10\n"
+            "`/give` transfer points · `/house` show the dealer's running P&L"
+        ),
+        "games": (
+            "**Games**\n"
+            "`/dice` roll three dice against the dealer.\n"
+            "`/blackjack` play one round of 21. Bets are withdrawn up front, "
+            "over-bets auto all-in, and idle hands auto-stand after 180 seconds."
+        ),
         "ping": "**Ping** — `/ping`\nCheck the bot's response latency.",
     },
     Locale.zh_TW: {
@@ -61,6 +73,18 @@ _HELP_CONTENT = {
             "`/maple_monster` · `/maple_equip` · `/maple_scroll` · "
             "`/maple_npc` · `/maple_quest` · `/maple_map` · "
             "`/maple_item` · `/maple_stats`"
+        ),
+        "points": (
+            "**點數**\n"
+            "跟我聊天可以累積點數，點數跨 server 共用。\n"
+            "`/balance` 查餘額 · `/leaderboard` 看 global 前 10 名\n"
+            "`/give` 轉點 · `/house` 看莊家累積 P&L"
+        ),
+        "games": (
+            "**小遊戲**\n"
+            "`/dice` 用三顆骰子跟莊家比大小。\n"
+            "`/blackjack` 跟莊家玩一局 21 點。bet 會先扣，超過餘額會自動 all-in，"
+            "不操作 180 秒會自動 stand 結算。"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲。",
     },
@@ -92,11 +116,23 @@ _HELP_CONTENT = {
             "`/maple_npc` · `/maple_quest` · `/maple_map` · "
             "`/maple_item` · `/maple_stats`"
         ),
+        "points": (
+            "**ポイント**\n"
+            "チャットでポイントを獲得し、サーバーをまたいで使えます。\n"
+            "`/balance` 残高確認 · `/leaderboard` グローバルトップ10\n"
+            "`/give` ポイント送付 · `/house` ディーラーの累計損益"
+        ),
+        "games": (
+            "**ゲーム**\n"
+            "`/dice` 3個のサイコロでディーラーと勝負します。\n"
+            "`/blackjack` 21を1ラウンド遊びます。ベットは先に差し引かれ、"
+            "残高超過は自動 all-in、180秒操作がない場合は自動 stand で精算されます。"
+        ),
         "ping": "**Ping** — `/ping`\nボットの応答遅延を確認します。",
     },
 }
 
-_SECTIONS = ("ai_chat", "threads", "video", "maplestory", "ping")
+_SECTIONS = ("ai_chat", "threads", "video", "maplestory", "points", "games", "ping")
 
 
 class HelpCogs(commands.Cog):
