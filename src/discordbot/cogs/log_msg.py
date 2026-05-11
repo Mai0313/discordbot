@@ -41,6 +41,7 @@ _MESSAGES_TABLE_READY_FOR: Engine | None = None
 _CREATE_MESSAGES_TABLE_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    discord_message_id TEXT,
     source_type TEXT NOT NULL,
     author TEXT,
     author_id TEXT,
@@ -53,17 +54,37 @@ CREATE TABLE IF NOT EXISTS messages (
 )
 """
 
+# Migration for DBs that predate the bot-message logging change — they have the
+# table but no discord_message_id column. The PRAGMA pre-check in
+# `_write_row_sync` keeps the ALTER from being attempted on already-migrated DBs
+# so we never need a savepoint to recover from "duplicate column" inside the
+# same transaction as the CREATE TABLE.
+_ADD_DISCORD_MESSAGE_ID_COLUMN_SQL: Final[str] = (
+    "ALTER TABLE messages ADD COLUMN discord_message_id TEXT"
+)
+
 _CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS ix_messages_channel_id_created_at "
     "ON messages(channel_id, created_at)",
     "CREATE INDEX IF NOT EXISTS ix_messages_author_id_created_at "
     "ON messages(author_id, created_at)",
+    # Partial unique index gives the UPSERT below a conflict target while
+    # leaving legacy NULL-id rows (logged before this change) untouched.
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_discord_message_id "
+    "ON messages(discord_message_id) WHERE discord_message_id IS NOT NULL",
 )
 
+# UPSERT: streaming bot replies edit themselves several times after the initial
+# `reply()`, so each `on_message_edit` re-fires this INSERT with the same
+# `discord_message_id`. The conflict on the partial unique index turns the
+# repeat write into an UPDATE so messages.db converges to the final on-Discord
+# state. `created_at` is intentionally NOT touched — the original send-time stays
+# pinned even as content / attachments mutate.
 _INSERT_MESSAGE_SQL: Final[str] = """
 INSERT INTO messages
     (
+        discord_message_id,
         source_type,
         author,
         author_id,
@@ -76,6 +97,7 @@ INSERT INTO messages
     )
 VALUES
     (
+        :discord_message_id,
         :source_type,
         :author,
         :author_id,
@@ -86,6 +108,10 @@ VALUES
         :attachments,
         :stickers
     )
+ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE SET
+    content = excluded.content,
+    attachments = excluded.attachments,
+    stickers = excluded.stickers
 """
 
 
@@ -109,6 +135,12 @@ def _write_row_sync(row: dict[str, str]) -> None:
     with _sql_engine.begin() as conn:
         if needs_create:
             conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
+            existing_columns = {
+                row_info[1]
+                for row_info in conn.execute(statement=text(text="PRAGMA table_info(messages)"))
+            }
+            if "discord_message_id" not in existing_columns:
+                conn.execute(statement=text(text=_ADD_DISCORD_MESSAGE_ID_COLUMN_SQL))
             for statement in _CREATE_MESSAGES_INDEX_SQL:
                 conn.execute(statement=text(text=statement))
         conn.execute(statement=text(text=_INSERT_MESSAGE_SQL), parameters=row)
@@ -207,6 +239,7 @@ class MessageLogger(BaseModel):
         attachment_paths = await self._save_attachments()
         sticker_paths = await self._save_stickers()
         row: dict[str, str] = {
+            "discord_message_id": str(self.message.id),
             "source_type": self.source_type,
             "author": self.sanitize_text(s=self.message.author.name),
             "author_id": str(self.message.author.id),
@@ -220,10 +253,13 @@ class MessageLogger(BaseModel):
         await asyncio.to_thread(_write_row_sync, row=row)
 
     async def log(self) -> None:
-        """Logs the message if it's not from a bot."""
+        """Persists the message row.
+
+        Author filtering (human or this bot's own reply) lives in
+        `LogMessageCog` so this method stays generic and is safe to call from
+        anywhere that already knows the message is loggable.
+        """
         try:
-            if self.message.author.bot:
-                return
             await self._save_messages()
         except Exception:
             logfire.error("Failed to log message", _exc_info=True)
@@ -244,6 +280,17 @@ class LogMessageCog(commands.Cog):
         """
         self.bot = bot
 
+    def _should_log(self, message: Message) -> bool:
+        """Returns True for human messages or this bot's own replies.
+
+        Third-party bots (e.g. other Discord apps sharing the guild) are
+        deliberately skipped so messages.db tracks only the conversation
+        participants this bot actually engages with — its users and itself.
+        """
+        if not message.author.bot:
+            return True
+        return bool(self.bot.user and message.author.id == self.bot.user.id)
+
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         """Listens for messages and logs them asynchronously.
@@ -251,9 +298,28 @@ class LogMessageCog(commands.Cog):
         Args:
             message: The message that was sent.
         """
-        if message.author.bot:
+        if not self._should_log(message=message):
             return
         asyncio.create_task(MessageLogger(message=message).log())  # noqa: RUF006
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, _before: Message, after: Message) -> None:
+        """Re-logs message edits so streaming bot replies converge to their final state.
+
+        `on_message` only fires on the initial `reply()` call, which for the
+        streaming text path in `gen_reply.py` captures only the first ~30
+        chars. Every subsequent `reply.edit(...)` fires here; the UPSERT on
+        `discord_message_id` collapses them into a single row whose content
+        matches what is actually on Discord.
+
+        Args:
+            _before: The pre-edit message snapshot (unused; only `after.id`
+                matters for the UPSERT key).
+            after: The current message state.
+        """
+        if not self._should_log(message=after):
+            return
+        asyncio.create_task(MessageLogger(message=after).log())  # noqa: RUF006
 
     @commands.Cog.listener()
     async def on_command_completion(self, context: commands.Context) -> None:
