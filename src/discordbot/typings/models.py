@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import Field, BaseModel
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
@@ -10,7 +10,7 @@ class ModelSettings(BaseModel):
     """Model name and reasoning effort that should be used together."""
 
     name: str
-    effort: ReasoningEffort | None
+    effort: ReasoningEffort = Field(default="none")
 
     @property
     def reasoning(self) -> Reasoning:
@@ -23,8 +23,6 @@ class ModelSettings(BaseModel):
         Raises:
             ValueError: The model has no reasoning effort configured.
         """
-        if self.effort is None:
-            raise ValueError("Model effort must be set to build reasoning options.")
         return Reasoning(effort=self.effort, summary="auto")
 
     @property

@@ -12,7 +12,7 @@ config = LLMConfig()
 
 # Mirror the @property value in cogs/gen_reply.py. Update here when the bot's
 # video_model swaps, otherwise this script tests a stale model.
-VIDEO_MODEL = ModelSettings(name="veo-3.1-fast-generate-preview", effort=None)
+VIDEO_MODEL = ModelSettings(name="veo-3.1-fast-generate-preview")
 POLL_INTERVAL = 5
 
 
