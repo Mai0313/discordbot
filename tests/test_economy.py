@@ -364,3 +364,101 @@ async def test_blackjack_view_timeout_auto_stands_and_settles() -> None:
     assert await database.get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
     assert message.edit_calls == 1
+
+
+async def test_add_balance_concurrent_credits_accumulate() -> None:
+    """Concurrent credits on the same user must not lose updates.
+
+    The old read-modify-write path would race: two coroutines read 100,
+    both compute 110, last commit wins, the first +10 silently vanishes.
+    UPSERT serializes the writes inside SQLite so both increments land.
+    """
+    await database.add_balance(user_id=42, name="alice", amount=100)
+    await asyncio.gather(*[
+        database.add_balance(user_id=42, name="alice", amount=10) for _ in range(20)
+    ])
+    assert await database.get_balance(user_id=42) == 300
+
+
+async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
+    """Two concurrent first-sight credits on the same user must not raise.
+
+    The old `session.get()`-then-`session.add()` path would see both
+    coroutines find ``None``, both INSERT, and one would raise
+    `IntegrityError`. UPSERT collapses the race into a deterministic merge.
+    """
+    results = await asyncio.gather(*[
+        database.add_balance(user_id=42, name="alice", amount=10) for _ in range(8)
+    ])
+    assert all(isinstance(value, int) for value in results)
+    assert await database.get_balance(user_id=42) == 80
+
+
+async def test_settle_game_concurrent_credits_accumulate() -> None:
+    """Concurrent positive settlements on the same user must not lose updates."""
+    await database.add_balance(user_id=42, name="alice", amount=100)
+    await asyncio.gather(*[
+        database.settle_game(user_id=42, name="alice", delta=10) for _ in range(10)
+    ])
+    assert await database.get_balance(user_id=42) == 200
+
+
+async def test_house_settle_concurrent_updates_accumulate() -> None:
+    """The dealer's hot row mustn't lose updates under concurrent settlements.
+
+    Every player wager mirrors into the dealer's ledger row, so this is the
+    single hottest row in the schema. The old read-modify-write path could
+    silently drop one of two simultaneous house settlements.
+    """
+    await asyncio.gather(*[
+        database.house_settle(user_id=99, name="house", delta=10) for _ in range(10)
+    ])
+    account = await database.get_account(user_id=99)
+    assert account is not None
+    _, balance, total_earned, total_spent = account
+    assert balance == 100
+    assert total_earned == 100
+    assert total_spent == 0
+
+
+async def test_apply_round_settlement_is_atomic() -> None:
+    """Player credit and house mirror share one transaction and one return."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
+    assert placed is not None
+
+    player_balance, house_balance = await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        payout=80,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-40,
+    )
+    assert player_balance == 140
+    assert house_balance == -40
+    assert await database.get_balance(user_id=1) == 140
+    assert await database.get_balance(user_id=99) == -40
+
+
+async def test_apply_round_settlement_zero_payout_only_touches_house() -> None:
+    """A pure loss reads the player balance without re-crediting it."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
+    assert placed is not None
+
+    player_balance, house_balance = await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        payout=0,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=40,
+    )
+    assert player_balance == 60
+    assert house_balance == 40
+    account = await database.get_account(user_id=1)
+    assert account is not None
+    _, _, total_earned, total_spent = account
+    assert total_earned == 100
+    assert total_spent == 40
