@@ -170,14 +170,14 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        ok = await transfer(
+        transfer_result = await transfer(
             sender_id=interaction.user.id,
             sender_name=interaction.user.name,
             receiver_id=member.id,
             receiver_name=member.name,
             amount=amount,
         )
-        if not ok:
+        if transfer_result is None:
             balance_now = await get_balance(user_id=interaction.user.id)
             await interaction.followup.send(
                 embed=Embed(
@@ -191,15 +191,14 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        sender_balance = await get_balance(user_id=interaction.user.id)
-        receiver_balance = await get_balance(user_id=member.id)
         embed = Embed(
             title=":handshake: 轉虛擬歡樂豆成功",
             description=(
                 f"{interaction.user.mention} → {member.mention}: "
                 f"**{currency_text(amount=amount)}**\n"
-                f"你剩下 **{currency_text(amount=sender_balance)}**, {member.display_name} 現在有 "
-                f"**{currency_text(amount=receiver_balance)}**。"
+                f"你剩下 **{currency_text(amount=transfer_result.sender_balance)}**, "
+                f"{member.display_name} 現在有 "
+                f"**{currency_text(amount=transfer_result.receiver_balance)}**。"
             ),
             color=_TRANSFER_COLOR,
         )

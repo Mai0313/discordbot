@@ -146,10 +146,10 @@ async def test_get_balance_unknown_user_returns_zero() -> None:
 async def test_transfer_moves_currency_between_users() -> None:
     """Successful transfer debits sender and credits receiver atomically."""
     await database.add_balance(user_id=1, name="alice", amount=200)
-    ok = await database.transfer(
+    result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=80
     )
-    assert ok is True
+    assert result == database.TransferResult(sender_balance=120, receiver_balance=80)
     assert await database.get_balance(user_id=1) == 120
     assert await database.get_balance(user_id=2) == 80
 
@@ -157,20 +157,20 @@ async def test_transfer_moves_currency_between_users() -> None:
 async def test_transfer_rejects_self() -> None:
     """Transfers to oneself must be rejected."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    ok = await database.transfer(
+    result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=1, receiver_name="alice", amount=10
     )
-    assert ok is False
+    assert result is None
     assert await database.get_balance(user_id=1) == 100
 
 
 async def test_transfer_rejects_insufficient_balance() -> None:
     """Transfers exceeding the sender's balance must be rejected."""
     await database.add_balance(user_id=1, name="alice", amount=10)
-    ok = await database.transfer(
+    result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=100
     )
-    assert ok is False
+    assert result is None
     assert await database.get_balance(user_id=1) == 10
     assert await database.get_balance(user_id=2) == 0
 
@@ -186,8 +186,8 @@ async def test_transfer_prevents_concurrent_double_spend() -> None:
             sender_id=1, sender_name="alice", receiver_id=3, receiver_name="carol", amount=80
         ),
     )
-    assert results.count(True) == 1
-    assert results.count(False) == 1
+    assert sum(result is not None for result in results) == 1
+    assert results.count(None) == 1
     assert await database.get_balance(user_id=1) == 20
     assert await database.get_balance(user_id=2) + await database.get_balance(user_id=3) == 80
 
@@ -204,7 +204,9 @@ async def test_transfer_concurrent_credits_accumulate() -> None:
             sender_id=2, sender_name="bob", receiver_id=3, receiver_name="carol", amount=70
         ),
     )
-    assert results == [True, True]
+    assert all(result is not None for result in results)
+    assert {result.sender_balance for result in results if result is not None} == {20, 30}
+    assert max(result.receiver_balance for result in results if result is not None) == 150
     assert await database.get_balance(user_id=3) == 150
 
 
@@ -212,10 +214,10 @@ async def test_transfer_concurrent_credits_accumulate() -> None:
 async def test_transfer_rejects_non_positive(amount: int) -> None:
     """Transfers with non-positive amounts must be rejected."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    ok = await database.transfer(
+    result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=amount
     )
-    assert ok is False
+    assert result is None
 
 
 async def test_top_n_orders_by_balance_descending() -> None:

@@ -33,9 +33,9 @@ from dataclasses import dataclass
 
 from sqlalchemy import Index, String, Integer, DateTime, case, desc, func, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
+from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.dialects.sqlite.dml import Insert as _SqliteInsert
 
 # place_bet keeps a small retry budget for the SELECT-then-conditional-UPDATE
 # loop. With WAL + busy_timeout, contention is rare and resolves on the
@@ -114,6 +114,19 @@ class PlacedBet:
     is_allin: bool
 
 
+@dataclass(frozen=True)
+class TransferResult:
+    """A successful point transfer.
+
+    Attributes:
+        sender_balance: Sender balance after the debit.
+        receiver_balance: Receiver balance after the credit.
+    """
+
+    sender_balance: int
+    receiver_balance: int
+
+
 async def _create_schema(engine: AsyncEngine) -> None:
     """Creates tables and indexes on first use; safe to call repeatedly."""
     async with engine.begin() as conn:
@@ -149,7 +162,9 @@ def open_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
-def _build_credit_upsert(*, user_id: int, name: str, amount: int, now: datetime) -> _SqliteInsert:
+def _build_credit_upsert(
+    *, user_id: int, name: str, amount: int, now: datetime
+) -> ReturningInsert[tuple[int]]:
     """UPSERT that credits ``amount`` points (caller guarantees ``amount > 0``).
 
     On INSERT, the new row starts at ``balance = total_earned = amount``,
@@ -184,7 +199,7 @@ def _build_credit_upsert(*, user_id: int, name: str, amount: int, now: datetime)
 
 def _build_clamped_settle_upsert(
     *, user_id: int, name: str, delta: int, now: datetime
-) -> _SqliteInsert:
+) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with the resulting balance clamped at 0.
 
     Mirrors the original `settle_game` semantics: positive `delta` credits;
@@ -224,7 +239,7 @@ def _build_clamped_settle_upsert(
 
 def _build_signed_delta_upsert(
     *, user_id: int, name: str, delta: int, now: datetime
-) -> _SqliteInsert:
+) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with NO clamp on the resulting balance.
 
     Used for the dealer's house-ledger row, which is allowed to go negative
@@ -518,14 +533,15 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
 
 async def transfer(
     *, sender_id: int, sender_name: str, receiver_id: int, receiver_name: str, amount: int
-) -> bool:
+) -> TransferResult | None:
     """Atomically moves points from sender to receiver.
 
     The debit is a single conditional `UPDATE` gated on `balance >= amount`;
     if that returns no row the transfer is rejected without ever touching
     the receiver. The credit is a UPSERT in the same transaction, so the
-    receiver row is created on first contact and the whole transfer is
-    one all-or-nothing operation.
+    receiver row is created on first contact and the whole transfer is one
+    all-or-nothing operation. Both balances are returned from the same SQL
+    writes, so callers do not need extra reads after a successful transfer.
 
     Args:
         sender_id: Discord user ID to debit.
@@ -535,12 +551,12 @@ async def transfer(
         amount: Number of points to transfer.
 
     Returns:
-        True when the transfer committed, or False when validation failed or
-        the sender had insufficient funds.
+        The post-transfer balances when the transfer committed, or `None`
+        when validation failed or the sender had insufficient funds.
     """
     await _ensure_schema()
     if amount <= 0 or sender_id == receiver_id:
-        return False
+        return None
 
     now = datetime.now(tz=UTC)
     async with open_session() as session:
@@ -559,16 +575,19 @@ async def transfer(
             .returning(UserAccount.balance)
         )
         debit_result = await session.execute(statement=debit_stmt)
-        if debit_result.one_or_none() is None:
+        debit_row = debit_result.one_or_none()
+        if debit_row is None:
             await session.rollback()
-            return False
+            return None
+        sender_balance = debit_row[0]
 
         credit_stmt = _build_credit_upsert(
             user_id=receiver_id, name=receiver_name, amount=amount, now=now
         )
-        await session.execute(statement=credit_stmt)
+        credit_result = await session.execute(statement=credit_stmt)
+        receiver_balance = credit_result.scalar_one()
         await session.commit()
-        return True
+        return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 
 
 async def top_n(
