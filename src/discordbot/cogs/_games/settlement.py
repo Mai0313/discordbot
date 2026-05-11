@@ -9,7 +9,7 @@ from discordbot.cogs._games.blackjack import (
     is_bust,
     is_blackjack,
 )
-from discordbot.cogs._economy.database import settle_game, house_settle
+from discordbot.cogs._economy.database import apply_round_settlement
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,10 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
 ) -> WagerSettlement:
     """Credits player payout and mirrors the net result into the house ledger.
 
+    The two ledger writes share a single SQLite transaction via
+    `apply_round_settlement`, so a crash between them cannot leave the dealer
+    ledger drifting from the player payout.
+
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
@@ -123,8 +127,14 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
         Database-backed settlement result after both ledgers are updated.
     """
     payout = wager_payout(bet=bet, delta=delta)
-    new_balance = await settle_game(user_id=player_id, name=player_account_name, delta=payout)
-    house_balance = await house_settle(user_id=dealer_id, name=dealer_name, delta=-delta)
+    new_balance, house_balance = await apply_round_settlement(
+        player_id=player_id,
+        player_account_name=player_account_name,
+        payout=payout,
+        dealer_id=dealer_id,
+        dealer_name=dealer_name,
+        dealer_delta=-delta,
+    )
     return WagerSettlement(
         delta=delta, payout=payout, new_balance=new_balance, house_balance=house_balance
     )
