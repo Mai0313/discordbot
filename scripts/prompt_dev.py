@@ -25,7 +25,7 @@ console = Console()
 config = LLMConfig()
 
 # Mirror the @property value in cogs/gen_reply.py. slow_model has a time-of-day
-# dispatch in production (peak hours swap to gemini-3.1-flash-lite-preview); for
+# dispatch in production (peak hours swap to gemini-3-flash-preview); for
 # dev we pin to the off-peak default. Swap manually when testing peak behaviour.
 SLOW_MODEL = ModelSettings(name="gemini-pro-latest", effort="high")
 

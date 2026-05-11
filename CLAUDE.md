@@ -61,7 +61,7 @@ Every AI call goes through a single `AsyncOpenAI` client built from `LLMConfig` 
 Model assignments live as `@property` methods on `ReplyGeneratorCogs` (`fast_model`, `slow_model`, `image_model`, `video_model`), each returning a `ModelSettings(name=…, effort=…)` instance from `discordbot.typings.models`. Two things to know:
 
 - **Model strings are volatile.** They swap several times a week (see `git log` for `fix: update model settings…`). Read them from `gen_reply.py` rather than memorising them, and update the property bodies — not the call sites — when changing models.
-- **`slow_model` is time-of-day dispatched.** During UTC 09:00–17:00 on weekdays (Gemini Pro's known overload window) it returns the cheaper `gemini-3.1-flash-lite-preview` with `effort="high"`; otherwise `gemini-pro-latest` with `effort="high"`. Don't replace this with a static return — the peak-hours fallback is the whole point.
+- **`slow_model` is time-of-day dispatched.** During UTC 09:00–17:00 on weekdays (Gemini Pro's known overload window) it returns the cheaper `gemini-3-flash-preview` with `effort="high"`; otherwise `gemini-pro-latest` with `effort="high"`. Don't replace this with a static return — the peak-hours fallback is the whole point.
 
 All chat/routing/captioning calls use the **OpenAI Responses API** (`client.responses.create`), not Chat Completions. Streaming results are always named `responses` (object) and iterated as `response` (loop var) — keep this naming.
 
