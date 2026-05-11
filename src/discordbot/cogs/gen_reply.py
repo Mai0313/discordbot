@@ -46,6 +46,14 @@ if TYPE_CHECKING:
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 
+# Strips the usage_footer appended by `_handle_streaming` from bot-authored
+# messages before feeding them back as `role=assistant` history. Without this,
+# the model performs in-context learning on its own past footers and starts
+# hallucinating fake "-# model · ⬆ ... ⬇ ... · $... · ..." lines into fresh
+# replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count icons,
+# which never appear together in user-authored content.
+_USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
+
 
 class ReplyGeneratorCogs(commands.Cog):
     """Generates AI replies for Discord messages.
@@ -155,11 +163,17 @@ class ReplyGeneratorCogs(commands.Cog):
         is added later in ``_process_single_message`` so it can be skipped for
         ``role=assistant``.
 
+        For bot-authored messages, the trailing ``usage_footer`` appended by
+        ``_handle_streaming`` is stripped so history fed back as ``role=assistant``
+        does not teach the model to mimic the footer pattern.
+
         Note: ``message.snapshots`` (Discord's forward feature) is intentionally
         not walked here because that workflow is rare in practice. Add it back
         if forwarded messages become a common path.
         """
         content = await self._get_user_prompt(content=message.content)
+        if content and self.bot.user and message.author.id == self.bot.user.id:
+            content = _USAGE_FOOTER_RE.sub("", content)
         if not content and message.embeds:
             content = self._extract_embed_text(embeds=list(message.embeds))
         if not content and message.is_system():
