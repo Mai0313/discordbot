@@ -139,7 +139,6 @@ data/
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **Ruff**       | Linting and formatting (line length: 99)                                                                                     |
 | **mypy**       | Type checking with the Pydantic plugin (runs in pre-commit)                                                                  |
-| **ty**         | Astral's type checker — installed as a dev dep, **not** in pre-commit. Run `uvx ty check src` manually for a second opinion. |
 | **pre-commit** | Runs Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, etc. on commit                                                   |
 
 ### Style

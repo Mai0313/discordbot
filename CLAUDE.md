@@ -168,7 +168,7 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 
 - **Ruff** is the formatter and the linter. Line length 99, double quotes, `skip-magic-trailing-comma = true`, Google docstring style. Preview rules are on and the rule set is broad (`F E W C90 I N D UP ANN ASYNC S B A C4 …`). Don't silence with blanket `# noqa` — prefer fixing or, if impossible, the narrowest possible `# noqa: <rule>` with a one-line reason.
 
-- **Type checking**: `mypy` (`[tool.mypy]`, with the Pydantic plugin) runs in pre-commit. `ty` is listed as a dev dependency but is **not** wired into pre-commit and pyproject.toml has no `[tool.ty]` block — run `uvx ty check src` manually if you want a second opinion. Any new public function needs real type hints — `Any` is a last resort.
+- **Type checking**: `mypy` (`[tool.mypy]`, with the Pydantic plugin) runs in pre-commit. Any new public function needs real type hints — `Any` is a last resort.
 
 - **Keyword arguments** are required for **every** function and method call, **including single-argument calls**. Concrete:
 

@@ -103,7 +103,6 @@ dev = [
     "openai-agents[litellm]",
     "poethepoet",
     "pre-commit",
-    "ty",
 ]
 test = [
     "genbadge[all]",
