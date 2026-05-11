@@ -331,3 +331,36 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently() -> None:
     assert await database.get_balance(user_id=99) == -50
     assert dealer.settle_calls == 1
     assert message.edit_calls == 1
+
+
+async def test_blackjack_view_timeout_auto_stands_and_settles() -> None:
+    """A player who walks away is treated as standing and the wager resolves."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
+    assert placed is not None
+
+    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand.player = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
+    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")]
+
+    dealer = _DealerStub()
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        hand=hand,
+        owner_id=1,
+        author_name="alice",
+        player_name="Alice",
+        dealer_id=99,
+        dealer_name="house",
+        balance_after_bet=placed.balance_after,
+    )
+    view.message = message
+
+    await view.on_timeout()
+
+    assert hand.finished is True
+    assert await database.get_balance(user_id=1) == 50
+    assert await database.get_balance(user_id=99) == 50
+    assert dealer.settle_calls == 1
+    assert message.edit_calls == 1
