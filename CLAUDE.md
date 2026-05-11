@@ -146,7 +146,7 @@ When adding a new configurable value, keep the `Field(description=..., examples=
 
 ### Message logging (`cogs/log_msg.py`)
 
-Every `on_message` is persisted through `MessageLogger._save_messages`, which builds a one-row `pandas.DataFrame` and writes it via `to_sql` into a SQLite DB at `data/messages.db`. The engine is a module-level singleton (`cogs/log_msg.py:_sql_engine`) — do not move `create_engine()` back onto a per-instance `cached_property`, that pattern was the dominant memory leak. The schema is defined implicitly by the `data_dict` fields in this cog.
+Every human `on_message` is persisted through `MessageLogger._save_messages`, which builds a plain dict and inserts it into the canonical `messages` table in `data/messages.db`. The engine is a module-level singleton (`cogs/log_msg.py:_sql_engine`) — do not move `create_engine()` back onto a per-instance `cached_property`, that pattern was the dominant memory leak. SQLite I/O stays off the event loop via `asyncio.to_thread`, and the connection PRAGMAs enable WAL + `busy_timeout`. Do not reintroduce per-channel / per-DM tables (`channel_*`, `DM_*`); the old layout is only read by `scripts/migrate_messages_db.py` when manually rebuilding `data/messages.db` from `data/messages.backup.db` while the bot is stopped.
 
 ### Utilities (`src/discordbot/utils/`)
 
@@ -160,7 +160,7 @@ Every `on_message` is persisted through `MessageLogger._save_messages`, which bu
 - `data/logs/` — per-run tee'd logs.
 - `data/maplestory/` — Artale JSON dataset consumed by `cogs/maplestory.py` (via `cogs/_maplestory/service.py`).
 - `data/downloads/`, `data/threads/` — ephemeral media scratch space; `cogs/video.py` and `cogs/parse_threads.py` clean up after themselves.
-- `data/messages.db` — the SQLite message log (when using the default config).
+- `data/messages.db` — the SQLite message log, stored in one indexed `messages` table (when using the default config).
 - `data/economy.db` — the SQLite point-balance store written by `cogs/_economy/database.py`. One row per Discord user, no `guild_id` (cross-server balances).
 - `data/model_prices.json` — cached LiteLLM price table fetched lazily by `discordbot.utils.model_pricing`.
 

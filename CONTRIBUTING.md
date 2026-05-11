@@ -135,11 +135,11 @@ data/
 
 ### Tooling
 
-| Tool           | Purpose                                                                                                                      |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Ruff**       | Linting and formatting (line length: 99)                                                                                     |
-| **mypy**       | Type checking with the Pydantic plugin (runs in pre-commit)                                                                  |
-| **pre-commit** | Runs Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, etc. on commit                                                   |
+| Tool           | Purpose                                                                    |
+| -------------- | -------------------------------------------------------------------------- |
+| **Ruff**       | Linting and formatting (line length: 99)                                   |
+| **mypy**       | Type checking with the Pydantic plugin (runs in pre-commit)                |
+| **pre-commit** | Runs Ruff, mypy, ShellCheck, mdformat, codespell, gitleaks, etc. on commit |
 
 ### Style
 

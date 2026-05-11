@@ -35,25 +35,13 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
     cursor.close()
 
 
-# Per-channel tables are created on first sight. The previous pandas-backed
-# write path did this implicitly via reflection on every call, paying ~1-3 ms
-# per message rebuilding a DataFrame and re-introspecting the schema. The
-# cache below replaces that with a one-shot CREATE TABLE IF NOT EXISTS the
-# first time we see a table name; subsequent writes go straight to INSERT.
-#
-# The set is mutated from worker threads (writes are offloaded via
-# `asyncio.to_thread`), so guard it with a thread-safe Lock — `asyncio.Lock`
-# would bind to a single event loop and break under cross-thread access.
-_TABLE_INIT_LOCK = threading.Lock()
-_INITIALIZED_TABLES: set[str] = set()
+_MESSAGES_TABLE_LOCK = threading.Lock()
+_MESSAGES_TABLE_READY_FOR: Engine | None = None
 
-# Schema mirrors what pandas used to produce for `.astype(str)` data —
-# 8 TEXT columns — so the 1.3 GB of existing rows continues to round-trip
-# without surprises. SQLite's dynamic typing means even the older tables
-# whose pandas-inferred schema had BIGINT columns happily accept TEXT
-# inserts via type affinity.
-_CREATE_TABLE_SQL: Final[str] = """
-CREATE TABLE IF NOT EXISTS "{table}" (
+_CREATE_MESSAGES_TABLE_SQL: Final[str] = """
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,
     author TEXT,
     author_id TEXT,
     content TEXT,
@@ -65,40 +53,69 @@ CREATE TABLE IF NOT EXISTS "{table}" (
 )
 """
 
-_INSERT_SQL: Final[str] = """
-INSERT INTO "{table}"
-    (author, author_id, content, created_at, channel_name, channel_id, attachments, stickers)
+_CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
+    "CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages(created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_messages_channel_id_created_at "
+    "ON messages(channel_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_messages_author_id_created_at "
+    "ON messages(author_id, created_at)",
+)
+
+_INSERT_MESSAGE_SQL: Final[str] = """
+INSERT INTO messages
+    (
+        source_type,
+        author,
+        author_id,
+        content,
+        created_at,
+        channel_name,
+        channel_id,
+        attachments,
+        stickers
+    )
 VALUES
-    (:author, :author_id, :content, :created_at, :channel_name, :channel_id, :attachments, :stickers)
+    (
+        :source_type,
+        :author,
+        :author_id,
+        :content,
+        :created_at,
+        :channel_name,
+        :channel_id,
+        :attachments,
+        :stickers
+    )
 """
 
 
-def _write_row_sync(table_name: str, row: dict[str, str]) -> None:
-    """Ensures the table exists and inserts one row.
+def _write_row_sync(row: dict[str, str]) -> None:
+    """Ensures the canonical messages table exists and inserts one row.
 
-    Both statements run inside one transaction so a freshly-created table
-    cannot disappear (e.g. via concurrent VACUUM) before the INSERT. The
-    table-init cache makes the CREATE statement effectively free after the
-    first write per table.
+    SQLite writes run off the event loop via `asyncio.to_thread`; the table
+    readiness marker is therefore guarded with a thread lock. The marker tracks
+    the current engine object so tests can swap `_sql_engine` without leaking
+    readiness from a previous temp DB.
 
     Args:
-        table_name: Destination table; safe because callers derive it from
-            integer channel/author IDs only.
-        row: 8-key mapping matching the schema declared in `_CREATE_TABLE_SQL`.
+        row: Mapping matching the schema declared in `_CREATE_MESSAGES_TABLE_SQL`.
     """
-    needs_create = table_name not in _INITIALIZED_TABLES
-    if needs_create:
-        with _TABLE_INIT_LOCK:
-            needs_create = table_name not in _INITIALIZED_TABLES
+    global _MESSAGES_TABLE_READY_FOR  # noqa: PLW0603 -- module-level cache by engine identity
 
+    needs_create = _MESSAGES_TABLE_READY_FOR is not _sql_engine
+    if needs_create:
+        with _MESSAGES_TABLE_LOCK:
+            needs_create = _MESSAGES_TABLE_READY_FOR is not _sql_engine
     with _sql_engine.begin() as conn:
         if needs_create:
-            conn.execute(text(_CREATE_TABLE_SQL.format(table=table_name)))
-        conn.execute(text(_INSERT_SQL.format(table=table_name)), row)
+            conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
+            for statement in _CREATE_MESSAGES_INDEX_SQL:
+                conn.execute(statement=text(text=statement))
+        conn.execute(statement=text(text=_INSERT_MESSAGE_SQL), parameters=row)
 
     if needs_create:
-        with _TABLE_INIT_LOCK:
-            _INITIALIZED_TABLES.add(table_name)
+        with _MESSAGES_TABLE_LOCK:
+            _MESSAGES_TABLE_READY_FOR = _sql_engine
 
 
 class MessageLogger(BaseModel):
@@ -127,16 +144,15 @@ class MessageLogger(BaseModel):
 
     @computed_field
     @property
-    def table_name(self) -> str:
-        """The database table name for this message.
+    def source_type(self) -> str:
+        """The storage source type for this message.
 
         Returns:
-            A DM-specific table name for direct messages, otherwise a
-            channel-specific table name.
+            `"dm"` for direct messages, otherwise `"guild"`.
         """
         if isinstance(self.message.channel, DMChannel):
-            return f"DM_{self.message.author.id}"
-        return f"channel_{self.message.channel.id}"
+            return "dm"
+        return "guild"
 
     @computed_field
     @property
@@ -191,8 +207,9 @@ class MessageLogger(BaseModel):
         attachment_paths = await self._save_attachments()
         sticker_paths = await self._save_stickers()
         row: dict[str, str] = {
+            "source_type": self.source_type,
             "author": self.sanitize_text(s=self.message.author.name),
-            "author_id": self.channel_id_or_author_id,
+            "author_id": str(self.message.author.id),
             "content": self.sanitize_text(s=self.message.content),
             "created_at": self.message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "channel_name": self.channel_name_or_author_name,
@@ -200,7 +217,7 @@ class MessageLogger(BaseModel):
             "attachments": ";".join(attachment_paths),
             "stickers": ";".join(sticker_paths),
         }
-        await asyncio.to_thread(_write_row_sync, self.table_name, row)
+        await asyncio.to_thread(_write_row_sync, row=row)
 
     async def log(self) -> None:
         """Logs the message if it's not from a bot."""
