@@ -177,7 +177,7 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 - **Do not touch the README badge block.** It may be outdated but is curated.
 - **Prompts live only in `cogs/_gen_reply/prompts.py`.** Service logic stays in `gen_reply.py`; don't mass-extract for symmetry.
 - DO NOT USE `dataclass`, use `pydantic` instead.
-- DO NOT ADD TOO MANY `_*` for global args.
+- DO NOT ADD TOO MANY `_*` for global args and module private constant.
 - **`AsyncOpenAI` is a `cached_property`** on each cog that needs it. Lazy construction is intentional — moving it into `__init__` would fail at import time in tests where env vars aren't loaded. Three independent clients is intentional.
 - **Gemini quirk**: when `reasoning.effort != "none"`, the OpenAI-compat layer prepends `\n\n\n` to streamed text. `_handle_streaming` strips leading newlines on the first delta (`content_started` flag) — don't remove that guard.
 - **Gemini thought summary only flows through the Responses API.** Chat Completions silently drops it via LiteLLM. With `reasoning.effort != "none"` and `reasoning.summary` set, the Responses API emits both `reasoning_summary_text.delta` (condensed) and `reasoning_text.delta` (full). Don't swap call sites back to Chat Completions for "simplicity".
