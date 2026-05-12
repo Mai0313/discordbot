@@ -59,6 +59,8 @@ The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every D
 
 **Spending 虛擬歡樂豆:** the casino games take a bet up-front and pay out when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero balance rejects the round. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
 
+Final casino response embeds are automatically deleted three minutes after the round resolves, and rejected zero-balance bets are also cleaned up after three minutes, so game chatter does not flood busy channels.
+
 | Slash command      | Game                                                                                                                                                     |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/dice <bet>`      | Three dice vs three dice; bigger total wins (push refunds the bet).                                                                                      |

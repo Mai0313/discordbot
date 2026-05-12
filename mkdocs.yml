@@ -20,8 +20,10 @@ nav:
                   - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
               - _economy:
                   - database: Reference/discordbot/cogs/_economy/database.md
+                  - presentation: Reference/discordbot/cogs/_economy/presentation.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
+                  - cleanup: Reference/discordbot/cogs/_games/cleanup.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dice: Reference/discordbot/cogs/_games/dice.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
@@ -60,9 +62,12 @@ nav:
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - artale_data: Scripts/artale_data.md
+      - clear_guild_commands: Scripts/clear_guild_commands.md
       - gen_docs: Scripts/gen_docs.md
       - gpt: Scripts/gpt.md
       - image_dev: Scripts/image_dev.md
+      - modify_balance: Scripts/modify_balance.md
+      - openai_agents: Scripts/openai_agents.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md
