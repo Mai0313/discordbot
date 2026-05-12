@@ -95,6 +95,10 @@ class FakeUser:
         self.bot = bot
         self.mention = f"<@{user_id}>"
         self.display_avatar = SimpleNamespace(url="https://example.test/avatar.png")
+        # /balance and /borrow read user.created_at via the snowflake-derived
+        # timestamp; pin it well into the past so the credit_limit tier lookup
+        # exercises the high-tier branch.
+        self.created_at = datetime.now(tz=UTC) - timedelta(days=365 * 5)
 
 
 class FakeDiscordMessage:
@@ -451,6 +455,7 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(economy, "top_n", fake_top_n)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
+    monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=bot)
     interaction = FakeInteraction(user=FakeUser(user_id=1))
@@ -472,6 +477,10 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
 
 async def fake_get_balance(user_id: int) -> int:
     return 150
+
+
+async def fake_get_loan_view(*, user_id: int) -> None:
+    return None
 
 
 async def fake_top_n(

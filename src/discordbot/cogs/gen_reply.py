@@ -25,9 +25,10 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings, RouteDecision
+from discordbot.typings.economy import TransactionKind
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._gen_reply.views import RegenerateView
-from discordbot.cogs._economy.database import add_balance
+from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._gen_reply.prompts import (
     BELIEF,
     IMAGE_PROMPT,
@@ -575,9 +576,19 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @staticmethod
     async def _award_chat_points(user_id: int, name: str, amount: int) -> int | None:
-        """Persists chat-reward points and returns the new balance, or None on DB failure."""
+        """Persists chat-reward points and returns the new balance, or None on DB failure.
+
+        Routed through ``credit_with_repayment`` so 50% of every reward
+        auto-pays the user's outstanding loan (interest first, then
+        principal). The returned balance reflects what actually landed in
+        the user's wallet; any debt-reduction context is recoverable from
+        ``point_transaction`` rows.
+        """
         try:
-            return await add_balance(user_id=user_id, name=name, amount=amount)
+            result = await credit_with_repayment(
+                user_id=user_id, name=name, amount=amount, kind=TransactionKind.CHAT_REWARD
+            )
+            return result.new_balance
         except Exception:
             logfire.warn("Failed to award chat points", _exc_info=True)
             return None

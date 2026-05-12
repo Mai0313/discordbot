@@ -1,17 +1,31 @@
-"""Slash commands that surface point balances, the leaderboard, and transfers."""
+"""Slash commands that surface point balances, the leaderboard, transfers, and loans."""
+
+from datetime import UTC, datetime
 
 import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
-from discordbot.cogs._economy.database import top_n, transfer, get_account, get_balance
+from discordbot.cogs._economy.database import (
+    repay,
+    top_n,
+    borrow,
+    transfer,
+    get_account,
+    get_balance,
+    credit_limit,
+    accrual_delta,
+    get_loan_view,
+)
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
 _TRANSFER_COLOR = 0x5865F2
 _HOUSE_COLOR = 0xEB459E
+_BORROW_COLOR = 0xF1C40F
+_REPAY_COLOR = 0x2ECC71
 _ERROR_COLOR = 0xED4245
 
 _LEADERBOARD_LIMIT = 10
@@ -25,7 +39,7 @@ async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> 
 
 
 class EconomyCogs(commands.Cog):
-    """Player-facing point balance commands.
+    """Player-facing point balance and loan commands.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -41,16 +55,16 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="balance",
-        description=f"Check your current {CURRENCY_NAME} balance.",
+        description=f"Check your current {CURRENCY_NAME} balance and loan status.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額。",
-            Locale.ja: f"現在の{CURRENCY_NAME}残高を確認します。",
+            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額與欠款狀態。",
+            Locale.ja: f"現在の{CURRENCY_NAME}残高と借入状況を確認します。",
         },
         nsfw=False,
     )
     async def balance(self, interaction: Interaction) -> None:
-        """Replies with the caller's current balance.
+        """Replies with the caller's current balance and any outstanding loan.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -58,16 +72,47 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         if interaction.user is None:
             return
-        amount = await get_balance(user_id=interaction.user.id)
+        user = interaction.user
+        amount = await get_balance(user_id=user.id)
+        loan = await get_loan_view(user_id=user.id)
+        limit = credit_limit(user=user)
+        age_days = (datetime.now(tz=UTC) - user.created_at).days
+
+        description = f"{user.mention} 目前持有 **{currency_text(amount=amount)}**。"
         embed = Embed(
-            title=f":coin: {CURRENCY_NAME}餘額",
-            description=f"{interaction.user.mention} 目前持有 **{currency_text(amount=amount)}**。",
-            color=_BALANCE_COLOR,
+            title=f":coin: {CURRENCY_NAME}餘額", description=description, color=_BALANCE_COLOR
         )
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(
-            text=f"跟機器人聊天可以累積{CURRENCY_NAME}, 輸入 /dice、/blackjack 或 /dragon_gate 來下注。"
-        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+
+        has_debt = False
+        if loan is not None and (loan.principal > 0 or loan.interest_stored > 0):
+            has_debt = True
+            pending_interest = 0
+            if loan.last_accrual_at is not None and loan.principal > 0:
+                pending_interest = accrual_delta(
+                    principal=loan.principal,
+                    last_accrual_at=loan.last_accrual_at,
+                    now=datetime.now(tz=UTC),
+                )
+            effective_interest = loan.interest_stored + pending_interest
+            embed.description = (
+                f"{description}\n下次賺到的點數會自動 50% 用來償還欠款 (利息優先, 本金其次)。"
+            )
+            embed.add_field(
+                name="未還本金", value=currency_text(amount=loan.principal), inline=True
+            )
+            embed.add_field(
+                name="累積利息", value=currency_text(amount=effective_interest), inline=True
+            )
+
+        footer_lines: list[str] = [
+            f"帳號年齡 {age_days} 天 · 借款上限 {currency_text(amount=limit)}"
+        ]
+        if not has_debt:
+            footer_lines.append(
+                f"跟機器人聊天可以累積{CURRENCY_NAME}, /dice、/blackjack 或 /dragon_gate 可下注。"
+            )
+        embed.set_footer(text="\n".join(footer_lines))
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -264,6 +309,145 @@ class EconomyCogs(commands.Cog):
         )
         embed.add_field(name="莊家賠給玩家", value=currency_text(amount=total_spent), inline=True)
         embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負。")
+        await _send_expiring_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="borrow",
+        description=f"Borrow {CURRENCY_NAME} against your Discord account age.",
+        name_localizations={Locale.zh_TW: "貸款", Locale.ja: "借入"},
+        description_localizations={
+            Locale.zh_TW: (
+                f"用 Discord 帳號年齡換取{CURRENCY_NAME}借款 "
+                "(日利息 1%, 之後賺到的點數會自動 50% 抵債)。"
+            ),
+            Locale.ja: (
+                f"Discord アカウント年齢に応じて{CURRENCY_NAME}を借入します "
+                "(日利1%, 以降の獲得分は50%自動返済)。"
+            ),
+        },
+        nsfw=False,
+    )
+    async def borrow_loan(
+        self,
+        interaction: Interaction,
+        amount: int = SlashOption(
+            name="amount",
+            description=f"How much {CURRENCY_NAME} to borrow (must be positive).",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: f"要借入的{CURRENCY_NAME} (必須大於 0)。",
+                Locale.ja: f"借入する{CURRENCY_NAME} (1以上)。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Borrows ``amount`` points against the caller's credit limit.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            amount: How many points to borrow.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        user = interaction.user
+        limit = credit_limit(user=user)
+        result = await borrow(
+            user_id=user.id, name=user.name, amount=amount, credit_limit_value=limit
+        )
+        if result is None:
+            loan = await get_loan_view(user_id=user.id)
+            current_debt = (loan.principal + loan.interest_stored) if loan else 0
+            remaining = max(limit - current_debt, 0)
+            embed = Embed(
+                title=":x: 借款失敗",
+                description=(
+                    f"額度不足。借款上限 **{currency_text(amount=limit)}**, "
+                    f"目前欠款 **{currency_text(amount=current_debt)}**, "
+                    f"還能再借 **{currency_text(amount=remaining)}**。"
+                ),
+                color=_ERROR_COLOR,
+            )
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
+        embed = Embed(
+            title=":coin: 借款成功",
+            description=(
+                f"已撥款 **{currency_text(amount=amount)}** 到 {user.mention} 的帳戶。\n"
+                f"目前持有 **{currency_text(amount=result.new_balance)}**, "
+                f"未還本金 **{currency_text(amount=result.principal)}**。\n"
+                "之後賺到的點數會自動 50% 用來償還, 利息每日 1%。"
+            ),
+            color=_BORROW_COLOR,
+        )
+        embed.set_footer(text=f"借款上限 {currency_text(amount=limit)}。")
+        await _send_expiring_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="repay",
+        description=f"Repay your outstanding {CURRENCY_NAME} loan from your balance.",
+        name_localizations={Locale.zh_TW: "還款", Locale.ja: "返済"},
+        description_localizations={
+            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款 (利息優先, 本金其次)。",
+            Locale.ja: f"残高から{CURRENCY_NAME}の借入を返済します (利息優先, 本金次)。",
+        },
+        nsfw=False,
+    )
+    async def repay_loan(
+        self,
+        interaction: Interaction,
+        amount: int = SlashOption(
+            name="amount",
+            description=f"Maximum {CURRENCY_NAME} to apply against the debt.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME} (自動 clamp 到欠款額)。",
+                Locale.ja: f"返済する{CURRENCY_NAME}の上限 (借入額にクランプ)。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Pays down outstanding interest then principal from the caller's balance.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            amount: Maximum amount to repay; clamped to ``min(amount, balance, debt)``.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        user = interaction.user
+
+        result = await repay(user_id=user.id, name=user.name, amount=amount)
+        if result is None:
+            balance_now = await get_balance(user_id=user.id)
+            loan = await get_loan_view(user_id=user.id)
+            debt = (loan.principal + loan.interest_stored) if loan else 0
+            if debt == 0:
+                reason = "你目前沒有欠款。"
+            elif balance_now == 0:
+                reason = f"目前餘額為 0, 無法還款 (欠 **{currency_text(amount=debt)}**)。"
+            else:
+                reason = "還款失敗, 請稍後再試。"
+            embed = Embed(title=":x: 還款失敗", description=reason, color=_ERROR_COLOR)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
+        effective = result.interest_repaid + result.principal_repaid
+        embed = Embed(
+            title=":receipt: 還款成功",
+            description=(
+                f"從 {user.mention} 餘額扣款 **{currency_text(amount=effective)}** "
+                f"(利息 **{currency_text(amount=result.interest_repaid)}**, "
+                f"本金 **{currency_text(amount=result.principal_repaid)}**)。\n"
+                f"目前持有 **{currency_text(amount=result.new_balance)}**, "
+                f"剩餘欠款 **{currency_text(amount=result.remaining_debt)}**。"
+            ),
+            color=_REPAY_COLOR,
+        )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
 

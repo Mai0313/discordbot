@@ -42,7 +42,11 @@ _HELP_CONTENT = {
             f"Earn {CURRENCY_NAME} from AI chat replies, then use them across servers.\n"
             "`/balance` check your balance · `/leaderboard` show the global top 10\n"
             f"`/give` transfer {CURRENCY_NAME} · `/house` show the dealer's running P&L\n"
-            "`/balance`, `/leaderboard`, and `/house` results clean themselves up after 3 minutes."
+            "`/borrow` take out a loan (cap scales with your Discord account age, "
+            "1%/day simple interest); `/repay` pay debt from your balance.\n"
+            "Every income event after a loan auto-applies 50% toward debt (interest first).\n"
+            "`/balance`, `/leaderboard`, `/house`, `/borrow`, and `/repay` results "
+            "clean themselves up after 3 minutes."
         ),
         "games": (
             "**Games**\n"
@@ -87,10 +91,13 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
-            f"AI chat 回覆會累積{CURRENCY_NAME}，{CURRENCY_NAME}跨 server 共用。\n"
-            "`/balance` 查餘額 · `/leaderboard` 看 global 前 10 名\n"
+            f"AI chat 回覆會累積{CURRENCY_NAME}, {CURRENCY_NAME}跨 server 共用。\n"
+            "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名\n"
             "`/give` 轉虛擬歡樂豆 · `/house` 看莊家累積 P&L\n"
-            "`/balance`、`/leaderboard`、`/house` 查詢結果會在 3 分鐘後自動清掉。"
+            "`/borrow` 依 Discord 帳號年齡借款 (日利息 1%); "
+            "`/repay` 從餘額還款 (利息優先)。\n"
+            "借款後賺到的點數會自動 50% 用來抵債 (利息優先, 本金其次)。\n"
+            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` 結果 3 分鐘後自動清掉。"
         ),
         "games": (
             "**小遊戲**\n"
@@ -136,9 +143,12 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME}**\n"
             f"AI チャット返信で{CURRENCY_NAME}を獲得し、サーバーをまたいで使えます。\n"
-            "`/balance` 残高確認 · `/leaderboard` グローバルトップ10\n"
+            "`/balance` 残高と借入状況を確認 · `/leaderboard` グローバルトップ10\n"
             f"`/give` {CURRENCY_NAME}送付 · `/house` ディーラーの累計損益\n"
-            "`/balance`、`/leaderboard`、`/house` の結果は3分後に自動削除されます。"
+            "`/borrow` Discord アカウント年齢に応じて借入 (日利1%); "
+            "`/repay` 残高から返済 (利息優先)。\n"
+            "借入後の獲得点数は50%が自動的に返済に充当されます (利息優先、元本次)。\n"
+            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` の結果は3分後に自動削除されます。"
         ),
         "games": (
             "**ゲーム**\n"

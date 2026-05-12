@@ -58,21 +58,31 @@ Flow per `on_message`:
 7. **Attachment ingestion** (`_get_attachment_parts`) is gated by `get_supported_modalities(model_name=slow_model.name)` from `utils/model_pricing.py`. Attachments whose modality the slow model doesn't accept are dropped before any LLM call. Images go through `_image_to_part` (PIL resize + JPEG re-encode, sent as `input_image` data URI); everything else (`video/*`, `application/pdf`, `text/plain`, …) goes through `_attachment_to_part` as `input_file`. For Discord embeds, `media.discordapp.net` `proxy_url` is preferred over the origin URL since CDN links expire.
 8. History / reference / current messages are fetched in parallel via `asyncio.gather`. The tasks list is built in a `for` loop on its own line, then gathered — don't collapse into a comprehension.
 
-### Economy (`cogs/economy.py` + `cogs/_economy/database.py`)
+### Economy (`cogs/economy.py` + `cogs/_economy/database.py` + `typings/economy.py`)
 
-Persistent point balances backing the chat reward, casino games, house ledger, and `/balance` / `/leaderboard` / `/give` / `/house`.
+Persistent point balances backing the chat reward, casino games, house ledger, loans, and `/balance` / `/leaderboard` / `/give` / `/house` / `/borrow` / `/repay`.
 
 - **DB**: SQLite at `data/economy.db` (NOT `messages.db`). The `AsyncEngine` is a module-level singleton (`_engine`). Do not move it onto a `cached_property` — that's the same memory-leak pattern `log_msg.py` already learned.
-- **Schema**: `UserAccount(user_id PK, name, balance, total_earned, total_spent, updated_at)`. **No `guild_id`** — points are cross-server by design, so `/leaderboard` is a global Top 10.
+- **Schema**:
+    - `UserAccount(user_id PK, name, balance, total_earned, total_spent, updated_at, loan_principal, loan_interest, loan_total_borrowed, loan_total_repaid, loan_last_accrual_at, loan_opened_at)`. **No `guild_id`** — points are cross-server by design, so `/leaderboard` is a global Top 10 and loans are also cross-server. Loan columns live on the same row so chat reward / casino payout can pay debt inside one UPDATE.
+    - `PointTransaction(id PK, user_id, kind, delta, balance_after, debt_after, note, occurred_at)` — append-only audit log; every balance-mutating helper writes one row via `_log_transaction_in_session`. `delta == 0` is intentionally skipped to keep push settlements out of the log. `kind` values come from `typings.economy.TransactionKind`.
 - **API surface** (all native async; each function opens `AsyncSession(bind=_engine, expire_on_commit=False)` directly so tests can monkeypatch `_engine` and the swap takes effect immediately):
-    - `add_balance(user_id, name, amount)` — chat reward.
-    - `place_bet(user_id, name, requested_bet)` — atomic upfront wager withdrawal. Over-bets auto-clamp to "all-in"; returns `PlacedBet(amount, balance_after, is_allin)` or `None`.
-    - `settle_game(user_id, name, delta)` — player payout. Clamps to ≥ 0.
-    - `house_settle(user_id, name, delta)` — dealer-side mirror of player payouts (negated). **Does not clamp at zero** — the bot's balance can and should go negative when the casino is losing.
-    - `transfer(...)` — atomic conditional debit + credit; returns `TransferResult` or `None`.
+    - `add_balance(user_id, name, amount)` — **low-level credit primitive**, does not log, does not auto-repay. Used by tests and internal helpers.
+    - `credit_with_repayment(user_id, name, amount, kind, note=None)` — chat reward / casino payout path. **50% of every income event auto-repays outstanding debt** (interest first, then principal). Returns `CreditResult`.
+    - `place_bet(user_id, name, requested_bet)` — atomic upfront wager withdrawal. Over-bets auto-clamp to "all-in"; returns `PlacedBet(amount, balance_after, is_allin)` or `None`. Logs `CASINO_BET`.
+    - `settle_game(user_id, name, delta)` — player payout. Clamps to ≥ 0. Logs the *applied* delta (post-clamp) as `CASINO_PAYOUT`.
+    - `house_settle(user_id, name, delta)` — dealer-side mirror of player payouts (negated). **Does not clamp at zero** — the bot's balance can and should go negative when the casino is losing. Logs `HOUSE_SETTLE`.
+    - `transfer(...)` — atomic conditional debit + credit; returns `TransferResult` or `None`. Logs `TRANSFER_OUT` + `TRANSFER_IN` in the same transaction.
+    - `apply_round_settlement(...)` — atomic casino settlement; player side goes through `credit_with_repayment` (so casino wins auto-repay debt), dealer side through `house_settle`.
+    - `borrow(user_id, name, amount, credit_limit_value)` — `principal + interest + amount ≤ credit_limit_value` or rejected. Disburses to balance but **does not** bump `total_earned`. Logs `BORROW`.
+    - `repay(user_id, name, amount)` — debits user balance, pays interest first then principal. Clamps to `min(amount, balance, debt_total)`. Does **not** bump `total_spent` (repayment isn't gameplay spending; `loan_total_repaid` is the tracking column). Logs `REPAY`.
+    - `get_loan_view(user_id)` — read-only `LoanView` snapshot; callers compute pending interest via `accrual_delta(principal=…, last_accrual_at=…, now=…)`.
+    - `credit_limit(user)` — pure function; tiered by Discord account age (`User.created_at`, snowflake-derived, free): \<30d→1k, \<180d→10k, \<1y→50k, \<3y→200k, ≥3y→500k. Identical in DMs / guilds / across servers. Inline tier table in the function body — don't extract a module-level constant.
+    - `accrual_delta(...)` — pure function; simple 1%/day interest on outstanding principal, `int()`-floored so sub-point fractions accumulate across calls instead of being permanently rounded off (`_accrue_interest_in_session` leaves `loan_last_accrual_at` untouched when the floor is zero).
     - `top_n(limit, exclude_user_ids=())` — `/leaderboard` data source; always called with `(bot.user.id,)` so the house never crowds out real players.
     - `get_account(user_id)` — used by `/house` to surface gross flows.
-- **Bet flow**: bets are withdrawn up-front via `place_bet`, then the round resolves through `cogs/_games/settlement.py:settle_wager(...)`, which computes `payout = max(bet + player_delta, 0)`, credits via `settle_game(delta=payout)`, and mirrors `-player_delta` into `house_settle`. Regular win pays `2 * bet`, push pays `bet`, loss pays `0`, natural Blackjack pays `int(bet * 2.5)`. Up-front withdrawal prevents parallel-command double-spends.
+- **Bet flow**: bets are withdrawn up-front via `place_bet`, then the round resolves through `cogs/_games/settlement.py:settle_wager(...)`, which computes `payout = max(bet + player_delta, 0)`, credits via `apply_round_settlement` (which routes the player payout through `credit_with_repayment(kind=CASINO_PAYOUT)` for 50% auto-repay), and mirrors `-player_delta` into `house_settle`. Regular win pays `2 * bet`, push pays `bet`, loss pays `0`, natural Blackjack pays `int(bet * 2.5)`. Up-front withdrawal prevents parallel-command double-spends.
+- **Loan flow**: `/borrow` disburses against `credit_limit(user)`; `/repay` pays interest-then-principal from balance. Interest accrues lazily: every loan helper calls `_accrue_interest_in_session` before reading state, so there's no background task. The 50% auto-repay rule applies on every chat reward and casino payout; `/give` receiver is **not** auto-repaid (gifts shouldn't be confiscated). `/balance` shows `未還本金` / `累積利息` fields (with pending accrual added) when the user has debt, and a `帳號年齡 X 天 · 借款上限 Y` footer either way.
 
 ### Games (`cogs/games.py` + `cogs/_games/`)
 
@@ -116,6 +126,7 @@ Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasCh
 - `DiscordConfig` — `DISCORD_BOT_TOKEN` (required), `DISCORD_TEST_SERVER_ID` (optional, enables instant-sync to one guild).
 - `LLMConfig` — `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
 - `ModelSettings` / `RouteDecision` (not env config, same package). `ModelSettings(name, effort)` builds the Responses-API reasoning block and dispatches the right provider's web-search tool. Accepted input modalities are looked up via `utils/model_pricing.get_supported_modalities` (kept out of `typings/` to avoid `utils/` imports).
+- `economy.py` — pure frozen `pydantic.BaseModel` types (`LoanView`, `CreditResult`, `BorrowResult`, `RepayResult`) and the `TransactionKind` enum, imported by `cogs/_economy/database.py`. Pure types go here even when they're not env-backed config, as long as they don't pull in `cogs/` or `utils/`.
 
 Keep `Field(description=..., examples=...)` populated when adding configurable values — descriptions are load-bearing here.
 
@@ -144,7 +155,7 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 - `maplestory/` — Artale JSON dataset.
 - `downloads/`, `threads/` — ephemeral media scratch (cleaned up by their respective cogs).
 - `messages.db` — message log.
-- `economy.db` — point balances.
+- `economy.db` — point balances, loan state, and `point_transaction` audit log.
 - `model_prices.json` — cached LiteLLM price table.
 
 ## Coding conventions

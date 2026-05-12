@@ -6,15 +6,17 @@ connection pool, dialect cache, and inspector cache for every Discord
 interaction (the same lesson `cogs/log_msg.py` captures for the sync engine
 it still uses for pandas `to_sql`).
 
-Every write path is an **atomic** SQL statement — either a SQLite UPSERT
-(`INSERT ... ON CONFLICT DO UPDATE`) or a conditional
+Every balance-mutating write path is an **atomic** SQL statement — either a
+SQLite UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a conditional
 `UPDATE ... WHERE ... RETURNING`. The previous implementation read the row
 in Python, mutated `account.balance`, and committed; two coroutines racing
 on the same user would lose updates, and two coroutines racing on a
 brand-new user would both `INSERT` and one would raise `IntegrityError`.
-The UPSERT pattern fixes both. `place_bet` keeps a SELECT-then-UPDATE
-retry loop because it needs to return the actual `effective_bet`, but the
-retry is bounded and the WHERE clause guarantees no double-spend.
+The UPSERT pattern fixes both. `place_bet`, `repay` and the inner
+`_credit_with_repayment_in_session` keep a SELECT-then-conditional-UPDATE
+retry loop because they need to inspect the current value to compute the
+delta, but the retry is bounded and the WHERE clause guarantees no
+double-spend.
 
 PRAGMA setup at connect-time enables WAL (so reads don't block on writes),
 sets a tolerant `busy_timeout`, and picks `synchronous=NORMAL` (the right
@@ -25,6 +27,12 @@ We use `aiosqlite` so every DB call stays on the event loop: no
 `asyncio.to_thread` shim, no separate `_*_sync` helpers. Each operation
 opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
+
+Loan support is integrated into the same ``user_account`` row (no separate
+``loan_account`` table) so chat reward and casino payout can pay down debt
+inside the same single-row UPDATE. The audit log lives in a separate
+``point_transaction`` table that every mutating helper writes into via
+``_log_transaction_in_session``.
 """
 
 from typing import Any, Final
@@ -37,10 +45,21 @@ from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
-# place_bet keeps a small retry budget for the SELECT-then-conditional-UPDATE
-# loop. With WAL + busy_timeout, contention is rare and resolves on the
-# first or second retry; the bound prevents a degenerate hot-row livelock.
+from discordbot.typings.economy import (
+    LoanView,
+    RepayResult,
+    BorrowResult,
+    CreditResult,
+    TransactionKind,
+)
+
+# place_bet / repay / _credit_with_repayment_in_session keep a small retry
+# budget for SELECT-then-conditional-UPDATE loops. With WAL + busy_timeout,
+# contention is rare and resolves on the first or second retry; the bound
+# prevents a degenerate hot-row livelock.
 _PLACE_BET_MAX_RETRIES: Final[int] = 8
+_CREDIT_WITH_REPAYMENT_MAX_RETRIES: Final[int] = 8
+_REPAY_MAX_RETRIES: Final[int] = 8
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
 
@@ -63,12 +82,17 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
     cursor.close()
 
 
-class _Base(DeclarativeBase):
-    """Declarative base for economy tables."""
+class Base(DeclarativeBase):
+    pass
 
 
-class UserAccount(_Base):
-    """Persistent point balance for a Discord user.
+class UserAccount(Base):
+    """Persistent balance and loan state for a Discord user.
+
+    Loan-related columns live on the same row as the balance so a single
+    UPDATE can credit balance and pay down debt atomically. ``loan_opened_at``
+    and ``loan_last_accrual_at`` are nullable because a user that has never
+    borrowed has no opening date and no accrual baseline.
 
     Attributes:
         user_id: Discord user ID; primary key.
@@ -77,6 +101,14 @@ class UserAccount(_Base):
         total_earned: Lifetime points earned (chat rewards, game wins, transfers in).
         total_spent: Lifetime points removed (game losses, transfers out).
         updated_at: UTC timestamp of the last write.
+        loan_principal: Currently outstanding loan principal.
+        loan_interest: Currently accrued (and not-yet-paid) interest.
+        loan_total_borrowed: Lifetime gross borrowed amount.
+        loan_total_repaid: Lifetime gross repaid amount.
+        loan_last_accrual_at: Timestamp the stored interest was last brought
+            up to date; ``None`` while the user has never borrowed.
+        loan_opened_at: Timestamp the user first borrowed; ``None`` while
+            the user has never borrowed.
     """
 
     __tablename__ = "user_account"
@@ -97,6 +129,45 @@ class UserAccount(_Base):
         default=lambda: datetime.now(tz=UTC),
         onupdate=lambda: datetime.now(tz=UTC),
     )
+    loan_principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    loan_interest: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    loan_total_borrowed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    loan_total_repaid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    loan_last_accrual_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    loan_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PointTransaction(Base):
+    """Append-only audit log of every persistent balance change.
+
+    One row per balance-mutating event. ``balance_after`` and ``debt_after``
+    reflect the user's state *after* the row's write, so consecutive rows
+    for the same user can be diffed to reconstruct every income / spend.
+
+    Attributes:
+        id: Autoincrementing primary key.
+        user_id: Discord user ID this row belongs to.
+        kind: ``TransactionKind`` enum value as string.
+        delta: Signed change applied to balance by this transaction.
+        balance_after: Balance after this transaction.
+        debt_after: ``loan_principal + loan_interest`` after this transaction.
+        note: Optional free-text annotation (e.g. counterparty for transfers).
+        occurred_at: UTC timestamp of the event.
+    """
+
+    __tablename__ = "point_transaction"
+    __table_args__ = (Index("ix_point_transaction_user_time", "user_id", "occurred_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(length=32), nullable=False)
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    debt_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(String(length=256), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 @dataclass(frozen=True)
@@ -130,7 +201,7 @@ class TransferResult:
 async def _create_schema(engine: AsyncEngine) -> None:
     """Creates tables and indexes on first use; safe to call repeatedly."""
     async with engine.begin() as conn:
-        await conn.run_sync(_Base.metadata.create_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 
 # Track which engine the schema has already been bootstrapped on. Storing
@@ -160,6 +231,67 @@ def open_session() -> AsyncSession:
         An `AsyncSession` using the current module-level `_engine`.
     """
     return AsyncSession(bind=_engine, expire_on_commit=False)
+
+
+def credit_limit(*, user: Any) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
+    """Returns the borrowing cap for a Discord account based on its age.
+
+    Computed entirely from ``user.created_at`` (which Discord reconstructs
+    from the snowflake ID), so the same cap applies in DMs, guilds, and
+    across servers, and a freshly-created account cannot farm by re-joining
+    different guilds. Older Discord accounts borrow more because they
+    represent a more stable identity.
+
+    Args:
+        user: A ``nextcord.User`` or ``nextcord.Member`` whose ``created_at``
+            timestamp is inspected.
+
+    Returns:
+        Maximum total debt (principal + accrued interest) the account is
+        allowed to carry at any single time.
+    """
+    age_days = (datetime.now(tz=UTC) - user.created_at).days
+    if age_days < 30:
+        return 1_000
+    if age_days < 180:
+        return 10_000
+    if age_days < 365:
+        return 50_000
+    if age_days < 365 * 3:
+        return 200_000
+    return 500_000
+
+
+def accrual_delta(*, principal: int, last_accrual_at: datetime, now: datetime) -> int:
+    """Returns whole-point interest accrued since ``last_accrual_at``.
+
+    Simple interest at 1% per day on the outstanding principal. Compounding
+    is intentionally absent so the user can predict the cost. Returns 0
+    when the elapsed days * principal floors to zero so sub-point fractions
+    accumulate across calls instead of being permanently rounded off.
+
+    SQLite returns naive datetimes for ``DateTime(timezone=True)`` columns,
+    so both arguments are coerced to UTC-aware before arithmetic — the
+    persisted timestamps were always written as UTC.
+
+    Args:
+        principal: Outstanding principal at the reference time.
+        last_accrual_at: Timestamp the stored interest was last brought up to date.
+        now: Reference time for the accrual.
+
+    Returns:
+        Whole-point interest delta to add to ``loan_interest``; always >= 0.
+    """
+    if principal <= 0:
+        return 0
+    if last_accrual_at.tzinfo is None:
+        last_accrual_at = last_accrual_at.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    elapsed_days = (now - last_accrual_at).total_seconds() / 86400.0
+    if elapsed_days <= 0:
+        return 0
+    return int(principal * 0.01 * elapsed_days)
 
 
 def _build_credit_upsert(
@@ -274,12 +406,312 @@ def _build_signed_delta_upsert(
     )
 
 
+async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on purpose
+    session: AsyncSession,
+    *,
+    user_id: int,
+    kind: TransactionKind,
+    delta: int,
+    balance_after: int,
+    note: str | None,
+    now: datetime,
+    debt_after: int | None = None,
+) -> None:
+    """Appends one row to ``point_transaction`` from inside the caller's session.
+
+    Skips the write when ``delta == 0`` so push-style settlements (where the
+    house ledger doesn't actually move) don't clutter the audit log. When
+    ``debt_after`` is not supplied, a single SELECT reads the user's current
+    debt to keep the row self-contained; callers that have just computed the
+    new debt locally should pass it in to skip the read.
+    """
+    if delta == 0:
+        return
+    if debt_after is None:
+        debt_result = await session.execute(
+            statement=select(UserAccount.loan_principal, UserAccount.loan_interest).where(
+                UserAccount.user_id == user_id
+            )
+        )
+        debt_row = debt_result.one_or_none()
+        debt_after = (debt_row[0] + debt_row[1]) if debt_row is not None else 0
+    await session.execute(
+        statement=insert(PointTransaction).values(
+            user_id=user_id,
+            kind=kind.value,
+            delta=delta,
+            balance_after=balance_after,
+            debt_after=debt_after,
+            note=note,
+            occurred_at=now,
+        )
+    )
+
+
+async def _accrue_interest_in_session(
+    session: AsyncSession, *, user_id: int, now: datetime
+) -> None:
+    """Brings ``loan_interest`` up to date in the caller's session.
+
+    Computes the accrual in Python (``accrual_delta``), then applies it with
+    a conditional UPDATE gated on the principal and last-accrual values we
+    just read. If a concurrent transaction accrues at the same moment the
+    conditional UPDATE matches no row, this helper silently no-ops; the
+    next accrual will pick up where the winning writer left off.
+
+    Sub-point fractions (``int()`` floor of ``principal * 0.01 * elapsed``)
+    are intentionally not persisted, and ``loan_last_accrual_at`` is left
+    untouched when the floor is zero so those fractions accumulate across
+    calls instead of evaporating.
+    """
+    read_result = await session.execute(
+        statement=select(UserAccount.loan_principal, UserAccount.loan_last_accrual_at).where(
+            UserAccount.user_id == user_id
+        )
+    )
+    row = read_result.one_or_none()
+    if row is None:
+        return
+    principal, last_accrual = row[0], row[1]
+    if principal <= 0 or last_accrual is None:
+        return
+    delta = accrual_delta(principal=principal, last_accrual_at=last_accrual, now=now)
+    if delta <= 0:
+        return
+    await session.execute(
+        statement=update(UserAccount)
+        .where(
+            UserAccount.user_id == user_id,
+            UserAccount.loan_principal == principal,
+            UserAccount.loan_last_accrual_at == last_accrual,
+        )
+        .values(
+            loan_interest=UserAccount.loan_interest + delta,
+            loan_last_accrual_at=now,
+            updated_at=now,
+        )
+    )
+
+
+async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row income pipeline kept linear for readability
+    session: AsyncSession,
+    *,
+    user_id: int,
+    name: str,
+    amount: int,
+    kind: TransactionKind,
+    note: str | None,
+    now: datetime,
+) -> CreditResult:
+    """Inner credit-with-50%-auto-repay pipeline; caller must commit the session.
+
+    Pipeline (all inside the caller's transaction):
+
+    1. ``_accrue_interest_in_session`` brings ``loan_interest`` up to date.
+    2. SELECT current balance + loan state.
+    3. ``to_repay = min(amount // 2, principal + interest)``.
+    4. Interest is paid first, then principal; remainder credits to balance.
+    5. Conditional UPDATE gated on the values we read; retry on conflict.
+    6. ``_log_transaction_in_session`` writes one audit row with
+       ``delta = credited_amount`` and the freshly computed ``debt_after``.
+
+    Caller must guarantee ``amount > 0``.
+    """
+    await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+
+    for _ in range(_CREDIT_WITH_REPAYMENT_MAX_RETRIES):
+        read_result = await session.execute(
+            statement=select(
+                UserAccount.balance,
+                UserAccount.name,
+                UserAccount.loan_principal,
+                UserAccount.loan_interest,
+                UserAccount.total_earned,
+                UserAccount.loan_total_repaid,
+            ).where(UserAccount.user_id == user_id)
+        )
+        row = read_result.one_or_none()
+
+        if row is None:
+            # No existing row → straight credit, no debt to pay down. UPSERT
+            # protects against a parallel INSERT that may have just landed.
+            insert_name = name or str(user_id)
+            base_stmt = insert(UserAccount).values(
+                user_id=user_id,
+                name=insert_name,
+                balance=amount,
+                total_earned=amount,
+                total_spent=0,
+                loan_principal=0,
+                loan_interest=0,
+                loan_total_borrowed=0,
+                loan_total_repaid=0,
+                loan_last_accrual_at=None,
+                loan_opened_at=None,
+                updated_at=now,
+            )
+            set_values: dict[str, Any] = {
+                "balance": UserAccount.balance + amount,
+                "total_earned": UserAccount.total_earned + amount,
+                "updated_at": now,
+            }
+            if name:
+                set_values["name"] = insert_name
+            upsert_stmt = base_stmt.on_conflict_do_update(
+                index_elements=["user_id"], set_=set_values
+            ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
+            insert_result = await session.execute(statement=upsert_stmt)
+            balance_after, principal_after, interest_after = insert_result.one()
+            await _log_transaction_in_session(
+                session=session,
+                user_id=user_id,
+                kind=kind,
+                delta=amount,
+                balance_after=balance_after,
+                debt_after=principal_after + interest_after,
+                note=note,
+                now=now,
+            )
+            return CreditResult(
+                new_balance=balance_after,
+                credited_amount=amount,
+                interest_repaid=0,
+                principal_repaid=0,
+                remaining_debt=principal_after + interest_after,
+            )
+
+        (starting_balance, existing_name, principal, interest, total_earned, total_repaid) = row
+        debt_total = principal + interest
+        to_repay = min(amount // 2, debt_total)
+        interest_repaid = min(to_repay, interest)
+        principal_repaid = to_repay - interest_repaid
+        credited = amount - to_repay
+
+        new_balance = starting_balance + credited
+        new_interest = interest - interest_repaid
+        new_principal = principal - principal_repaid
+        new_total_earned = total_earned + credited
+        new_total_repaid = total_repaid + to_repay
+
+        update_values: dict[str, Any] = {
+            "balance": new_balance,
+            "total_earned": new_total_earned,
+            "loan_interest": new_interest,
+            "loan_principal": new_principal,
+            "loan_total_repaid": new_total_repaid,
+            "updated_at": now,
+        }
+        if name and name != existing_name:
+            update_values["name"] = name
+
+        stmt = (
+            update(UserAccount)
+            .where(
+                UserAccount.user_id == user_id,
+                UserAccount.balance == starting_balance,
+                UserAccount.loan_principal == principal,
+                UserAccount.loan_interest == interest,
+            )
+            .values(**update_values)
+            .returning(UserAccount.balance)
+        )
+        update_result = await session.execute(statement=stmt)
+        if update_result.one_or_none() is None:
+            # Conflicting write between our SELECT and UPDATE; nothing has
+            # been committed in this helper yet, so re-read and try again.
+            continue
+
+        await _log_transaction_in_session(
+            session=session,
+            user_id=user_id,
+            kind=kind,
+            delta=credited,
+            balance_after=new_balance,
+            debt_after=new_principal + new_interest,
+            note=note,
+            now=now,
+        )
+        return CreditResult(
+            new_balance=new_balance,
+            credited_amount=credited,
+            interest_repaid=interest_repaid,
+            principal_repaid=principal_repaid,
+            remaining_debt=new_principal + new_interest,
+        )
+
+    raise RuntimeError(f"credit_with_repayment retry budget exhausted for user_id={user_id}")
+
+
+async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both ledger keys + kind
+    session: AsyncSession,
+    *,
+    user_id: int,
+    name: str,
+    delta: int,
+    kind: TransactionKind,
+    now: datetime,
+) -> int:
+    """Applies a clamped settle delta and logs the resulting audit row.
+
+    The clamp means a stale caller asking for a larger loss than the user
+    can afford settles as "spent everything you had", not as a negative
+    balance. To log the *applied* delta rather than the requested one,
+    this helper reads the pre-update balance first and diffs against the
+    post-update value returned by the UPSERT.
+    """
+    pre_result = await session.execute(
+        statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+    )
+    pre_balance = pre_result.scalar_one_or_none() or 0
+    stmt = _build_clamped_settle_upsert(user_id=user_id, name=name, delta=delta, now=now)
+    result = await session.execute(statement=stmt)
+    new_balance = result.scalar_one()
+    applied = new_balance - pre_balance
+    await _log_transaction_in_session(
+        session=session,
+        user_id=user_id,
+        kind=kind,
+        delta=applied,
+        balance_after=new_balance,
+        note=None,
+        now=now,
+    )
+    return new_balance
+
+
+async def _house_settle_in_session(
+    session: AsyncSession, *, user_id: int, name: str, delta: int, now: datetime
+) -> int:
+    """Applies a signed delta to the dealer ledger and logs the audit row.
+
+    Unlike ``_settle_game_in_session`` this never clamps; the dealer is
+    allowed to go negative. The applied delta equals the requested delta
+    so no pre-read is required.
+    """
+    stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
+    result = await session.execute(statement=stmt)
+    new_balance = result.scalar_one()
+    await _log_transaction_in_session(
+        session=session,
+        user_id=user_id,
+        kind=TransactionKind.HOUSE_SETTLE,
+        delta=delta,
+        balance_after=new_balance,
+        note=None,
+        now=now,
+    )
+    return new_balance
+
+
 async def add_balance(user_id: int, name: str, amount: int) -> int:
-    """Adds points to the user balance.
+    """Adds points to the user balance without touching the loan state.
 
     Non-positive amounts no-op and return the existing balance so callers
     can pass raw token counts (which can be 0 for cached responses) without
-    a guard.
+    a guard. Intentionally **does not** trigger 50% auto-repayment; this
+    is the low-level credit primitive (mainly used by tests and any future
+    "no-questions-asked" credit path). Production code paths that should
+    pay down debt use ``credit_with_repayment`` instead.
 
     Implemented as a single SQLite UPSERT, so two coroutines racing on the
     same user can neither lose updates nor crash with an `IntegrityError`
@@ -303,6 +735,52 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
         result = await session.execute(statement=stmt)
         await session.commit()
         return result.scalar_one()
+
+
+async def credit_with_repayment(
+    *, user_id: int, name: str, amount: int, kind: TransactionKind, note: str | None = None
+) -> CreditResult:
+    """Credits ``amount`` to the user while diverting 50% to repay debt first.
+
+    Repayment order is interest first, then principal, capped at the user's
+    outstanding debt. Any portion not used for repayment goes to balance
+    and bumps ``total_earned``. Writes one audit row via the helper.
+
+    Args:
+        user_id: Discord user ID receiving the credit.
+        name: Last-seen Discord username to store on the account.
+        amount: Gross income amount; must be positive for the repayment
+            path to run.
+        kind: Audit-log category for this credit (e.g. ``CHAT_REWARD``,
+            ``CASINO_PAYOUT``).
+        note: Optional free-text annotation for the audit row.
+
+    Returns:
+        Outcome capturing post-credit balance, the credited slice, and the
+        repayment breakdown.
+    """
+    await _ensure_schema()
+    if amount <= 0:
+        return CreditResult(
+            new_balance=await get_balance(user_id=user_id),
+            credited_amount=0,
+            interest_repaid=0,
+            principal_repaid=0,
+            remaining_debt=0,
+        )
+    now = datetime.now(tz=UTC)
+    async with open_session() as session:
+        result = await _credit_with_repayment_in_session(
+            session=session,
+            user_id=user_id,
+            name=name,
+            amount=amount,
+            kind=kind,
+            note=note,
+            now=now,
+        )
+        await session.commit()
+        return result
 
 
 async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | None:
@@ -342,10 +820,11 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
             starting_balance, existing_name = row[0], row[1]
             effective_bet = min(requested_bet, starting_balance)
 
+            now = datetime.now(tz=UTC)
             update_values: dict[str, Any] = {
                 "balance": UserAccount.balance - effective_bet,
                 "total_spent": UserAccount.total_spent + effective_bet,
-                "updated_at": datetime.now(tz=UTC),
+                "updated_at": now,
             }
             if name and name != existing_name:
                 update_values["name"] = name
@@ -364,6 +843,15 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
                 # a fresh read.
                 await session.rollback()
                 continue
+            await _log_transaction_in_session(
+                session=session,
+                user_id=user_id,
+                kind=TransactionKind.CASINO_BET,
+                delta=-effective_bet,
+                balance_after=updated_row[0],
+                note=None,
+                now=now,
+            )
             await session.commit()
             return PlacedBet(
                 amount=effective_bet,
@@ -380,7 +868,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
     the gross payout here when the round resolves. Losses are still clamped at
     zero so a stale caller never leaves a player in the red. Implemented as a
     single UPSERT, so concurrent settlements on the same user can't lose
-    updates.
+    updates. The audit log records the *applied* delta (after clamping).
 
     Args:
         user_id: Discord user ID whose balance is adjusted.
@@ -391,13 +879,18 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
         The user's current balance after settlement.
     """
     await _ensure_schema()
-    stmt = _build_clamped_settle_upsert(
-        user_id=user_id, name=name, delta=delta, now=datetime.now(tz=UTC)
-    )
+    now = datetime.now(tz=UTC)
     async with open_session() as session:
-        result = await session.execute(statement=stmt)
+        new_balance = await _settle_game_in_session(
+            session=session,
+            user_id=user_id,
+            name=name,
+            delta=delta,
+            kind=TransactionKind.CASINO_PAYOUT,
+            now=now,
+        )
         await session.commit()
-        return result.scalar_one()
+        return new_balance
 
 
 async def house_settle(user_id: int, name: str, delta: int) -> int:
@@ -422,13 +915,13 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
         The dealer ledger balance after settlement, which may be negative.
     """
     await _ensure_schema()
-    stmt = _build_signed_delta_upsert(
-        user_id=user_id, name=name, delta=delta, now=datetime.now(tz=UTC)
-    )
+    now = datetime.now(tz=UTC)
     async with open_session() as session:
-        result = await session.execute(statement=stmt)
+        new_balance = await _house_settle_in_session(
+            session=session, user_id=user_id, name=name, delta=delta, now=now
+        )
         await session.commit()
-        return result.scalar_one()
+        return new_balance
 
 
 async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
@@ -440,13 +933,13 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     dealer_name: str,
     dealer_delta: int,
 ) -> tuple[int, int]:
-    """Credits the player payout and mirrors the house P&L in one transaction.
+    """Credits the player payout (with auto-repay) and mirrors house P&L atomically.
 
     Sharing a session (and therefore a single SQLite transaction) means a
-    crash between the two writes cannot leave the dealer ledger drifting
-    from the player payout. ``payout`` must be non-negative (it's the gross
-    amount to credit back after the upfront bet withdrawal). ``dealer_delta``
-    is the signed change to apply to the dealer ledger.
+    crash between the player and dealer writes cannot leave the dealer
+    ledger drifting from the player payout. The player payout goes through
+    ``_credit_with_repayment_in_session`` so the 50% auto-repay rule
+    applies on casino wins exactly as it does on chat rewards.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -463,29 +956,215 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     now = datetime.now(tz=UTC)
     async with open_session() as session:
         if payout > 0:
-            player_result = await session.execute(
-                statement=_build_credit_upsert(
-                    user_id=player_id, name=player_account_name, amount=payout, now=now
-                )
+            credit_result = await _credit_with_repayment_in_session(
+                session=session,
+                user_id=player_id,
+                name=player_account_name,
+                amount=payout,
+                kind=TransactionKind.CASINO_PAYOUT,
+                note=None,
+                now=now,
             )
-            player_balance = player_result.scalar_one()
+            player_balance = credit_result.new_balance
         else:
-            # Loss: place_bet already debited the player's row, so just read
-            # the current balance. If the row somehow doesn't exist (shouldn't
-            # happen because place_bet must have created it), treat as zero.
             read_result = await session.execute(
                 statement=select(UserAccount.balance).where(UserAccount.user_id == player_id)
             )
             player_balance = read_result.scalar_one_or_none() or 0
 
-        dealer_result = await session.execute(
-            statement=_build_signed_delta_upsert(
-                user_id=dealer_id, name=dealer_name, delta=dealer_delta, now=now
-            )
+        dealer_balance = await _house_settle_in_session(
+            session=session, user_id=dealer_id, name=dealer_name, delta=dealer_delta, now=now
         )
-        dealer_balance = dealer_result.scalar_one()
         await session.commit()
         return player_balance, dealer_balance
+
+
+async def borrow(
+    *, user_id: int, name: str, amount: int, credit_limit_value: int
+) -> BorrowResult | None:
+    """Disburses ``amount`` points to the user as new principal.
+
+    Rejected (``None`` returned) when ``amount`` is non-positive or when
+    the post-borrow total debt (existing principal + accrued interest +
+    requested amount) would exceed ``credit_limit_value``. Interest is
+    accrued first so the limit check uses up-to-date numbers. Borrowed
+    funds do **not** bump ``total_earned`` — debt isn't earnings.
+
+    Args:
+        user_id: Discord user ID for the borrower.
+        name: Last-seen Discord username.
+        amount: Amount to borrow (must be positive).
+        credit_limit_value: Maximum allowed post-borrow total debt; the
+            caller is expected to compute this with ``credit_limit``.
+
+    Returns:
+        ``BorrowResult`` capturing the new balance and loan state, or
+        ``None`` when the request was rejected.
+    """
+    await _ensure_schema()
+    if amount <= 0:
+        return None
+    now = datetime.now(tz=UTC)
+
+    async with open_session() as session:
+        await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+
+        read_result = await session.execute(
+            statement=select(UserAccount.loan_principal, UserAccount.loan_interest).where(
+                UserAccount.user_id == user_id
+            )
+        )
+        row = read_result.one_or_none()
+        current_principal = row[0] if row is not None else 0
+        current_interest = row[1] if row is not None else 0
+
+        if current_principal + current_interest + amount > credit_limit_value:
+            return None
+
+        insert_name = name or str(user_id)
+        base_stmt = insert(UserAccount).values(
+            user_id=user_id,
+            name=insert_name,
+            balance=amount,
+            total_earned=0,
+            total_spent=0,
+            loan_principal=amount,
+            loan_interest=0,
+            loan_total_borrowed=amount,
+            loan_total_repaid=0,
+            loan_last_accrual_at=now,
+            loan_opened_at=now,
+            updated_at=now,
+        )
+        set_values: dict[str, Any] = {
+            "balance": UserAccount.balance + amount,
+            "loan_principal": UserAccount.loan_principal + amount,
+            "loan_total_borrowed": UserAccount.loan_total_borrowed + amount,
+            "loan_last_accrual_at": now,
+            "loan_opened_at": func.coalesce(UserAccount.loan_opened_at, now),
+            "updated_at": now,
+        }
+        if name:
+            set_values["name"] = insert_name
+        upsert_stmt = base_stmt.on_conflict_do_update(
+            index_elements=["user_id"], set_=set_values
+        ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
+        result = await session.execute(statement=upsert_stmt)
+        balance_after, principal_after, interest_after = result.one()
+
+        await _log_transaction_in_session(
+            session=session,
+            user_id=user_id,
+            kind=TransactionKind.BORROW,
+            delta=amount,
+            balance_after=balance_after,
+            debt_after=principal_after + interest_after,
+            note=None,
+            now=now,
+        )
+        await session.commit()
+        return BorrowResult(
+            new_balance=balance_after, principal=principal_after, interest=interest_after
+        )
+
+
+async def repay(*, user_id: int, name: str, amount: int) -> RepayResult | None:
+    """Pays down interest first then principal, debited from the user's balance.
+
+    Effective repayment is clamped to ``min(amount, balance, debt_total)``
+    so over-requests automatically reduce to the largest legal value. The
+    user's ``total_spent`` is intentionally **not** bumped because repaying
+    a loan isn't spending in the gameplay sense; the ``loan_total_repaid``
+    column is the right place to track the repayment.
+
+    Args:
+        user_id: Discord user ID for the borrower.
+        name: Last-seen Discord username.
+        amount: Maximum amount to apply against debt (must be positive).
+
+    Returns:
+        ``RepayResult`` on success, or ``None`` when there's no debt, no
+        balance, or the retry budget was exhausted.
+    """
+    await _ensure_schema()
+    if amount <= 0:
+        return None
+    now = datetime.now(tz=UTC)
+
+    async with open_session() as session:
+        await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+
+        for _ in range(_REPAY_MAX_RETRIES):
+            read_result = await session.execute(
+                statement=select(
+                    UserAccount.balance,
+                    UserAccount.name,
+                    UserAccount.loan_principal,
+                    UserAccount.loan_interest,
+                    UserAccount.loan_total_repaid,
+                ).where(UserAccount.user_id == user_id)
+            )
+            row = read_result.one_or_none()
+            if row is None:
+                return None
+            current_balance, existing_name, principal, interest, total_repaid = row
+            debt_total = principal + interest
+            if debt_total == 0 or current_balance == 0:
+                return None
+
+            effective = min(amount, current_balance, debt_total)
+            interest_repaid = min(effective, interest)
+            principal_repaid = effective - interest_repaid
+
+            new_balance = current_balance - effective
+            new_interest = interest - interest_repaid
+            new_principal = principal - principal_repaid
+            new_total_repaid = total_repaid + effective
+
+            update_values: dict[str, Any] = {
+                "balance": new_balance,
+                "loan_interest": new_interest,
+                "loan_principal": new_principal,
+                "loan_total_repaid": new_total_repaid,
+                "updated_at": now,
+            }
+            if name and name != existing_name:
+                update_values["name"] = name
+
+            stmt = (
+                update(UserAccount)
+                .where(
+                    UserAccount.user_id == user_id,
+                    UserAccount.balance == current_balance,
+                    UserAccount.loan_principal == principal,
+                    UserAccount.loan_interest == interest,
+                )
+                .values(**update_values)
+                .returning(UserAccount.balance)
+            )
+            update_result = await session.execute(statement=stmt)
+            if update_result.one_or_none() is None:
+                await session.rollback()
+                continue
+
+            await _log_transaction_in_session(
+                session=session,
+                user_id=user_id,
+                kind=TransactionKind.REPAY,
+                delta=-effective,
+                balance_after=new_balance,
+                debt_after=new_principal + new_interest,
+                note=None,
+                now=now,
+            )
+            await session.commit()
+            return RepayResult(
+                new_balance=new_balance,
+                interest_repaid=interest_repaid,
+                principal_repaid=principal_repaid,
+                remaining_debt=new_principal + new_interest,
+            )
+        return None
 
 
 async def get_balance(user_id: int) -> int:
@@ -529,6 +1208,46 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
         if row is None:
             return None
         return (row[0], row[1], row[2], row[3])
+
+
+async def get_loan_view(*, user_id: int) -> LoanView | None:
+    """Returns a stored snapshot of the user's loan state.
+
+    The interest value is the persisted (``loan_interest``) column. Callers
+    that want the effective interest "as of now" should pass ``principal``
+    + ``last_accrual_at`` through ``accrual_delta`` and add the result to
+    ``interest_stored``.
+
+    Args:
+        user_id: Discord user ID to look up.
+
+    Returns:
+        ``LoanView`` for the user, or ``None`` if the user has never been
+        seen by the economy DB.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(
+                UserAccount.loan_principal,
+                UserAccount.loan_interest,
+                UserAccount.loan_last_accrual_at,
+                UserAccount.loan_opened_at,
+                UserAccount.loan_total_borrowed,
+                UserAccount.loan_total_repaid,
+            ).where(UserAccount.user_id == user_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return LoanView(
+            principal=row[0],
+            interest_stored=row[1],
+            last_accrual_at=row[2],
+            opened_at=row[3],
+            total_borrowed=row[4],
+            total_repaid=row[5],
+        )
 
 
 async def transfer(
@@ -586,6 +1305,27 @@ async def transfer(
         )
         credit_result = await session.execute(statement=credit_stmt)
         receiver_balance = credit_result.scalar_one()
+
+        sender_note = f"to {receiver_name or receiver_id} ({receiver_id})"
+        receiver_note = f"from {sender_name or sender_id} ({sender_id})"
+        await _log_transaction_in_session(
+            session=session,
+            user_id=sender_id,
+            kind=TransactionKind.TRANSFER_OUT,
+            delta=-amount,
+            balance_after=sender_balance,
+            note=sender_note,
+            now=now,
+        )
+        await _log_transaction_in_session(
+            session=session,
+            user_id=receiver_id,
+            kind=TransactionKind.TRANSFER_IN,
+            delta=amount,
+            balance_after=receiver_balance,
+            note=receiver_note,
+            now=now,
+        )
         await session.commit()
         return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 

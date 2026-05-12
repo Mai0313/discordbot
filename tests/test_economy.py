@@ -49,7 +49,7 @@ async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     db_path = tmp_path / "economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
-        await conn.run_sync(database._Base.metadata.create_all)
+        await conn.run_sync(database.Base.metadata.create_all)
     monkeypatch.setattr(target=database, name="_engine", value=engine)
     yield
     await engine.dispose()
