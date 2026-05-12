@@ -200,7 +200,7 @@ class ReplyGeneratorCogs(commands.Cog):
             converted = convert_base64_to_data_uri(b64)
             return ResponseInputImageParam(image_url=converted, detail="auto", type="input_image")
         except Exception:
-            logfire.warn(f"Failed to convert image, keeping original URL: {url}")
+            logfire.warn(f"Failed to convert this image: {url}")
             return None
 
     async def _attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
@@ -220,7 +220,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 filename=attachment.filename, file_data=data_uri, type="input_file"
             )
         except Exception:
-            logfire.warn(f"Failed to download attachment: {attachment.url}")
+            logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
 
     @staticmethod
@@ -322,8 +322,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     *attachment_parts,
                 ],
             )
-        except Exception as e:
-            logfire.warn(f"Failed to process message {message.id}: {e}")
+        except Exception:
+            logfire.warn(f"Failed to process message {message.id}", _exc_info=True)
             return EasyInputMessageParam(role="user", content="")
 
     async def _get_history_message(
@@ -790,7 +790,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:
-            logfire.error("Failed to generate reply", _exc_info=True)
+            logfire.error("Failed to generate reply", user_id=message.author.name, _exc_info=True)
             with contextlib.suppress(Exception):
                 await self._handle_reaction(message=message, emoji="❌", previous=current_emoji)
                 error_embed = Embed(
