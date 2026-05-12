@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with a casino mini-game, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with daily check-in, an optional VIP perk, daily-resetting loans, a casino mini-game, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -55,11 +55,13 @@ Use `/download_video` to download videos from multiple platforms:
 
 The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
-**Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
+**Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. `/checkin` claims a daily 100,000 虛擬歡樂豆 with a 7-day streak bonus (linear: day 1 = 1×, day 7 = 4×). Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
 
 **Spending 虛擬歡樂豆:** casino games validate the bet when the round starts, then apply the signed result only when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the round. An unfinished in-memory round is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
 
-Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
+**VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 虛擬歡樂豆. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
+
+Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
 | Slash command      | Game                                                                                                                                                     |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,15 +71,17 @@ Game-related response embeds are automatically deleted after three minutes: fina
 
 **Managing 虛擬歡樂豆:**
 
-- `/balance` — show your current balance.
+- `/balance` — show your current balance, loan principal (if any), and VIP status.
+- `/checkin` — claim today's check-in reward; replies are ephemeral. Streak resets at 00:00 Asia/Taipei and cycles back to day 1 after seven consecutive days or any missed day.
+- `/vip` — buy permanent VIP for 10,000,000 虛擬歡樂豆.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
-- `/debt_leaderboard` — global Top 10 outstanding debts, including read-time pending interest.
-- `/borrow <amount>` — borrow against your Discord account age. Loans use 1% per-day simple interest.
-- `/repay <amount>` — repay debt from your current balance, interest first and principal second.
+- `/loss_leaderboard` — global Top 10 biggest casino net losers since 00:00 Asia/Taipei today.
+- `/borrow <amount>` — borrow against your Discord account age. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
+- `/repay <amount>` — repay outstanding principal from your current balance.
 - `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
 - `/house` — show the dealer's accumulated win/loss across `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
-After borrowing, 50% of each income event automatically repays debt before the rest lands in the wallet.
+After borrowing, 50% of each income event (message reward, chat reward, casino payout) automatically repays principal before the rest lands in the wallet. `/give` recipients are not auto-repaid.
 
 ### MapleStory Artale Database
 
@@ -97,29 +101,31 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 
 ## Commands
 
-| Command                           | Description                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------ |
-| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)              |
-| _Threads link_                    | Automatically expands Threads.net posts with media                                   |
-| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                |
-| `/balance`                        | Show your current 虛擬歡樂豆 balance (cross-server)                                  |
-| `/leaderboard`                    | Global Top 10 虛擬歡樂豆 holders                                                     |
-| `/debt_leaderboard`               | Global Top 10 outstanding debts                                                      |
-| `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age                                   |
-| `/repay <amount>`                 | Repay outstanding debt from your balance                                             |
-| `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                |
-| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately |
-| `/house`                          | Show the dealer's accumulated win/loss across casino games                           |
-| `/maple_monster <name>`           | Search MapleStory monsters and drops                                                 |
-| `/maple_equip <name>`             | Search MapleStory equipment                                                          |
-| `/maple_scroll <name>`            | Search MapleStory scrolls                                                            |
-| `/maple_npc <name>`               | Search MapleStory NPCs                                                               |
-| `/maple_quest <name>`             | Search MapleStory quests                                                             |
-| `/maple_map <name>`               | Search MapleStory maps                                                               |
-| `/maple_item <name>`              | Search MapleStory item sources                                                       |
-| `/maple_stats`                    | View MapleStory database statistics                                                  |
-| `/help`                           | Show bot usage guide                                                                 |
-| `/ping`                           | Check bot latency                                                                    |
+| Command                           | Description                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------- |
+| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)               |
+| _Threads link_                    | Automatically expands Threads.net posts with media                                    |
+| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                 |
+| `/balance`                        | Show your current 虛擬歡樂豆 balance, loan, and VIP status (cross-server)             |
+| `/checkin`                        | Claim today's check-in reward (ephemeral; 7-day streak bonus, resets at Taipei 00:00) |
+| `/vip`                            | Buy permanent VIP (1.5× blackjack payout, 2× check-in, 2× loan cap)                   |
+| `/leaderboard`                    | Global Top 10 虛擬歡樂豆 holders                                                      |
+| `/loss_leaderboard`               | Today's Top 10 biggest casino losers (resets at Taipei 00:00)                         |
+| `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age (resets at Taipei 00:00)           |
+| `/repay <amount>`                 | Repay outstanding principal from your balance                                         |
+| `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                 |
+| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately  |
+| `/house`                          | Show the dealer's accumulated win/loss across casino games                            |
+| `/maple_monster <name>`           | Search MapleStory monsters and drops                                                  |
+| `/maple_equip <name>`             | Search MapleStory equipment                                                           |
+| `/maple_scroll <name>`            | Search MapleStory scrolls                                                             |
+| `/maple_npc <name>`               | Search MapleStory NPCs                                                                |
+| `/maple_quest <name>`             | Search MapleStory quests                                                              |
+| `/maple_map <name>`               | Search MapleStory maps                                                                |
+| `/maple_item <name>`              | Search MapleStory item sources                                                        |
+| `/maple_stats`                    | View MapleStory database statistics                                                   |
+| `/help`                           | Show bot usage guide                                                                  |
+| `/ping`                           | Check bot latency                                                                     |
 
 ## Self-Hosting
 

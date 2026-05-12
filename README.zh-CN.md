@@ -19,7 +19,7 @@
 
 </div>
 
-功能丰富的 Discord 机器人，具备 AI 智能对话、图片与视频生成、内容解析、多平台视频下载、点数系统与一个赌场小游戏，以及枫之谷游戏数据库。支持多国语言。
+功能丰富的 Discord 机器人，具备 AI 智能对话、图片与视频生成、内容解析、多平台视频下载、点数系统（每日签到、可选 VIP、每日重置的贷款）、一个赌场小游戏，以及枫之谷游戏数据库。支持多国语言。
 
 ## 功能
 
@@ -55,11 +55,13 @@
 
 机器人会用本地 SQLite (`data/economy.db`) 持久保存每位 Discord 用户的点数余额，**点数跨服务器共享**，同一个账号在任何 guild 看到的余额都一样。
 
-**获得点数：** 每则非 bot 用户消息都会获得 5,000 点数。AI 流式回复会再追加以 `total_tokens` (input + output) 计算的 bonus，实际数字会显示在回复 footer。Threads 解析与 `/download_video` 不会在基础消息奖励之外再付额外 action reward。
+**获得点数：** 每则非 bot 用户消息都会获得 5,000 点数。AI 流式回复会再追加以 `total_tokens` (input + output) 计算的 bonus，实际数字会显示在回复 footer。`/checkin` 每天可领 100,000 点数，连续 7 天为一个 cycle（线性加成：第 1 天 1×、第 7 天 4×）。Threads 解析与 `/download_video` 不会在基础消息奖励之外再付额外 action reward。
 
 **花用点数：** 赌场游戏会在开局时检查 bet，等 round 结算时才套用本局正负结果。如果下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝开局。机器人重启时，未完成的 in-memory round 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下注金额，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 的「庄家余额」是 house ledger balance，不是本局赚多少，所以正数不会加 `+`。
 
-游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。游戏 response 的 message ID 会存在本地，bot 重启后会在下次 startup 删掉上次留下的进行中或已结算游戏 embed。`/give` 的转点记录会保留，不自动删除。
+**VIP：** `/vip` 一次性花费 10,000,000 点数购买永久 VIP 标记。VIP 会获得 1.5x 赌场赢钱加成（只乘正 delta）、2x 签到基础点数、2x 借款上限。
+
+游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。游戏 response 的 message ID 会存在本地，bot 重启后会在下次 startup 删掉上次留下的进行中或已结算游戏 embed。`/give` 的转点记录会保留，不自动删除。
 
 | Slash command       | 玩法                                                                                                                   |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -69,15 +71,17 @@
 
 **管理点数：**
 
-- `/balance` — 查看自己的余额。
+- `/balance` — 查看自己的余额、未还本金 (如果有) 与 VIP 状态。
+- `/checkin` — 领取今日签到奖励；回复是 ephemeral 只有自己看得到。每天 00:00 Asia/Taipei 结算，连续 7 天为一 cycle，超过或漏签会 reset 回第 1 天。
+- `/vip` — 花 10,000,000 点数购买永久 VIP。
 - `/leaderboard` — 机器人所有服务器的全域 Top 10（庄家自己的账户会被排除）。
-- `/debt_leaderboard` — 查看全域欠债 Top 10，排序会包含读取当下可计算的 pending interest。
-- `/borrow <金额>` — 依 Discord 账号年龄借点数，loan 使用每日 1% simple interest。
-- `/repay <金额>` — 从目前余额还款，先还 interest，再还 principal。
+- `/loss_leaderboard` — 今日 00:00 Asia/Taipei 之后赌场净输最多的全域 Top 10。
+- `/borrow <金额>` — 依 Discord 账号年龄借点数，**每天 00:00 Asia/Taipei 本金自动归零**，没有利息。
+- `/repay <金额>` — 从目前余额偿还未还本金。
 - `/give <成员> <金额>` — 把点数转给其他人（不能转给自己或机器人）。
 - `/house` — 查看庄家在 `/blackjack` 累积的输赢。庄家资金无上限，所以 ledger balance 可以是负数（代表整体玩家从庄家手里赢走的点数比较多）。
 
-借款后，每次 income event 会先自动拿 50% 还债，剩下才进钱包。
+借款后，每次 income event（message reward / chat reward / 赌场 payout）会先自动拿 50% 还本金，剩下才进钱包。`/give` 的收款方不会被自动扣去还债。
 
 ### 枫之谷 Artale 数据库
 
@@ -102,11 +106,13 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 | `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                        |
 | _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                            |
 | `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频              |
-| `/balance`                      | 查看你目前的点数余额（跨服务器）                                           |
+| `/balance`                      | 查看你目前的点数余额、贷款与 VIP 状态（跨服务器）                          |
+| `/checkin`                      | 领取今日签到奖励（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）    |
+| `/vip`                          | 购买永久 VIP（1.5x 赌场赔率、2x 签到、2x 借款上限）                        |
 | `/leaderboard`                  | 全域点数 Top 10                                                            |
-| `/debt_leaderboard`             | 全域欠债 Top 10                                                            |
-| `/borrow <金额>`                | 依 Discord 账号年龄借点数                                                  |
-| `/repay <金额>`                 | 从余额偿还欠款                                                             |
+| `/loss_leaderboard`             | 今日输最多 Top 10（每天 Taipei 00:00 重置）                                |
+| `/borrow <金额>`                | 依 Discord 账号年龄借点数（每天 Taipei 00:00 自动归零）                    |
+| `/repay <金额>`                 | 从余额偿还未还本金                                                         |
 | `/give <成员> <点数>`           | 把点数转给其他成员                                                         |
 | `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button；起手 Blackjack 会直接结算） |
 | `/house`                        | 查看庄家在赌场游戏累积的输赢                                               |
