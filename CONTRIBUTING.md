@@ -75,7 +75,7 @@ Pull request titles and commit messages should follow
 example:
 
 ```text
-feat: add dragon gate command
+feat: add blackjack surrender option
 fix(economy): prevent duplicate blackjack settlement
 docs: simplify contributor guide
 ```

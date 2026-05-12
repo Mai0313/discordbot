@@ -159,7 +159,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME} Top 10",
-                description="### 尚未開張\n/dice 或 /blackjack 開局就會上榜",
+                description="### 尚未開張\n/blackjack 開局就會上榜",
                 color=_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -350,7 +350,7 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def house(self, interaction: Interaction) -> None:
-        """Shows the bot's accumulated dealer P&L across `/dice` and `/blackjack`.
+        """Shows the bot's accumulated dealer P&L across `/blackjack`.
 
         Args:
             interaction: The interaction that triggered the command.

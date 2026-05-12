@@ -11,10 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-DiceOutcome = Literal["win", "lose", "push"]
-DragonGateOutcome = Literal["win", "lose", "push"]
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
-GameKind = Literal["dice", "blackjack", "dragon_gate"]
+GameKind = Literal["blackjack"]
 
 
 class Card(BaseModel):
@@ -33,48 +31,6 @@ class Card(BaseModel):
     def __str__(self) -> str:
         """Human-readable label like ``A♠``."""
         return f"{self.rank}{self.suit}"
-
-
-class DiceResult(BaseModel):
-    """Result of one dice round.
-
-    Attributes:
-        player_rolls: Player's three rolls in order.
-        dealer_rolls: Dealer's three rolls in order.
-        player_total: Sum of the player rolls.
-        dealer_total: Sum of the dealer rolls.
-        outcome: ``win`` / ``lose`` / ``push`` from the player's perspective.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    player_rolls: tuple[int, ...]
-    dealer_rolls: tuple[int, ...]
-    player_total: int
-    dealer_total: int
-    outcome: DiceOutcome
-
-
-class DragonGateResult(BaseModel):
-    """Result of one Dragon Gate round.
-
-    Attributes:
-        first_gate: First gate card as drawn.
-        second_gate: Second gate card as drawn.
-        lower_gate: Lower-valued gate card.
-        upper_gate: Higher-valued gate card.
-        shot: The player's shot card.
-        outcome: Player-facing settlement label.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    first_gate: Card
-    second_gate: Card
-    lower_gate: Card
-    upper_gate: Card
-    shot: Card
-    outcome: DragonGateOutcome
 
 
 class WagerSettlement(BaseModel):
@@ -107,14 +63,4 @@ class BlackjackSettlement(WagerSettlement):
     detail: str
 
 
-__all__ = [
-    "BlackjackSettlement",
-    "Card",
-    "DiceOutcome",
-    "DiceResult",
-    "DragonGateOutcome",
-    "DragonGateResult",
-    "GameKind",
-    "SettleOutcome",
-    "WagerSettlement",
-]
+__all__ = ["BlackjackSettlement", "Card", "GameKind", "SettleOutcome", "WagerSettlement"]

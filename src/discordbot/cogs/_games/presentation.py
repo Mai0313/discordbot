@@ -1,6 +1,6 @@
 """Shared presentation helpers for casino game embeds."""
 
-from discordbot.typings.games import DiceOutcome, SettleOutcome, DragonGateOutcome
+from discordbot.typings.games import SettleOutcome
 from discordbot.cogs._economy.presentation import currency_text
 
 IN_PROGRESS_COLOR = 0x5865F2
@@ -8,23 +8,6 @@ WIN_COLOR = 0x57F287
 LOSE_COLOR = 0xED4245
 PUSH_COLOR = 0xFEE75C
 ERROR_COLOR = 0xED4245
-
-
-def dice_outcome_presentation(outcome: DiceOutcome) -> tuple[str, int]:
-    """Returns presentation values for a dice outcome.
-
-    Args:
-        outcome: Player-facing dice outcome.
-
-    Returns:
-        A `(label, color)` tuple for the final embed.
-    """
-    dice_result = {
-        "win": ("你贏了", WIN_COLOR),
-        "lose": ("你輸了", LOSE_COLOR),
-        "push": ("平手", PUSH_COLOR),
-    }
-    return dice_result[outcome]
 
 
 def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
@@ -45,23 +28,6 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
         "dealer_bust": ("莊家爆牌, 你贏了", WIN_COLOR),
     }
     return blackjack_result[outcome]
-
-
-def dragon_gate_outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
-    """Returns presentation values for a Dragon Gate outcome.
-
-    Args:
-        outcome: Player-facing Dragon Gate outcome.
-
-    Returns:
-        A `(label, color)` tuple for the final embed.
-    """
-    dragon_gate_result = {
-        "win": ("射進龍門, 你贏了", WIN_COLOR),
-        "lose": ("射偏了, 你輸了", LOSE_COLOR),
-        "push": ("沒有有效龍門, 退回下注", PUSH_COLOR),
-    }
-    return dragon_gate_result[outcome]
 
 
 def allin_note(*, is_allin: bool) -> str:

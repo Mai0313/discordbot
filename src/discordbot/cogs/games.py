@@ -1,7 +1,6 @@
-"""Casino-style games (`/dice`, `/blackjack`) wagering economy points."""
+"""Casino-style games (`/blackjack`) wagering economy points."""
 
 from random import SystemRandom
-import asyncio
 from functools import cached_property
 
 from openai import AsyncOpenAI
@@ -12,7 +11,6 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import PreparedBet
-from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.cleanup import (
@@ -22,32 +20,9 @@ from discordbot.cogs._games.cleanup import (
 )
 from discordbot.cogs._games.blackjack import BlackjackHand
 from discordbot.cogs._economy.database import get_balance
-from discordbot.cogs._games.settlement import (
-    settle_wager,
-    settle_blackjack_round,
-    blackjack_early_finish_note,
-)
-from discordbot.cogs._games.dragon_gate import (
-    play_dragon_gate,
-    render_card_value,
-    dragon_gate_detail,
-)
-from discordbot.cogs._games.presentation import (
-    ERROR_COLOR,
-    IN_PROGRESS_COLOR,
-    duel_lines,
-    dealer_quote,
-    wager_footer,
-    settlement_footer,
-    dice_outcome_presentation,
-    blackjack_outcome_presentation,
-    dragon_gate_outcome_presentation,
-)
+from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
+from discordbot.cogs._games.presentation import ERROR_COLOR, blackjack_outcome_presentation
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
-
-# Short pause between the "place your bet" embed and the dice reveal so the
-# moment lands. Long enough to feel deliberate, short enough not to annoy.
-_DICE_REVEAL_DELAY_SECONDS = 1.5
 
 
 class GamesCogs(commands.Cog):
@@ -56,7 +31,7 @@ class GamesCogs(commands.Cog):
     Attributes:
         bot: The Discord bot instance that owns this cog.
         config: The LLM client configuration loaded for dealer banter.
-        rng: System randomness used for dice rolls and card draws.
+        rng: System randomness used for card draws.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -150,265 +125,6 @@ class GamesCogs(commands.Cog):
             balance_at_start=balance,
             is_allin=requested_bet > balance,
         )
-
-    @nextcord.slash_command(
-        name="dice",
-        description="Roll three dice against the dealer; whoever totals higher wins.",
-        name_localizations={Locale.zh_TW: "比大小", Locale.ja: "サイコロ勝負"},
-        description_localizations={
-            Locale.zh_TW: "用三顆骰子跟莊家比點數總和, 大的贏",
-            Locale.ja: "3個のサイコロで親と勝負し、合計が大きい方が勝ち。",
-        },
-        nsfw=False,
-    )
-    async def dice(
-        self,
-        interaction: Interaction,
-        bet: int = SlashOption(
-            name="bet",
-            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
-            name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
-            description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
-                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
-            },
-            required=True,
-            min_value=1,
-        ),
-    ) -> None:
-        """Plays one round of player-vs-dealer compare-the-total dice.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            bet: How many points to wager.
-        """
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-
-        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
-        if prepared_bet is None:
-            return
-        bet = prepared_bet.amount
-        is_allin = prepared_bet.is_allin
-
-        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
-
-        taunt = await self.dealer.taunt_bet(
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            balance_at_start=prepared_bet.balance_at_start,
-            bet=bet,
-            game="dice",
-        )
-
-        in_progress = Embed(
-            title="🎲 比大小", description=dealer_quote(text=taunt), color=IN_PROGRESS_COLOR
-        )
-        in_progress.set_author(
-            name=f"{interaction.user.display_name} 的對局",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        in_progress.set_footer(
-            text=wager_footer(
-                bet=bet,
-                balance_at_start=prepared_bet.balance_at_start,
-                is_allin=is_allin,
-                status="等候開獎",
-            )
-        )
-        message = await interaction.followup.send(embed=in_progress, wait=True)
-        await track_game_message(message=message)
-
-        await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
-        result = play_dice(rng=self.rng)
-
-        if result.outcome == "win":
-            delta = bet
-        elif result.outcome == "push":
-            delta = 0
-        else:
-            delta = -bet
-
-        settlement = await settle_wager(
-            player_id=interaction.user.id,
-            player_account_name=interaction.user.name,
-            player_avatar_url=interaction.user.display_avatar.url,
-            dealer_id=dealer_id,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
-            bet=bet,
-            delta=delta,
-        )
-        detail = f"玩家骰 {result.player_total} 點, 莊家骰 {result.dealer_total} 點"
-        banter = await self.dealer.settle(
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            outcome=result.outcome,
-            bet=bet,
-            delta=settlement.delta,
-            new_balance=settlement.new_balance,
-            game="dice",
-            detail=detail,
-        )
-        outcome_label, color = dice_outcome_presentation(outcome=result.outcome)
-
-        final = Embed(
-            title=f"🎲 比大小 | {outcome_label}",
-            description=dealer_quote(text=banter),
-            color=color,
-        )
-        final.set_author(
-            name=f"{interaction.user.display_name} 的對局",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        final.add_field(
-            name="擲骰",
-            value=duel_lines(
-                player_name=interaction.user.display_name,
-                player_value=render_rolls(rolls=result.player_rolls),
-                dealer_name=dealer_name,
-                dealer_value=render_rolls(rolls=result.dealer_rolls),
-            ),
-            inline=False,
-        )
-        final.set_footer(
-            text=settlement_footer(
-                delta=settlement.delta, new_balance=settlement.new_balance, is_allin=is_allin
-            )
-        )
-        await message.edit(embed=final)
-        schedule_game_message_delete(message=message)
-
-    @nextcord.slash_command(
-        name="dragon_gate",
-        description="Shoot one card between two gate cards; inside wins.",
-        name_localizations={Locale.zh_TW: "射龍門", Locale.ja: "ドラゴンゲート"},
-        description_localizations={
-            Locale.zh_TW: "下注後開兩張門牌, 第三張嚴格落在中間就贏",
-            Locale.ja: "2枚のゲートカードの間に3枚目が入れば勝ち。",
-        },
-        nsfw=False,
-    )
-    async def dragon_gate(
-        self,
-        interaction: Interaction,
-        bet: int = SlashOption(
-            name="bet",
-            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
-            name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
-            description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
-                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
-            },
-            required=True,
-            min_value=1,
-        ),
-    ) -> None:
-        """Plays one round of Dragon Gate.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            bet: How many points to wager.
-        """
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-
-        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
-        if prepared_bet is None:
-            return
-        bet = prepared_bet.amount
-        is_allin = prepared_bet.is_allin
-
-        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
-
-        taunt = await self.dealer.taunt_bet(
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            balance_at_start=prepared_bet.balance_at_start,
-            bet=bet,
-            game="dragon_gate",
-        )
-
-        in_progress = Embed(
-            title="🎴 射龍門", description=dealer_quote(text=taunt), color=IN_PROGRESS_COLOR
-        )
-        in_progress.set_author(
-            name=f"{interaction.user.display_name} 的對局",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        in_progress.set_footer(
-            text=wager_footer(
-                bet=bet,
-                balance_at_start=prepared_bet.balance_at_start,
-                is_allin=is_allin,
-                status="等候開門",
-            )
-        )
-        message = await interaction.followup.send(embed=in_progress, wait=True)
-        await track_game_message(message=message)
-
-        await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
-        result = play_dragon_gate(rng=self.rng)
-
-        if result.outcome == "win":
-            delta = bet
-        elif result.outcome == "push":
-            delta = 0
-        else:
-            delta = -bet
-
-        settlement = await settle_wager(
-            player_id=interaction.user.id,
-            player_account_name=interaction.user.name,
-            player_avatar_url=interaction.user.display_avatar.url,
-            dealer_id=dealer_id,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
-            bet=bet,
-            delta=delta,
-        )
-        detail = dragon_gate_detail(result=result)
-        banter = await self.dealer.settle(
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            outcome=result.outcome,
-            bet=bet,
-            delta=settlement.delta,
-            new_balance=settlement.new_balance,
-            game="dragon_gate",
-            detail=detail,
-        )
-        outcome_label, color = dragon_gate_outcome_presentation(outcome=result.outcome)
-
-        final = Embed(
-            title=f"🎴 射龍門 | {outcome_label}",
-            description=dealer_quote(text=banter),
-            color=color,
-        )
-        final.set_author(
-            name=f"{interaction.user.display_name} 的對局",
-            icon_url=interaction.user.display_avatar.url,
-        )
-        final.add_field(
-            name="牌面",
-            value=(
-                f"**龍門**\n"
-                f"{render_card_value(card=result.lower_gate)}  ~  "
-                f"{render_card_value(card=result.upper_gate)}\n\n"
-                f"**{interaction.user.display_name} 射門**\n"
-                f"{render_card_value(card=result.shot)}"
-            ),
-            inline=False,
-        )
-        final.set_footer(
-            text=settlement_footer(
-                delta=settlement.delta, new_balance=settlement.new_balance, is_allin=is_allin
-            )
-        )
-        await message.edit(embed=final)
-        schedule_game_message_delete(message=message)
 
     @nextcord.slash_command(
         name="blackjack",

@@ -37,7 +37,6 @@ DEALER_SETTLE_PROMPT = f"""
 - 21 點 Blackjack: 給點面子但仍不爽
 - 玩家爆牌: 大力嘲笑
 - 莊家爆牌: 假裝小事一樁, 但承認玩家贏
-- 射龍門: 根據射進、射偏、沒有有效龍門回應, 不要解釋規則
 """
 
 DEALER_HINT_PROMPT = f"""

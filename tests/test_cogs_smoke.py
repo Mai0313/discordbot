@@ -513,29 +513,12 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
 
-async def fake_sleep(delay: float) -> None:
-    return
-
-
 def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
     return
 
 
 async def fake_game_balance(user_id: int) -> int:
     return 100
-
-
-async def fake_settle_wager(  # noqa: PLR0913 -- mirrors settlement helper signature
-    player_id: int,
-    player_account_name: str,
-    player_avatar_url: str,
-    dealer_id: int,
-    dealer_name: str,
-    dealer_avatar_url: str,
-    bet: int,
-    delta: int,
-) -> SimpleNamespace:
-    return SimpleNamespace(delta=10, new_balance=110, house_balance=-10)
 
 
 async def fake_settle_blackjack_round(  # noqa: PLR0913 -- mirrors settlement helper signature
@@ -575,10 +558,8 @@ class FakeDealer:
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    monkeypatch.setattr(games.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
-    monkeypatch.setattr(games, "settle_wager", fake_settle_wager)
     monkeypatch.setattr(games, "settle_blackjack_round", fake_settle_blackjack_round)
     hand = BlackjackHand(rng=games.SystemRandom(), bet=10)
     hand.player = [Card(rank="A", suit="♠"), Card(rank="K", suit="♣")]
@@ -594,14 +575,6 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     cog.__dict__["dealer"] = FakeDealer()
-
-    dice_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.dice.callback(cog, dice_interaction, bet=10)
-    assert dice_interaction.followup.sent[0]["wait"] is True
-
-    dragon_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.dragon_gate.callback(cog, dragon_interaction, bet=10)
-    assert dragon_interaction.followup.sent[0]["wait"] is True
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet=10)

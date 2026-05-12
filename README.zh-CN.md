@@ -19,7 +19,7 @@
 
 </div>
 
-功能丰富的 Discord 机器人，具备 AI 智能对话、图片与视频生成、内容解析、多平台视频下载、点数系统与赌场小游戏，以及枫之谷游戏数据库。支持多国语言。
+功能丰富的 Discord 机器人，具备 AI 智能对话、图片与视频生成、内容解析、多平台视频下载、点数系统与一个赌场小游戏，以及枫之谷游戏数据库。支持多国语言。
 
 ## 功能
 
@@ -61,11 +61,9 @@
 
 游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。游戏 response 的 message ID 会存在本地，bot 重启后会在下次 startup 删掉上次留下的进行中或已结算游戏 embed。`/give` 的转点记录会保留，不自动删除。
 
-| Slash command         | 玩法                                                                                                                   |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `/dice <下注>`        | 三颗骰子 vs 三颗骰子，总和大者赢（平手退钱）。                                                                         |
-| `/dragon_gate <下注>` | 射龙门，先开两张门牌，第三张严格落在两柱中间就赢；撞柱或门外算输，两柱相同或相邻则 push 退钱。                         |
-| `/blackjack <下注>`   | 标准 21 点，附 Hit / Stand button；天生 Blackjack 赔 1.5 倍；玩家每次 hit 庄家会用看得到的 dealer card 给带刺的 hint。 |
+| Slash command       | 玩法                                                                                                                   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <下注>` | 标准 21 点，附 Hit / Stand button；天生 Blackjack 赔 1.5 倍；玩家每次 hit 庄家会用看得到的 dealer card 给带刺的 hint。 |
 
 **21 点提前结算规则：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌。玩家起手 Blackjack 会直接赢并赔 1.5 倍；庄家起手 Blackjack 会直接结算，除非玩家同时也是 Blackjack，否则玩家输。这不是任意凑到 21 点都会提前结束，只有起手 natural Blackjack 才会跳过 Hit / Stand。
 
@@ -77,7 +75,7 @@
 - `/borrow <金额>` — 依 Discord 账号年龄借点数，loan 使用每日 1% simple interest。
 - `/repay <金额>` — 从目前余额还款，先还 interest，再还 principal。
 - `/give <成员> <金额>` — 把点数转给其他人（不能转给自己或机器人）。
-- `/house` — 查看庄家在 `/dice`、`/dragon_gate` 与 `/blackjack` 累积的输赢。庄家资金无上限，所以 ledger balance 可以是负数（代表整体玩家从庄家手里赢走的点数比较多）。
+- `/house` — 查看庄家在 `/blackjack` 累积的输赢。庄家资金无上限，所以 ledger balance 可以是负数（代表整体玩家从庄家手里赢走的点数比较多）。
 
 借款后，每次 income event 会先自动拿 50% 还债，剩下才进钱包。
 
@@ -110,8 +108,6 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 | `/borrow <金额>`                | 依 Discord 账号年龄借点数                                                  |
 | `/repay <金额>`                 | 从余额偿还欠款                                                             |
 | `/give <成员> <点数>`           | 把点数转给其他成员                                                         |
-| `/dice <下注>`                  | 跟 AI 庄家掷三颗骰子比大小                                                 |
-| `/dragon_gate <下注>`           | 跟 AI 庄家玩射龙门，第三张严格落在两张门牌中间就赢                         |
 | `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button；起手 Blackjack 会直接结算） |
 | `/house`                        | 查看庄家在赌场游戏累积的输赢                                               |
 | `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                     |

@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with casino mini-games, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with a casino mini-game, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -51,7 +51,7 @@ Use `/download_video` to download videos from multiple platforms:
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
 
-### 虛擬歡樂豆 & Casino Games
+### 虛擬歡樂豆 & Casino Game
 
 The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
@@ -61,11 +61,9 @@ The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every D
 
 Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
-| Slash command        | Game                                                                                                                                                     |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/dice <bet>`        | Three dice vs three dice; bigger total wins (push refunds the bet).                                                                                      |
-| `/dragon_gate <bet>` | Two gate cards are opened, then one shot card must land strictly between them to win. Matching a gate post or landing outside loses; closed gates push.  |
-| `/blackjack <bet>`   | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit using only the visible dealer card. |
+| Slash command      | Game                                                                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit using only the visible dealer card. |
 
 **Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack wins immediately and pays 1.5×; a dealer natural Blackjack settles immediately unless the player also has Blackjack, in which case the hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
@@ -77,7 +75,7 @@ Game-related response embeds are automatically deleted after three minutes: fina
 - `/borrow <amount>` — borrow against your Discord account age. Loans use 1% per-day simple interest.
 - `/repay <amount>` — repay debt from your current balance, interest first and principal second.
 - `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
-- `/house` — show the dealer's accumulated win/loss across `/dice`, `/dragon_gate`, and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
+- `/house` — show the dealer's accumulated win/loss across `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
 After borrowing, 50% of each income event automatically repays debt before the rest lands in the wallet.
 
@@ -110,8 +108,6 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age                                   |
 | `/repay <amount>`                 | Repay outstanding debt from your balance                                             |
 | `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                |
-| `/dice <bet>`                     | Roll three dice against the AI dealer                                                |
-| `/dragon_gate <bet>`              | Shoot one card between two gate cards; strictly inside wins                          |
 | `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately |
 | `/house`                          | Show the dealer's accumulated win/loss across casino games                           |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                                 |
