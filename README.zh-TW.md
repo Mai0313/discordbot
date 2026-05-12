@@ -174,9 +174,6 @@ uv run python scripts/artale_data.py
 DISCORD_BOT_TOKEN=你的機器人token
 OPENAI_API_KEY=你的api金鑰
 OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 相容端點
-
-# 可選
-DISCORD_TEST_SERVER_ID=你的測試伺服器id
 ```
 
 ### Slash Command Sync

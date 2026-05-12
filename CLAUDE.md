@@ -123,7 +123,7 @@ When a moderator times out the bot itself, this cog detects the `on_member_updat
 
 Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasChoices("ENV_NAME")` so env-var names are explicit. `.env` is auto-loaded at import time.
 
-- `DiscordConfig` — `DISCORD_BOT_TOKEN` (required), `DISCORD_TEST_SERVER_ID` (optional, enables instant-sync to one guild).
+- `DiscordConfig` — `DISCORD_BOT_TOKEN` (required).
 - `LLMConfig` — `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
 - `ModelSettings` / `RouteDecision` (not env config, same package). `ModelSettings(name, effort)` builds the Responses-API reasoning block and dispatches the right provider's web-search tool. Accepted input modalities are looked up via `utils/model_pricing.get_supported_modalities` (kept out of `typings/` to avoid `utils/` imports).
 - `economy.py` — pure frozen `pydantic.BaseModel` types (`LoanView`, `CreditResult`, `BorrowResult`, `RepayResult`) and the `TransactionKind` enum, imported by `cogs/_economy/database.py`. Pure types go here even when they're not env-backed config, as long as they don't pull in `cogs/` or `utils/`.

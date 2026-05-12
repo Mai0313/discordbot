@@ -53,6 +53,8 @@ nav:
               - video: Reference/discordbot/cogs/video.md
           - typings:
               - config: Reference/discordbot/typings/config.md
+              - economy: Reference/discordbot/typings/economy.md
+              - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
           - utils:
@@ -63,7 +65,6 @@ nav:
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - artale_data: Scripts/artale_data.md
-      - clear_guild_commands: Scripts/clear_guild_commands.md
       - gen_docs: Scripts/gen_docs.md
       - gpt: Scripts/gpt.md
       - image_dev: Scripts/image_dev.md

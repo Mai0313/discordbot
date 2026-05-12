@@ -174,9 +174,6 @@ Create a `.env` file (or copy from `.env.example`):
 DISCORD_BOT_TOKEN=your_bot_token
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1   # or any OpenAI-compatible endpoint
-
-# Optional
-DISCORD_TEST_SERVER_ID=your_test_server_id
 ```
 
 ### Slash Command Sync
