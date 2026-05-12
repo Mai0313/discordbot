@@ -26,6 +26,7 @@ nav:
                   - cleanup: Reference/discordbot/cogs/_games/cleanup.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dice: Reference/discordbot/cogs/_games/dice.md
+                  - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md

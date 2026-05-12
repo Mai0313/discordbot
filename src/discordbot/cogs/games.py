@@ -22,6 +22,11 @@ from discordbot.cogs._games.settlement import (
     settle_blackjack_round,
     blackjack_early_finish_note,
 )
+from discordbot.cogs._games.dragon_gate import (
+    play_dragon_gate,
+    render_card_value,
+    dragon_gate_detail,
+)
 from discordbot.cogs._games.presentation import (
     ERROR_COLOR,
     IN_PROGRESS_COLOR,
@@ -29,6 +34,7 @@ from discordbot.cogs._games.presentation import (
     settlement_footer,
     dice_outcome_presentation,
     blackjack_outcome_presentation,
+    dragon_gate_outcome_presentation,
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
@@ -232,6 +238,132 @@ class GamesCogs(commands.Cog):
         )
         final.add_field(
             name=dealer_name, value=render_rolls(rolls=result.dealer_rolls), inline=False
+        )
+        final.set_footer(
+            text=settlement_footer(
+                bet=bet,
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
+                house_balance=settlement.house_balance,
+                is_allin=is_allin,
+            )
+        )
+        await message.edit(embed=final)
+        schedule_game_message_delete(message=message)
+
+    @nextcord.slash_command(
+        name="dragon_gate",
+        description="Shoot one card between two gate cards; inside wins.",
+        name_localizations={Locale.zh_TW: "射龍門", Locale.ja: "ドラゴンゲート"},
+        description_localizations={
+            Locale.zh_TW: "下注後開兩張門牌, 第三張嚴格落在中間就贏。",
+            Locale.ja: "2枚のゲートカードの間に3枚目が入れば勝ち。",
+        },
+        nsfw=False,
+    )
+    async def dragon_gate(
+        self,
+        interaction: Interaction,
+        bet: int = SlashOption(
+            name="bet",
+            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
+            name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
+            description_localizations={
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Plays one round of Dragon Gate.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            bet: How many points to wager.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+
+        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
+        if placed_bet is None:
+            return
+        bet = placed_bet.amount
+        is_allin = placed_bet.is_allin
+
+        dealer_id, dealer_name = self._dealer_identity()
+
+        taunt = await self.dealer.taunt_bet(
+            author_name=interaction.user.name,
+            player_name=interaction.user.display_name,
+            balance_after_bet=placed_bet.balance_after,
+            bet=bet,
+            game="dragon_gate",
+        )
+
+        in_progress = Embed(
+            title=":flower_playing_cards: 射龍門 - 下注",
+            description=taunt,
+            color=IN_PROGRESS_COLOR,
+        )
+        in_progress.add_field(
+            name="下注", value=bet_field_value(bet=bet, is_allin=is_allin), inline=True
+        )
+        in_progress.add_field(
+            name="下注後餘額", value=currency_text(amount=placed_bet.balance_after), inline=True
+        )
+        in_progress.set_footer(text="正在開門...")
+        message = await interaction.followup.send(embed=in_progress, wait=True)
+
+        await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
+        result = play_dragon_gate(rng=self.rng)
+
+        if result.outcome == "win":
+            delta = bet
+        elif result.outcome == "push":
+            delta = 0
+        else:
+            delta = -bet
+
+        settlement = await settle_wager(
+            player_id=interaction.user.id,
+            player_account_name=interaction.user.name,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            bet=bet,
+            delta=delta,
+        )
+        detail = dragon_gate_detail(result=result)
+        banter = await self.dealer.settle(
+            author_name=interaction.user.name,
+            player_name=interaction.user.display_name,
+            outcome=result.outcome,
+            bet=bet,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
+            game="dragon_gate",
+            detail=detail,
+        )
+        outcome_label, color = dragon_gate_outcome_presentation(outcome=result.outcome)
+
+        final = Embed(
+            title=f":flower_playing_cards: 射龍門 - {outcome_label}",
+            description=banter,
+            color=color,
+        )
+        final.add_field(
+            name="龍門",
+            value=(
+                f"{render_card_value(card=result.lower_gate)}  ~  "
+                f"{render_card_value(card=result.upper_gate)}"
+            ),
+            inline=False,
+        )
+        final.add_field(
+            name=f"{interaction.user.display_name} 射門",
+            value=render_card_value(card=result.shot),
+            inline=False,
         )
         final.set_footer(
             text=settlement_footer(
