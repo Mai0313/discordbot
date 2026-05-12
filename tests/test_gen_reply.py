@@ -1,10 +1,17 @@
+from io import BytesIO
 from types import SimpleNamespace
+import base64
 from collections.abc import AsyncIterator
 
+from PIL import Image
 import pytest
+from nextcord import Embed
 from nextcord.ui import View
 
-from discordbot.cogs.gen_reply import ReplyGeneratorCogs
+from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, ReplyGeneratorCogs
+from discordbot.typings.models import ModelSettings
+from discordbot.cogs._gen_reply.views import RegenerateView
+from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 
 class FakeReply:
@@ -12,7 +19,7 @@ class FakeReply:
 
     def __init__(self) -> None:
         """Initializes the fake reply with empty content and no attached view."""
-        self.content = ""
+        self.content: str | None = ""
         self.view: View | None = None
 
     async def edit(self, *, content: str, view: View | None = None) -> None:
@@ -24,27 +31,150 @@ class FakeReply:
 class FakeAuthor:
     """Minimal stand-in for ``Message.author`` used by the streaming helper."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, bot: bool = False, user_id: int = 12345) -> None:
         """Initializes the fake author with stable id and name fields."""
-        self.id = 12345
+        self.id = user_id
         self.name = "tester"
+        self.display_name = "Tester"
+        self.mention = f"<@{user_id}>"
+        self.bot = bot
 
 
 class FakeMessage:
     """Provides a fake message object that records created replies."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, content: str = "", author: FakeAuthor | None = None) -> None:
         """Initializes the fake message with no recorded replies."""
         self.replies: list[FakeReply] = []
-        self.author = FakeAuthor()
+        self.author = author or FakeAuthor()
+        self.content = content
+        self.embeds: list[Embed] = []
+        self.attachments: list[object] = []
+        self.stickers: list[object] = []
+        self.reference: object | None = None
+        self.guild = SimpleNamespace(id=1)
+        self.channel = SimpleNamespace(history=self._history)
+        self.id = 987
+        self.system_content = ""
+        self.added_reactions: list[str] = []
+        self.removed_reactions: list[tuple[str, object]] = []
+        self.reactions: list[object] = []
 
-    async def reply(self, *, content: str, view: View | None = None) -> FakeReply:
+    async def _history(
+        self, *, limit: int, before: object, oldest_first: bool
+    ) -> AsyncIterator["FakeMessage"]:
+        if False:
+            yield self
+
+    async def reply(
+        self,
+        *,
+        content: str | None,
+        view: View | None = None,
+        file: object | None = None,
+        embed: Embed | None = None,
+    ) -> FakeReply:
         """Creates and records a fake reply with the requested content and view."""
         reply = FakeReply()
         reply.content = content
         reply.view = view
+        reply.file = file
+        reply.embed = embed
         self.replies.append(reply)
         return reply
+
+    async def add_reaction(self, *, emoji: str) -> None:
+        self.added_reactions.append(emoji)
+
+    async def remove_reaction(self, *, emoji: str, member: object) -> None:
+        self.removed_reactions.append((emoji, member))
+
+    def is_system(self) -> bool:
+        return bool(self.system_content)
+
+
+class FakeAttachment:
+    def __init__(
+        self,
+        *,
+        filename: str = "file.txt",
+        content_type: str | None = "text/plain",
+        payload: bytes = b"hello",
+        url: str = "https://example.test/file.txt",
+    ) -> None:
+        self.filename = filename
+        self.content_type = content_type
+        self._payload = payload
+        self.url = url
+
+    async def read(self) -> bytes:
+        return self._payload
+
+
+class FakeResponses:
+    def __init__(self) -> None:
+        self.create_calls: list[dict[str, object]] = []
+        self.parse_calls: list[dict[str, object]] = []
+        self.output_text = "caption"
+        self.output_parsed = SimpleNamespace(decision="SUMMARY")
+
+    async def create(self, **kwargs: object) -> object:
+        self.create_calls.append(kwargs)
+        return SimpleNamespace(output_text=self.output_text)
+
+    async def parse(self, **kwargs: object) -> object:
+        self.parse_calls.append(kwargs)
+        return SimpleNamespace(output_parsed=self.output_parsed)
+
+
+class FakeImages:
+    def __init__(self) -> None:
+        self.generate_calls: list[dict[str, object]] = []
+        self.edit_calls: list[dict[str, object]] = []
+
+    async def generate(self, **kwargs: object) -> object:
+        self.generate_calls.append(kwargs)
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
+
+    async def edit(self, **kwargs: object) -> object:
+        self.edit_calls.append(kwargs)
+        return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
+
+
+class FakeVideos:
+    def __init__(self) -> None:
+        self.retrieve_calls = 0
+
+    async def create(self, **kwargs: object) -> object:
+        return SimpleNamespace(id="video-1", status="processing")
+
+    async def retrieve(self, **kwargs: object) -> object:
+        self.retrieve_calls += 1
+        return SimpleNamespace(id="video-1", status="completed")
+
+    async def download_content(self, **kwargs: object) -> object:
+        return SimpleNamespace(content=b"mp4")
+
+
+class FakeClient:
+    def __init__(self) -> None:
+        self.responses = FakeResponses()
+        self.images = FakeImages()
+        self.videos = FakeVideos()
+
+
+def _png_b64() -> str:
+    image = Image.new(mode="RGB", size=(1, 1), color=(255, 0, 0))
+    buffer = BytesIO()
+    image.save(fp=buffer, format="PNG")
+    return base64.b64encode(s=buffer.getvalue()).decode(encoding="utf-8")
+
+
+def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
+    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
+    cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
+    cog.__dict__["client"] = FakeClient()
+    return cog
 
 
 async def _stream_events() -> AsyncIterator[SimpleNamespace]:
@@ -86,3 +216,268 @@ async def test_handle_streaming_allows_missing_output_token_details(
     )
     assert result == expected
     assert message.replies[0].content == result
+
+
+def test_extract_friendly_error_prefers_nested_provider_message() -> None:
+    raw = """wrapper b'{"error": {"message": "quota exceeded"}}'"""
+    assert extract_friendly_error(exc=RuntimeError(raw)) == "quota exceeded"
+    assert extract_friendly_error(exc=RuntimeError("plain failure")) == "plain failure"
+    assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
+
+
+async def test_regenerate_view_restricts_user_and_dispatches_original_message() -> None:
+    called: list[FakeMessage] = []
+
+    async def fake_on_message(*, message: FakeMessage) -> None:
+        called.append(message)
+
+    async def fake_send_message(**kwargs: object) -> None:
+        denied.append(kwargs)
+
+    class _ReplyMessage:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        async def delete(self) -> None:
+            self.deleted = True
+
+    denied: list[dict[str, object]] = []
+    original = FakeMessage(author=FakeAuthor(user_id=10))
+    original.reactions = [SimpleNamespace(me=True, emoji="🆗"), SimpleNamespace(me=False, emoji="x")]
+    cog = SimpleNamespace(
+        bot=SimpleNamespace(user=SimpleNamespace(id=999)), on_message=fake_on_message
+    )
+    view = RegenerateView(cog=cog, original_message=original)
+    denied_interaction = SimpleNamespace(
+        user=SimpleNamespace(id=11),
+        response=SimpleNamespace(send_message=fake_send_message),
+    )
+    assert await view.interaction_check(interaction=denied_interaction) is False
+    assert denied[0]["ephemeral"] is True
+
+    reply_message = _ReplyMessage()
+    allowed_interaction = SimpleNamespace(
+        user=SimpleNamespace(id=10),
+        message=reply_message,
+        response=SimpleNamespace(defer=_async_none),
+    )
+    assert await view.interaction_check(interaction=allowed_interaction) is True
+    await view.regenerate.callback(allowed_interaction)
+    assert reply_message.deleted
+    assert original.removed_reactions == [("🆗", cog.bot.user)]
+    assert called == [original]
+
+
+async def _async_none() -> None:
+    return None
+
+
+async def test_gen_reply_message_content_and_attachment_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cog = _cog()
+    embed = Embed(title="Title", description="Body")
+    embed.set_author(name="Author")
+    embed.add_field(name="Field", value="Value")
+    embed.set_footer(text="Footer")
+
+    assert await cog._get_user_prompt(content="hi <@999>") == "hi"
+    assert "Author" in cog._extract_embed_text(embeds=[embed])
+
+    bot_message = FakeMessage(
+        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+        author=FakeAuthor(bot=True, user_id=999),
+    )
+    assert await cog._get_cleaned_content(message=bot_message) == "answer"
+    assert _USAGE_FOOTER_RE.search(string=bot_message.content)
+
+    embed_message = FakeMessage()
+    embed_message.embeds = [embed]
+    assert "Title" in await cog._get_cleaned_content(message=embed_message)
+
+    system_message = FakeMessage()
+    system_message.system_content = "joined"
+    assert await cog._get_cleaned_content(message=system_message) == "joined"
+
+    assert cog._required_modality(content_type="video/mp4") == "video"
+    assert cog._required_modality(content_type="audio/mpeg") == "audio"
+    assert cog._required_modality(content_type="application/pdf") == "image"
+
+    file_part = await cog._attachment_to_part(
+        attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
+    )
+    assert file_part is not None
+    assert file_part["file_data"] == "data:text/plain;base64,YWJj"
+
+    image_part = await cog._image_to_part(
+        source=FakeAttachment(filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64()))
+    )
+    assert image_part is not None
+    assert image_part["type"] == "input_image"
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"image"})
+    message = FakeMessage()
+    message.attachments = [
+        FakeAttachment(filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())),
+        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"video"),
+    ]
+    message.stickers = [
+        FakeAttachment(filename="sticker.png", content_type="image/png", payload=base64.b64decode(_png_b64()))
+    ]
+    img_embed = Embed()
+    img_embed.set_image(url="https://example.test/image.png")
+    message.embeds = [img_embed]
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.get_pil_image",
+        lambda image_file: Image.new(mode="RGB", size=(1, 1), color=(0, 0, 0)),
+    )
+    parts = await cog._get_attachment_parts(message=message)
+    assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
+
+
+async def test_gen_reply_processes_history_reference_and_current_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"text", "image"}
+    )
+    bot_msg = FakeMessage(content="bot answer", author=FakeAuthor(bot=True, user_id=999))
+    user_msg = FakeMessage(content="hello", author=FakeAuthor(user_id=1))
+    with_attachment = FakeMessage(content="see file", author=FakeAuthor(user_id=2))
+    with_attachment.attachments = [FakeAttachment(filename="note.txt", content_type="text/plain")]
+
+    bot_processed = await cog._process_single_message(message=bot_msg)
+    user_processed = await cog._process_single_message(message=user_msg)
+    attachment_processed = await cog._process_single_message(message=with_attachment)
+    assert bot_processed["role"] == "assistant"
+    assert user_processed["role"] == "user"
+    assert attachment_processed["role"] == "user"
+    assert isinstance(attachment_processed["content"], list)
+
+    async def fake_history(*, limit: int, before: object, oldest_first: bool) -> AsyncIterator[FakeMessage]:
+        yield user_msg
+        yield bot_msg
+
+    current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
+    current.channel = SimpleNamespace(history=fake_history)
+    history = await cog._get_history_message(message=current, limit=30)
+    assert len(history) == 3
+    assert history[0]["role"] == "system"
+
+    parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
+    grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
+    parent.id = 988
+    grandparent.id = 989
+    parent.reference = SimpleNamespace(resolved=grandparent)
+    current.reference = SimpleNamespace(resolved=parent)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    reference = await cog._get_reference_message(message=current)
+    assert len(reference) == 4
+    assert reference[0]["role"] == "system"
+    assert len(await cog._get_current_message(message=current)) == 2
+
+
+async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    cog = _cog()
+    message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
+    assert await cog._route_message(message=message) == "SUMMARY"
+    assert cog.client.responses.parse_calls[0]["model"] == cog.fast_model.name
+
+    async def fake_sleep(*args: object, delay: float = 0) -> None:
+        return None
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    await cog._handle_video_generation(message=message, user_prompt="video")
+    assert len(message.replies) == 1
+
+    await cog._handle_image_reply(message=message, user_prompt="image")
+    assert cog.client.images.generate_calls
+    assert message.replies[-1].content.startswith("<@1> caption")
+
+    async def fake_streaming(**kwargs: object) -> str:
+        streamed.append(kwargs)
+        return "done"
+
+    streamed: list[dict[str, object]] = []
+    monkeypatch.setattr(cog, "_handle_streaming", fake_streaming)
+    await cog._handle_message_reply(
+        message=message, system_prompt="system", context_prompt="context", history_limit=2
+    )
+    assert cog.client.responses.create_calls[-1]["stream"] is True
+    assert streamed[-1]["message"] is message
+
+
+@pytest.mark.parametrize(
+    argnames=("route", "expected_call"),
+    argvalues=[
+        ("IMAGE", "_handle_image_reply"),
+        ("VIDEO", "_handle_video_generation"),
+        ("SUMMARY", "_handle_message_reply"),
+        ("QA", "_handle_message_reply"),
+    ],
+)
+async def test_gen_reply_on_message_dispatches_routes(
+    monkeypatch: pytest.MonkeyPatch, route: str, expected_call: str
+) -> None:
+    cog = _cog()
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_route(*, message: FakeMessage) -> str:
+        return route
+
+    async def fake_reaction(**kwargs: object) -> None:
+        calls.append(("reaction", kwargs))
+
+    async def fake_handler(**kwargs: object) -> None:
+        calls.append((expected_call, kwargs))
+
+    monkeypatch.setattr(cog, "_route_message", fake_route)
+    monkeypatch.setattr(cog, "_handle_reaction", fake_reaction)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_handler)
+    monkeypatch.setattr(cog, "_handle_video_generation", fake_handler)
+    monkeypatch.setattr(cog, "_handle_message_reply", fake_handler)
+
+    message = FakeMessage(content="<@999> hello", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+    assert any(call[0] == expected_call for call in calls)
+    assert calls[-1][1]["emoji"] == "🆗"
+
+
+async def test_gen_reply_on_message_early_returns_and_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cog = _cog()
+    bot_authored = FakeMessage(content="<@999> hi", author=FakeAuthor(bot=True))
+    await cog.on_message(message=bot_authored)
+    assert bot_authored.replies == []
+
+    unmentioned = FakeMessage(content="hello", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=unmentioned)
+    assert unmentioned.replies == []
+
+    dm_empty = FakeMessage(content="<@999>", author=FakeAuthor(user_id=1))
+    dm_empty.guild = None
+    await cog.on_message(message=dm_empty)
+    assert dm_empty.replies[0].content == "?"
+
+    async def boom(*, message: FakeMessage) -> str:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cog, "_route_message", boom)
+    failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=failed)
+    assert failed.replies[0].content is None
+
+
+def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))
+    assert cog.fast_model == ModelSettings(name="gemini-flash-latest", effort="none")
+    assert cog.image_model.name.endswith("image-preview")
+    assert cog.video_model.name.startswith("veo")
+    assert cog.slow_model.effort == "high"
+    assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
+    assert ModelSettings(name="claude-test").tools[0]["name"] == "web_search"
+    assert ModelSettings(name="openai-test").tools == [{"type": "web_search"}]
