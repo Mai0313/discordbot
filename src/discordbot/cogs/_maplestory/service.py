@@ -27,9 +27,9 @@ def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
             raw = json.load(f)
         return [model.model_validate(item) for item in raw]
     except FileNotFoundError:
-        logfire.warning("找不到資料檔案 %s", path)
+        logfire.warning(f"找不到資料檔案 {path}")
     except (json.JSONDecodeError, Exception) as exc:
-        logfire.error("無法載入 %s — %s", path, exc)
+        logfire.error(f"無法載入 {path}: {exc}")
     return []
 
 
