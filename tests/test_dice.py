@@ -45,10 +45,22 @@ def test_render_rolls_includes_faces_and_total() -> None:
     assert "= 6" in rendered
 
 
-def test_settlement_footer_does_not_prefix_positive_house_balance() -> None:
-    """House balance is an absolute ledger balance, not this-round profit."""
-    footer = settlement_footer(
-        bet=100, delta=-100, new_balance=500, house_balance=1_200, is_allin=False
-    )
-    assert "莊家餘額 1,200 虛擬歡樂豆" in footer
-    assert "莊家餘額 +1,200 虛擬歡樂豆" not in footer
+def test_settlement_footer_shows_delta_and_balance() -> None:
+    """Footer keeps only the round delta and post-settlement balance."""
+    footer = settlement_footer(delta=-100, new_balance=500, is_allin=False)
+    assert "本局 -100 虛擬歡樂豆" in footer
+    assert "餘額 500 虛擬歡樂豆" in footer
+    assert "下注" not in footer
+    assert "莊家" not in footer
+
+
+def test_settlement_footer_signs_positive_delta() -> None:
+    """A winning round prefixes the delta with a `+`."""
+    footer = settlement_footer(delta=200, new_balance=700, is_allin=False)
+    assert "本局 +200 虛擬歡樂豆" in footer
+
+
+def test_settlement_footer_appends_allin_note() -> None:
+    """All-in rounds add the auto all-in suffix."""
+    footer = settlement_footer(delta=0, new_balance=0, is_allin=True)
+    assert "已自動 all-in" in footer

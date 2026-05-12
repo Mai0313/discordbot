@@ -485,8 +485,8 @@ async def fake_get_loan_view(*, user_id: int) -> None:
 
 async def fake_top_n(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int]]:
-    return [(1, "alice", 150)]
+) -> list[tuple[int, str, int, str]]:
+    return [(1, "alice", 150, "https://cdn.example/alice.png")]
 
 
 async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:

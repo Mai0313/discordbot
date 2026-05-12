@@ -94,6 +94,7 @@ async def test_add_balance_refreshes_name() -> None:
     await database.add_balance(user_id=42, name="alice_renamed", amount=10)
     rows = await database.top_n(limit=1)
     assert rows[0][1] == "alice_renamed"
+    assert rows[0][3] == ""
 
 
 async def test_add_balance_stores_and_refreshes_avatar_url() -> None:
@@ -297,11 +298,11 @@ async def test_transfer_rejects_non_positive(amount: int) -> None:
 
 async def test_top_n_orders_by_balance_descending() -> None:
     """Leaderboard returns the top accounts ordered by balance."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    await database.add_balance(user_id=2, name="bob", amount=300)
+    await database.add_balance(user_id=1, name="alice", amount=100, avatar_url="https://cdn/a.png")
+    await database.add_balance(user_id=2, name="bob", amount=300, avatar_url="https://cdn/b.png")
     await database.add_balance(user_id=3, name="carol", amount=50)
     rows = await database.top_n(limit=2)
-    assert rows == [(2, "bob", 300), (1, "alice", 100)]
+    assert rows == [(2, "bob", 300, "https://cdn/b.png"), (1, "alice", 100, "https://cdn/a.png")]
 
 
 async def test_top_n_excludes_specified_users() -> None:
@@ -310,8 +311,8 @@ async def test_top_n_excludes_specified_users() -> None:
     await database.add_balance(user_id=2, name="bob", amount=300)
     await database.add_balance(user_id=99, name="house", amount=999)
     rows = await database.top_n(limit=10, exclude_user_ids=(99,))
-    assert (99, "house", 999) not in rows
-    assert rows[0] == (2, "bob", 300)
+    assert all(row[0] != 99 for row in rows)
+    assert rows[0][:3] == (2, "bob", 300)
 
 
 async def test_house_settle_allows_negative_balance() -> None:

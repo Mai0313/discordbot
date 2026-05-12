@@ -31,7 +31,7 @@ from discordbot.cogs._games.dragon_gate import (
 from discordbot.cogs._games.presentation import (
     ERROR_COLOR,
     IN_PROGRESS_COLOR,
-    bet_field_value,
+    allin_note,
     settlement_footer,
     dice_outcome_presentation,
     blackjack_outcome_presentation,
@@ -189,16 +189,14 @@ class GamesCogs(commands.Cog):
             game="dice",
         )
 
-        in_progress = Embed(
-            title=":game_die: 比大小 - 下注", description=taunt, color=IN_PROGRESS_COLOR
+        in_progress = Embed(title="🎲 比大小", description=taunt, color=IN_PROGRESS_COLOR)
+        in_progress.set_author(
+            name=f"{interaction.user.display_name} 的對局",
+            icon_url=interaction.user.display_avatar.url,
         )
-        in_progress.add_field(
-            name="下注", value=bet_field_value(bet=bet, is_allin=is_allin), inline=True
+        in_progress.set_footer(
+            text=(f"下注 {currency_text(amount=bet)} · 等候開獎...{allin_note(is_allin=is_allin)}")
         )
-        in_progress.add_field(
-            name="下注後餘額", value=currency_text(amount=placed_bet.balance_after), inline=True
-        )
-        in_progress.set_footer(text="正在搖骰子...")
         message = await interaction.followup.send(embed=in_progress, wait=True)
 
         await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
@@ -234,11 +232,13 @@ class GamesCogs(commands.Cog):
         )
         outcome_label, color = dice_outcome_presentation(outcome=result.outcome)
 
-        final = Embed(
-            title=f":game_die: 比大小 - {outcome_label}", description=banter, color=color
+        final = Embed(title=f"🎲 比大小 — {outcome_label}", description=banter, color=color)
+        final.set_author(
+            name=f"{interaction.user.display_name} 的對局",
+            icon_url=interaction.user.display_avatar.url,
         )
         final.add_field(
-            name=f"{interaction.user.display_name}",
+            name=interaction.user.display_name,
             value=render_rolls(rolls=result.player_rolls),
             inline=False,
         )
@@ -247,11 +247,7 @@ class GamesCogs(commands.Cog):
         )
         final.set_footer(
             text=settlement_footer(
-                bet=bet,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                house_balance=settlement.house_balance,
-                is_allin=is_allin,
+                delta=settlement.delta, new_balance=settlement.new_balance, is_allin=is_allin
             )
         )
         await message.edit(embed=final)
@@ -308,18 +304,14 @@ class GamesCogs(commands.Cog):
             game="dragon_gate",
         )
 
-        in_progress = Embed(
-            title=":flower_playing_cards: 射龍門 - 下注",
-            description=taunt,
-            color=IN_PROGRESS_COLOR,
+        in_progress = Embed(title="🎴 射龍門", description=taunt, color=IN_PROGRESS_COLOR)
+        in_progress.set_author(
+            name=f"{interaction.user.display_name} 的對局",
+            icon_url=interaction.user.display_avatar.url,
         )
-        in_progress.add_field(
-            name="下注", value=bet_field_value(bet=bet, is_allin=is_allin), inline=True
+        in_progress.set_footer(
+            text=(f"下注 {currency_text(amount=bet)} · 等候開門...{allin_note(is_allin=is_allin)}")
         )
-        in_progress.add_field(
-            name="下注後餘額", value=currency_text(amount=placed_bet.balance_after), inline=True
-        )
-        in_progress.set_footer(text="正在開門...")
         message = await interaction.followup.send(embed=in_progress, wait=True)
 
         await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
@@ -355,10 +347,10 @@ class GamesCogs(commands.Cog):
         )
         outcome_label, color = dragon_gate_outcome_presentation(outcome=result.outcome)
 
-        final = Embed(
-            title=f":flower_playing_cards: 射龍門 - {outcome_label}",
-            description=banter,
-            color=color,
+        final = Embed(title=f"🎴 射龍門 — {outcome_label}", description=banter, color=color)
+        final.set_author(
+            name=f"{interaction.user.display_name} 的對局",
+            icon_url=interaction.user.display_avatar.url,
         )
         final.add_field(
             name="龍門",
@@ -375,11 +367,7 @@ class GamesCogs(commands.Cog):
         )
         final.set_footer(
             text=settlement_footer(
-                bet=bet,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                house_balance=settlement.house_balance,
-                is_allin=is_allin,
+                delta=settlement.delta, new_balance=settlement.new_balance, is_allin=is_allin
             )
         )
         await message.edit(embed=final)
@@ -465,11 +453,10 @@ class GamesCogs(commands.Cog):
             embed = build_final_embed(
                 dealer_name=dealer_name,
                 player_name=interaction.user.display_name,
+                player_avatar_url=interaction.user.display_avatar.url,
                 hand=hand,
-                bet=bet,
                 delta=settlement.delta,
                 new_balance=settlement.new_balance,
-                house_balance=settlement.house_balance,
                 dealer_line=banter,
                 outcome_label=outcome_label,
                 color=color,
@@ -496,6 +483,7 @@ class GamesCogs(commands.Cog):
         embed = build_in_progress_embed(
             dealer_name=dealer_name,
             player_name=interaction.user.display_name,
+            player_avatar_url=interaction.user.display_avatar.url,
             hand=hand,
             balance_after_bet=placed_bet.balance_after,
             dealer_line=taunt,

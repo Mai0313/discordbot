@@ -34,6 +34,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     *,
     dealer_name: str,
     player_name: str,
+    player_avatar_url: str,
     hand: BlackjackHand,
     balance_after_bet: int,
     dealer_line: str,
@@ -44,6 +45,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     Args:
         dealer_name: Display name used for the dealer field title.
         player_name: Display name used for the player field title.
+        player_avatar_url: Last-seen Discord avatar URL for the player (used as author icon).
         hand: Current Blackjack hand state.
         balance_after_bet: Player balance after the wager was withdrawn.
         dealer_line: Dealer banter shown in the embed description.
@@ -52,20 +54,16 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     Returns:
         The in-progress Blackjack embed.
     """
-    embed = Embed(
-        title=":black_joker: 21 點 - 進行中", description=dealer_line, color=IN_PROGRESS_COLOR
-    )
-    embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
+    embed = Embed(title="♠️ 21 點", description=dealer_line, color=IN_PROGRESS_COLOR)
+    embed.set_author(name=f"{player_name} 的對局", icon_url=player_avatar_url or None)
+    embed.add_field(name=player_name, value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name=f"{dealer_name} 的牌",
-        value=_format_dealer_line(hand=hand, hide_hole=True),
-        inline=False,
+        name=dealer_name, value=_format_dealer_line(hand=hand, hide_hole=True), inline=False
     )
     embed.set_footer(
         text=(
             f"下注 {currency_text(amount=hand.bet)} · "
-            f"下注後餘額 {currency_text(amount=balance_after_bet)}"
-            f"{allin_note(is_allin=is_allin)}"
+            f"餘額 {currency_text(amount=balance_after_bet)}{allin_note(is_allin=is_allin)}"
         )
     )
     return embed
@@ -75,11 +73,10 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     *,
     dealer_name: str,
     player_name: str,
+    player_avatar_url: str,
     hand: BlackjackHand,
-    bet: int,
     delta: int,
     new_balance: int,
-    house_balance: int,
     dealer_line: str,
     outcome_label: str,
     color: int,
@@ -91,11 +88,10 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     Args:
         dealer_name: Display name used for the dealer field title.
         player_name: Display name used for the player field title.
+        player_avatar_url: Last-seen Discord avatar URL for the player (used as author icon).
         hand: Final Blackjack hand state.
-        bet: Effective bet amount in points.
         delta: Player net point change for the round.
         new_balance: Player balance after settlement.
-        house_balance: Dealer ledger balance after settlement.
         dealer_line: Dealer banter shown in the embed description.
         outcome_label: Human-readable result label for the embed title.
         color: Embed color for the outcome.
@@ -105,25 +101,16 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     Returns:
         The final Blackjack embed.
     """
-    embed = Embed(
-        title=f":black_joker: 21 點 - {outcome_label}", description=dealer_line, color=color
-    )
-    embed.add_field(name=f"{player_name} 的牌", value=_format_player_line(hand=hand), inline=False)
+    embed = Embed(title=f"♠️ 21 點 — {outcome_label}", description=dealer_line, color=color)
+    embed.set_author(name=f"{player_name} 的對局", icon_url=player_avatar_url or None)
+    embed.add_field(name=player_name, value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name=f"{dealer_name} 的牌",
-        value=_format_dealer_line(hand=hand, hide_hole=False),
-        inline=False,
+        name=dealer_name, value=_format_dealer_line(hand=hand, hide_hole=False), inline=False
     )
     if round_note:
-        embed.add_field(name="提前結束原因", value=round_note, inline=False)
+        embed.add_field(name="提前結束", value=round_note, inline=False)
     embed.set_footer(
-        text=settlement_footer(
-            bet=bet,
-            delta=delta,
-            new_balance=new_balance,
-            house_balance=house_balance,
-            is_allin=is_allin,
-        )
+        text=settlement_footer(delta=delta, new_balance=new_balance, is_allin=is_allin)
     )
     return embed
 
@@ -240,6 +227,7 @@ class BlackjackView(ui.View):
         embed = build_in_progress_embed(
             dealer_name=self.dealer_name,
             player_name=self.player_name,
+            player_avatar_url=self.player_avatar_url,
             hand=self.hand,
             balance_after_bet=self.balance_after_bet,
             dealer_line=hint,
@@ -302,11 +290,10 @@ class BlackjackView(ui.View):
             embed = build_final_embed(
                 dealer_name=self.dealer_name,
                 player_name=self.player_name,
+                player_avatar_url=self.player_avatar_url,
                 hand=self.hand,
-                bet=self.hand.bet,
                 delta=settlement.delta,
                 new_balance=settlement.new_balance,
-                house_balance=settlement.house_balance,
                 dealer_line=banter,
                 outcome_label=outcome_label,
                 color=color,

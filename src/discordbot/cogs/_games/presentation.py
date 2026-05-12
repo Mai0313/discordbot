@@ -76,38 +76,22 @@ def allin_note(*, is_allin: bool) -> str:
     return " · 已自動 all-in" if is_allin else ""
 
 
-def bet_field_value(*, bet: int, is_allin: bool) -> str:
-    """Formats a bet amount for in-progress embeds.
-
-    Args:
-        bet: Effective bet amount in points.
-        is_allin: Whether the requested bet was clamped to the full balance.
-
-    Returns:
-        A display string for the wager field.
-    """
-    suffix = " (已自動 all-in)" if is_allin else ""
-    return f"{currency_text(amount=bet)}{suffix}"
-
-
-def settlement_footer(
-    *, bet: int, delta: int, new_balance: int, house_balance: int, is_allin: bool
-) -> str:
+def settlement_footer(*, delta: int, new_balance: int, is_allin: bool) -> str:
     """Formats the shared final-round settlement footer.
 
+    Keeps only the two numbers the player needs to see at a glance — the
+    round delta and the post-settlement balance — and lets ``/house`` carry
+    the dealer ledger when the player explicitly asks for it.
+
     Args:
-        bet: Effective bet amount in points.
         delta: Player net point change for the round.
         new_balance: Player balance after settlement.
-        house_balance: Dealer ledger balance after settlement.
         is_allin: Whether the requested bet was clamped to the full balance.
 
     Returns:
         Footer text for a final game embed.
     """
     return (
-        f"下注 {currency_text(amount=bet)} · "
-        f"本局淨變動 {currency_text(amount=delta, signed=True)} · "
-        f"餘額 {currency_text(amount=new_balance)} · "
-        f"莊家餘額 {currency_text(amount=house_balance)}{allin_note(is_allin=is_allin)}"
+        f"本局 {currency_text(amount=delta, signed=True)} · "
+        f"餘額 {currency_text(amount=new_balance)}{allin_note(is_allin=is_allin)}"
     )

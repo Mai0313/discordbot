@@ -1398,7 +1398,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 
 async def top_n(
     *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int]]:
+) -> list[tuple[int, str, int, str]]:
     """Returns accounts ordered by balance descending.
 
     ``exclude_user_ids`` filters out specific accounts (notably the bot's
@@ -1411,15 +1411,17 @@ async def top_n(
         exclude_user_ids: User IDs to filter out before applying the limit.
 
     Returns:
-        `(user_id, name, balance)` tuples ordered by balance descending.
+        `(user_id, name, balance, avatar_url)` tuples ordered by balance
+        descending. ``avatar_url`` is empty when the user has never been
+        seen by an avatar-aware write path.
     """
     await _ensure_schema()
     async with open_session() as session:
-        stmt = select(UserAccount.user_id, UserAccount.name, UserAccount.balance).order_by(
-            desc(UserAccount.balance)
-        )
+        stmt = select(
+            UserAccount.user_id, UserAccount.name, UserAccount.balance, UserAccount.avatar_url
+        ).order_by(desc(UserAccount.balance))
         if exclude_user_ids:
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
-        return [(row[0], row[1], row[2]) for row in result.all()]
+        return [(row[0], row[1], row[2], row[3]) for row in result.all()]
