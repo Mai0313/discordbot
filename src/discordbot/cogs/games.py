@@ -11,12 +11,13 @@ from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.economy import PlacedBet
 from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import BlackjackHand
-from discordbot.cogs._economy.database import PlacedBet, place_bet, get_balance
+from discordbot.cogs._economy.database import place_bet, get_balance
 from discordbot.cogs._games.settlement import (
     settle_wager,
     settle_blackjack_round,

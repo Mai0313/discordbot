@@ -116,4 +116,42 @@ class RepayResult(BaseModel):
     remaining_debt: int
 
 
-__all__ = ["BorrowResult", "CreditResult", "LoanView", "RepayResult", "TransactionKind"]
+class PlacedBet(BaseModel):
+    """A successfully withdrawn wager.
+
+    Attributes:
+        amount: Actual amount withdrawn. This may be lower than the requested amount for all-in.
+        balance_after: Account balance after the bet was withdrawn.
+        is_allin: True when the requested bet was clamped to the available balance.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    amount: int
+    balance_after: int
+    is_allin: bool
+
+
+class TransferResult(BaseModel):
+    """A successful point transfer.
+
+    Attributes:
+        sender_balance: Sender balance after the debit.
+        receiver_balance: Receiver balance after the credit.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    sender_balance: int
+    receiver_balance: int
+
+
+__all__ = [
+    "BorrowResult",
+    "CreditResult",
+    "LoanView",
+    "PlacedBet",
+    "RepayResult",
+    "TransactionKind",
+    "TransferResult",
+]

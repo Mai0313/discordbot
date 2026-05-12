@@ -568,10 +568,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     hand.dealer = [Card(rank="9", suit="♠"), Card(rank="8", suit="♣")]
     hand.finished = True
 
-    def fake_deal_initial() -> None:
-        return None
-
-    hand.deal_initial = fake_deal_initial
+    monkeypatch.setattr(target=BlackjackHand, name="deal_initial", value=lambda self: None)
 
     def fake_blackjack_hand(rng: games.SystemRandom, bet: int) -> BlackjackHand:
         return hand

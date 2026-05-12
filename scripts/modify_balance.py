@@ -9,22 +9,21 @@ Usage::
 
 import asyncio
 import argparse
-from datetime import UTC, datetime
-from dataclasses import dataclass
 from collections.abc import Sequence
 
+from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
 from discordbot.cogs._economy import database
-from discordbot.cogs._economy.database import UserAccount
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 console = Console()
 
 
-@dataclass(frozen=True)
-class BalanceChange:
+class BalanceChange(BaseModel):
     """Summary of a manual balance adjustment."""
+
+    model_config = ConfigDict(frozen=True)
 
     user_id: int
     name: str
@@ -66,12 +65,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 async def modify_balance(
     *, user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
 ) -> BalanceChange:
-    """Applies a manual economy balance adjustment.
+    """Applies a manual economy balance adjustment via the database API.
 
-    Opens an economy database session, fetches or creates the user's
-    `UserAccount`, clamps the resulting balance at zero unless negative
-    balances are explicitly allowed, updates lifetime earned or spent totals,
-    and commits the transaction. Dry runs roll back instead of writing changes.
+    Routes the change through the same helpers the bot itself uses: positive
+    deltas go through ``add_balance`` and negative deltas go through
+    ``settle_game`` (which clamps at zero) or ``house_settle`` (which allows
+    negative balances). Dry runs read the current state and compute the
+    expected applied delta without writing.
 
     Args:
         user_id: Discord user ID whose account should be adjusted.
@@ -83,63 +83,52 @@ async def modify_balance(
     Returns:
         A `BalanceChange` summary describing the requested and applied change.
     """
-    async with database.open_session() as session:
-        account = await session.get(entity=UserAccount, ident=user_id)
-        created = account is None
+    account = await database.get_account(user_id=user_id)
+    created = account is None
+    existing_name = account[0] if account is not None else ""
+    before = account[1] if account is not None else 0
+    effective_name = name or existing_name or str(user_id)
 
-        if account is None:
-            if delta <= 0 and not allow_negative:
-                return BalanceChange(
-                    user_id=user_id,
-                    name=name or str(user_id),
-                    before=0,
-                    requested_delta=delta,
-                    applied_delta=0,
-                    after=0,
-                    created=False,
-                    dry_run=dry_run,
-                )
-            account = UserAccount(user_id=user_id, name=name or str(user_id))
-            session.add(instance=account)
-            await session.flush()
+    after = before + delta if allow_negative else max(before + delta, 0)
+    applied_delta = after - before
 
-        before = account.balance
-        after = before + delta if allow_negative else max(before + delta, 0)
-        applied_delta = after - before
-
-        if dry_run:
-            await session.rollback()
-            return BalanceChange(
-                user_id=user_id,
-                name=name or account.name,
-                before=before,
-                requested_delta=delta,
-                applied_delta=applied_delta,
-                after=after,
-                created=created,
-                dry_run=True,
-            )
-
-        account.balance = after
-        if name:
-            account.name = name
-        if applied_delta > 0:
-            account.total_earned += applied_delta
-        elif applied_delta < 0:
-            account.total_spent += -applied_delta
-        account.updated_at = datetime.now(tz=UTC)
-
-        await session.commit()
+    if dry_run or applied_delta == 0:
         return BalanceChange(
             user_id=user_id,
-            name=account.name,
+            name=effective_name,
             before=before,
             requested_delta=delta,
             applied_delta=applied_delta,
             after=after,
-            created=created,
-            dry_run=False,
+            created=created and not dry_run and applied_delta != 0,
+            dry_run=dry_run,
         )
+
+    if applied_delta > 0:
+        new_balance = await database.add_balance(
+            user_id=user_id, name=effective_name, amount=applied_delta
+        )
+    elif allow_negative:
+        # house_settle is the only public helper that allows the resulting
+        # balance to go below zero; the admin CLI is its only non-dealer caller.
+        new_balance = await database.house_settle(
+            user_id=user_id, name=effective_name, delta=applied_delta
+        )
+    else:
+        new_balance = await database.settle_game(
+            user_id=user_id, name=effective_name, delta=applied_delta
+        )
+
+    return BalanceChange(
+        user_id=user_id,
+        name=effective_name,
+        before=before,
+        requested_delta=delta,
+        applied_delta=applied_delta,
+        after=new_balance,
+        created=created,
+        dry_run=False,
+    )
 
 
 def _print_change(change: BalanceChange) -> None:

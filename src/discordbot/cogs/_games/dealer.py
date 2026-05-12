@@ -1,11 +1,12 @@
 """AI dealer that produces short banter lines for the casino games."""
 
-from typing import Literal, cast
+from typing import cast
 
 from openai import AsyncOpenAI
 import logfire
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.typings.games import GameKind, SettleOutcome
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import (
     DEALER_HINT_PROMPT,
@@ -13,21 +14,6 @@ from discordbot.cogs._games.prompts import (
     DEALER_TAUNT_BET_PROMPT,
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
-
-GameKind = Literal["dice", "blackjack", "dragon_gate"]
-SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
-
-_FALLBACK_BET = "下好離手, 不要等下哭。"
-_FALLBACK_WIN = "算你今天運氣好, 下一把不會這麼順。"
-_FALLBACK_LOSE = "下次再來送錢吧。"
-_FALLBACK_PUSH = "白忙一場, 賭場最開心的就是這種局。"
-_FALLBACK_HINT = "看你自己的, 我可不會手下留情。"
-
-_GAME_LABELS: dict[GameKind, str] = {
-    "dice": "比大小骰子",
-    "blackjack": "21 點",
-    "dragon_gate": "射龍門",
-}
 
 
 class DealerAI:
@@ -92,9 +78,13 @@ class DealerAI:
             A trimmed model-generated line, or the fallback line on request
             failure or empty output.
         """
-        game_label = _GAME_LABELS[game]
+        game_labels: dict[GameKind, str] = {
+            "dice": "比大小骰子",
+            "blackjack": "21 點",
+            "dragon_gate": "射龍門",
+        }
         user_text = (
-            f"遊戲: {game_label}\n"
+            f"遊戲: {game_labels[game]}\n"
             f"玩家: {player_name}\n"
             f"下注金額 ({CURRENCY_NAME}): {bet}\n"
             f"下注後剩餘餘額 ({CURRENCY_NAME}): {balance_after_bet}"
@@ -102,7 +92,7 @@ class DealerAI:
         return await self._ask(
             instructions=DEALER_TAUNT_BET_PROMPT,
             user_text=user_text,
-            fallback=_FALLBACK_BET,
+            fallback="下好離手, 不要等下哭。",
             end_user_id=author_name,
         )
 
@@ -134,28 +124,32 @@ class DealerAI:
             A trimmed model-generated line, or an outcome-specific fallback line
             on request failure or empty output.
         """
-        game_label = _GAME_LABELS[game]
-        outcome_label = {
+        game_labels: dict[GameKind, str] = {
+            "dice": "比大小骰子",
+            "blackjack": "21 點",
+            "dragon_gate": "射龍門",
+        }
+        outcome_labels: dict[SettleOutcome, str] = {
             "win": "玩家贏",
             "lose": "玩家輸",
             "push": "平手",
             "blackjack": "玩家直接 Blackjack 21 點 (賠 1.5x)",
             "player_bust": "玩家爆牌, 莊家自動贏",
             "dealer_bust": "莊家爆牌, 玩家贏",
-        }[outcome]
-        fallback = {
-            "win": _FALLBACK_WIN,
-            "lose": _FALLBACK_LOSE,
-            "push": _FALLBACK_PUSH,
+        }
+        fallback_lines: dict[SettleOutcome, str] = {
+            "win": "算你今天運氣好, 下一把不會這麼順。",
+            "lose": "下次再來送錢吧。",
+            "push": "白忙一場, 賭場最開心的就是這種局。",
             "blackjack": "Blackjack? 算你會玩, 下一把見真章。",
             "player_bust": "爆了爆了, 沒事多算算數字好嗎。",
             "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了。",
-        }[outcome]
+        }
         user_text = (
-            f"遊戲: {game_label}\n"
+            f"遊戲: {game_labels[game]}\n"
             f"玩家: {player_name}\n"
             f"下注金額 ({CURRENCY_NAME}): {bet}\n"
-            f"結果: {outcome_label}\n"
+            f"結果: {outcome_labels[outcome]}\n"
             f"玩家本局淨變動 ({CURRENCY_NAME}): {delta:+d} (正為贏, 負為輸)\n"
             f"玩家結算後餘額 ({CURRENCY_NAME}): {new_balance}\n"
             f"局面細節: {detail}"
@@ -163,7 +157,7 @@ class DealerAI:
         return await self._ask(
             instructions=DEALER_SETTLE_PROMPT,
             user_text=user_text,
-            fallback=fallback,
+            fallback=fallback_lines[outcome],
             end_user_id=author_name,
         )
 
@@ -190,6 +184,6 @@ class DealerAI:
         return await self._ask(
             instructions=DEALER_HINT_PROMPT,
             user_text=user_text,
-            fallback=_FALLBACK_HINT,
+            fallback="看你自己的, 我可不會手下留情。",
             end_user_id=author_name,
         )

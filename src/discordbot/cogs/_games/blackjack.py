@@ -5,33 +5,10 @@ fixed `rng`. The cog wires this up with `random.SystemRandom()` for production.
 """
 
 from random import Random
-from typing import Literal
-from dataclasses import field, dataclass
 
-_RANKS: tuple[str, ...] = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
-_SUITS: tuple[str, ...] = ("♠", "♥", "♦", "♣")
-_BLACKJACK_TARGET = 21
-_DEALER_STAND_AT = 17
-_BLACKJACK_HAND_SIZE = 2
+from pydantic import Field, BaseModel, ConfigDict
 
-OutcomeLabel = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
-
-
-@dataclass(frozen=True)
-class Card:
-    """A single playing card.
-
-    Attributes:
-        rank: One of A, 2-10, J, Q, K.
-        suit: One of the four unicode suit glyphs.
-    """
-
-    rank: str
-    suit: str
-
-    def __str__(self) -> str:
-        """Human-readable label like ``A♠``."""
-        return f"{self.rank}{self.suit}"
+from discordbot.typings.games import Card, SettleOutcome
 
 
 def draw_card(rng: Random) -> Card:
@@ -47,8 +24,8 @@ def draw_card(rng: Random) -> Card:
     Returns:
         The drawn card.
     """
-    rank = rng.choice(seq=_RANKS)
-    suit = rng.choice(seq=_SUITS)
+    rank = rng.choice(seq=("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"))
+    suit = rng.choice(seq=("♠", "♥", "♦", "♣"))
     return Card(rank=rank, suit=suit)
 
 
@@ -75,7 +52,7 @@ def hand_value(cards: list[Card]) -> int:
             total += 10
         else:
             total += int(card.rank)
-    while total > _BLACKJACK_TARGET and aces > 0:
+    while total > 21 and aces > 0:
         total -= 10
         aces -= 1
     return total
@@ -90,7 +67,7 @@ def is_blackjack(cards: list[Card]) -> bool:
     Returns:
         True only when the hand has exactly two cards summing to 21.
     """
-    return len(cards) == _BLACKJACK_HAND_SIZE and hand_value(cards=cards) == _BLACKJACK_TARGET
+    return len(cards) == 2 and hand_value(cards=cards) == 21
 
 
 def is_bust(cards: list[Card]) -> bool:
@@ -102,11 +79,10 @@ def is_bust(cards: list[Card]) -> bool:
     Returns:
         True when the hand total is greater than 21.
     """
-    return hand_value(cards=cards) > _BLACKJACK_TARGET
+    return hand_value(cards=cards) > 21
 
 
-@dataclass
-class BlackjackHand:
+class BlackjackHand(BaseModel):
     """Mutable state for one Blackjack round.
 
     Attributes:
@@ -117,10 +93,12 @@ class BlackjackHand:
         finished: True once both sides have stopped drawing.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     rng: Random
     bet: int
-    player: list[Card] = field(default_factory=list)
-    dealer: list[Card] = field(default_factory=list)
+    player: list[Card] = Field(default_factory=list)
+    dealer: list[Card] = Field(default_factory=list)
     finished: bool = False
 
     def deal_initial(self) -> None:
@@ -146,8 +124,8 @@ class BlackjackHand:
         return card
 
     def stand(self) -> None:
-        """Player stops; dealer draws to ``_DEALER_STAND_AT`` then resolves."""
-        while hand_value(cards=self.dealer) < _DEALER_STAND_AT:
+        """Player stops; dealer hits until reaching 17, then resolves."""
+        while hand_value(cards=self.dealer) < 17:
             self.dealer.append(draw_card(rng=self.rng))
         self.finished = True
 
@@ -168,7 +146,7 @@ class BlackjackHand:
         return hand_value(cards=self.dealer)
 
 
-def settle(hand: BlackjackHand) -> tuple[OutcomeLabel, int]:
+def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
     """Resolves a finished hand into an outcome label and the player's net delta.
 
     Delta is computed against the bet, not against the bankroll:
@@ -197,7 +175,7 @@ def settle(hand: BlackjackHand) -> tuple[OutcomeLabel, int]:
     dealer_bj = is_blackjack(cards=hand.dealer)
 
     if player_bj and dealer_bj:
-        outcome: OutcomeLabel = "push"
+        outcome: SettleOutcome = "push"
         delta = 0
     elif player_bj:
         outcome, delta = "blackjack", int(bet * 3 // 2)

@@ -1,35 +1,12 @@
 """Pure dice-roll helpers for the /dice command."""
 
 from random import Random
-from typing import Literal
-from dataclasses import dataclass
 
-DICE_PER_SIDE = 3
-DICE_FACES = 6
-DiceOutcome = Literal["win", "lose", "push"]
-
-
-@dataclass(frozen=True)
-class DiceResult:
-    """Result of one dice round.
-
-    Attributes:
-        player_rolls: Player's three rolls in order.
-        dealer_rolls: Dealer's three rolls in order.
-        player_total: Sum of the player rolls.
-        dealer_total: Sum of the dealer rolls.
-        outcome: ``win`` / ``lose`` / ``push`` from the player's perspective.
-    """
-
-    player_rolls: tuple[int, ...]
-    dealer_rolls: tuple[int, ...]
-    player_total: int
-    dealer_total: int
-    outcome: DiceOutcome
+from discordbot.typings.games import DiceResult, DiceOutcome
 
 
 def roll_dice(rng: Random) -> tuple[int, ...]:
-    """Rolls one side's dice.
+    """Rolls one side's three six-sided dice.
 
     Args:
         rng: Random source used to generate each die value.
@@ -37,7 +14,7 @@ def roll_dice(rng: Random) -> tuple[int, ...]:
     Returns:
         The rolled values in order.
     """
-    return tuple(rng.randint(a=1, b=DICE_FACES) for _ in range(DICE_PER_SIDE))
+    return tuple(rng.randint(a=1, b=6) for _ in range(3))
 
 
 def play_dice(rng: Random) -> DiceResult:
@@ -68,9 +45,6 @@ def play_dice(rng: Random) -> DiceResult:
     )
 
 
-_DICE_FACE_EMOJI: dict[int, str] = {1: "⚀", 2: "⚁", 3: "⚂", 4: "⚃", 5: "⚄", 6: "⚅"}
-
-
 def render_rolls(rolls: tuple[int, ...]) -> str:
     """Formats dice rolls with unicode die faces and total.
 
@@ -80,5 +54,6 @@ def render_rolls(rolls: tuple[int, ...]) -> str:
     Returns:
         A display string containing die faces and the sum.
     """
-    faces = " ".join(_DICE_FACE_EMOJI[value] for value in rolls)
+    emoji = {1: "⚀", 2: "⚁", 3: "⚂", 4: "⚃", 5: "⚄", 6: "⚅"}
+    faces = " ".join(emoji[value] for value in rolls)
     return f"{faces}  (= {sum(rolls)})"

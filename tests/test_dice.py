@@ -4,7 +4,7 @@
 
 from random import Random
 
-from discordbot.cogs._games.dice import DICE_FACES, DICE_PER_SIDE, play_dice, render_rolls
+from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.presentation import settlement_footer
 
 
@@ -16,12 +16,12 @@ def test_play_dice_with_seeded_rng_is_deterministic() -> None:
 
 
 def test_play_dice_roll_count_and_face_range() -> None:
-    """Each side rolls DICE_PER_SIDE dice with faces in [1, DICE_FACES]."""
+    """Each side rolls three six-sided dice with faces in [1, 6]."""
     result = play_dice(rng=Random(x=1))
-    assert len(result.player_rolls) == DICE_PER_SIDE
-    assert len(result.dealer_rolls) == DICE_PER_SIDE
-    assert all(1 <= face <= DICE_FACES for face in result.player_rolls)
-    assert all(1 <= face <= DICE_FACES for face in result.dealer_rolls)
+    assert len(result.player_rolls) == 3
+    assert len(result.dealer_rolls) == 3
+    assert all(1 <= face <= 6 for face in result.player_rolls)
+    assert all(1 <= face <= 6 for face in result.dealer_rolls)
 
 
 def test_play_dice_outcome_matches_totals() -> None:

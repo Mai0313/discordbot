@@ -1,45 +1,8 @@
 """Settlement helpers shared by game commands and interactive views."""
 
-from dataclasses import dataclass
-
-from discordbot.cogs._games.blackjack import (
-    OutcomeLabel,
-    BlackjackHand,
-    settle,
-    is_bust,
-    is_blackjack,
-)
+from discordbot.typings.games import WagerSettlement, BlackjackSettlement
+from discordbot.cogs._games.blackjack import BlackjackHand, settle, is_bust, is_blackjack
 from discordbot.cogs._economy.database import apply_round_settlement
-
-
-@dataclass(frozen=True)
-class WagerSettlement:
-    """Database-backed settlement result for a finished wager.
-
-    Attributes:
-        delta: Net point change relative to the withdrawn bet.
-        payout: Gross amount credited back to the player after the upfront bet withdrawal.
-        new_balance: Player balance after crediting the payout.
-        house_balance: Dealer ledger balance after mirroring the player's net change.
-    """
-
-    delta: int
-    payout: int
-    new_balance: int
-    house_balance: int
-
-
-@dataclass(frozen=True)
-class BlackjackSettlement(WagerSettlement):
-    """Database-backed settlement result for a finished Blackjack round.
-
-    Attributes:
-        outcome: Player-facing outcome label from the Blackjack rules engine.
-        detail: Short game-state summary for the dealer AI prompt.
-    """
-
-    outcome: OutcomeLabel
-    detail: str
 
 
 def wager_payout(*, bet: int, delta: int) -> int:

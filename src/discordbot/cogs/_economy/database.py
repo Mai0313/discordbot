@@ -37,7 +37,6 @@ inside the same single-row UPDATE. The audit log lives in a separate
 
 from typing import Any, Final
 from datetime import UTC, datetime
-from dataclasses import dataclass
 
 from sqlalchemy import Index, String, Integer, DateTime, case, desc, func, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
@@ -47,9 +46,11 @@ from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.economy import (
     LoanView,
+    PlacedBet,
     RepayResult,
     BorrowResult,
     CreditResult,
+    TransferResult,
     TransactionKind,
 )
 
@@ -170,40 +171,6 @@ class PointTransaction(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-@dataclass(frozen=True)
-class PlacedBet:
-    """A successfully withdrawn wager.
-
-    Attributes:
-        amount: Actual amount withdrawn. This may be lower than the requested amount for all-in.
-        balance_after: Account balance after the bet was withdrawn.
-        is_allin: True when the requested bet was clamped to the available balance.
-    """
-
-    amount: int
-    balance_after: int
-    is_allin: bool
-
-
-@dataclass(frozen=True)
-class TransferResult:
-    """A successful point transfer.
-
-    Attributes:
-        sender_balance: Sender balance after the debit.
-        receiver_balance: Receiver balance after the credit.
-    """
-
-    sender_balance: int
-    receiver_balance: int
-
-
-async def _create_schema(engine: AsyncEngine) -> None:
-    """Creates tables and indexes on first use; safe to call repeatedly."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 # Track which engine the schema has already been bootstrapped on. Storing
 # the engine identity (not just a bool) means swapping `_engine` (e.g. tests
 # pointing it at a temp file) automatically forces another schema check;
@@ -220,7 +187,8 @@ async def _ensure_schema() -> None:
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     if _schema_ready_for is _engine:
         return
-    await _create_schema(engine=_engine)
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     _schema_ready_for = _engine
 
 

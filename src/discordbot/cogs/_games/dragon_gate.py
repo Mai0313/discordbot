@@ -1,54 +1,29 @@
 """Pure helpers for the /dragon_gate command."""
 
 from random import Random
-from typing import Literal
-from dataclasses import dataclass
 
-from discordbot.cogs._games.blackjack import Card, draw_card
-
-DragonGateOutcome = Literal["win", "lose", "push"]
-
-_RANK_VALUES: dict[str, int] = {
-    "2": 2,
-    "3": 3,
-    "4": 4,
-    "5": 5,
-    "6": 6,
-    "7": 7,
-    "8": 8,
-    "9": 9,
-    "10": 10,
-    "J": 11,
-    "Q": 12,
-    "K": 13,
-    "A": 14,
-}
-
-
-@dataclass(frozen=True)
-class DragonGateResult:
-    """Result of one Dragon Gate round.
-
-    Attributes:
-        first_gate: First gate card as drawn.
-        second_gate: Second gate card as drawn.
-        lower_gate: Lower-valued gate card.
-        upper_gate: Higher-valued gate card.
-        shot: The player's shot card.
-        outcome: Player-facing settlement label.
-    """
-
-    first_gate: Card
-    second_gate: Card
-    lower_gate: Card
-    upper_gate: Card
-    shot: Card
-    outcome: DragonGateOutcome
+from discordbot.typings.games import Card, DragonGateResult, DragonGateOutcome
+from discordbot.cogs._games.blackjack import draw_card
 
 
 def card_value(*, card: Card) -> int:
     """Returns the Dragon Gate value for a card, with Ace high."""
-    return _RANK_VALUES[card.rank]
+    values = {
+        "2": 2,
+        "3": 3,
+        "4": 4,
+        "5": 5,
+        "6": 6,
+        "7": 7,
+        "8": 8,
+        "9": 9,
+        "10": 10,
+        "J": 11,
+        "Q": 12,
+        "K": 13,
+        "A": 14,
+    }
+    return values[card.rank]
 
 
 def _ordered_gate(*, first_gate: Card, second_gate: Card) -> tuple[Card, Card]:
