@@ -1,12 +1,22 @@
+from pathlib import Path
+
 import pytest
 
 from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsDownloader
 
 
 @pytest.fixture
-def downloader() -> ThreadsDownloader:
-    """Provides a ThreadsDownloader instance with a default output folder."""
-    return ThreadsDownloader(output_folder="./data/threads")
+def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownloader:
+    """Provides a ThreadsDownloader that fakes media downloads."""
+
+    def fake_download_media(self: ThreadsDownloader, *, url: str, filename: str) -> Path:
+        assert url, "download url should not be empty"
+        filepath = Path(self.output_folder) / filename
+        filepath.write_bytes(data=b"fake media")
+        return filepath
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
+    return ThreadsDownloader(output_folder=str(tmp_path))
 
 
 def test_find_post_with_parents_returns_chain_in_order() -> None:
