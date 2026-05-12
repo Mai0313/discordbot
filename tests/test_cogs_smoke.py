@@ -472,7 +472,7 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.give.callback(
         cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount=1
     )
-    assert "不能把" in bot_receiver.followup.sent[0]["embed"].description
+    assert "不能" in bot_receiver.followup.sent[0]["embed"].description
 
 
 async def fake_get_balance(user_id: int) -> int:

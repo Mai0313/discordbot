@@ -11,23 +11,24 @@ from discordbot.cogs._games.blackjack import BlackjackHand, render_hand, dealer_
 from discordbot.cogs._games.settlement import settle_blackjack_round
 from discordbot.cogs._games.presentation import (
     IN_PROGRESS_COLOR,
-    allin_note,
+    duel_lines,
+    dealer_quote,
+    wager_footer,
     settlement_footer,
     blackjack_outcome_presentation,
 )
-from discordbot.cogs._economy.presentation import currency_text
 
 
 def _format_player_line(hand: BlackjackHand) -> str:
     """Formats the player's hand with its current total."""
-    return f"{render_hand(cards=hand.player)} (= {hand.player_total()})"
+    return f"{render_hand(cards=hand.player)}  **{hand.player_total()}**"
 
 
 def _format_dealer_line(hand: BlackjackHand, hide_hole: bool) -> str:
     """Formats the dealer's hand, optionally hiding the hole card."""
     if hide_hole:
-        return f"{render_hand(cards=hand.dealer, hide_first=True)} (= ?)"
-    return f"{render_hand(cards=hand.dealer)} (= {hand.dealer_total()})"
+        return f"{render_hand(cards=hand.dealer, hide_first=True)}  **?**"
+    return f"{render_hand(cards=hand.dealer)}  **{hand.dealer_total()}**"
 
 
 def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every render input
@@ -54,16 +55,23 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     Returns:
         The in-progress Blackjack embed.
     """
-    embed = Embed(title="♠️ 21 點", description=dealer_line, color=IN_PROGRESS_COLOR)
+    embed = Embed(
+        title="♠️ 21 點", description=dealer_quote(text=dealer_line), color=IN_PROGRESS_COLOR
+    )
     embed.set_author(name=f"{player_name} 的對局", icon_url=player_avatar_url or None)
-    embed.add_field(name=player_name, value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name=dealer_name, value=_format_dealer_line(hand=hand, hide_hole=True), inline=False
+        name="牌面",
+        value=duel_lines(
+            player_name=player_name,
+            player_value=_format_player_line(hand=hand),
+            dealer_name=dealer_name,
+            dealer_value=_format_dealer_line(hand=hand, hide_hole=True),
+        ),
+        inline=False,
     )
     embed.set_footer(
-        text=(
-            f"下注 {currency_text(amount=hand.bet)} · "
-            f"餘額 {currency_text(amount=balance_after_bet)}{allin_note(is_allin=is_allin)}"
+        text=wager_footer(
+            bet=hand.bet, balance_after_bet=balance_after_bet, is_allin=is_allin, status="等待操作"
         )
     )
     return embed
@@ -101,14 +109,22 @@ def build_final_embed(  # noqa: PLR0913 -- final embed is one cohesive payload
     Returns:
         The final Blackjack embed.
     """
-    embed = Embed(title=f"♠️ 21 點 — {outcome_label}", description=dealer_line, color=color)
+    embed = Embed(
+        title=f"♠️ 21 點 | {outcome_label}", description=dealer_quote(text=dealer_line), color=color
+    )
     embed.set_author(name=f"{player_name} 的對局", icon_url=player_avatar_url or None)
-    embed.add_field(name=player_name, value=_format_player_line(hand=hand), inline=False)
     embed.add_field(
-        name=dealer_name, value=_format_dealer_line(hand=hand, hide_hole=False), inline=False
+        name="牌面",
+        value=duel_lines(
+            player_name=player_name,
+            player_value=_format_player_line(hand=hand),
+            dealer_name=dealer_name,
+            dealer_value=_format_dealer_line(hand=hand, hide_hole=False),
+        ),
+        inline=False,
     )
     if round_note:
-        embed.add_field(name="提前結束", value=round_note, inline=False)
+        embed.add_field(name="提前結束", value=f"**{round_note}**", inline=False)
     embed.set_footer(
         text=settlement_footer(delta=delta, new_balance=new_balance, is_allin=is_allin)
     )

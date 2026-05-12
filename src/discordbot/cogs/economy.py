@@ -18,7 +18,12 @@ from discordbot.cogs._economy.database import (
     accrual_delta,
     get_loan_view,
 )
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
+from discordbot.cogs._economy.presentation import (
+    CURRENCY_NAME,
+    amount_code,
+    bold_currency,
+    currency_text,
+)
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
@@ -27,6 +32,19 @@ _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
 _ERROR_COLOR = 0xED4245
+
+
+def _set_optional_thumbnail(*, embed: Embed, avatar_url: str) -> None:
+    """Sets an embed thumbnail when an avatar URL is available."""
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+
+
+def _rank_line(*, position: int, name: str, balance: int) -> str:
+    """Formats one leaderboard row."""
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank = medals.get(position, f"`#{position}`")
+    return f"{rank} **{name}**  {amount_code(amount=balance)} {CURRENCY_NAME}"
 
 
 async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> None:
@@ -75,8 +93,11 @@ class EconomyCogs(commands.Cog):
         limit = credit_limit(user=user)
         age_days = (datetime.now(tz=UTC) - user.created_at).days
 
-        embed = Embed(color=_BALANCE_COLOR, description=f"💰 **{currency_text(amount=amount)}**")
+        embed = Embed(
+            title="💰 錢包", color=_BALANCE_COLOR, description=f"## {currency_text(amount=amount)}"
+        )
         embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
 
         has_debt = loan is not None and (loan.principal > 0 or loan.interest_stored > 0)
         if has_debt and loan is not None:
@@ -88,11 +109,17 @@ class EconomyCogs(commands.Cog):
                     now=datetime.now(tz=UTC),
                 )
             effective_interest = loan.interest_stored + pending_interest
-            embed.add_field(name="未還本金", value=f"`{loan.principal:,}`", inline=True)
-            embed.add_field(name="累積利息", value=f"`{effective_interest:,}`", inline=True)
-            embed.add_field(name="自動還款", value="收入 50% 抵債", inline=True)
+            embed.add_field(
+                name="債務",
+                value=(
+                    f"本金 {amount_code(amount=loan.principal)}\n"
+                    f"利息 {amount_code(amount=effective_interest)}\n"
+                    "-# 收入 50% 自動還款"
+                ),
+                inline=False,
+            )
 
-        embed.set_footer(text=f"帳號 {age_days} 天 · 借款上限 {limit:,}")
+        embed.set_footer(text=f"帳號 {age_days} 天 | 借款上限 {currency_text(amount=limit)}")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -115,38 +142,37 @@ class EconomyCogs(commands.Cog):
         # Exclude the bot's own house-ledger row so the casino's house P&L
         # never crowds out real players on the leaderboard.
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_n(limit=5, exclude_user_ids=exclude_user_ids)
+        rows = await top_n(limit=10, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
-                title=f"🏆 {CURRENCY_NAME}排行榜",
-                description=f"目前還沒有人有{CURRENCY_NAME}, /dice 或 /blackjack 開賭看看",
+                title=f"🏆 {CURRENCY_NAME} Top 10",
+                description="### 尚未開張\n/dice 或 /blackjack 開局就會上榜",
                 color=_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        champion_avatar_url = rows[0][3]
-
-        medals = ("🥇", "🥈", "🥉")
-        # Top 3 get the big "podium card" treatment (H3 + subtext); 4th
-        # and 5th drop down to a single bold line so the visual weight
-        # falls off naturally and the page doesn't get longer than it
-        # needs to be.
-        podium = [
-            f"### {medals[index]} {row[1]}\n-# 持有 `{row[2]:,}` {CURRENCY_NAME}"
-            for index, row in enumerate(iterable=rows[:3])
-        ]
-        runners_up = [f"**{row[1]}** · `{row[2]:,}`" for row in rows[3:]]
-        sections = podium
-        if runners_up:
-            sections.append("\n".join(runners_up))
+        _, champion_name, champion_balance, champion_avatar_url = rows[0]
 
         embed = Embed(
-            title=f"🏆 {CURRENCY_NAME}排行榜",
-            description="\n".join(sections),
+            title=f"🏆 {CURRENCY_NAME} Top 10",
+            description=(f"## 🥇 {champion_name}\n{bold_currency(amount=champion_balance)}"),
             color=_LEADERBOARD_COLOR,
         )
-        embed.set_author(name="本期霸主", icon_url=champion_avatar_url or None)
+        embed.set_author(name="目前第一名", icon_url=champion_avatar_url or None)
+        _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
+        if len(rows) > 1:
+            top_three = "\n".join(
+                _rank_line(position=position, name=row[1], balance=row[2])
+                for position, row in enumerate(iterable=rows[1:3], start=2)
+            )
+            embed.add_field(name="前三名", value=top_three, inline=False)
+        if len(rows) > 3:
+            others = "\n".join(
+                _rank_line(position=position, name=row[1], balance=row[2])
+                for position, row in enumerate(iterable=rows[3:], start=4)
+            )
+            embed.add_field(name="其他玩家", value=others, inline=False)
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -199,15 +225,13 @@ class EconomyCogs(commands.Cog):
 
         if member.bot:
             embed = Embed(
-                title="❌ 轉帳失敗",
-                description=f"不能把{CURRENCY_NAME}轉給機器人",
-                color=_ERROR_COLOR,
+                title="轉帳失敗", description="### 不能轉給 bot\n請選一般成員", color=_ERROR_COLOR
             )
             embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
             await interaction.followup.send(embed=embed)
             return
         if member.id == sender.id:
-            embed = Embed(title="❌ 轉帳失敗", description="不能轉給自己", color=_ERROR_COLOR)
+            embed = Embed(title="轉帳失敗", description="### 不能轉給自己", color=_ERROR_COLOR)
             embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
             await interaction.followup.send(embed=embed)
             return
@@ -224,10 +248,11 @@ class EconomyCogs(commands.Cog):
         if transfer_result is None:
             balance_now = await get_balance(user_id=sender.id)
             embed = Embed(
-                title="❌ 轉帳失敗",
+                title="轉帳失敗",
                 description=(
-                    f"餘額只有 **{currency_text(amount=balance_now)}**, "
-                    f"想轉 **{currency_text(amount=amount)}**"
+                    f"### 餘額不足\n"
+                    f"目前 {bold_currency(amount=balance_now)}\n"
+                    f"想轉 {bold_currency(amount=amount)}"
                 ),
                 color=_ERROR_COLOR,
             )
@@ -236,22 +261,19 @@ class EconomyCogs(commands.Cog):
             return
 
         embed = Embed(
-            title="💸 轉帳成功",
-            description=(
-                f"{sender.mention} → {member.mention}\n金額 **{currency_text(amount=amount)}**"
-            ),
+            title="💸 轉帳完成",
+            description=f"### {currency_text(amount=amount)}\n{sender.mention} → {member.mention}",
             color=_TRANSFER_COLOR,
         )
         embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
+        _set_optional_thumbnail(embed=embed, avatar_url=member.display_avatar.url)
         embed.add_field(
-            name=f"{sender.display_name} 的餘額",
-            value=f"`{transfer_result.sender_balance:,}`",
-            inline=True,
-        )
-        embed.add_field(
-            name=f"{member.display_name} 的餘額",
-            value=f"`{transfer_result.receiver_balance:,}`",
-            inline=True,
+            name="轉帳後餘額",
+            value=(
+                f"**{sender.display_name}** {amount_code(amount=transfer_result.sender_balance)}\n"
+                f"**{member.display_name}** {amount_code(amount=transfer_result.receiver_balance)}"
+            ),
+            inline=False,
         )
         await interaction.followup.send(embed=embed)
 
@@ -291,20 +313,26 @@ class EconomyCogs(commands.Cog):
             name = name or account[0]
 
         if balance > 0:
-            verdict = f"📈 淨贏 **{currency_text(amount=balance)}**"
+            verdict = f"📈 淨贏 {bold_currency(amount=balance)}"
             color = _BALANCE_COLOR
         elif balance < 0:
-            verdict = f"📉 淨虧 **{currency_text(amount=abs(balance))}**"
+            verdict = f"📉 淨虧 {bold_currency(amount=abs(balance))}"
             color = _ERROR_COLOR
         else:
             verdict = "⚖️ 打平"
             color = _HOUSE_COLOR
 
-        embed = Embed(title="🎰 莊家戰績", description=verdict, color=color)
+        embed = Embed(title="🎰 莊家戰績", description=f"## {verdict}", color=color)
         embed.set_author(name=f"{name} 的賭場", icon_url=bot_user.display_avatar.url)
-        embed.add_field(name="贏到", value=f"`{total_earned:,}`", inline=True)
-        embed.add_field(name="賠出", value=f"`{total_spent:,}`", inline=True)
-        embed.set_footer(text="跨伺服器累積 · 莊家資金無上限")
+        _set_optional_thumbnail(embed=embed, avatar_url=bot_user.display_avatar.url)
+        embed.add_field(
+            name="流水",
+            value=(
+                f"贏到 {amount_code(amount=total_earned)}\n賠出 {amount_code(amount=total_spent)}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="跨伺服器累積 | 莊家資金無上限")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -361,25 +389,37 @@ class EconomyCogs(commands.Cog):
             current_debt = (loan.principal + loan.interest_stored) if loan else 0
             remaining = max(limit - current_debt, 0)
             embed = Embed(
-                title="❌ 借款失敗",
-                description=f"超過借款上限 **{currency_text(amount=limit)}**",
+                title="借款失敗",
+                description=(
+                    f"### 剩餘額度 {currency_text(amount=remaining)}\n"
+                    f"申請後會超過上限 {bold_currency(amount=limit)}"
+                ),
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-            embed.add_field(name="目前欠款", value=f"`{current_debt:,}`", inline=True)
-            embed.add_field(name="尚可借", value=f"`{remaining:,}`", inline=True)
+            _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+            embed.add_field(name="目前欠款", value=amount_code(amount=current_debt), inline=False)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
-            title="💴 借款成功",
-            description=f"撥款 **{currency_text(amount=amount)}** 入帳",
+            title="💴 借款完成",
+            description=f"### {currency_text(amount=amount, signed=True)} 入帳",
             color=_BORROW_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        embed.add_field(name="目前餘額", value=f"`{result.new_balance:,}`", inline=True)
-        embed.add_field(name="未還本金", value=f"`{result.principal:,}`", inline=True)
-        embed.set_footer(text=f"日利息 1% · 收入 50% 自動抵債 · 上限 {limit:,}")
+        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.add_field(
+            name="借款後",
+            value=(
+                f"餘額 {amount_code(amount=result.new_balance)}\n"
+                f"本金 {amount_code(amount=result.principal)}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=f"日利息 1% | 收入 50% 自動還款 | 上限 {currency_text(amount=limit)}"
+        )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -428,25 +468,39 @@ class EconomyCogs(commands.Cog):
             if debt == 0:
                 reason = "目前沒有欠款"
             elif balance_now == 0:
-                reason = f"餘額為 0, 無法還款 (欠 **{currency_text(amount=debt)}**)"
+                reason = f"餘額為 0, 無法還款\n欠 {bold_currency(amount=debt)}"
             else:
                 reason = "還款失敗, 請稍後再試"
-            embed = Embed(title="❌ 還款失敗", description=reason, color=_ERROR_COLOR)
+            embed = Embed(title="還款失敗", description=f"### {reason}", color=_ERROR_COLOR)
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         effective = result.interest_repaid + result.principal_repaid
         embed = Embed(
-            title="🧾 還款成功",
-            description=f"扣款 **{currency_text(amount=effective)}**",
+            title="🧾 還款完成",
+            description=f"### {currency_text(amount=-effective, signed=True)} 扣款",
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        embed.add_field(name="利息", value=f"`{result.interest_repaid:,}`", inline=True)
-        embed.add_field(name="本金", value=f"`{result.principal_repaid:,}`", inline=True)
-        embed.add_field(name="剩餘欠款", value=f"`{result.remaining_debt:,}`", inline=True)
-        embed.set_footer(text=f"餘額 {result.new_balance:,}")
+        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.add_field(
+            name="本次還款",
+            value=(
+                f"利息 {amount_code(amount=result.interest_repaid)}\n"
+                f"本金 {amount_code(amount=result.principal_repaid)}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="剩餘",
+            value=(
+                f"欠款 {amount_code(amount=result.remaining_debt)}\n"
+                f"餘額 {amount_code(amount=result.new_balance)}"
+            ),
+            inline=True,
+        )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
 
