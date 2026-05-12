@@ -115,7 +115,7 @@ class EconomyCogs(commands.Cog):
         # Exclude the bot's own house-ledger row so the casino's house P&L
         # never crowds out real players on the leaderboard.
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_n(limit=3, exclude_user_ids=exclude_user_ids)
+        rows = await top_n(limit=5, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME}排行榜",
@@ -128,10 +128,18 @@ class EconomyCogs(commands.Cog):
         champion_avatar_url = rows[0][3]
 
         medals = ("🥇", "🥈", "🥉")
-        sections: list[str] = []
-        for index, row in enumerate(iterable=rows):
-            name, amount = row[1], row[2]
-            sections.append(f"### {medals[index]} {name}\n-# 持有 `{amount:,}` {CURRENCY_NAME}")
+        # Top 3 get the big "podium card" treatment (H3 + subtext); 4th
+        # and 5th drop down to a single bold line so the visual weight
+        # falls off naturally and the page doesn't get longer than it
+        # needs to be.
+        podium = [
+            f"### {medals[index]} {row[1]}\n-# 持有 `{row[2]:,}` {CURRENCY_NAME}"
+            for index, row in enumerate(iterable=rows[:3])
+        ]
+        runners_up = [f"**{row[1]}** · `{row[2]:,}`" for row in rows[3:]]
+        sections = podium
+        if runners_up:
+            sections.append("\n".join(runners_up))
 
         embed = Embed(
             title=f"🏆 {CURRENCY_NAME}排行榜",
