@@ -4,6 +4,7 @@ import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import top_n, transfer, get_account, get_balance
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
@@ -15,6 +16,12 @@ _ERROR_COLOR = 0xED4245
 
 _LEADERBOARD_LIMIT = 10
 _LEADERBOARD_MEDALS = ["🥇", "🥈", "🥉"]
+
+
+async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> None:
+    """Sends a game-related economy embed and schedules its cleanup."""
+    message = await interaction.followup.send(embed=embed, wait=True)
+    schedule_game_message_delete(message=message)
 
 
 class EconomyCogs(commands.Cog):
@@ -61,7 +68,7 @@ class EconomyCogs(commands.Cog):
         embed.set_footer(
             text=f"跟機器人聊天可以累積{CURRENCY_NAME}, 輸入 /dice 或 /blackjack 來下注。"
         )
-        await interaction.followup.send(embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="leaderboard",
@@ -90,7 +97,7 @@ class EconomyCogs(commands.Cog):
                 description=f"目前還沒有人有{CURRENCY_NAME}。",
                 color=_LEADERBOARD_COLOR,
             )
-            await interaction.followup.send(embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         lines: list[str] = []
@@ -105,7 +112,7 @@ class EconomyCogs(commands.Cog):
             description="\n".join(lines),
             color=_LEADERBOARD_COLOR,
         )
-        await interaction.followup.send(embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="give",
@@ -222,12 +229,13 @@ class EconomyCogs(commands.Cog):
         """
         await interaction.response.defer()
         if self.bot.user is None:
-            await interaction.followup.send(
+            await _send_expiring_followup(
+                interaction=interaction,
                 embed=Embed(
                     title=":x: 無法查詢",
                     description="目前無法取得機器人身份。",
                     color=_ERROR_COLOR,
-                )
+                ),
             )
             return
 
@@ -256,7 +264,7 @@ class EconomyCogs(commands.Cog):
         )
         embed.add_field(name="莊家賠給玩家", value=currency_text(amount=total_spent), inline=True)
         embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負。")
-        await interaction.followup.send(embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
 
 def setup(bot: commands.Bot) -> None:
