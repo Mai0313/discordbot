@@ -388,20 +388,18 @@ async def test_house_settle_accumulates_gross_flows() -> None:
 
 
 async def test_settle_wager_updates_player_and_house() -> None:
-    """Shared wager settlement credits payout and mirrors house P&L."""
+    """Shared wager settlement applies net delta and mirrors house P&L."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
-    assert placed is not None
 
     settlement = await settle_wager(
         player_id=1,
         player_account_name="alice",
         dealer_id=99,
         dealer_name="house",
-        bet=placed.amount,
+        bet=40,
         delta=40,
     )
-    assert settlement.payout == 80
+    assert settlement.payout == 40
     assert settlement.new_balance == 140
     assert settlement.house_balance == -40
 
@@ -412,12 +410,10 @@ async def test_get_account_returns_none_for_unseen_user() -> None:
 
 
 async def test_settle_blackjack_round_updates_player_and_house() -> None:
-    """Shared Blackjack settlement credits the player and mirrors house P&L."""
+    """Shared Blackjack settlement applies net delta and mirrors house P&L."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
-    assert placed is not None
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
     hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
     hand.finished = True
@@ -426,7 +422,7 @@ async def test_settle_blackjack_round_updates_player_and_house() -> None:
         hand=hand, player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house"
     )
     assert settlement.delta == 50
-    assert settlement.payout == 100
+    assert settlement.payout == 50
     assert settlement.new_balance == 150
     assert settlement.house_balance == -50
     assert await database.get_balance(user_id=99) == -50
@@ -445,10 +441,8 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
         target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
     )
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
-    assert placed is not None
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
     hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
     hand.finished = True
@@ -463,7 +457,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
         player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_after_bet=placed.balance_after,
+        balance_at_start=100,
     )
 
     await asyncio.gather(view._finalize(message=message), view._finalize(message=message))
@@ -488,10 +482,8 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
         target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
     )
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
-    assert placed is not None
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=placed.amount)
+    hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
     hand.dealer = [Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")]
 
@@ -505,7 +497,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
         player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_after_bet=placed.balance_after,
+        balance_at_start=100,
     )
     view.message = message
 
@@ -534,7 +526,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         settlement_started.set()
         await continue_settlement.wait()
         return SimpleNamespace(
-            outcome="win", delta=50, payout=100, new_balance=150, house_balance=-50, detail="win"
+            outcome="win", delta=50, payout=50, new_balance=150, house_balance=-50, detail="win"
         )
 
     monkeypatch.setattr(
@@ -558,7 +550,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_after_bet=50,
+        balance_at_start=50,
     )
 
     hit_button, stand_button = view.children
@@ -635,15 +627,13 @@ async def test_house_settle_concurrent_updates_accumulate() -> None:
 
 
 async def test_apply_round_settlement_is_atomic() -> None:
-    """Player credit and house mirror share one transaction and one return."""
+    """Player delta and house mirror share one transaction and one return."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
-    assert placed is not None
 
     player_balance, house_balance = await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
-        payout=80,
+        player_delta=40,
         dealer_id=99,
         dealer_name="house",
         dealer_delta=-40,
@@ -654,16 +644,14 @@ async def test_apply_round_settlement_is_atomic() -> None:
     assert await database.get_balance(user_id=99) == -40
 
 
-async def test_apply_round_settlement_zero_payout_only_touches_house() -> None:
-    """A pure loss reads the player balance without re-crediting it."""
+async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
+    """A loss debits the player and credits the house."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
-    assert placed is not None
 
     player_balance, house_balance = await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
-        payout=0,
+        player_delta=-40,
         dealer_id=99,
         dealer_name="house",
         dealer_delta=40,
@@ -675,3 +663,20 @@ async def test_apply_round_settlement_zero_payout_only_touches_house() -> None:
     _, _, total_earned, total_spent = account
     assert total_earned == 100
     assert total_spent == 40
+
+
+async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
+    """Deferred settlement still collects a loss after the balance was spent elsewhere."""
+    await database.add_balance(user_id=1, name="alice", amount=25)
+
+    player_balance, house_balance = await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-40,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=40,
+    )
+
+    assert player_balance == -15
+    assert house_balance == 40

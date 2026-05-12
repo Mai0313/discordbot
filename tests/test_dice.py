@@ -73,10 +73,10 @@ def test_settlement_footer_appends_allin_note() -> None:
 
 def test_wager_footer_shows_bet_balance_and_status() -> None:
     """In-progress footer keeps the bet, balance, and short round status."""
-    footer = wager_footer(bet=100, balance_after_bet=400, is_allin=False, status="等候開獎")
+    footer = wager_footer(bet=100, balance_at_start=400, is_allin=False, status="等候開獎")
 
     assert "下注 100 虛擬歡樂豆" in footer
-    assert "餘額 400 虛擬歡樂豆" in footer
+    assert "目前餘額 400 虛擬歡樂豆" in footer
     assert "等候開獎" in footer
 
 

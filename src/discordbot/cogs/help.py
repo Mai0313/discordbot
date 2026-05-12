@@ -52,7 +52,7 @@ _HELP_CONTENT = {
             "**Games**\n"
             "`/dice` roll three dice against the dealer.\n"
             "`/dragon_gate` shoot one card strictly between two gate cards.\n"
-            "`/blackjack` play one round of 21. Bets are withdrawn up front, "
+            "`/blackjack` play one round of 21. Bets settle only when the round ends, "
             "over-bets auto all-in, idle hands auto-stand after 180 seconds, "
             "and final game messages are cleaned up after 3 minutes."
         ),
@@ -103,7 +103,7 @@ _HELP_CONTENT = {
             "**小遊戲**\n"
             "`/dice` 用三顆骰子跟莊家比大小\n"
             "`/dragon_gate` 射一張牌嚴格落在兩張門牌中間\n"
-            "`/blackjack` 跟莊家玩一局 21 點bet 會先扣，超過餘額會自動 all-in，"
+            "`/blackjack` 跟莊家玩一局 21 點，bet 會在結算時處理，超過餘額會自動 all-in，"
             "不操作 180 秒會自動 stand 結算，final game message 會在 3 分鐘後清掉"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
@@ -154,7 +154,7 @@ _HELP_CONTENT = {
             "**ゲーム**\n"
             "`/dice` 3個のサイコロでディーラーと勝負します。\n"
             "`/dragon_gate` 2枚のゲートカードの間に厳密に1枚を通します。\n"
-            "`/blackjack` 21を1ラウンド遊びます。ベットは先に差し引かれ、"
+            "`/blackjack` 21を1ラウンド遊びます。ベットはラウンド終了時に精算され、"
             "残高超過は自動 all-in、180秒操作がない場合は自動 stand で精算され、"
             "final game message は3分後に削除されます。"
         ),

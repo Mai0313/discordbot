@@ -57,7 +57,7 @@
 
 **獲得虛擬歡樂豆：** 每次 AI 串流回覆會以 `total_tokens` (input + output) 為虛擬歡樂豆獎勵，實際數字會顯示在回覆 footer。目前只有跟機器人聊天會給虛擬歡樂豆 — Threads 解析與 `/download_video` 刻意都不付。
 
-**花用虛擬歡樂豆：** 賭場遊戲會先扣下注額，結算時再依結果回補。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 時才會拒絕開局。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
+**花用虛擬歡樂豆：** 賭場遊戲會在開局時檢查 bet，等 round 結算時才套用本局正負結果。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕開局。機器人重啟時，未完成的 in-memory round 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
 
 遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/house` 查詢 embed 也會在送出後清掉。`/give` 的轉點紀錄會保留，不自動刪除。
 

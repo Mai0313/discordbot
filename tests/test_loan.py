@@ -264,6 +264,20 @@ async def test_repay_zero_balance_returns_none() -> None:
     assert await database.repay(user_id=1, name="alice", amount=100) is None
 
 
+async def test_repay_negative_balance_returns_none() -> None:
+    """Negative casino balance is not repayable cash."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-600,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=600,
+    )
+    assert await database.repay(user_id=1, name="alice", amount=100) is None
+
+
 async def test_repay_does_not_bump_total_spent() -> None:
     """Repaying a loan must not pollute the gameplay-spent counter."""
     await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
@@ -510,32 +524,25 @@ async def test_place_bet_logs_casino_bet() -> None:
 async def test_apply_round_settlement_logs_payout_and_house_settle() -> None:
     """Player and dealer sides of a round each produce one audit row."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
-    assert placed is not None
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
-        payout=80,
+        player_delta=40,
         dealer_id=99,
         dealer_name="house",
         dealer_delta=-40,
     )
-    assert await _list_transactions(user_id=1) == [
-        (TransactionKind.CASINO_BET.value, -40, 0),
-        (TransactionKind.CASINO_PAYOUT.value, 80, 0),
-    ]
+    assert await _list_transactions(user_id=1) == [(TransactionKind.CASINO_PAYOUT.value, 40, 0)]
     assert await _list_transactions(user_id=99) == [(TransactionKind.HOUSE_SETTLE.value, -40, 0)]
 
 
 async def test_apply_round_settlement_skips_zero_delta_house_log() -> None:
     """A push (dealer_delta=0) does not produce a house audit row."""
     await database.add_balance(user_id=1, name="alice", amount=100)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=40)
-    assert placed is not None
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
-        payout=40,
+        player_delta=0,
         dealer_id=99,
         dealer_name="house",
         dealer_delta=0,

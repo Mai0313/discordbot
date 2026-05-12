@@ -61,7 +61,7 @@ class DealerAI:
         *,
         author_name: str,
         player_name: str,
-        balance_after_bet: int,
+        balance_at_start: int,
         bet: int,
         game: GameKind,
     ) -> str:
@@ -70,7 +70,7 @@ class DealerAI:
         Args:
             author_name: Discord username used as the LiteLLM end-user ID.
             player_name: Display name to include in the prompt.
-            balance_after_bet: Player balance after the wager was withdrawn.
+            balance_at_start: Player balance observed when the round started.
             bet: Effective bet amount in points.
             game: Game type for the prompt.
 
@@ -87,7 +87,7 @@ class DealerAI:
             f"遊戲: {game_labels[game]}\n"
             f"玩家: {player_name}\n"
             f"下注金額 ({CURRENCY_NAME}): {bet}\n"
-            f"下注後剩餘餘額 ({CURRENCY_NAME}): {balance_after_bet}"
+            f"開局餘額 ({CURRENCY_NAME}): {balance_at_start}"
         )
         return await self._ask(
             instructions=DEALER_TAUNT_BET_PROMPT,

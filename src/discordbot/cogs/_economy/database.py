@@ -691,6 +691,27 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
     return new_balance
 
 
+async def _casino_debit_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
+    session: AsyncSession, *, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+) -> int:
+    """Applies a casino loss without clamping the player's balance at zero."""
+    stmt = _build_signed_delta_upsert(
+        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
+    )
+    result = await session.execute(statement=stmt)
+    new_balance = result.scalar_one()
+    await _log_transaction_in_session(
+        session=session,
+        user_id=user_id,
+        kind=TransactionKind.CASINO_BET,
+        delta=delta,
+        balance_after=new_balance,
+        note=None,
+        now=now,
+    )
+    return new_balance
+
+
 async def _house_settle_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
     session: AsyncSession, *, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
@@ -892,11 +913,12 @@ async def place_bet(
 async def settle_game(user_id: int, name: str, delta: int, avatar_url: str = "") -> int:
     """Applies a signed player balance adjustment.
 
-    Casino commands withdraw the bet up front with `place_bet()` and then pass
-    the gross payout here when the round resolves. Losses are still clamped at
-    zero so a stale caller never leaves a player in the red. Implemented as a
-    single UPSERT, so concurrent settlements on the same user can't lose
-    updates. The audit log records the *applied* delta (after clamping).
+    This is kept as a clamped low-level adjustment helper. Current casino
+    commands use `apply_round_settlement()` so unfinished in-memory rounds do
+    not mutate balances, and finished losses can still debit below zero.
+    Implemented as a single UPSERT, so concurrent settlements on the same user
+    can't lose updates. The audit log records the *applied* delta (after
+    clamping).
 
     Args:
         user_id: Discord user ID whose balance is adjusted.
@@ -965,25 +987,27 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     player_id: int,
     player_account_name: str,
     player_avatar_url: str = "",
-    payout: int,
+    player_delta: int,
     dealer_id: int,
     dealer_name: str,
     dealer_avatar_url: str = "",
     dealer_delta: int,
 ) -> tuple[int, int]:
-    """Credits the player payout (with auto-repay) and mirrors house P&L atomically.
+    """Applies a finished round's net delta and mirrors house P&L atomically.
 
     Sharing a session (and therefore a single SQLite transaction) means a
     crash between the player and dealer writes cannot leave the dealer
-    ledger drifting from the player payout. The player payout goes through
-    ``_credit_with_repayment_in_session`` so the 50% auto-repay rule
-    applies on casino wins exactly as it does on chat rewards.
+    ledger drifting from the player result. Positive player deltas go through
+    ``_credit_with_repayment_in_session`` so the 50% auto-repay rule applies
+    to casino profit. Negative deltas are debited without a zero clamp so a
+    player cannot evade a bad in-memory round by moving funds before it settles.
 
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
         player_avatar_url: Last-seen Discord avatar URL for the player.
-        payout: Gross amount to credit back to the player.
+        player_delta: Signed net change for the player. Losses may make the
+            balance negative.
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
         dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
@@ -995,32 +1019,47 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        if payout > 0:
+        if player_delta > 0:
             credit_result = await _credit_with_repayment_in_session(
                 session=session,
                 user_id=player_id,
                 name=player_account_name,
                 avatar_url=player_avatar_url,
-                amount=payout,
+                amount=player_delta,
                 kind=TransactionKind.CASINO_PAYOUT,
                 note=None,
                 now=now,
             )
             player_balance = credit_result.new_balance
+        elif player_delta < 0:
+            player_balance = await _casino_debit_in_session(
+                session=session,
+                user_id=player_id,
+                name=player_account_name,
+                avatar_url=player_avatar_url,
+                delta=player_delta,
+                now=now,
+            )
         else:
             read_result = await session.execute(
                 statement=select(UserAccount.balance).where(UserAccount.user_id == player_id)
             )
             player_balance = read_result.scalar_one_or_none() or 0
 
-        dealer_balance = await _house_settle_in_session(
-            session=session,
-            user_id=dealer_id,
-            name=dealer_name,
-            avatar_url=dealer_avatar_url,
-            delta=dealer_delta,
-            now=now,
-        )
+        if dealer_delta == 0:
+            dealer_result = await session.execute(
+                statement=select(UserAccount.balance).where(UserAccount.user_id == dealer_id)
+            )
+            dealer_balance = dealer_result.scalar_one_or_none() or 0
+        else:
+            dealer_balance = await _house_settle_in_session(
+                session=session,
+                user_id=dealer_id,
+                name=dealer_name,
+                avatar_url=dealer_avatar_url,
+                delta=dealer_delta,
+                now=now,
+            )
         await session.commit()
         return player_balance, dealer_balance
 
@@ -1137,7 +1176,7 @@ async def repay(
 
     Returns:
         ``RepayResult`` on success, or ``None`` when there's no debt, no
-        balance, or the retry budget was exhausted.
+        positive balance, or the retry budget was exhausted.
     """
     await _ensure_schema()
     if amount <= 0:
@@ -1162,7 +1201,7 @@ async def repay(
                 return None
             current_balance, existing_name, principal, interest, total_repaid = row
             debt_total = principal + interest
-            if debt_total == 0 or current_balance == 0:
+            if debt_total == 0 or current_balance <= 0:
                 return None
 
             effective = min(amount, current_balance, debt_total)

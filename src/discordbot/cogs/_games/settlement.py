@@ -5,19 +5,6 @@ from discordbot.cogs._games.blackjack import BlackjackHand, settle, is_bust, is_
 from discordbot.cogs._economy.database import apply_round_settlement
 
 
-def wager_payout(*, bet: int, delta: int) -> int:
-    """Returns the gross payout after an upfront bet withdrawal.
-
-    Args:
-        bet: Effective bet amount that was already withdrawn.
-        delta: Player net point change for the round.
-
-    Returns:
-        Amount to credit back to the player, clamped to at least zero.
-    """
-    return max(bet + delta, 0)
-
-
 def blackjack_detail(hand: BlackjackHand) -> str:
     """Builds a concise Blackjack result summary for dealer banter.
 
@@ -74,11 +61,13 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     bet: int,
     delta: int,
 ) -> WagerSettlement:
-    """Credits player payout and mirrors the net result into the house ledger.
+    """Applies player net delta and mirrors the result into the house ledger.
 
     The two ledger writes share a single SQLite transaction via
     `apply_round_settlement`, so a crash between them cannot leave the dealer
-    ledger drifting from the player payout.
+    ledger drifting from the player result. Bets are not deducted when a round
+    starts; unfinished in-memory rounds vanish on bot restart without touching
+    balances.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -87,25 +76,24 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
         dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
-        bet: Effective bet amount that was already withdrawn.
+        bet: Effective bet amount for the finished round.
         delta: Player net point change for the round.
 
     Returns:
         Database-backed settlement result after both ledgers are updated.
     """
-    payout = wager_payout(bet=bet, delta=delta)
     new_balance, house_balance = await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
-        payout=payout,
+        player_delta=delta,
         dealer_id=dealer_id,
         dealer_name=dealer_name,
         dealer_avatar_url=dealer_avatar_url,
         dealer_delta=-delta,
     )
     return WagerSettlement(
-        delta=delta, payout=payout, new_balance=new_balance, house_balance=house_balance
+        delta=delta, payout=max(delta, 0), new_balance=new_balance, house_balance=house_balance
     )
 
 

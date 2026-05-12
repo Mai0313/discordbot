@@ -16,7 +16,7 @@ class TransactionKind(StrEnum):
 
     Attributes:
         CHAT_REWARD: Streaming AI reply token reward.
-        CASINO_BET: Up-front wager withdrawal from ``place_bet``.
+        CASINO_BET: Wager debit, including deferred settlement losses.
         CASINO_PAYOUT: Player-side payout from a finished casino round.
         HOUSE_SETTLE: Dealer-side mirror of a player settlement.
         BORROW: Loan disbursement from ``borrow``.
@@ -132,6 +132,22 @@ class PlacedBet(BaseModel):
     is_allin: bool
 
 
+class PreparedBet(BaseModel):
+    """A wager accepted for a round but not yet deducted.
+
+    Attributes:
+        amount: Effective wager amount. This may be lower than the requested amount for all-in.
+        balance_at_start: Account balance observed when the round started.
+        is_allin: True when the requested bet was clamped to the available balance.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    amount: int
+    balance_at_start: int
+    is_allin: bool
+
+
 class TransferResult(BaseModel):
     """A successful point transfer.
 
@@ -151,6 +167,7 @@ __all__ = [
     "CreditResult",
     "LoanView",
     "PlacedBet",
+    "PreparedBet",
     "RepayResult",
     "TransactionKind",
     "TransferResult",

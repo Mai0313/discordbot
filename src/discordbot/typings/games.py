@@ -81,9 +81,9 @@ class WagerSettlement(BaseModel):
     """Database-backed settlement result for a finished wager.
 
     Attributes:
-        delta: Net point change relative to the withdrawn bet.
-        payout: Gross amount credited back to the player after the upfront bet withdrawal.
-        new_balance: Player balance after crediting the payout.
+        delta: Net point change for the round.
+        payout: Positive player credit from the round, excluding losses and pushes.
+        new_balance: Player balance after applying the signed round delta.
         house_balance: Dealer ledger balance after mirroring the player's net change.
     """
 

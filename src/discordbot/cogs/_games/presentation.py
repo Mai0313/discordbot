@@ -76,12 +76,12 @@ def allin_note(*, is_allin: bool) -> str:
     return " | all-in" if is_allin else ""
 
 
-def wager_footer(*, bet: int, balance_after_bet: int, is_allin: bool, status: str) -> str:
+def wager_footer(*, bet: int, balance_at_start: int, is_allin: bool, status: str) -> str:
     """Formats the shared footer for an unresolved round.
 
     Args:
-        bet: Effective wager already withdrawn.
-        balance_after_bet: Player balance after the wager withdrawal.
+        bet: Effective wager for the round.
+        balance_at_start: Player balance observed when the round started.
         is_allin: Whether the requested bet was clamped to the full balance.
         status: Short status text for the round.
 
@@ -90,7 +90,7 @@ def wager_footer(*, bet: int, balance_after_bet: int, is_allin: bool, status: st
     """
     return (
         f"下注 {currency_text(amount=bet)} | "
-        f"餘額 {currency_text(amount=balance_after_bet)} | {status}"
+        f"目前餘額 {currency_text(amount=balance_at_start)} | {status}"
         f"{allin_note(is_allin=is_allin)}"
     )
 

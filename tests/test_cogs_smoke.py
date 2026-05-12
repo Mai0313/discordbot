@@ -513,14 +513,8 @@ def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
     return
 
 
-async def fake_place_bet(
-    user_id: int, name: str, avatar_url: str, requested_bet: int
-) -> database.PlacedBet:
-    return database.PlacedBet(amount=10, balance_after=90, is_allin=False)
-
-
-async def fake_zero_balance(user_id: int) -> int:
-    return 0
+async def fake_game_balance(user_id: int) -> int:
+    return 100
 
 
 async def fake_settle_wager(  # noqa: PLR0913 -- mirrors settlement helper signature
@@ -552,7 +546,7 @@ async def fake_settle_blackjack_round(  # noqa: PLR0913 -- mirrors settlement he
 
 class FakeDealer:
     async def taunt_bet(
-        self, author_name: str, player_name: str, balance_after_bet: int, bet: int, game: str
+        self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: str
     ) -> str:
         return "taunt"
 
@@ -575,8 +569,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
-    monkeypatch.setattr(games, "place_bet", fake_place_bet)
-    monkeypatch.setattr(games, "get_balance", fake_zero_balance)
+    monkeypatch.setattr(games, "get_balance", fake_game_balance)
     monkeypatch.setattr(games, "settle_wager", fake_settle_wager)
     monkeypatch.setattr(games, "settle_blackjack_round", fake_settle_blackjack_round)
     hand = BlackjackHand(rng=games.SystemRandom(), bet=10)

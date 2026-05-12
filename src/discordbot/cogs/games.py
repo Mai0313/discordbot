@@ -11,13 +11,13 @@ from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-from discordbot.typings.economy import PlacedBet
+from discordbot.typings.economy import PreparedBet
 from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import BlackjackHand
-from discordbot.cogs._economy.database import place_bet, get_balance
+from discordbot.cogs._economy.database import get_balance
 from discordbot.cogs._games.settlement import (
     settle_wager,
     settle_blackjack_round,
@@ -106,24 +106,18 @@ class GamesCogs(commands.Cog):
             return (0, "莊家", "")
         return (self.bot.user.id, self.bot.user.display_name, self.bot.user.display_avatar.url)
 
-    async def _place_bet(
+    async def _prepare_bet(
         self, *, interaction: Interaction, requested_bet: int
-    ) -> PlacedBet | None:
-        """Withdraws the effective bet or sends an insufficient-balance embed.
+    ) -> PreparedBet | None:
+        """Checks the effective bet or sends an insufficient-balance embed.
 
-        `place_bet()` owns the atomic balance check and auto all-in clamp, so
-        slash commands do not make game decisions from stale balances.
+        Bets are settled only when a round finishes. If the bot restarts during
+        an in-memory round, no balance mutation has happened yet.
         """
         if interaction.user is None:
             return None
-        placed_bet = await place_bet(
-            user_id=interaction.user.id,
-            name=interaction.user.name,
-            avatar_url=interaction.user.display_avatar.url,
-            requested_bet=requested_bet,
-        )
-        if placed_bet is None:
-            balance = await get_balance(user_id=interaction.user.id)
+        balance = await get_balance(user_id=interaction.user.id)
+        if requested_bet <= 0 or balance <= 0:
             message = await interaction.followup.send(
                 embed=Embed(
                     title="餘額不足",
@@ -138,7 +132,11 @@ class GamesCogs(commands.Cog):
             )
             schedule_game_message_delete(message=message)
             return None
-        return placed_bet
+        return PreparedBet(
+            amount=min(requested_bet, balance),
+            balance_at_start=balance,
+            is_allin=requested_bet > balance,
+        )
 
     @nextcord.slash_command(
         name="dice",
@@ -175,18 +173,18 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
-        if placed_bet is None:
+        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
+        if prepared_bet is None:
             return
-        bet = placed_bet.amount
-        is_allin = placed_bet.is_allin
+        bet = prepared_bet.amount
+        is_allin = prepared_bet.is_allin
 
         dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
-            balance_after_bet=placed_bet.balance_after,
+            balance_at_start=prepared_bet.balance_at_start,
             bet=bet,
             game="dice",
         )
@@ -201,7 +199,7 @@ class GamesCogs(commands.Cog):
         in_progress.set_footer(
             text=wager_footer(
                 bet=bet,
-                balance_after_bet=placed_bet.balance_after,
+                balance_at_start=prepared_bet.balance_at_start,
                 is_allin=is_allin,
                 status="等候開獎",
             )
@@ -303,18 +301,18 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
-        if placed_bet is None:
+        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
+        if prepared_bet is None:
             return
-        bet = placed_bet.amount
-        is_allin = placed_bet.is_allin
+        bet = prepared_bet.amount
+        is_allin = prepared_bet.is_allin
 
         dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
-            balance_after_bet=placed_bet.balance_after,
+            balance_at_start=prepared_bet.balance_at_start,
             bet=bet,
             game="dragon_gate",
         )
@@ -329,7 +327,7 @@ class GamesCogs(commands.Cog):
         in_progress.set_footer(
             text=wager_footer(
                 bet=bet,
-                balance_after_bet=placed_bet.balance_after,
+                balance_at_start=prepared_bet.balance_at_start,
                 is_allin=is_allin,
                 status="等候開門",
             )
@@ -432,11 +430,11 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        placed_bet = await self._place_bet(interaction=interaction, requested_bet=bet)
-        if placed_bet is None:
+        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
+        if prepared_bet is None:
             return
-        bet = placed_bet.amount
-        is_allin = placed_bet.is_allin
+        bet = prepared_bet.amount
+        is_allin = prepared_bet.is_allin
 
         dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
@@ -446,7 +444,7 @@ class GamesCogs(commands.Cog):
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
-            balance_after_bet=placed_bet.balance_after,
+            balance_at_start=prepared_bet.balance_at_start,
             bet=bet,
             game="blackjack",
         )
@@ -501,7 +499,7 @@ class GamesCogs(commands.Cog):
             dealer_id=dealer_id,
             dealer_name=dealer_name,
             dealer_avatar_url=dealer_avatar_url,
-            balance_after_bet=placed_bet.balance_after,
+            balance_at_start=prepared_bet.balance_at_start,
             is_allin=is_allin,
         )
         embed = build_in_progress_embed(
@@ -509,7 +507,7 @@ class GamesCogs(commands.Cog):
             player_name=interaction.user.display_name,
             player_avatar_url=interaction.user.display_avatar.url,
             hand=hand,
-            balance_after_bet=placed_bet.balance_after,
+            balance_at_start=prepared_bet.balance_at_start,
             dealer_line=taunt,
             is_allin=is_allin,
         )

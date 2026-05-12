@@ -37,7 +37,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     player_name: str,
     player_avatar_url: str,
     hand: BlackjackHand,
-    balance_after_bet: int,
+    balance_at_start: int,
     dealer_line: str,
     is_allin: bool = False,
 ) -> Embed:
@@ -48,7 +48,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
         player_name: Display name used for the player field title.
         player_avatar_url: Last-seen Discord avatar URL for the player (used as author icon).
         hand: Current Blackjack hand state.
-        balance_after_bet: Player balance after the wager was withdrawn.
+        balance_at_start: Player balance observed when the round started.
         dealer_line: Dealer banter shown in the embed description.
         is_allin: Whether the requested bet was clamped to the full balance.
 
@@ -71,7 +71,7 @@ def build_in_progress_embed(  # noqa: PLR0913 -- in-progress embed needs every r
     )
     embed.set_footer(
         text=wager_footer(
-            bet=hand.bet, balance_after_bet=balance_after_bet, is_allin=is_allin, status="等待操作"
+            bet=hand.bet, balance_at_start=balance_at_start, is_allin=is_allin, status="等待操作"
         )
     )
     return embed
@@ -144,7 +144,7 @@ class BlackjackView(ui.View):
         dealer_id: Discord user ID of the bot itself (used for the house ledger).
         dealer_name: Display name of the bot, surfaced in embeds and the house ledger row.
         dealer_avatar_url: Last-seen Discord avatar URL for the dealer ledger row.
-        balance_after_bet: Player's balance immediately after the bet was deducted.
+        balance_at_start: Player balance observed when the round started.
         is_allin: True when the original bet was clamped down to the player's balance.
         message: Reference to the rendered Discord message; set on first edit.
     """
@@ -161,7 +161,7 @@ class BlackjackView(ui.View):
         dealer_id: int,
         dealer_name: str,
         dealer_avatar_url: str = "",
-        balance_after_bet: int,
+        balance_at_start: int,
         is_allin: bool = False,
     ) -> None:
         """Initialises the view.
@@ -176,7 +176,7 @@ class BlackjackView(ui.View):
             dealer_id: Discord user ID of the bot itself (house ledger key).
             dealer_name: Bot's display name; shown in embeds and stored on the house ledger row.
             dealer_avatar_url: Last-seen Discord avatar URL for the dealer ledger row.
-            balance_after_bet: Player balance after the bet was withdrawn.
+            balance_at_start: Player balance observed when the round started.
             is_allin: True when the original bet was clamped down to ``balance``.
         """
         super().__init__(timeout=180)
@@ -189,7 +189,7 @@ class BlackjackView(ui.View):
         self.dealer_id = dealer_id
         self.dealer_name = dealer_name
         self.dealer_avatar_url = dealer_avatar_url
-        self.balance_after_bet = balance_after_bet
+        self.balance_at_start = balance_at_start
         self.is_allin = is_allin
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
@@ -251,7 +251,7 @@ class BlackjackView(ui.View):
                 player_name=self.player_name,
                 player_avatar_url=self.player_avatar_url,
                 hand=self.hand,
-                balance_after_bet=self.balance_after_bet,
+                balance_at_start=self.balance_at_start,
                 dealer_line=hint,
                 is_allin=self.is_allin,
             )
@@ -279,9 +279,9 @@ class BlackjackView(ui.View):
     async def _finalize(self, *, message: Message) -> None:
         """Settles DB, asks the dealer for a closing line, and updates the embed.
 
-        The bet was already withdrawn before the view was created, so we credit
-        back ``bet + delta`` here: ``2 * bet`` on a regular win, ``2.5 * bet``
-        on a natural Blackjack, ``bet`` on a push, and ``0`` on a loss.
+        Bets are applied only here, when the round has actually resolved. A
+        restart before this point drops the in-memory hand without changing
+        the player's balance.
 
         We also mirror the player's net change into the bot's house ledger
         (negated, since dealer P&L is the inverse of player P&L), so global

@@ -149,8 +149,8 @@ class BlackjackHand(BaseModel):
 def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
     """Resolves a finished hand into an outcome label and the player's net delta.
 
-    Delta is computed against the bet, not against the bankroll:
-    - natural Blackjack pays 1.5x (rounded to int) on top of the bet's preservation;
+    Delta is computed as the direct bankroll change:
+    - natural Blackjack pays 1.5x (rounded to int);
     - regular win pays 1x;
     - push returns 0;
     - loss returns ``-bet``.
@@ -160,7 +160,7 @@ def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
 
     Returns:
         A tuple of `(outcome, delta)`, where `delta` is the player's net point
-        change relative to the withdrawn bet.
+        change for the round.
 
     Raises:
         ValueError: The hand is not finished yet.
