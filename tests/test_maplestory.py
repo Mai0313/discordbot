@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import json
 from types import SimpleNamespace
-from pathlib import Path
+from typing import TYPE_CHECKING, Unpack, TypedDict
 
 import pytest
 from nextcord import Embed, SelectOption
@@ -44,30 +46,57 @@ from discordbot.cogs._maplestory.models import (
 )
 from discordbot.cogs._maplestory.service import MapleStoryService, _load_json, _load_translations
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+type JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+class InteractionPayload(TypedDict, total=False):
+    content: str
+    embed: Embed
+    view: MapleDropSearchView | None
+    message_id: int
+    ephemeral: bool
+
 
 class _FakeResponse:
     def __init__(self) -> None:
         self.deferred = False
-        self.messages: list[dict[str, object]] = []
+        self.messages: list[InteractionPayload] = []
 
     async def defer(self) -> None:
         self.deferred = True
 
-    async def send_message(self, **kwargs: object) -> None:
+    async def send_message(self, **kwargs: Unpack[InteractionPayload]) -> None:
         self.messages.append(kwargs)
 
 
 class _FakeFollowup:
     def __init__(self) -> None:
-        self.sent: list[dict[str, object]] = []
-        self.edited: list[dict[str, object]] = []
+        self.sent: list[InteractionPayload] = []
+        self.edited: list[InteractionPayload] = []
 
-    async def send(self, *args: object, **kwargs: object) -> None:
-        if args:
-            kwargs["content"] = args[0]
-        self.sent.append(kwargs)
+    async def send(
+        self,
+        content: str | None = None,
+        *,
+        embed: Embed | None = None,
+        view: MapleDropSearchView | None = None,
+        ephemeral: bool | None = None,
+    ) -> None:
+        payload = InteractionPayload()
+        if content is not None:
+            payload["content"] = content
+        if embed is not None:
+            payload["embed"] = embed
+        if view is not None:
+            payload["view"] = view
+        if ephemeral is not None:
+            payload["ephemeral"] = ephemeral
+        self.sent.append(payload)
 
-    async def edit_message(self, **kwargs: object) -> None:
+    async def edit_message(self, **kwargs: Unpack[InteractionPayload]) -> None:
         self.edited.append(kwargs)
 
 
@@ -78,7 +107,7 @@ class _FakeInteraction:
         self.message = SimpleNamespace(id=message_id)
 
 
-def _write_json(path: Path, payload: object) -> None:
+def _write_json(path: Path, payload: JsonValue) -> None:
     path.write_text(data=json.dumps(obj=payload, ensure_ascii=False), encoding="utf-8")
 
 
@@ -115,10 +144,17 @@ def maple_data_dir(tmp_path: Path) -> Path:
                 ],
                 "drops": {
                     "equipmentItems": [
-                        {"name": "Wooden Sword", "level": 10, "type": "Weapon", "jobs": ["Warrior"]}
+                        {
+                            "name": "Wooden Sword",
+                            "level": 10,
+                            "type": "Weapon",
+                            "jobs": ["Warrior"],
+                        }
                     ],
                     "useableItems": [{"name": "Red Potion", "level": 0, "type": "Potion"}],
-                    "scrolls": [{"name": "Scroll for Gloves for ATT", "level": 0, "type": "Glove"}],
+                    "scrolls": [
+                        {"name": "Scroll for Gloves for ATT", "level": 0, "type": "Glove"}
+                    ],
                     "miscItems": [{"name": "Slime Bubble", "level": 0, "type": "Etc"}],
                     "mesoRange": [4, 8],
                 },
@@ -309,15 +345,20 @@ def test_maplestory_models_accept_aliases_and_helpers() -> None:
     ]
     assert Scroll(name="Scroll", nameZh="卷").display_name == "卷"
     assert Useable(name="Potion", nameZh="藥水").display_name == "藥水"
-    assert NPC(name="NPC", nameZh="店員", regionToMapsList=[RegionMaps(region="R", maps=["M"])]).all_maps == [
-        "M"
-    ]
+    assert NPC(
+        name="NPC", nameZh="店員", regionToMapsList=[RegionMaps(region="R", maps=["M"])]
+    ).all_maps == ["M"]
     assert quest.display_name == "Quest"
     assert MapEntry(name="Map", nameZh="地圖").display_name == "地圖"
     assert MiscItem(name="Etc", nameZh="其他").display_name == "其他"
-    assert CraftingRecipe(
-        npc="NPC", output="Sword", materials=[CraftingMaterial(item="Ore", quantity=1)]
-    ).materials[0].quantity == 1
+    assert (
+        CraftingRecipe(
+            npc="NPC", output="Sword", materials=[CraftingMaterial(item="Ores", quantity=1)]
+        )
+        .materials[0]
+        .quantity
+        == 1
+    )
 
 
 def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService) -> None:
@@ -328,9 +369,9 @@ def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService
     assert service.search_monsters_by_name(query="綠")[0].name == "Slime"
     assert service.get_monster(name="綠水靈").name == "Slime"
     assert service.get_monster(name="missing") is None
-    assert [monster.name for monster in service.get_monsters_by_drop(item_name="Wooden Sword")] == [
-        "Slime"
-    ]
+    assert [
+        monster.name for monster in service.get_monsters_by_drop(item_name="Wooden Sword")
+    ] == ["Slime"]
     assert service.search_equipment_by_name(query="wooden")
     assert service.get_equipment(name="木劍").name == "Wooden Sword"
     assert service.get_equipment(name="missing") is None
@@ -417,7 +458,9 @@ async def test_maplestory_view_resolvers_and_selection(service: MapleStoryServic
         assert isinstance(embed, Embed)
 
     drop_view = MapleDropSearchView(service=service, search_type="monster", query="slime")
-    drop_view.set_options(options=[SelectOption(label=f"Option {i}", value=str(i)) for i in range(30)])
+    drop_view.set_options(
+        options=[SelectOption(label=f"Option {i}", value=str(i)) for i in range(30)]
+    )
     assert len(drop_view.select_result.options) == 25
 
 
@@ -501,7 +544,7 @@ async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -
 
 
 def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None:
-    added: list[object] = []
+    added: list[MapleStoryCogs] = []
     monkeypatch.setattr(
         "discordbot.cogs.maplestory.MapleStoryService.from_directory",
         lambda data_dir: MapleStoryService(),

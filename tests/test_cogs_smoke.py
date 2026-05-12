@@ -1,12 +1,11 @@
-from types import SimpleNamespace
-from typing import Self
-from pathlib import Path
-from datetime import UTC, datetime, timedelta
-from collections.abc import AsyncIterator
+from __future__ import annotations
 
-import pytest
+from types import TracebackType, SimpleNamespace
+from typing import TYPE_CHECKING, Self, Unpack, TypedDict
+from datetime import UTC, datetime, timedelta
+
 import nextcord
-from nextcord import Embed
+from nextcord import File, Embed
 from nextcord.ext import commands
 
 from discordbot import cli
@@ -21,42 +20,74 @@ from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._games.blackjack import Card, BlackjackHand
 
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import AsyncIterator
+
+    import pytest
+
+
+class DiscordPayload(TypedDict, total=False):
+    content: str | None
+    embed: Embed
+    embeds: list[Embed]
+    file: File
+    files: list[File]
+    view: nextcord.ui.View
+    wait: bool
+    ephemeral: bool
+    suppress: bool
+
+
+class OriginalEditPayload(TypedDict, total=False):
+    content: str
+
+
+class SelfTimeoutCall(TypedDict):
+    member: SimpleNamespace
+    until: datetime
+
 
 class FakeResponse:
     def __init__(self) -> None:
         self.deferred = False
-        self.sent: list[dict[str, object]] = []
+        self.sent: list[DiscordPayload] = []
 
     async def defer(self) -> None:
         self.deferred = True
 
-    async def send_message(self, **kwargs: object) -> None:
+    async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         self.sent.append(kwargs)
 
 
 class FakeFollowup:
     def __init__(self) -> None:
-        self.sent: list[dict[str, object]] = []
+        self.sent: list[DiscordPayload] = []
 
-    async def send(self, **kwargs: object) -> object:
+    async def send(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
         self.sent.append(kwargs)
         return FakeDiscordMessage()
 
 
 class FakeInteraction:
-    def __init__(self, *, user: object | None = None) -> None:
+    def __init__(self, *, user: FakeUser | None = None) -> None:
         self.user = user or FakeUser()
         self.response = FakeResponse()
         self.followup = FakeFollowup()
-        self.edits: list[dict[str, object]] = []
+        self.edits: list[OriginalEditPayload] = []
 
-    async def edit_original_message(self, **kwargs: object) -> None:
+    async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
         self.edits.append(kwargs)
 
 
 class FakeUser:
     def __init__(
-        self, *, user_id: int = 1, name: str = "alice", display_name: str = "Alice", bot: bool = False
+        self,
+        *,
+        user_id: int = 1,
+        name: str = "alice",
+        display_name: str = "Alice",
+        bot: bool = False,
     ) -> None:
         self.id = user_id
         self.name = name
@@ -68,14 +99,14 @@ class FakeUser:
 
 class FakeDiscordMessage:
     def __init__(self) -> None:
-        self.edits: list[dict[str, object]] = []
+        self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []
-        self.removed: list[tuple[str, object]] = []
-        self.replies: list[dict[str, object]] = []
+        self.removed: list[tuple[str, FakeUser]] = []
+        self.replies: list[DiscordPayload] = []
         self.deleted = False
         self.suppressed = False
 
-    async def edit(self, **kwargs: object) -> None:
+    async def edit(self, **kwargs: Unpack[DiscordPayload]) -> None:
         if "suppress" in kwargs:
             self.suppressed = bool(kwargs["suppress"])
         self.edits.append(kwargs)
@@ -83,10 +114,10 @@ class FakeDiscordMessage:
     async def add_reaction(self, emoji: str) -> None:
         self.reactions.append(emoji)
 
-    async def remove_reaction(self, *, emoji: str, member: object) -> None:
+    async def remove_reaction(self, *, emoji: str, member: FakeUser) -> None:
         self.removed.append((emoji, member))
 
-    async def reply(self, **kwargs: object) -> None:
+    async def reply(self, **kwargs: Unpack[DiscordPayload]) -> None:
         self.replies.append(kwargs)
 
     async def delete(self) -> None:
@@ -101,7 +132,12 @@ class DownloadResultStub:
         """Returns the fake download result."""
         return self
 
-    def __exit__(self, *args: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Leaves the fake downloaded file on disk for assertions."""
         return
 
@@ -109,9 +145,10 @@ class DownloadResultStub:
 class DownloaderStub:
     def __init__(self, *, results: list[DownloadResultStub]) -> None:
         self.results = results
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, str | bool]] = []
 
-    def download(self, **kwargs: object) -> DownloadResultStub:
+    def download(self, *, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
+        kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
 
@@ -126,7 +163,12 @@ class ParseResultStub:
             raise self.results
         return self.results
 
-    def __exit__(self, *args: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Keeps fake parsed outputs available after context exit."""
         return
 
@@ -137,6 +179,27 @@ class ThreadsDownloaderStub:
 
     def parse(self, url: str) -> ParseResultStub:
         return ParseResultStub(results=self.results)
+
+
+class FakeSendChannel:
+    def __init__(self, sent: list[str]) -> None:
+        self.sent = sent
+
+    async def send(self, *, content: str) -> None:
+        self.sent.append(content)
+
+
+class FakeAuditEntry:
+    def __init__(self, *, target_id: int, user: FakeUser, reason: str) -> None:
+        self.target = SimpleNamespace(id=target_id)
+        self.changes = SimpleNamespace(after=SimpleNamespace(communication_disabled_until=True))
+        self.user = user
+        self.reason = reason
+
+
+class FakeGeneratedResponse:
+    def __init__(self, *, output_text: str) -> None:
+        self.output_text = output_text
 
 
 def _thread_output(
@@ -199,7 +262,9 @@ async def test_video_deliver_and_download_branches(
     await cog._deliver(
         interaction=interaction, file_size_mb=1.25, file_path=str(small), file_name=small.name
     )
-    assert interaction.followup.sent[0]["content"].startswith("✅ 下載成功")
+    success_content = interaction.followup.sent[0]["content"]
+    assert isinstance(success_content, str)
+    assert success_content.startswith("✅ 下載成功")
     assert interaction.edits[-1]["content"] == "✅"
 
     downloader = DownloaderStub(
@@ -207,7 +272,9 @@ async def test_video_deliver_and_download_branches(
     )
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
     retry_interaction = FakeInteraction()
-    await VideoCogs.download_video.callback(cog, retry_interaction, url="https://x.test", quality="best")
+    await VideoCogs.download_video.callback(
+        cog, retry_interaction, url="https://x.test", quality="best"
+    )
     assert [call["quality"] for call in downloader.calls] == ["best", "low"]
     assert retry_interaction.followup.sent[-1]["file"] is not None
 
@@ -217,7 +284,9 @@ async def test_video_deliver_and_download_branches(
         "VideoDownloader",
         lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big)]),
     )
-    await VideoCogs.download_video.callback(cog, fail_interaction, url="https://x.test", quality="low")
+    await VideoCogs.download_video.callback(
+        cog, fail_interaction, url="https://x.test", quality="low"
+    )
     assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
 
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: _RaiseDownloader())
@@ -229,7 +298,7 @@ async def test_video_deliver_and_download_branches(
 
 
 class _RaiseDownloader:
-    def download(self, **kwargs: object) -> DownloadResultStub:
+    def download(self, *, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
         raise RuntimeError("download failed")
 
 
@@ -240,7 +309,9 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     video_file.write_bytes(data=b"123")
 
     parent = _thread_output(text="parent", video_urls=["https://example.test/video.mp4"])
-    target = _thread_output(image_urls=["https://example.test/1.png", "https://example.test/2.png"])
+    target = _thread_output(
+        image_urls=["https://example.test/1.png", "https://example.test/2.png"]
+    )
     embeds = cog._build_embeds(results=[parent, target])
     assert len(embeds) == 3
     assert "點此觀看影片" in embeds[0].description
@@ -287,7 +358,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     sent: list[str] = []
-    channel = SimpleNamespace(send=lambda content: _append_async(sent, content))
+    channel = FakeSendChannel(sent=sent)
     bot_user = FakeUser(user_id=999, name="bot", display_name="Bot")
     bot = SimpleNamespace(user=bot_user)
     cog = AutoUnmuteCogs(bot=bot)
@@ -297,7 +368,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
         name="Guild",
         get_channel=lambda channel_id: channel,
         system_channel=None,
-        audit_logs=lambda **kwargs: _audit_entries(bot_user),
+        audit_logs=lambda action, limit: _audit_entries(bot_user),
     )
     await cog.on_message(
         message=SimpleNamespace(
@@ -306,14 +377,14 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     )
     assert cog._last_active_channel == {123: 456}
 
-    monkeypatch.setattr(auto_unmute.nextcord.abc, "Messageable", object)
+    monkeypatch.setattr(auto_unmute.nextcord.abc, "Messageable", FakeSendChannel)
     assert cog._resolve_channel(guild=guild) is channel
     moderator, reason = await cog._lookup_audit(guild=guild)
     assert moderator.name == "moderator"
     assert reason == "testing"
 
     cog.__dict__["client"] = SimpleNamespace(
-        responses=SimpleNamespace(create=lambda **kwargs: _response_async("not today"))
+        responses=SimpleNamespace(create=_create_auto_unmute_response)
     )
     reply = await cog._generate_reply(
         guild_name="Guild",
@@ -334,32 +405,34 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
 
     before = SimpleNamespace(communication_disabled_until=None)
     after = member
-    handled: list[object] = []
-    monkeypatch.setattr(cog, "_handle_self_timeout", lambda **kwargs: _append_async(handled, kwargs))
+    handled: list[SelfTimeoutCall] = []
+
+    async def record_self_timeout(*, member: SimpleNamespace, until: datetime) -> None:
+        handled.append({"member": member, "until": until})
+
+    monkeypatch.setattr(cog, "_handle_self_timeout", record_self_timeout)
     await cog.on_member_update(before=before, after=after)
     assert handled
 
 
-async def _audit_entries(bot_user: FakeUser) -> AsyncIterator[object]:
-    yield SimpleNamespace(
-        target=SimpleNamespace(id=111),
-        changes=SimpleNamespace(after=SimpleNamespace(communication_disabled_until=True)),
-        user=FakeUser(name="wrong"),
-        reason="wrong",
-    )
-    yield SimpleNamespace(
-        target=SimpleNamespace(id=bot_user.id),
-        changes=SimpleNamespace(after=SimpleNamespace(communication_disabled_until=True)),
-        user=FakeUser(name="moderator"),
-        reason="testing",
-    )
+async def _audit_entries(bot_user: FakeUser) -> AsyncIterator[FakeAuditEntry]:
+    yield FakeAuditEntry(target_id=111, user=FakeUser(name="wrong"), reason="wrong")
+    yield FakeAuditEntry(target_id=bot_user.id, user=FakeUser(name="moderator"), reason="testing")
 
 
-async def _response_async(output_text: str) -> object:
-    return SimpleNamespace(output_text=output_text)
+async def _create_auto_unmute_response(  # noqa: PLR0913 -- mirrors Responses API call shape
+    model: str,
+    instructions: str,
+    input: list[dict[str, str]],  # noqa: A002 -- OpenAI SDK parameter name
+    reasoning: dict[str, str],
+    service_tier: str,
+    extra_headers: dict[str, str],
+    extra_body: dict[str, bool],
+) -> FakeGeneratedResponse:
+    return FakeGeneratedResponse(output_text="not today")
 
 
-async def _append_async(container: list[object], item: object) -> None:
+async def _append_async[T](container: list[T], item: T) -> None:
     container.append(item)
 
 
@@ -368,25 +441,25 @@ async def _async_none() -> None:
 
 
 async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPatch) -> None:
-    scheduled: list[object] = []
-    monkeypatch.setattr(
-        economy, "schedule_game_message_delete", lambda **kwargs: scheduled.append(kwargs["message"])
-    )
-    monkeypatch.setattr(economy, "get_balance", lambda user_id: _value_async(150))
-    monkeypatch.setattr(economy, "top_n", lambda **kwargs: _value_async([(1, "alice", 150)]))
-    monkeypatch.setattr(economy, "get_account", lambda user_id: _value_async(("Bot", -50, 100, 150)))
-    monkeypatch.setattr(
-        economy,
-        "transfer",
-        lambda **kwargs: _value_async(database.TransferResult(sender_balance=50, receiver_balance=100)),
-    )
+    scheduled: list[FakeDiscordMessage] = []
+
+    def record_scheduled(*, message: FakeDiscordMessage) -> None:
+        scheduled.append(message)
+
+    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    monkeypatch.setattr(economy, "get_balance", fake_get_balance)
+    monkeypatch.setattr(economy, "top_n", fake_top_n)
+    monkeypatch.setattr(economy, "get_account", fake_get_account)
+    monkeypatch.setattr(economy, "transfer", fake_transfer)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=bot)
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.balance.callback(cog, interaction)
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
-    await EconomyCogs.give.callback(cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100)
+    await EconomyCogs.give.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+    )
     assert len(interaction.followup.sent) == 4
     assert scheduled
 
@@ -397,37 +470,90 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     assert "不能把" in bot_receiver.followup.sent[0]["embed"].description
 
 
-async def _value_async(value: object) -> object:
-    return value
+async def fake_get_balance(user_id: int) -> int:
+    return 150
 
 
-async def test_games_commands_run_with_patched_settlement(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def fake_top_n(
+    limit: int, exclude_user_ids: tuple[int, ...] = ()
+) -> list[tuple[int, str, int]]:
+    return [(1, "alice", 150)]
+
+
+async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
+    return ("Bot", -50, 100, 150)
+
+
+async def fake_transfer(
+    sender_id: int, sender_name: str, receiver_id: int, receiver_name: str, amount: int
+) -> database.TransferResult:
+    return database.TransferResult(sender_balance=50, receiver_balance=100)
+
+
+async def fake_sleep(delay: float) -> None:
+    return
+
+
+def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
+    return
+
+
+async def fake_place_bet(user_id: int, name: str, requested_bet: int) -> database.PlacedBet:
+    return database.PlacedBet(amount=10, balance_after=90, is_allin=False)
+
+
+async def fake_zero_balance(user_id: int) -> int:
+    return 0
+
+
+async def fake_settle_wager(  # noqa: PLR0913 -- mirrors settlement helper signature
+    player_id: int,
+    player_account_name: str,
+    dealer_id: int,
+    dealer_name: str,
+    bet: int,
+    delta: int,
+) -> SimpleNamespace:
+    return SimpleNamespace(delta=10, new_balance=110, house_balance=-10)
+
+
+async def fake_settle_blackjack_round(
+    hand: BlackjackHand, player_id: int, player_account_name: str, dealer_id: int, dealer_name: str
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        outcome="win", delta=15, new_balance=115, house_balance=-15, detail="natural"
+    )
+
+
+class FakeDealer:
+    async def taunt_bet(
+        self, author_name: str, player_name: str, balance_after_bet: int, bet: int, game: str
+    ) -> str:
+        return "taunt"
+
+    async def settle(  # noqa: PLR0913 -- mirrors DealerAI.settle signature
+        self,
+        author_name: str,
+        player_name: str,
+        outcome: str,
+        bet: int,
+        delta: int,
+        new_balance: int,
+        game: str,
+        detail: str,
+    ) -> str:
+        return "settled"
+
+
+async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    monkeypatch.setattr(games.asyncio, "sleep", lambda *args, **kwargs: _async_none())
-    monkeypatch.setattr(games, "schedule_game_message_delete", lambda message: None)
-    monkeypatch.setattr(
-        games,
-        "place_bet",
-        lambda **kwargs: _value_async(database.PlacedBet(amount=10, balance_after=90, is_allin=False)),
-    )
-    monkeypatch.setattr(games, "get_balance", lambda user_id: _value_async(0))
-    monkeypatch.setattr(
-        games,
-        "settle_wager",
-        lambda **kwargs: _value_async(SimpleNamespace(delta=10, new_balance=110, house_balance=-10)),
-    )
-    monkeypatch.setattr(
-        games,
-        "settle_blackjack_round",
-        lambda **kwargs: _value_async(
-            SimpleNamespace(
-                outcome="win", delta=15, new_balance=115, house_balance=-15, detail="natural"
-            )
-        ),
-    )
+    monkeypatch.setattr(games.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
+    monkeypatch.setattr(games, "place_bet", fake_place_bet)
+    monkeypatch.setattr(games, "get_balance", fake_zero_balance)
+    monkeypatch.setattr(games, "settle_wager", fake_settle_wager)
+    monkeypatch.setattr(games, "settle_blackjack_round", fake_settle_blackjack_round)
     hand = BlackjackHand(rng=games.SystemRandom(), bet=10)
     hand.player = [Card(rank="A", suit="♠"), Card(rank="K", suit="♣")]
     hand.dealer = [Card(rank="9", suit="♠"), Card(rank="8", suit="♣")]
@@ -437,13 +563,14 @@ async def test_games_commands_run_with_patched_settlement(
         return None
 
     hand.deal_initial = fake_deal_initial
-    monkeypatch.setattr(games, "BlackjackHand", lambda **kwargs: hand)
+
+    def fake_blackjack_hand(rng: games.SystemRandom, bet: int) -> BlackjackHand:
+        return hand
+
+    monkeypatch.setattr(games, "BlackjackHand", fake_blackjack_hand)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = SimpleNamespace(
-        taunt_bet=lambda **kwargs: _value_async("taunt"),
-        settle=lambda **kwargs: _value_async("settled"),
-    )
+    cog.__dict__["dealer"] = FakeDealer()
 
     dice_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dice.callback(cog, dice_interaction, bet=10)
@@ -459,8 +586,20 @@ async def test_games_commands_run_with_patched_settlement(
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    added: list[tuple[object, bool | None]] = []
-    bot = SimpleNamespace(add_cog=lambda cog, override=None: added.append((cog, override)))
+    added: list[
+        tuple[
+            VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+            bool | None,
+        ]
+    ] = []
+
+    def record_cog(
+        cog: VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+        override: bool | None = None,
+    ) -> None:
+        added.append((cog, override))
+
+    bot = SimpleNamespace(add_cog=record_cog)
     for module in [video, games, economy, template, parse_threads, auto_unmute]:
         monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
         monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
@@ -476,30 +615,37 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
-    loaded: list[object] = []
-    bot = SimpleNamespace(
-        load_extensions=lambda modules, stop_at_error: loaded.append((modules, stop_at_error))
-    )
+    loaded: list[tuple[list[str], bool]] = []
+
+    def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
+        loaded.append((modules, stop_at_error))
+
+    bot = SimpleNamespace(load_extensions=record_load_extensions)
     cli.DiscordBot._load_cogs_sync(bot)
     assert loaded[0][1] is True
     assert "discordbot.cogs.template" in loaded[0][0]
 
 
 async def test_cli_message_and_command_error_branches() -> None:
-    processed: list[object] = []
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True),
-        process_commands=lambda message: _append_async(processed, message),
-    )
+    processed: list[SimpleNamespace] = []
+
+    async def record_processed(message: SimpleNamespace) -> None:
+        processed.append(message)
+
+    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True), process_commands=record_processed)
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
     await cli.DiscordBot.on_message(bot, message=user_message)
     assert processed == [user_message]
     await cli.DiscordBot.on_message(bot, message=SimpleNamespace(author=bot.user))
     assert len(processed) == 1
 
-    sent: list[dict[str, object]] = []
+    sent: list[DiscordPayload] = []
+
+    async def record_context_send(**kwargs: Unpack[DiscordPayload]) -> None:
+        sent.append(kwargs)
+
     context = SimpleNamespace(
-        send=lambda **kwargs: _append_async(sent, kwargs),
+        send=record_context_send,
         guild=SimpleNamespace(name="Guild", id=1),
         author=FakeUser(user_id=1),
     )

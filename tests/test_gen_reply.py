@@ -1,17 +1,51 @@
+from __future__ import annotations
+
 from io import BytesIO
 from types import SimpleNamespace
 import base64
-from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Unpack, Literal, TypedDict
 
 from PIL import Image
 import pytest
-from nextcord import Embed
-from nextcord.ui import View
+from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, ReplyGeneratorCogs
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import ModelSettings, RouteDecision
 from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from nextcord.ui import View
+
+
+class FakeGuild:
+    def __init__(self, guild_id: int = 1) -> None:
+        self.id = guild_id
+
+
+class FakeReference:
+    def __init__(self, resolved: FakeMessage) -> None:
+        self.resolved = resolved
+
+
+class FakeReaction:
+    def __init__(self, *, me: bool, emoji: str) -> None:
+        self.me = me
+        self.emoji = emoji
+
+
+class ReplyPayload(TypedDict, total=False):
+    content: str | None
+    view: View
+    file: File
+    embed: Embed
+
+
+class InteractionReplyPayload(TypedDict, total=False):
+    content: str
+    ephemeral: bool
 
 
 class FakeReply:
@@ -21,6 +55,8 @@ class FakeReply:
         """Initializes the fake reply with empty content and no attached view."""
         self.content: str | None = ""
         self.view: View | None = None
+        self.file: File | None = None
+        self.embed: Embed | None = None
 
     async def edit(self, *, content: str, view: View | None = None) -> None:
         """Records the replacement content and view passed to edit."""
@@ -49,20 +85,20 @@ class FakeMessage:
         self.author = author or FakeAuthor()
         self.content = content
         self.embeds: list[Embed] = []
-        self.attachments: list[object] = []
-        self.stickers: list[object] = []
-        self.reference: object | None = None
-        self.guild = SimpleNamespace(id=1)
+        self.attachments: list[FakeAttachment] = []
+        self.stickers: list[FakeAttachment] = []
+        self.reference: FakeReference | None = None
+        self.guild: FakeGuild | None = FakeGuild()
         self.channel = SimpleNamespace(history=self._history)
         self.id = 987
         self.system_content = ""
         self.added_reactions: list[str] = []
-        self.removed_reactions: list[tuple[str, object]] = []
-        self.reactions: list[object] = []
+        self.removed_reactions: list[tuple[str, FakeAuthor]] = []
+        self.reactions: list[FakeReaction] = []
 
     async def _history(
-        self, *, limit: int, before: object, oldest_first: bool
-    ) -> AsyncIterator["FakeMessage"]:
+        self, *, limit: int, before: FakeMessage, oldest_first: bool
+    ) -> AsyncIterator[FakeMessage]:
         if False:
             yield self
 
@@ -71,7 +107,7 @@ class FakeMessage:
         *,
         content: str | None,
         view: View | None = None,
-        file: object | None = None,
+        file: File | None = None,
         embed: Embed | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content and view."""
@@ -86,7 +122,7 @@ class FakeMessage:
     async def add_reaction(self, *, emoji: str) -> None:
         self.added_reactions.append(emoji)
 
-    async def remove_reaction(self, *, emoji: str, member: object) -> None:
+    async def remove_reaction(self, *, emoji: str, member: FakeAuthor) -> None:
         self.removed_reactions.append((emoji, member))
 
     def is_system(self) -> bool:
@@ -113,31 +149,75 @@ class FakeAttachment:
 
 class FakeResponses:
     def __init__(self) -> None:
-        self.create_calls: list[dict[str, object]] = []
-        self.parse_calls: list[dict[str, object]] = []
+        self.create_streams: list[bool] = []
+        self.parse_models: list[str] = []
         self.output_text = "caption"
         self.output_parsed = SimpleNamespace(decision="SUMMARY")
 
-    async def create(self, **kwargs: object) -> object:
-        self.create_calls.append(kwargs)
+    async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
+        self,
+        *,
+        model: str,
+        instructions: str,
+        input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
+        reasoning: dict[str, str],
+        service_tier: str,
+        extra_headers: dict[str, str],
+        extra_body: dict[str, bool],
+        stream: bool = False,
+        tools: list[dict[str, str | dict[str, str]]] | None = None,
+    ) -> SimpleNamespace:
+        self.create_streams.append(stream)
         return SimpleNamespace(output_text=self.output_text)
 
-    async def parse(self, **kwargs: object) -> object:
-        self.parse_calls.append(kwargs)
+    async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
+        self,
+        *,
+        model: str,
+        instructions: str,
+        input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
+        text_format: type[RouteDecision],
+        reasoning: dict[str, str],
+        service_tier: str,
+        extra_headers: dict[str, str],
+        extra_body: dict[str, bool],
+    ) -> SimpleNamespace:
+        self.parse_models.append(model)
         return SimpleNamespace(output_parsed=self.output_parsed)
 
 
 class FakeImages:
     def __init__(self) -> None:
-        self.generate_calls: list[dict[str, object]] = []
-        self.edit_calls: list[dict[str, object]] = []
+        self.generate_calls = 0
+        self.edit_calls = 0
 
-    async def generate(self, **kwargs: object) -> object:
-        self.generate_calls.append(kwargs)
+    async def generate(  # noqa: PLR0913 -- mirrors Images API generate signature
+        self,
+        *,
+        prompt: str,
+        model: str,
+        n: int,
+        response_format: Literal["b64_json"],
+        quality: str,
+        size: str,
+        extra_headers: dict[str, str],
+    ) -> SimpleNamespace:
+        self.generate_calls += 1
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
-    async def edit(self, **kwargs: object) -> object:
-        self.edit_calls.append(kwargs)
+    async def edit(  # noqa: PLR0913 -- mirrors Images API edit signature
+        self,
+        *,
+        image: list[bytes],
+        prompt: str,
+        model: str,
+        n: int,
+        response_format: Literal["b64_json"],
+        quality: str,
+        size: str,
+        extra_headers: dict[str, str],
+    ) -> SimpleNamespace:
+        self.edit_calls += 1
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
 
@@ -145,14 +225,18 @@ class FakeVideos:
     def __init__(self) -> None:
         self.retrieve_calls = 0
 
-    async def create(self, **kwargs: object) -> object:
+    async def create(
+        self, *, model: str, prompt: str, extra_headers: dict[str, str]
+    ) -> SimpleNamespace:
         return SimpleNamespace(id="video-1", status="processing")
 
-    async def retrieve(self, **kwargs: object) -> object:
+    async def retrieve(self, *, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
         self.retrieve_calls += 1
         return SimpleNamespace(id="video-1", status="completed")
 
-    async def download_content(self, **kwargs: object) -> object:
+    async def download_content(
+        self, *, video_id: str, extra_headers: dict[str, str]
+    ) -> SimpleNamespace:
         return SimpleNamespace(content=b"mp4")
 
 
@@ -231,7 +315,7 @@ async def test_regenerate_view_restricts_user_and_dispatches_original_message() 
     async def fake_on_message(*, message: FakeMessage) -> None:
         called.append(message)
 
-    async def fake_send_message(**kwargs: object) -> None:
+    async def fake_send_message(**kwargs: Unpack[InteractionReplyPayload]) -> None:
         denied.append(kwargs)
 
     class _ReplyMessage:
@@ -241,23 +325,21 @@ async def test_regenerate_view_restricts_user_and_dispatches_original_message() 
         async def delete(self) -> None:
             self.deleted = True
 
-    denied: list[dict[str, object]] = []
+    denied: list[InteractionReplyPayload] = []
     original = FakeMessage(author=FakeAuthor(user_id=10))
-    original.reactions = [SimpleNamespace(me=True, emoji="🆗"), SimpleNamespace(me=False, emoji="x")]
-    cog = SimpleNamespace(
-        bot=SimpleNamespace(user=SimpleNamespace(id=999)), on_message=fake_on_message
-    )
+    original.reactions = [FakeReaction(me=True, emoji="🆗"), FakeReaction(me=False, emoji="x")]
+    bot_user = FakeAuthor(bot=True, user_id=999)
+    cog = SimpleNamespace(bot=SimpleNamespace(user=bot_user), on_message=fake_on_message)
     view = RegenerateView(cog=cog, original_message=original)
     denied_interaction = SimpleNamespace(
-        user=SimpleNamespace(id=11),
-        response=SimpleNamespace(send_message=fake_send_message),
+        user=FakeAuthor(user_id=11), response=SimpleNamespace(send_message=fake_send_message)
     )
     assert await view.interaction_check(interaction=denied_interaction) is False
     assert denied[0]["ephemeral"] is True
 
     reply_message = _ReplyMessage()
     allowed_interaction = SimpleNamespace(
-        user=SimpleNamespace(id=10),
+        user=FakeAuthor(user_id=10),
         message=reply_message,
         response=SimpleNamespace(defer=_async_none),
     )
@@ -310,19 +392,27 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert file_part["file_data"] == "data:text/plain;base64,YWJj"
 
     image_part = await cog._image_to_part(
-        source=FakeAttachment(filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64()))
+        source=FakeAttachment(
+            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
     )
     assert image_part is not None
     assert image_part["type"] == "input_image"
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"image"})
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"image"}
+    )
     message = FakeMessage()
     message.attachments = [
-        FakeAttachment(filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())),
+        FakeAttachment(
+            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        ),
         FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"video"),
     ]
     message.stickers = [
-        FakeAttachment(filename="sticker.png", content_type="image/png", payload=base64.b64decode(_png_b64()))
+        FakeAttachment(
+            filename="sticker.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
     ]
     img_embed = Embed()
     img_embed.set_image(url="https://example.test/image.png")
@@ -355,7 +445,9 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     assert attachment_processed["role"] == "user"
     assert isinstance(attachment_processed["content"], list)
 
-    async def fake_history(*, limit: int, before: object, oldest_first: bool) -> AsyncIterator[FakeMessage]:
+    async def fake_history(
+        *, limit: int, before: FakeMessage, oldest_first: bool
+    ) -> AsyncIterator[FakeMessage]:
         yield user_msg
         yield bot_msg
 
@@ -369,8 +461,8 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
     parent.id = 988
     grandparent.id = 989
-    parent.reference = SimpleNamespace(resolved=grandparent)
-    current.reference = SimpleNamespace(resolved=parent)
+    parent.reference = FakeReference(resolved=grandparent)
+    current.reference = FakeReference(resolved=parent)
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
     reference = await cog._get_reference_message(message=current)
     assert len(reference) == 4
@@ -382,9 +474,9 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert await cog._route_message(message=message) == "SUMMARY"
-    assert cog.client.responses.parse_calls[0]["model"] == cog.fast_model.name
+    assert cog.client.responses.parse_models[0] == cog.fast_model.name
 
-    async def fake_sleep(*args: object, delay: float = 0) -> None:
+    async def fake_sleep(delay: float) -> None:
         return None
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
@@ -393,19 +485,22 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
 
     await cog._handle_image_reply(message=message, user_prompt="image")
     assert cog.client.images.generate_calls
+    assert isinstance(message.replies[-1].content, str)
     assert message.replies[-1].content.startswith("<@1> caption")
 
-    async def fake_streaming(**kwargs: object) -> str:
-        streamed.append(kwargs)
+    async def fake_streaming(
+        *, responses: SimpleNamespace, message: FakeMessage, view: View | None = None
+    ) -> str:
+        streamed.append(message)
         return "done"
 
-    streamed: list[dict[str, object]] = []
+    streamed: list[FakeMessage] = []
     monkeypatch.setattr(cog, "_handle_streaming", fake_streaming)
     await cog._handle_message_reply(
         message=message, system_prompt="system", context_prompt="context", history_limit=2
     )
-    assert cog.client.responses.create_calls[-1]["stream"] is True
-    assert streamed[-1]["message"] is message
+    assert cog.client.responses.create_streams[-1] is True
+    assert streamed[-1] is message
 
 
 @pytest.mark.parametrize(
@@ -421,27 +516,46 @@ async def test_gen_reply_on_message_dispatches_routes(
     monkeypatch: pytest.MonkeyPatch, route: str, expected_call: str
 ) -> None:
     cog = _cog()
-    calls: list[tuple[str, dict[str, object]]] = []
+    calls: list[str] = []
 
     async def fake_route(*, message: FakeMessage) -> str:
         return route
 
-    async def fake_reaction(**kwargs: object) -> None:
-        calls.append(("reaction", kwargs))
+    async def fake_reaction(
+        *, message: FakeMessage, emoji: str, previous: str | None = None
+    ) -> None:
+        calls.append(f"reaction:{emoji}")
 
-    async def fake_handler(**kwargs: object) -> None:
-        calls.append((expected_call, kwargs))
+    async def fake_image_handler(
+        *, message: FakeMessage, user_prompt: str, view: View | None = None
+    ) -> None:
+        calls.append("_handle_image_reply")
+
+    async def fake_video_handler(
+        *, message: FakeMessage, user_prompt: str, view: View | None = None
+    ) -> None:
+        calls.append("_handle_video_generation")
+
+    async def fake_message_handler(
+        *,
+        message: FakeMessage,
+        system_prompt: str,
+        context_prompt: str,
+        history_limit: int,
+        view: View | None = None,
+    ) -> None:
+        calls.append("_handle_message_reply")
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
     monkeypatch.setattr(cog, "_handle_reaction", fake_reaction)
-    monkeypatch.setattr(cog, "_handle_image_reply", fake_handler)
-    monkeypatch.setattr(cog, "_handle_video_generation", fake_handler)
-    monkeypatch.setattr(cog, "_handle_message_reply", fake_handler)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr(cog, "_handle_video_generation", fake_video_handler)
+    monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
 
     message = FakeMessage(content="<@999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
-    assert any(call[0] == expected_call for call in calls)
-    assert calls[-1][1]["emoji"] == "🆗"
+    assert expected_call in calls
+    assert calls[-1] == "reaction:🆗"
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
