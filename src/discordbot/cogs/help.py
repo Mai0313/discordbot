@@ -43,6 +43,7 @@ _HELP_CONTENT = {
         "games": (
             "**Games**\n"
             "`/dice` roll three dice against the dealer.\n"
+            "`/dragon_gate` shoot one card between two gate cards.\n"
             "`/blackjack` play one round of 21. Bets are withdrawn up front, "
             "over-bets auto all-in, and idle hands auto-stand after 180 seconds."
         ),
@@ -85,6 +86,7 @@ _HELP_CONTENT = {
         "games": (
             "**小遊戲**\n"
             "`/dice` 用三顆骰子跟莊家比大小。\n"
+            "`/dragon_gate` 射一張牌進兩張門牌中間。\n"
             "`/blackjack` 跟莊家玩一局 21 點。bet 會先扣，超過餘額會自動 all-in，"
             "不操作 180 秒會自動 stand 結算。"
         ),
@@ -127,6 +129,7 @@ _HELP_CONTENT = {
         "games": (
             "**ゲーム**\n"
             "`/dice` 3個のサイコロでディーラーと勝負します。\n"
+            "`/dragon_gate` 2枚のゲートカードの間に1枚を通します。\n"
             "`/blackjack` 21を1ラウンド遊びます。ベットは先に差し引かれ、"
             "残高超過は自動 all-in、180秒操作がない場合は自動 stand で精算されます。"
         ),

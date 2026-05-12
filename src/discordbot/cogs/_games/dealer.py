@@ -14,7 +14,7 @@ from discordbot.cogs._games.prompts import (
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-GameKind = Literal["dice", "blackjack"]
+GameKind = Literal["dice", "blackjack", "dragon_gate"]
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
 
 _FALLBACK_BET = "下好離手, 不要等下哭。"
@@ -22,6 +22,12 @@ _FALLBACK_WIN = "算你今天運氣好, 下一把不會這麼順。"
 _FALLBACK_LOSE = "下次再來送錢吧。"
 _FALLBACK_PUSH = "白忙一場, 賭場最開心的就是這種局。"
 _FALLBACK_HINT = "看你自己的, 我可不會手下留情。"
+
+_GAME_LABELS: dict[GameKind, str] = {
+    "dice": "比大小骰子",
+    "blackjack": "21 點",
+    "dragon_gate": "射龍門",
+}
 
 
 class DealerAI:
@@ -86,7 +92,7 @@ class DealerAI:
             A trimmed model-generated line, or the fallback line on request
             failure or empty output.
         """
-        game_label = "比大小骰子" if game == "dice" else "21 點"
+        game_label = _GAME_LABELS[game]
         user_text = (
             f"遊戲: {game_label}\n"
             f"玩家: {player_name}\n"
@@ -128,7 +134,7 @@ class DealerAI:
             A trimmed model-generated line, or an outcome-specific fallback line
             on request failure or empty output.
         """
-        game_label = "比大小骰子" if game == "dice" else "21 點"
+        game_label = _GAME_LABELS[game]
         outcome_label = {
             "win": "玩家贏",
             "lose": "玩家輸",
