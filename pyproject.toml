@@ -67,7 +67,7 @@ authors = [
     { name = "Wei", email = "mai@mai0313.com" },
 ]
 dependencies = [
-    "logfire>=4.30.0",
+    "logfire[sqlalchemy]>=4.30.0",
     "nextcord[speed,voice]>=3.1.1",
     "openai>=2.30.0",
     "pandas>=3.0.1",
@@ -100,7 +100,7 @@ dev = [
     "ipykernel",
     "ipywidgets",
     "notebook",
-    "openai-agents[litellm]",
+    "openai-agents",
     "poethepoet",
     "pre-commit",
 ]
