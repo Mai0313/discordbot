@@ -51,10 +51,12 @@ class SelfTimeoutCall(TypedDict):
 class FakeResponse:
     def __init__(self) -> None:
         self.deferred = False
+        self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
 
-    async def defer(self) -> None:
+    async def defer(self, *, ephemeral: bool = False) -> None:
         self.deferred = True
+        self.deferred_ephemeral = ephemeral
 
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         self.sent.append(kwargs)
@@ -452,23 +454,30 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
+    monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "top_n", fake_top_n)
-    monkeypatch.setattr(economy, "top_debtors", fake_top_debtors)
+    monkeypatch.setattr(economy, "top_losers", fake_top_losers)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
+    monkeypatch.setattr(economy, "checkin", fake_checkin)
+    monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=bot)
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.balance.callback(cog, interaction)
     await EconomyCogs.leaderboard.callback(cog, interaction)
-    await EconomyCogs.debt_leaderboard.callback(cog, interaction)
+    await EconomyCogs.loss_leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
     )
-    assert len(interaction.followup.sent) == 5
+    await EconomyCogs.checkin_command.callback(cog, interaction)
+    await EconomyCogs.vip_command.callback(cog, interaction)
+    assert len(interaction.followup.sent) == 7
     assert scheduled
+    # The /checkin reply must be ephemeral so only the caller sees it.
+    assert interaction.followup.sent[5].get("ephemeral") is True
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
@@ -485,16 +494,20 @@ async def fake_get_loan_view(*, user_id: int) -> None:
     return None
 
 
+async def fake_get_vip(user_id: int) -> bool:
+    return False
+
+
 async def fake_top_n(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
     return [(1, "alice", 150, "https://cdn.example/alice.png")]
 
 
-async def fake_top_debtors(
+async def fake_top_losers(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, int, str]]:
-    return [(1, "alice", 1_000, 25, "https://cdn.example/alice.png")]
+) -> list[tuple[int, str, int, str]]:
+    return [(1, "alice", 500, "https://cdn.example/alice.png")]
 
 
 async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
@@ -511,6 +524,14 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     amount: int,
 ) -> database.TransferResult:
     return database.TransferResult(sender_balance=50, receiver_balance=100)
+
+
+async def fake_checkin(*, user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
+    return database.CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
+
+
+async def fake_buy_vip(*, user_id: int, name: str, avatar_url: str) -> database.VipPurchaseResult:
+    return database.VipPurchaseResult(new_balance=500_000, cost=database.VIP_PURCHASE_COST)
 
 
 def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
@@ -650,11 +671,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     async def record_reward(**kwargs: object) -> database.CreditResult:
         rewards.append(kwargs)
         return database.CreditResult(
-            new_balance=5_000,
-            credited_amount=5_000,
-            interest_repaid=0,
-            principal_repaid=0,
-            remaining_debt=0,
+            new_balance=5_000, credited_amount=5_000, principal_repaid=0, remaining_debt=0
         )
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)

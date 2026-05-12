@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from random import SystemRandom
 import asyncio
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 
 import pytest
@@ -163,10 +163,10 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
     assert before <= occurred_at <= after
 
 
-async def test_existing_economy_db_gets_avatar_url_column(
+async def test_existing_economy_db_gets_schema_migrations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pre-avatar economy DB is migrated before avatar-aware writes run."""
+    """A pre-feature economy DB picks up new columns and drops dead legacy ones."""
     db_path = tmp_path / "legacy-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
@@ -209,6 +209,17 @@ async def test_existing_economy_db_gets_avatar_url_column(
     )
 
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/avatar.png"
+    async with database.open_session() as session:
+        result = await session.execute(statement=text(text="PRAGMA table_info(user_account)"))
+        columns = {row[1] for row in result.all()}
+    assert {"is_vip", "last_checkin_at", "checkin_streak"} <= columns
+    assert "loan_interest" not in columns
+    assert "loan_last_accrual_at" not in columns
+
+    # A brand-new user must be insertable after the migration even when the
+    # legacy schema had NOT NULL columns without DEFAULT.
+    await database.add_balance(user_id=43, name="bob", amount=7)
+    assert await database.get_balance(user_id=43) == 7
     await engine.dispose()
 
 
@@ -680,3 +691,303 @@ async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
 
     assert player_balance == -15
     assert house_balance == 40
+
+
+# Daily check-in ------------------------------------------------------------
+
+
+async def test_checkin_first_time_credits_base_reward() -> None:
+    """A first check-in pays the base reward and persists a streak of 1."""
+    result = await database.checkin(user_id=1, name="alice")
+    assert result is not None
+    assert result.amount == database.BASE_CHECKIN_REWARD_AMOUNT
+    assert result.streak == 1
+    assert result.is_vip is False
+    assert result.new_balance == database.BASE_CHECKIN_REWARD_AMOUNT
+
+
+async def test_checkin_same_day_is_rejected() -> None:
+    """A second check-in within the same Taipei day must return None."""
+    first = await database.checkin(user_id=1, name="alice")
+    assert first is not None
+    second = await database.checkin(user_id=1, name="alice")
+    assert second is None
+    assert await database.get_balance(user_id=1) == first.new_balance
+
+
+async def test_checkin_consecutive_day_advances_streak() -> None:
+    """A check-in on the next calendar day bumps the streak by 1."""
+    first = await database.checkin(user_id=1, name="alice")
+    assert first is not None
+    # Backdate the previous check-in to yesterday Taipei
+    yesterday = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=1)
+    async with database.open_session() as session:
+        await session.execute(
+            statement=database
+            .update(database.UserAccount)
+            .where(database.UserAccount.user_id == 1)
+            .values(last_checkin_at=yesterday)
+        )
+        await session.commit()
+    second = await database.checkin(user_id=1, name="alice")
+    assert second is not None
+    assert second.streak == 2
+    assert second.amount > first.amount
+
+
+async def test_checkin_streak_cycles_back_to_one_after_seven() -> None:
+    """Day 8 in a row resets back to streak 1."""
+    await database.checkin(user_id=1, name="alice")
+    async with database.open_session() as session:
+        await session.execute(
+            statement=database
+            .update(database.UserAccount)
+            .where(database.UserAccount.user_id == 1)
+            .values(
+                last_checkin_at=datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=1),
+                checkin_streak=database.CHECKIN_STREAK_CYCLE,
+            )
+        )
+        await session.commit()
+    result = await database.checkin(user_id=1, name="alice")
+    assert result is not None
+    assert result.streak == 1
+
+
+async def test_checkin_missed_day_resets_streak_to_one() -> None:
+    """Skipping a day resets the streak back to 1."""
+    await database.checkin(user_id=1, name="alice")
+    async with database.open_session() as session:
+        await session.execute(
+            statement=database
+            .update(database.UserAccount)
+            .where(database.UserAccount.user_id == 1)
+            .values(
+                last_checkin_at=datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=3),
+                checkin_streak=4,
+            )
+        )
+        await session.commit()
+    result = await database.checkin(user_id=1, name="alice")
+    assert result is not None
+    assert result.streak == 1
+
+
+async def test_checkin_vip_gets_double_base() -> None:
+    """A VIP account starts at 2x base before the streak multiplier."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    purchase = await database.buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    result = await database.checkin(user_id=1, name="alice")
+    assert result is not None
+    assert result.is_vip is True
+    assert result.amount == 2 * database.BASE_CHECKIN_REWARD_AMOUNT
+
+
+@pytest.mark.parametrize(
+    argnames=("streak", "is_vip", "expected"),
+    argvalues=[
+        (1, False, 100_000),
+        (2, False, 150_000),
+        (7, False, 400_000),
+        (1, True, 200_000),
+        (7, True, 800_000),
+    ],
+)
+def test_checkin_reward_formula(streak: int, is_vip: bool, expected: int) -> None:
+    """Streak + VIP combinations compute to the expected reward."""
+    assert database.checkin_reward(streak=streak, is_vip=is_vip) == expected
+
+
+async def test_checkin_logs_audit_row() -> None:
+    """A successful check-in writes one CHECKIN_REWARD row tagged with the streak."""
+    result = await database.checkin(user_id=1, name="alice")
+    assert result is not None
+    async with database.open_session() as session:
+        rows = (
+            await session.execute(
+                statement=select(
+                    database.PointTransaction.kind,
+                    database.PointTransaction.delta,
+                    database.PointTransaction.note,
+                ).where(database.PointTransaction.user_id == 1)
+            )
+        ).all()
+    assert rows == [(database.TransactionKind.CHECKIN_REWARD.value, result.amount, "streak 1")]
+
+
+# VIP purchase --------------------------------------------------------------
+
+
+async def test_buy_vip_sets_flag_and_debits_balance() -> None:
+    """A successful purchase costs ``VIP_PURCHASE_COST`` and flips ``is_vip``."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 100)
+    result = await database.buy_vip(user_id=1, name="alice")
+    assert result is not None
+    assert result.new_balance == 100
+    assert result.cost == database.VIP_PURCHASE_COST
+    assert await database.get_vip(user_id=1) is True
+
+
+async def test_buy_vip_rejects_insufficient_balance() -> None:
+    """Users without enough points cannot purchase VIP."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    result = await database.buy_vip(user_id=1, name="alice")
+    assert result is None
+    assert await database.get_vip(user_id=1) is False
+
+
+async def test_buy_vip_rejects_existing_vip() -> None:
+    """A second purchase by an existing VIP returns None and does not re-debit."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST * 2)
+    first = await database.buy_vip(user_id=1, name="alice")
+    assert first is not None
+    second = await database.buy_vip(user_id=1, name="alice")
+    assert second is None
+    assert await database.get_balance(user_id=1) == database.VIP_PURCHASE_COST
+
+
+async def test_buy_vip_rejects_unseen_user() -> None:
+    """A user without a row cannot purchase (no balance to debit)."""
+    assert await database.buy_vip(user_id=999, name="ghost") is None
+
+
+async def test_buy_vip_logs_audit_row() -> None:
+    """A successful purchase records one VIP_PURCHASE audit row."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    await database.buy_vip(user_id=1, name="alice")
+    async with database.open_session() as session:
+        rows = (
+            await session.execute(
+                statement=select(
+                    database.PointTransaction.kind, database.PointTransaction.delta
+                ).where(database.PointTransaction.user_id == 1)
+            )
+        ).all()
+    assert rows == [(database.TransactionKind.VIP_PURCHASE.value, -database.VIP_PURCHASE_COST)]
+
+
+async def test_get_vip_unknown_user_returns_false() -> None:
+    """Unknown users report no VIP perk rather than raising."""
+    assert await database.get_vip(user_id=12345) is False
+
+
+# Loss leaderboard ----------------------------------------------------------
+
+
+async def test_top_losers_only_lists_net_negative_players() -> None:
+    """A player with a positive casino net does not appear on the loss board."""
+    await database.add_balance(user_id=1, name="alice", amount=1_000)
+    await database.add_balance(user_id=2, name="bob", amount=1_000)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-300,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=300,
+    )
+    await database.apply_round_settlement(
+        player_id=2,
+        player_account_name="bob",
+        player_delta=200,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-200,
+    )
+    rows = await database.top_losers(limit=10, exclude_user_ids=(99,))
+    assert [(row[0], row[1], row[2]) for row in rows] == [(1, "alice", 300)]
+
+
+async def test_top_losers_orders_by_loss_magnitude() -> None:
+    """The leaderboard sorts from biggest loss to smallest."""
+    for user_id, name, loss in [(1, "alice", 100), (2, "bob", 500), (3, "carol", 250)]:
+        await database.add_balance(user_id=user_id, name=name, amount=loss)
+        await database.apply_round_settlement(
+            player_id=user_id,
+            player_account_name=name,
+            player_delta=-loss,
+            dealer_id=99,
+            dealer_name="house",
+            dealer_delta=loss,
+        )
+    rows = await database.top_losers(limit=10, exclude_user_ids=(99,))
+    assert [(row[0], row[2]) for row in rows] == [(2, 500), (3, 250), (1, 100)]
+
+
+async def test_top_losers_excludes_specified_users() -> None:
+    """``exclude_user_ids`` filters the house ledger out of the report."""
+    await database.add_balance(user_id=1, name="alice", amount=500)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=500,
+    )
+    rows = await database.top_losers(limit=10, exclude_user_ids=(99,))
+    assert all(row[0] != 99 for row in rows)
+
+
+async def test_top_losers_ignores_events_before_today() -> None:
+    """Audit rows older than today's Taipei midnight do not count."""
+    await database.add_balance(user_id=1, name="alice", amount=500)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=500,
+    )
+    past = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=2)
+    async with database.open_session() as session:
+        await session.execute(
+            statement=database.update(database.PointTransaction).values(occurred_at=past)
+        )
+        await session.commit()
+    assert await database.top_losers(limit=10, exclude_user_ids=(99,)) == []
+
+
+async def test_top_losers_empty_when_no_casino_activity() -> None:
+    """Without any CASINO_BET / CASINO_PAYOUT rows the leaderboard is empty."""
+    await database.add_balance(user_id=1, name="alice", amount=100)
+    assert await database.top_losers(limit=10, exclude_user_ids=(99,)) == []
+
+
+# VIP blackjack settlement -------------------------------------------------
+
+
+async def test_settle_wager_applies_vip_bonus_on_win() -> None:
+    """A VIP player wins 1.5x of the base delta; house mirrors the boosted amount."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    purchase = await database.buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    settlement = await settle_wager(
+        player_id=1,
+        player_account_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+        bet=100,
+        delta=100,
+    )
+    assert settlement.delta == 150
+    assert settlement.house_balance == -150
+
+
+async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
+    """The VIP perk does not soften losses."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 1_000)
+    purchase = await database.buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    settlement = await settle_wager(
+        player_id=1,
+        player_account_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+        bet=100,
+        delta=-100,
+    )
+    assert settlement.delta == -100
+    assert settlement.house_balance == 100

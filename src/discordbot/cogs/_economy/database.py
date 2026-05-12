@@ -30,9 +30,15 @@ monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
 Loan support is integrated into the same ``user_account`` row (no separate
 ``loan_account`` table) so chat reward and casino payout can pay down debt
-inside the same single-row UPDATE. The audit log lives in a separate
-``point_transaction`` table that every mutating helper writes into via
-``_log_transaction_in_session``.
+inside the same single-row UPDATE. Loans expire every Asia/Taipei midnight:
+the lazy ``_reset_expired_loan_in_session`` helper wipes ``loan_principal``
+when ``loan_opened_at`` is older than today's local midnight. The audit log
+lives in a separate ``point_transaction`` table that every mutating helper
+writes into via ``_log_transaction_in_session``.
+
+VIP is a single boolean column on ``user_account``. It bumps daily check-in
+rewards, the borrow cap, and the player's winning payout from games. The
+flag is permanent once set.
 """
 
 from typing import Any, Final
@@ -41,6 +47,7 @@ from datetime import UTC, datetime, timezone, timedelta
 from sqlalchemy import (
     Index,
     String,
+    Boolean,
     Integer,
     DateTime,
     case,
@@ -57,13 +64,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.economy import (
+    VIP_PURCHASE_COST,
+    CHECKIN_STREAK_CYCLE,
+    CHECKIN_STREAK_BONUS_STEP,
+    BASE_CHECKIN_REWARD_AMOUNT,
     LoanView,
     PlacedBet,
     RepayResult,
     BorrowResult,
     CreditResult,
+    CheckinResult,
     TransferResult,
     TransactionKind,
+    VipPurchaseResult,
 )
 
 # place_bet / repay / _credit_with_repayment_in_session keep a small retry
@@ -73,6 +86,11 @@ from discordbot.typings.economy import (
 _PLACE_BET_MAX_RETRIES: Final[int] = 8
 _CREDIT_WITH_REPAYMENT_MAX_RETRIES: Final[int] = 8
 _REPAY_MAX_RETRIES: Final[int] = 8
+_CHECKIN_MAX_RETRIES: Final[int] = 8
+_VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
+# Blackjack VIP perk: 1.5x payout on winning rounds, applied as floor(delta * 3 / 2).
+_VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
+_VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
 TAIWAN_TIMEZONE: Final[timezone] = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
@@ -81,6 +99,19 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy
 def _database_now() -> datetime:
     """Returns the wall-clock timestamp used for persisted economy rows."""
     return datetime.now(tz=TAIWAN_TIMEZONE)
+
+
+def _as_taipei(dt: datetime) -> datetime:
+    """Returns ``dt`` re-interpreted in Asia/Taipei (treating naive as Taipei)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TAIWAN_TIMEZONE)
+    return dt.astimezone(tz=TAIWAN_TIMEZONE)
+
+
+def _taipei_midnight(now: datetime) -> datetime:
+    """Returns the most recent Asia/Taipei 00:00 boundary at or before ``now``."""
+    local = _as_taipei(dt=now)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -106,12 +137,12 @@ class Base(DeclarativeBase):
 
 
 class UserAccount(Base):
-    """Persistent balance and loan state for a Discord user.
+    """Persistent balance, loan, VIP, and check-in state for a Discord user.
 
-    Loan-related columns live on the same row as the balance so a single
-    UPDATE can credit balance and pay down debt atomically. ``loan_opened_at``
-    and ``loan_last_accrual_at`` are nullable because a user that has never
-    borrowed has no opening date and no accrual baseline.
+    Loan and check-in columns live on the same row as the balance so single
+    UPDATEs can settle multiple effects atomically. ``loan_opened_at`` is
+    nullable because a user that has never borrowed has no opening date;
+    ``last_checkin_at`` is nullable for users who have never checked in.
 
     Attributes:
         user_id: Discord user ID; primary key.
@@ -121,14 +152,16 @@ class UserAccount(Base):
         total_earned: Lifetime points earned (chat rewards, game wins, transfers in).
         total_spent: Lifetime points removed (game losses, transfers out).
         updated_at: Taiwan-local timestamp of the last write.
-        loan_principal: Currently outstanding loan principal.
-        loan_interest: Currently accrued (and not-yet-paid) interest.
+        loan_principal: Currently outstanding loan principal (wiped daily at midnight).
         loan_total_borrowed: Lifetime gross borrowed amount.
         loan_total_repaid: Lifetime gross repaid amount.
-        loan_last_accrual_at: Timestamp the stored interest was last brought
-            up to date; ``None`` while the user has never borrowed.
-        loan_opened_at: Timestamp the user first borrowed; ``None`` while
-            the user has never borrowed.
+        loan_opened_at: Timestamp the user borrowed for the current daily window;
+            ``None`` while the user has never borrowed or after the nightly reset.
+        is_vip: Permanent VIP flag toggled by a successful ``/vip`` purchase.
+        last_checkin_at: Timestamp of the latest ``/checkin`` payout; ``None``
+            for users who have never checked in.
+        checkin_streak: Consecutive-day streak (1..``CHECKIN_STREAK_CYCLE``),
+            persisted after the latest ``/checkin``. 0 means never checked in.
     """
 
     __tablename__ = "user_account"
@@ -149,13 +182,14 @@ class UserAccount(Base):
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
     loan_principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    loan_interest: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     loan_total_borrowed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     loan_total_repaid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    loan_last_accrual_at: Mapped[datetime | None] = mapped_column(
+    loan_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_checkin_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    loan_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    checkin_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class PointTransaction(Base):
@@ -164,6 +198,8 @@ class PointTransaction(Base):
     One row per balance-mutating event. ``balance_after`` and ``debt_after``
     reflect the user's state *after* the row's write, so consecutive rows
     for the same user can be diffed to reconstruct every income / spend.
+    ``occurred_at`` carries the Asia/Taipei wall clock so daily windows
+    (e.g. the loss leaderboard) can simply filter on the column.
 
     Attributes:
         id: Autoincrementing primary key.
@@ -171,13 +207,18 @@ class PointTransaction(Base):
         kind: ``TransactionKind`` enum value as string.
         delta: Signed change applied to balance by this transaction.
         balance_after: Balance after this transaction.
-        debt_after: ``loan_principal + loan_interest`` after this transaction.
+        debt_after: ``loan_principal`` after this transaction.
         note: Optional free-text annotation (e.g. counterparty for transfers).
         occurred_at: Taiwan-local timestamp of the event.
     """
 
     __tablename__ = "point_transaction"
-    __table_args__ = (Index("ix_point_transaction_user_time", "user_id", "occurred_at"),)
+    __table_args__ = (
+        Index("ix_point_transaction_user_time", "user_id", "occurred_at"),
+        # /loss_leaderboard filters by (occurred_at, kind); the composite
+        # index keeps the daily window scan cheap as the audit log grows.
+        Index("ix_point_transaction_time_kind", "occurred_at", "kind"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -201,7 +242,18 @@ _schema_ready_for: AsyncEngine | None = None
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the schema once per ``_engine`` value."""
+    """Bootstraps the schema once per ``_engine`` value.
+
+    Idempotent migrations:
+
+    * Adds ``avatar_url`` to legacy DBs that predated the avatar cache.
+    * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` so VIP
+      and check-in features keep working on DBs from before they shipped.
+    * Drops legacy ``loan_interest`` / ``loan_last_accrual_at`` columns
+      so the new model can INSERT fresh rows without violating their old
+      ``NOT NULL`` constraints. Requires SQLite 3.35+ (`DROP COLUMN`),
+      which is bundled with every Python ≥ 3.11.
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     if _schema_ready_for is _engine:
         return
@@ -215,6 +267,30 @@ async def _ensure_schema() -> None:
                     text="ALTER TABLE user_account ADD COLUMN avatar_url VARCHAR(2048) NOT NULL DEFAULT ''"
                 )
             )
+        if "is_vip" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN is_vip BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+        if "last_checkin_at" not in existing_columns:
+            await conn.execute(
+                statement=text(text="ALTER TABLE user_account ADD COLUMN last_checkin_at DATETIME")
+            )
+        if "checkin_streak" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN checkin_streak INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "loan_interest" in existing_columns:
+            await conn.execute(
+                statement=text(text="ALTER TABLE user_account DROP COLUMN loan_interest")
+            )
+        if "loan_last_accrual_at" in existing_columns:
+            await conn.execute(
+                statement=text(text="ALTER TABLE user_account DROP COLUMN loan_last_accrual_at")
+            )
     _schema_ready_for = _engine
 
 
@@ -227,65 +303,73 @@ def open_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
-def credit_limit(*, user: Any) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
+def credit_limit(*, user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
     """Returns the borrowing cap for a Discord account based on its age.
 
     Computed entirely from ``user.created_at`` (which Discord reconstructs
     from the snowflake ID), so the same cap applies in DMs, guilds, and
     across servers, and a freshly-created account cannot farm by re-joining
     different guilds. Older Discord accounts borrow more because they
-    represent a more stable identity.
+    represent a more stable identity. VIP accounts double the cap.
 
     Args:
         user: A ``nextcord.User`` or ``nextcord.Member`` whose ``created_at``
             timestamp is inspected.
+        is_vip: Whether the user owns the VIP perk; doubles the cap.
 
     Returns:
-        Maximum total debt (principal + accrued interest) the account is
-        allowed to carry at any single time.
+        Maximum total principal the account is allowed to carry within a
+        single Taipei calendar day.
     """
     age_days = (datetime.now(tz=UTC) - user.created_at).days
     if age_days < 30:
-        return 1_000
-    if age_days < 180:
-        return 10_000
-    if age_days < 365:
-        return 50_000
-    if age_days < 365 * 3:
-        return 200_000
-    return 500_000
+        base = 1_000
+    elif age_days < 180:
+        base = 10_000
+    elif age_days < 365:
+        base = 50_000
+    elif age_days < 365 * 3:
+        base = 200_000
+    else:
+        base = 500_000
+    return base * 2 if is_vip else base
 
 
-def accrual_delta(*, principal: int, last_accrual_at: datetime, now: datetime) -> int:
-    """Returns whole-point interest accrued since ``last_accrual_at``.
+def checkin_reward(*, streak: int, is_vip: bool) -> int:
+    """Returns the gross check-in payout for a streak day.
 
-    Simple interest at 1% per day on the outstanding principal. Compounding
-    is intentionally absent so the user can predict the cost. Returns 0
-    when the elapsed days * principal floors to zero so sub-point fractions
-    accumulate across calls instead of being permanently rounded off.
-
-    SQLite returns naive datetimes for ``DateTime(timezone=True)`` columns,
-    so both arguments are coerced to Taiwan-local aware before arithmetic,
-    matching the timezone used for persisted economy timestamps.
+    The reward formula is ``BASE * (1 + (streak - 1) * CHECKIN_STREAK_BONUS_STEP)``
+    where ``streak`` is the 1..``CHECKIN_STREAK_CYCLE`` day in the cycle.
+    VIP doubles the base before the streak bonus.
 
     Args:
-        principal: Outstanding principal at the reference time.
-        last_accrual_at: Timestamp the stored interest was last brought up to date.
-        now: Reference time for the accrual.
+        streak: Streak counter for this check-in (1..``CHECKIN_STREAK_CYCLE``).
+        is_vip: VIP status of the account at check-in time.
 
     Returns:
-        Whole-point interest delta to add to ``loan_interest``; always >= 0.
+        Integer reward amount.
     """
-    if principal <= 0:
-        return 0
-    if last_accrual_at.tzinfo is None:
-        last_accrual_at = last_accrual_at.replace(tzinfo=TAIWAN_TIMEZONE)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=TAIWAN_TIMEZONE)
-    elapsed_days = (now - last_accrual_at).total_seconds() / 86400.0
-    if elapsed_days <= 0:
-        return 0
-    return int(principal * 0.01 * elapsed_days)
+    base = BASE_CHECKIN_REWARD_AMOUNT * (2 if is_vip else 1)
+    multiplier = 1.0 + (streak - 1) * CHECKIN_STREAK_BONUS_STEP
+    return int(base * multiplier)
+
+
+def apply_vip_blackjack_bonus(*, delta: int, is_vip: bool) -> int:
+    """Applies the VIP 1.5x payout multiplier on a winning player delta.
+
+    The bonus only fires on positive deltas (wins). Pushes and losses pass
+    through unchanged so VIP never softens a loss.
+
+    Args:
+        delta: Pre-bonus player delta for the round.
+        is_vip: VIP status of the account at settlement time.
+
+    Returns:
+        Post-bonus player delta.
+    """
+    if not is_vip or delta <= 0:
+        return delta
+    return delta * _VIP_WIN_MULTIPLIER_NUM // _VIP_WIN_MULTIPLIER_DEN
 
 
 def _build_credit_upsert(
@@ -425,19 +509,16 @@ async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on 
     Skips the write when ``delta == 0`` so push-style settlements (where the
     house ledger doesn't actually move) don't clutter the audit log. When
     ``debt_after`` is not supplied, a single SELECT reads the user's current
-    debt to keep the row self-contained; callers that have just computed the
-    new debt locally should pass it in to skip the read.
+    principal to keep the row self-contained; callers that have just computed
+    the new debt locally should pass it in to skip the read.
     """
     if delta == 0:
         return
     if debt_after is None:
         debt_result = await session.execute(
-            statement=select(UserAccount.loan_principal, UserAccount.loan_interest).where(
-                UserAccount.user_id == user_id
-            )
+            statement=select(UserAccount.loan_principal).where(UserAccount.user_id == user_id)
         )
-        debt_row = debt_result.one_or_none()
-        debt_after = (debt_row[0] + debt_row[1]) if debt_row is not None else 0
+        debt_after = debt_result.scalar_one_or_none() or 0
     await session.execute(
         statement=insert(PointTransaction).values(
             user_id=user_id,
@@ -451,48 +532,39 @@ async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on 
     )
 
 
-async def _accrue_interest_in_session(
+async def _reset_expired_loan_in_session(
     session: AsyncSession, *, user_id: int, now: datetime
 ) -> None:
-    """Brings ``loan_interest`` up to date in the caller's session.
+    """Wipes ``loan_principal`` when the loan was opened before today's midnight.
 
-    Computes the accrual in Python (``accrual_delta``), then applies it with
-    a conditional UPDATE gated on the principal and last-accrual values we
-    just read. If a concurrent transaction accrues at the same moment the
-    conditional UPDATE matches no row, this helper silently no-ops; the
-    next accrual will pick up where the winning writer left off.
-
-    Sub-point fractions (``int()`` floor of ``principal * 0.01 * elapsed``)
-    are intentionally not persisted, and ``loan_last_accrual_at`` is left
-    untouched when the floor is zero so those fractions accumulate across
-    calls instead of evaporating.
+    Loans live for the rest of the calendar day in Asia/Taipei. The next
+    write or read after midnight zeroes the principal and clears
+    ``loan_opened_at`` so subsequent ``/borrow`` calls re-arm the daily
+    window. The reset is unconditional (a forgiveness, not a clawback) so
+    we do not touch ``balance``: users keep whatever they did with the
+    borrowed funds. We deliberately do NOT emit an audit row for the
+    reset: it is a deterministic system event and clutters the per-user
+    history without adding information.
     """
+    today_midnight = _taipei_midnight(now=now)
     read_result = await session.execute(
-        statement=select(UserAccount.loan_principal, UserAccount.loan_last_accrual_at).where(
+        statement=select(UserAccount.loan_principal, UserAccount.loan_opened_at).where(
             UserAccount.user_id == user_id
         )
     )
     row = read_result.one_or_none()
     if row is None:
         return
-    principal, last_accrual = row[0], row[1]
-    if principal <= 0 or last_accrual is None:
+    principal, opened_at = row[0], row[1]
+    if principal <= 0 or opened_at is None:
         return
-    delta = accrual_delta(principal=principal, last_accrual_at=last_accrual, now=now)
-    if delta <= 0:
+    opened_at = _as_taipei(dt=opened_at)
+    if opened_at >= today_midnight:
         return
     await session.execute(
         statement=update(UserAccount)
-        .where(
-            UserAccount.user_id == user_id,
-            UserAccount.loan_principal == principal,
-            UserAccount.loan_last_accrual_at == last_accrual,
-        )
-        .values(
-            loan_interest=UserAccount.loan_interest + delta,
-            loan_last_accrual_at=now,
-            updated_at=now,
-        )
+        .where(UserAccount.user_id == user_id)
+        .values(loan_principal=0, loan_opened_at=None, updated_at=now)
     )
 
 
@@ -511,17 +583,17 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
 
     Pipeline (all inside the caller's transaction):
 
-    1. ``_accrue_interest_in_session`` brings ``loan_interest`` up to date.
+    1. ``_reset_expired_loan_in_session`` clears the previous day's loan.
     2. SELECT current balance + loan state.
-    3. ``to_repay = min(amount // 2, principal + interest)``.
-    4. Interest is paid first, then principal; remainder credits to balance.
+    3. ``to_repay = min(amount // 2, principal)``.
+    4. Repayment debits ``loan_principal``; remainder credits balance.
     5. Conditional UPDATE gated on the values we read; retry on conflict.
     6. ``_log_transaction_in_session`` writes one audit row with
-       ``delta = credited_amount`` and the freshly computed ``debt_after``.
+       ``delta = credited_amount`` and the post-state debt.
 
     Caller must guarantee ``amount > 0``.
     """
-    await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+    await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
 
     for _ in range(_CREDIT_WITH_REPAYMENT_MAX_RETRIES):
         read_result = await session.execute(
@@ -529,7 +601,6 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 UserAccount.balance,
                 UserAccount.name,
                 UserAccount.loan_principal,
-                UserAccount.loan_interest,
                 UserAccount.total_earned,
                 UserAccount.loan_total_repaid,
             ).where(UserAccount.user_id == user_id)
@@ -548,10 +619,8 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 total_earned=amount,
                 total_spent=0,
                 loan_principal=0,
-                loan_interest=0,
                 loan_total_borrowed=0,
                 loan_total_repaid=0,
-                loan_last_accrual_at=None,
                 loan_opened_at=None,
                 updated_at=now,
             )
@@ -566,44 +635,38 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 set_values["avatar_url"] = avatar_url
             upsert_stmt = base_stmt.on_conflict_do_update(
                 index_elements=["user_id"], set_=set_values
-            ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
+            ).returning(UserAccount.balance, UserAccount.loan_principal)
             insert_result = await session.execute(statement=upsert_stmt)
-            balance_after, principal_after, interest_after = insert_result.one()
+            balance_after, principal_after = insert_result.one()
             await _log_transaction_in_session(
                 session=session,
                 user_id=user_id,
                 kind=kind,
                 delta=amount,
                 balance_after=balance_after,
-                debt_after=principal_after + interest_after,
+                debt_after=principal_after,
                 note=note,
                 now=now,
             )
             return CreditResult(
                 new_balance=balance_after,
                 credited_amount=amount,
-                interest_repaid=0,
                 principal_repaid=0,
-                remaining_debt=principal_after + interest_after,
+                remaining_debt=principal_after,
             )
 
-        (starting_balance, existing_name, principal, interest, total_earned, total_repaid) = row
-        debt_total = principal + interest
-        to_repay = min(amount // 2, debt_total)
-        interest_repaid = min(to_repay, interest)
-        principal_repaid = to_repay - interest_repaid
+        (starting_balance, existing_name, principal, total_earned, total_repaid) = row
+        to_repay = min(amount // 2, principal)
         credited = amount - to_repay
 
         new_balance = starting_balance + credited
-        new_interest = interest - interest_repaid
-        new_principal = principal - principal_repaid
+        new_principal = principal - to_repay
         new_total_earned = total_earned + credited
         new_total_repaid = total_repaid + to_repay
 
         update_values: dict[str, Any] = {
             "balance": new_balance,
             "total_earned": new_total_earned,
-            "loan_interest": new_interest,
             "loan_principal": new_principal,
             "loan_total_repaid": new_total_repaid,
             "updated_at": now,
@@ -619,7 +682,6 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 UserAccount.user_id == user_id,
                 UserAccount.balance == starting_balance,
                 UserAccount.loan_principal == principal,
-                UserAccount.loan_interest == interest,
             )
             .values(**update_values)
             .returning(UserAccount.balance)
@@ -636,16 +698,15 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             kind=kind,
             delta=credited,
             balance_after=new_balance,
-            debt_after=new_principal + new_interest,
+            debt_after=new_principal,
             note=note,
             now=now,
         )
         return CreditResult(
             new_balance=new_balance,
             credited_amount=credited,
-            interest_repaid=interest_repaid,
-            principal_repaid=principal_repaid,
-            remaining_debt=new_principal + new_interest,
+            principal_repaid=to_repay,
+            remaining_debt=new_principal,
         )
 
     raise RuntimeError(f"credit_with_repayment retry budget exhausted for user_id={user_id}")
@@ -784,9 +845,10 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
 ) -> CreditResult:
     """Credits ``amount`` to the user while diverting 50% to repay debt first.
 
-    Repayment order is interest first, then principal, capped at the user's
-    outstanding debt. Any portion not used for repayment goes to balance
-    and bumps ``total_earned``. Writes one audit row via the helper.
+    Repayment goes entirely against principal (the interest system has been
+    removed) and is capped at the user's outstanding loan. Any portion not
+    used for repayment goes to balance and bumps ``total_earned``. Writes
+    one audit row via the helper.
 
     Args:
         user_id: Discord user ID receiving the credit.
@@ -800,14 +862,13 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
 
     Returns:
         Outcome capturing post-credit balance, the credited slice, and the
-        repayment breakdown.
+        repayment amount.
     """
     await _ensure_schema()
     if amount <= 0:
         return CreditResult(
             new_balance=await get_balance(user_id=user_id),
             credited_amount=0,
-            interest_repaid=0,
             principal_repaid=0,
             remaining_debt=0,
         )
@@ -1070,16 +1131,16 @@ async def borrow(
     """Disburses ``amount`` points to the user as new principal.
 
     Rejected (``None`` returned) when ``amount`` is non-positive or when
-    the post-borrow total debt (existing principal + accrued interest +
-    requested amount) would exceed ``credit_limit_value``. Interest is
-    accrued first so the limit check uses up-to-date numbers. Borrowed
-    funds do **not** bump ``total_earned`` — debt isn't earnings.
+    the post-borrow principal (existing + requested amount) would exceed
+    ``credit_limit_value``. Loans expire at the next Asia/Taipei midnight,
+    so the daily cap matches the daily reset window. Borrowed funds do
+    **not** bump ``total_earned`` — debt isn't earnings.
 
     Args:
         user_id: Discord user ID for the borrower.
         name: Last-seen Discord username.
         amount: Amount to borrow (must be positive).
-        credit_limit_value: Maximum allowed post-borrow total debt; the
+        credit_limit_value: Maximum allowed post-borrow principal; the
             caller is expected to compute this with ``credit_limit``.
         avatar_url: Last-seen Discord avatar URL to store when available.
 
@@ -1093,18 +1154,14 @@ async def borrow(
     now = _database_now()
 
     async with open_session() as session:
-        await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+        await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
 
         read_result = await session.execute(
-            statement=select(UserAccount.loan_principal, UserAccount.loan_interest).where(
-                UserAccount.user_id == user_id
-            )
+            statement=select(UserAccount.loan_principal).where(UserAccount.user_id == user_id)
         )
-        row = read_result.one_or_none()
-        current_principal = row[0] if row is not None else 0
-        current_interest = row[1] if row is not None else 0
+        current_principal = read_result.scalar_one_or_none() or 0
 
-        if current_principal + current_interest + amount > credit_limit_value:
+        if current_principal + amount > credit_limit_value:
             return None
 
         insert_name = name or str(user_id)
@@ -1116,10 +1173,8 @@ async def borrow(
             total_earned=0,
             total_spent=0,
             loan_principal=amount,
-            loan_interest=0,
             loan_total_borrowed=amount,
             loan_total_repaid=0,
-            loan_last_accrual_at=now,
             loan_opened_at=now,
             updated_at=now,
         )
@@ -1127,7 +1182,6 @@ async def borrow(
             "balance": UserAccount.balance + amount,
             "loan_principal": UserAccount.loan_principal + amount,
             "loan_total_borrowed": UserAccount.loan_total_borrowed + amount,
-            "loan_last_accrual_at": now,
             "loan_opened_at": func.coalesce(UserAccount.loan_opened_at, now),
             "updated_at": now,
         }
@@ -1137,9 +1191,9 @@ async def borrow(
             set_values["avatar_url"] = avatar_url
         upsert_stmt = base_stmt.on_conflict_do_update(
             index_elements=["user_id"], set_=set_values
-        ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
+        ).returning(UserAccount.balance, UserAccount.loan_principal)
         result = await session.execute(statement=upsert_stmt)
-        balance_after, principal_after, interest_after = result.one()
+        balance_after, principal_after = result.one()
 
         await _log_transaction_in_session(
             session=session,
@@ -1147,22 +1201,20 @@ async def borrow(
             kind=TransactionKind.BORROW,
             delta=amount,
             balance_after=balance_after,
-            debt_after=principal_after + interest_after,
+            debt_after=principal_after,
             note=None,
             now=now,
         )
         await session.commit()
-        return BorrowResult(
-            new_balance=balance_after, principal=principal_after, interest=interest_after
-        )
+        return BorrowResult(new_balance=balance_after, principal=principal_after)
 
 
 async def repay(
     *, user_id: int, name: str, amount: int, avatar_url: str = ""
 ) -> RepayResult | None:
-    """Pays down interest first then principal, debited from the user's balance.
+    """Pays down principal, debited from the user's balance.
 
-    Effective repayment is clamped to ``min(amount, balance, debt_total)``
+    Effective repayment is clamped to ``min(amount, balance, principal)``
     so over-requests automatically reduce to the largest legal value. The
     user's ``total_spent`` is intentionally **not** bumped because repaying
     a loan isn't spending in the gameplay sense; the ``loan_total_repaid``
@@ -1184,7 +1236,7 @@ async def repay(
     now = _database_now()
 
     async with open_session() as session:
-        await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
+        await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
 
         for _ in range(_REPAY_MAX_RETRIES):
             read_result = await session.execute(
@@ -1192,30 +1244,23 @@ async def repay(
                     UserAccount.balance,
                     UserAccount.name,
                     UserAccount.loan_principal,
-                    UserAccount.loan_interest,
                     UserAccount.loan_total_repaid,
                 ).where(UserAccount.user_id == user_id)
             )
             row = read_result.one_or_none()
             if row is None:
                 return None
-            current_balance, existing_name, principal, interest, total_repaid = row
-            debt_total = principal + interest
-            if debt_total == 0 or current_balance <= 0:
+            current_balance, existing_name, principal, total_repaid = row
+            if principal == 0 or current_balance <= 0:
                 return None
 
-            effective = min(amount, current_balance, debt_total)
-            interest_repaid = min(effective, interest)
-            principal_repaid = effective - interest_repaid
-
+            effective = min(amount, current_balance, principal)
             new_balance = current_balance - effective
-            new_interest = interest - interest_repaid
-            new_principal = principal - principal_repaid
+            new_principal = principal - effective
             new_total_repaid = total_repaid + effective
 
             update_values: dict[str, Any] = {
                 "balance": new_balance,
-                "loan_interest": new_interest,
                 "loan_principal": new_principal,
                 "loan_total_repaid": new_total_repaid,
                 "updated_at": now,
@@ -1231,7 +1276,6 @@ async def repay(
                     UserAccount.user_id == user_id,
                     UserAccount.balance == current_balance,
                     UserAccount.loan_principal == principal,
-                    UserAccount.loan_interest == interest,
                 )
                 .values(**update_values)
                 .returning(UserAccount.balance)
@@ -1247,17 +1291,332 @@ async def repay(
                 kind=TransactionKind.REPAY,
                 delta=-effective,
                 balance_after=new_balance,
-                debt_after=new_principal + new_interest,
+                debt_after=new_principal,
                 note=None,
                 now=now,
             )
             await session.commit()
             return RepayResult(
-                new_balance=new_balance,
-                interest_repaid=interest_repaid,
-                principal_repaid=principal_repaid,
-                remaining_debt=new_principal + new_interest,
+                new_balance=new_balance, principal_repaid=effective, remaining_debt=new_principal
             )
+        return None
+
+
+def _next_checkin_streak(
+    *,
+    last_checkin_at: datetime | None,
+    current_streak: int,
+    today_midnight: datetime,
+    yesterday_midnight: datetime,
+    tomorrow_midnight: datetime,
+) -> int | None:
+    """Returns the streak counter for the next check-in, or ``None`` when
+    the user has already checked in today.
+
+    Args:
+        last_checkin_at: Stored ``last_checkin_at`` (Taipei-naive) or ``None``.
+        current_streak: Currently-persisted streak counter.
+        today_midnight: 00:00 Asia/Taipei for the request day.
+        yesterday_midnight: 00:00 Asia/Taipei for the prior day.
+        tomorrow_midnight: 00:00 Asia/Taipei for the next day.
+
+    Returns:
+        The streak number to persist, or ``None`` if today is already done.
+    """
+    if last_checkin_at is None:
+        return 1
+    last_local = _as_taipei(dt=last_checkin_at)
+    if today_midnight <= last_local < tomorrow_midnight:
+        return None
+    if (
+        yesterday_midnight <= last_local < today_midnight
+        and 0 < current_streak < CHECKIN_STREAK_CYCLE
+    ):
+        return current_streak + 1
+    return 1
+
+
+async def _insert_first_checkin_in_session(
+    *, session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
+) -> tuple[int, int, int, bool] | None:
+    """Inserts a fresh user row crediting the day-1 check-in reward.
+
+    Returns ``None`` when another coroutine already inserted the row so
+    the caller retries on the next loop iteration.
+
+    Args:
+        session: Active SQLAlchemy session.
+        user_id: Discord user ID checking in.
+        name: Last-seen Discord username to store on the account.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+        now: ``_database_now()`` value pinned for this transaction.
+
+    Returns:
+        ``(reward, balance_after, streak_after, vip_after)`` on success or
+        ``None`` when ``ON CONFLICT DO NOTHING`` rejected the insert.
+    """
+    new_streak = 1
+    reward = checkin_reward(streak=new_streak, is_vip=False)
+    insert_stmt = (
+        insert(UserAccount)
+        .values(
+            user_id=user_id,
+            name=name or str(user_id),
+            avatar_url=avatar_url,
+            balance=reward,
+            total_earned=reward,
+            total_spent=0,
+            loan_principal=0,
+            loan_total_borrowed=0,
+            loan_total_repaid=0,
+            loan_opened_at=None,
+            is_vip=False,
+            last_checkin_at=now,
+            checkin_streak=new_streak,
+            updated_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["user_id"])
+    )
+    insert_result = await session.execute(statement=insert_stmt)
+    if (insert_result.rowcount or 0) == 0:
+        return None
+    return reward, reward, new_streak, False
+
+
+async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper carries account identity + observed row
+    *,
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    avatar_url: str,
+    now: datetime,
+    new_streak: int,
+    row: tuple[int, datetime | None, int, bool, str],
+) -> tuple[int, int, int, bool] | None:
+    """Performs the conditional UPDATE for an existing account.
+
+    The WHERE clause pins ``balance`` and ``last_checkin_at`` to the values
+    observed in the SELECT so concurrent writers can't double-credit.
+
+    Args:
+        session: Active SQLAlchemy session.
+        user_id: Discord user ID checking in.
+        name: Last-seen Discord username to refresh on the account.
+        avatar_url: Last-seen Discord avatar URL to refresh when set.
+        now: ``_database_now()`` value pinned for this transaction.
+        new_streak: Streak counter chosen by ``_next_checkin_streak``.
+        row: Tuple returned by the prior SELECT.
+
+    Returns:
+        ``(reward, balance_after, streak_after, vip_after)`` on success or
+        ``None`` when the conditional UPDATE matched zero rows.
+    """
+    current_balance, last_checkin_at, _current_streak, is_vip, existing_name = row
+    reward = checkin_reward(streak=new_streak, is_vip=is_vip)
+    new_balance = current_balance + reward
+
+    update_values: dict[str, Any] = {
+        "balance": new_balance,
+        "total_earned": UserAccount.total_earned + reward,
+        "last_checkin_at": now,
+        "checkin_streak": new_streak,
+        "updated_at": now,
+    }
+    if name and name != existing_name:
+        update_values["name"] = name
+    if avatar_url:
+        update_values["avatar_url"] = avatar_url
+
+    if last_checkin_at is None:
+        last_checkin_gate = UserAccount.last_checkin_at.is_(None)
+    else:
+        last_checkin_gate = UserAccount.last_checkin_at == last_checkin_at
+
+    stmt = (
+        update(UserAccount)
+        .where(
+            UserAccount.user_id == user_id,
+            UserAccount.balance == current_balance,
+            last_checkin_gate,
+        )
+        .values(**update_values)
+        .returning(UserAccount.balance, UserAccount.checkin_streak, UserAccount.is_vip)
+    )
+    update_result = await session.execute(statement=stmt)
+    updated_row = update_result.one_or_none()
+    if updated_row is None:
+        return None
+    balance_after, streak_after, vip_after = updated_row
+    return reward, balance_after, streak_after, bool(vip_after)
+
+
+async def checkin(*, user_id: int, name: str, avatar_url: str = "") -> CheckinResult | None:
+    """Records a daily check-in and credits the streak-adjusted reward.
+
+    Returns ``None`` when the user has already checked in today (Taipei
+    local date). On first check-in or after a missed day the streak resets
+    to 1; otherwise the streak advances by 1 and cycles back to 1 after
+    reaching ``CHECKIN_STREAK_CYCLE``. The reward is computed with
+    ``checkin_reward`` and persisted alongside the streak counter in the
+    same write. VIP perks (2x base) read the persisted flag inside the
+    same transaction so a freshly-bought VIP immediately applies on the
+    next check-in.
+
+    Concurrency: a SELECT-then-conditional-UPDATE pattern (gated on the
+    observed ``last_checkin_at`` value) prevents two parallel coroutines
+    from double-crediting. First-sight INSERTs use ``ON CONFLICT DO
+    NOTHING`` to defer to whichever writer landed first; the loser falls
+    through to the next retry with the freshly-visible row.
+
+    Args:
+        user_id: Discord user ID checking in.
+        name: Last-seen Discord username to store on the account.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        ``CheckinResult`` describing the credit, or ``None`` when the user
+        already checked in today.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    today_midnight = _taipei_midnight(now=now)
+    yesterday_midnight = today_midnight - timedelta(days=1)
+    tomorrow_midnight = today_midnight + timedelta(days=1)
+
+    async with open_session() as session:
+        for _ in range(_CHECKIN_MAX_RETRIES):
+            read_result = await session.execute(
+                statement=select(
+                    UserAccount.balance,
+                    UserAccount.last_checkin_at,
+                    UserAccount.checkin_streak,
+                    UserAccount.is_vip,
+                    UserAccount.name,
+                ).where(UserAccount.user_id == user_id)
+            )
+            row = read_result.one_or_none()
+
+            if row is None:
+                outcome = await _insert_first_checkin_in_session(
+                    session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+                )
+            else:
+                new_streak = _next_checkin_streak(
+                    last_checkin_at=row[1],
+                    current_streak=row[2],
+                    today_midnight=today_midnight,
+                    yesterday_midnight=yesterday_midnight,
+                    tomorrow_midnight=tomorrow_midnight,
+                )
+                if new_streak is None:
+                    return None
+                outcome = await _update_checkin_row_in_session(
+                    session=session,
+                    user_id=user_id,
+                    name=name,
+                    avatar_url=avatar_url,
+                    now=now,
+                    new_streak=new_streak,
+                    row=row,
+                )
+
+            if outcome is None:
+                await session.rollback()
+                continue
+
+            reward, balance_after, streak_after, vip_after = outcome
+            await _log_transaction_in_session(
+                session=session,
+                user_id=user_id,
+                kind=TransactionKind.CHECKIN_REWARD,
+                delta=reward,
+                balance_after=balance_after,
+                note=f"streak {streak_after}",
+                now=now,
+            )
+            await session.commit()
+            return CheckinResult(
+                new_balance=balance_after, amount=reward, streak=streak_after, is_vip=vip_after
+            )
+
+        return None
+
+
+async def buy_vip(*, user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
+    """Promotes the user to VIP after debiting ``VIP_PURCHASE_COST`` points.
+
+    Returns ``None`` when the user is already VIP, has insufficient balance,
+    or the retry budget for the conditional UPDATE was exhausted.
+
+    Args:
+        user_id: Discord user ID purchasing VIP.
+        name: Last-seen Discord username to store on the account.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        ``VipPurchaseResult`` describing the post-purchase balance, or
+        ``None`` when the purchase was rejected.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    cost = VIP_PURCHASE_COST
+
+    async with open_session() as session:
+        for _ in range(_VIP_PURCHASE_MAX_RETRIES):
+            read_result = await session.execute(
+                statement=select(UserAccount.balance, UserAccount.is_vip, UserAccount.name).where(
+                    UserAccount.user_id == user_id
+                )
+            )
+            row = read_result.one_or_none()
+            if row is None:
+                return None
+            balance, is_vip, existing_name = row
+            if is_vip:
+                return None
+            if balance < cost:
+                return None
+
+            new_balance = balance - cost
+            update_values: dict[str, Any] = {
+                "balance": new_balance,
+                "total_spent": UserAccount.total_spent + cost,
+                "is_vip": True,
+                "updated_at": now,
+            }
+            if name and name != existing_name:
+                update_values["name"] = name
+            if avatar_url:
+                update_values["avatar_url"] = avatar_url
+
+            stmt = (
+                update(UserAccount)
+                .where(
+                    UserAccount.user_id == user_id,
+                    UserAccount.balance == balance,
+                    UserAccount.is_vip.is_(False),
+                )
+                .values(**update_values)
+                .returning(UserAccount.balance)
+            )
+            update_result = await session.execute(statement=stmt)
+            updated_row = update_result.one_or_none()
+            if updated_row is None:
+                await session.rollback()
+                continue
+
+            await _log_transaction_in_session(
+                session=session,
+                user_id=user_id,
+                kind=TransactionKind.VIP_PURCHASE,
+                delta=-cost,
+                balance_after=updated_row[0],
+                note=None,
+                now=now,
+            )
+            await session.commit()
+            return VipPurchaseResult(new_balance=updated_row[0], cost=cost)
+
         return None
 
 
@@ -1276,6 +1635,23 @@ async def get_balance(user_id: int) -> int:
             statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
         )
         return result.scalar_one_or_none() or 0
+
+
+async def get_vip(user_id: int) -> bool:
+    """Returns whether the user owns the VIP perk.
+
+    Args:
+        user_id: Discord user ID to look up.
+
+    Returns:
+        ``True`` when the account has ``is_vip`` set, else ``False``.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(UserAccount.is_vip).where(UserAccount.user_id == user_id)
+        )
+        return bool(result.scalar_one_or_none())
 
 
 async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
@@ -1307,10 +1683,9 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
 async def get_loan_view(*, user_id: int) -> LoanView | None:
     """Returns a stored snapshot of the user's loan state.
 
-    The interest value is the persisted (``loan_interest``) column. Callers
-    that want the effective interest "as of now" should pass ``principal``
-    + ``last_accrual_at`` through ``accrual_delta`` and add the result to
-    ``interest_stored``.
+    The principal is read after applying the daily reset so callers always
+    see the current Taipei-day picture; a loan opened the previous day will
+    surface as ``principal == 0`` and ``opened_at is None``.
 
     Args:
         user_id: Discord user ID to look up.
@@ -1320,12 +1695,13 @@ async def get_loan_view(*, user_id: int) -> LoanView | None:
         seen by the economy DB.
     """
     await _ensure_schema()
+    now = _database_now()
     async with open_session() as session:
+        await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
+        await session.commit()
         result = await session.execute(
             statement=select(
                 UserAccount.loan_principal,
-                UserAccount.loan_interest,
-                UserAccount.loan_last_accrual_at,
                 UserAccount.loan_opened_at,
                 UserAccount.loan_total_borrowed,
                 UserAccount.loan_total_repaid,
@@ -1335,12 +1711,7 @@ async def get_loan_view(*, user_id: int) -> LoanView | None:
         if row is None:
             return None
         return LoanView(
-            principal=row[0],
-            interest_stored=row[1],
-            last_accrual_at=row[2],
-            opened_at=row[3],
-            total_borrowed=row[4],
-            total_repaid=row[5],
+            principal=row[0], opened_at=row[1], total_borrowed=row[2], total_repaid=row[3]
         )
 
 
@@ -1470,52 +1841,53 @@ async def top_n(
         return [(row[0], row[1], row[2], row[3]) for row in result.all()]
 
 
-async def top_debtors(
+async def top_losers(
     *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, int, str]]:
-    """Returns accounts ordered by effective outstanding debt descending.
+) -> list[tuple[int, str, int, str]]:
+    """Returns the biggest net casino losers since today's Taipei midnight.
 
-    The stored interest column is only brought up to date on loan writes, so
-    this read path adds pending interest in Python before sorting. That keeps
-    the debt leaderboard consistent with ``/balance`` without mutating rows
-    just because someone viewed the ranking.
+    "Loss" sums every ``CASINO_BET`` and ``CASINO_PAYOUT`` delta written to
+    the audit log within the current Asia/Taipei day. A user with a net-
+    negative casino position is on the leaderboard; net-positive users are
+    filtered out. The reported loss is the absolute value of the net so the
+    `/loss_leaderboard` embed reads naturally.
+
+    The audit log is the only source of truth: the daily window resets
+    automatically when the date rolls over, no background task required.
 
     Args:
         limit: Maximum number of accounts to return.
         exclude_user_ids: User IDs to filter out before applying the limit.
 
     Returns:
-        `(user_id, name, principal, interest, avatar_url)` tuples ordered by
-        `principal + interest` descending. ``interest`` includes pending
-        accrual as of the read time.
+        `(user_id, name, loss_amount, avatar_url)` tuples ordered by loss
+        descending. ``loss_amount`` is always positive.
     """
     await _ensure_schema()
     if limit <= 0:
         return []
-
     now = _database_now()
+    today_midnight = _taipei_midnight(now=now)
+    net_delta = func.sum(PointTransaction.delta).label("net_delta")
+
     async with open_session() as session:
-        stmt = select(
-            UserAccount.user_id,
-            UserAccount.name,
-            UserAccount.loan_principal,
-            UserAccount.loan_interest,
-            UserAccount.loan_last_accrual_at,
-            UserAccount.avatar_url,
-        ).where((UserAccount.loan_principal > 0) | (UserAccount.loan_interest > 0))
+        stmt = (
+            select(PointTransaction.user_id, UserAccount.name, UserAccount.avatar_url, net_delta)
+            .join(UserAccount, UserAccount.user_id == PointTransaction.user_id, isouter=True)
+            .where(
+                PointTransaction.occurred_at >= today_midnight,
+                PointTransaction.kind.in_(
+                    other=(TransactionKind.CASINO_BET.value, TransactionKind.CASINO_PAYOUT.value)
+                ),
+            )
+            .group_by(PointTransaction.user_id, UserAccount.name, UserAccount.avatar_url)
+            .having(net_delta < 0)
+            .order_by(net_delta)
+            .limit(limit=limit)
+        )
         if exclude_user_ids:
-            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
+            stmt = stmt.where(PointTransaction.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)
-        rows = result.all()
-
-    debtors: list[tuple[int, str, int, int, str]] = []
-    for row in rows:
-        principal = row[2]
-        interest = row[3]
-        if principal > 0 and row[4] is not None:
-            interest += accrual_delta(principal=principal, last_accrual_at=row[4], now=now)
-        if principal + interest > 0:
-            debtors.append((row[0], row[1], principal, interest, row[5]))
-
-    debtors.sort(key=lambda debtor: debtor[2] + debtor[3], reverse=True)
-    return debtors[:limit]
+        return [
+            (row[0], row[1] or str(row[0]), int(-row[3]), row[2] or "") for row in result.all()
+        ]

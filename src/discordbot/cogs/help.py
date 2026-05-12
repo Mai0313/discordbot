@@ -2,7 +2,11 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
-from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
+from discordbot.typings.economy import (
+    VIP_PURCHASE_COST,
+    BASE_CHECKIN_REWARD_AMOUNT,
+    BASE_MESSAGE_REWARD_AMOUNT,
+)
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 _HELP_CONTENT = {
@@ -43,13 +47,24 @@ _HELP_CONTENT = {
             f"Every message earns {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}; "
             "AI chat replies add token-based bonuses.\n"
             "`/balance` check your balance · `/leaderboard` show the global top 10 · "
-            "`/debt_leaderboard` show the top debtors\n"
+            "`/loss_leaderboard` show today's biggest casino losers\n"
             f"`/give` transfer {CURRENCY_NAME} · `/house` show the dealer's running P&L\n"
             "`/borrow` take out a loan (cap scales with your Discord account age, "
-            "1%/day simple interest); `/repay` pay debt from your balance.\n"
-            "Every income event after a loan auto-applies 50% toward debt (interest first).\n"
-            "`/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, "
+            "auto-expires at Asia/Taipei midnight); `/repay` pay debt from your balance.\n"
+            "Every income event after a loan auto-applies 50% toward principal.\n"
+            "`/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, "
             "and `/repay` results clean themselves up after 3 minutes."
+        ),
+        "checkin": (
+            "**Daily Check-in** — `/checkin`\n"
+            f"Claim {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME} once per day (Asia/Taipei). "
+            "Consecutive days within a 7-day cycle add a streak bonus; the reply is "
+            "ephemeral so only you see it."
+        ),
+        "vip": (
+            "**VIP** — `/vip`\n"
+            f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 1.5x "
+            "blackjack payouts, 2x check-in points, and 2x borrow cap."
         ),
         "games": (
             "**Games**\n"
@@ -95,13 +110,23 @@ _HELP_CONTENT = {
             f"每則訊息會獲得 {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}, "
             f"AI chat 回覆另外追加 token bonus, {CURRENCY_NAME}跨 server 共用\n"
             "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名 · "
-            "`/debt_leaderboard` 看欠債前 10 名\n"
+            "`/loss_leaderboard` 看今日輸最多前 10 名\n"
             "`/give` 轉虛擬歡樂豆 · `/house` 看莊家累積 P&L\n"
-            "`/borrow` 依 Discord 帳號年齡借款 (日利息 1%); "
-            "`/repay` 從餘額還款 (利息優先)\n"
-            "借款後賺到的點數會自動 50% 用來抵債 (利息優先, 本金其次)\n"
-            "`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、"
+            "`/borrow` 依 Discord 帳號年齡借款 (每天 0:00 Asia/Taipei 自動清零); "
+            "`/repay` 從餘額還款\n"
+            "借款後賺到的點數會自動 50% 用來還本金\n"
+            "`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、"
             "`/borrow`、`/repay` 結果 3 分鐘後自動清掉"
+        ),
+        "checkin": (
+            "**每日簽到** — `/checkin`\n"
+            f"每天可以領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME} (Asia/Taipei), "
+            "連續七天為一個 cycle, 每天加成. 訊息是 ephemeral 只有自己看得到"
+        ),
+        "vip": (
+            "**VIP** — `/vip`\n"
+            f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
+            "VIP 賭場贏錢 1.5x, 簽到 2x 點數, 貸款額度 2x"
         ),
         "games": (
             "**小遊戲**\n"
@@ -147,13 +172,23 @@ _HELP_CONTENT = {
             f"すべてのメッセージで{BASE_MESSAGE_REWARD_AMOUNT:,}{CURRENCY_NAME}を獲得し、"
             "AI チャット返信ではtokenベースのボーナスも入ります。\n"
             "`/balance` 残高と借入状況を確認 · `/leaderboard` グローバルトップ10 · "
-            "`/debt_leaderboard` 借入トップ10\n"
+            "`/loss_leaderboard` 本日の負け額トップ10\n"
             f"`/give` {CURRENCY_NAME}送付 · `/house` ディーラーの累計損益\n"
-            "`/borrow` Discord アカウント年齢に応じて借入 (日利1%); "
-            "`/repay` 残高から返済 (利息優先)。\n"
-            "借入後の獲得点数は50%が自動的に返済に充当されます (利息優先、元本次)。\n"
-            "`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、"
+            "`/borrow` Discord アカウント年齢に応じて借入 (毎日0:00 Asia/Taipei 自動リセット); "
+            "`/repay` 残高から返済。\n"
+            "借入後の獲得点数は50%が自動的に元本返済に充当されます。\n"
+            "`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、"
             "`/borrow`、`/repay` の結果は3分後に自動削除されます。"
+        ),
+        "checkin": (
+            "**デイリーチェックイン** — `/checkin`\n"
+            f"毎日{BASE_CHECKIN_REWARD_AMOUNT:,}{CURRENCY_NAME}を受け取れます (Asia/Taipei)。"
+            "7日サイクルで連続日数ボーナスが付き、返信は ephemeral で本人のみ閲覧可能。"
+        ),
+        "vip": (
+            "**VIP** — `/vip`\n"
+            f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入。"
+            "VIP はブラックジャック配当1.5x、チェックイン2x、借入上限2x。"
         ),
         "games": (
             "**ゲーム**\n"
@@ -165,7 +200,17 @@ _HELP_CONTENT = {
     },
 }
 
-_SECTIONS = ("ai_chat", "threads", "video", "maplestory", "points", "games", "ping")
+_SECTIONS = (
+    "ai_chat",
+    "threads",
+    "video",
+    "maplestory",
+    "points",
+    "checkin",
+    "vip",
+    "games",
+    "ping",
+)
 
 
 class HelpCogs(commands.Cog):

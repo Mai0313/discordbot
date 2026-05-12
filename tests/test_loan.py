@@ -1,4 +1,4 @@
-"""Tests for the loan layer: credit limit, interest accrual, borrow / repay flows, auto-repay, and audit logging."""
+"""Tests for the loan layer: credit limit, borrow / repay flows, auto-repay, daily reset, audit log."""
 
 from __future__ import annotations
 
@@ -51,25 +51,14 @@ async def _list_transactions(*, user_id: int) -> list[tuple[str, int, int]]:
         return [(row[0], row[1], row[2]) for row in result.all()]
 
 
-async def _set_loan_interest(*, user_id: int, interest: int) -> None:
-    """Test helper: backdoors a stored interest value onto a user's loan row."""
-    async with database.open_session() as session:
-        await session.execute(
-            statement=update(database.UserAccount)
-            .where(database.UserAccount.user_id == user_id)
-            .values(loan_interest=interest)
-        )
-        await session.commit()
-
-
-async def _backdate_last_accrual(*, user_id: int, days_ago: int) -> None:
-    """Test helper: simulates time passing by pushing last_accrual_at back."""
+async def _backdate_loan_opened_at(*, user_id: int, days_ago: int) -> None:
+    """Test helper: simulates time passing by pushing loan_opened_at back."""
     past = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=days_ago)
     async with database.open_session() as session:
         await session.execute(
             statement=update(database.UserAccount)
             .where(database.UserAccount.user_id == user_id)
-            .values(loan_last_accrual_at=past)
+            .values(loan_opened_at=past)
         )
         await session.commit()
 
@@ -93,45 +82,35 @@ async def _backdate_last_accrual(*, user_id: int, days_ago: int) -> None:
     ],
 )
 def test_credit_limit_tier_boundaries(days: int, expected: int) -> None:
-    """Each tier boundary returns the expected cap."""
+    """Each tier boundary returns the expected cap (non-VIP)."""
     user = _user_with_age(days_old=days)
     assert database.credit_limit(user=user) == expected
 
 
-def test_accrual_delta_zero_principal_returns_zero() -> None:
-    """Zero principal accrues no interest regardless of elapsed time."""
-    now = datetime.now(tz=UTC)
-    delta = database.accrual_delta(principal=0, last_accrual_at=now - timedelta(days=10), now=now)
-    assert delta == 0
+def test_credit_limit_doubles_for_vip() -> None:
+    """VIP perk doubles the credit limit regardless of account-age tier."""
+    user = _user_with_age(days_old=365 * 5)
+    assert database.credit_limit(user=user, is_vip=False) == 500_000
+    assert database.credit_limit(user=user, is_vip=True) == 1_000_000
 
 
-def test_accrual_delta_clock_skew_returns_zero() -> None:
-    """Now < last_accrual_at must not produce negative interest."""
-    now = datetime.now(tz=UTC)
-    delta = database.accrual_delta(
-        principal=10_000, last_accrual_at=now + timedelta(hours=1), now=now
-    )
-    assert delta == 0
+# VIP blackjack bonus -------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    argnames=("principal", "days", "expected"),
+    argnames=("delta", "is_vip", "expected"),
     argvalues=[
-        (10_000, 1, 100),
-        (10_000, 7, 700),
-        (10_000, 30, 3_000),
-        (500_000, 1, 5_000),
-        (500_000, 30, 150_000),
-        (100, 0.001, 0),
+        (100, False, 100),
+        (100, True, 150),
+        (101, True, 151),
+        (0, True, 0),
+        (-50, True, -50),
+        (1, True, 1),
     ],
 )
-def test_accrual_delta_simple_interest(principal: int, days: float, expected: int) -> None:
-    """1% per day simple interest, integer-floored."""
-    now = datetime.now(tz=UTC)
-    delta = database.accrual_delta(
-        principal=principal, last_accrual_at=now - timedelta(days=days), now=now
-    )
-    assert delta == expected
+def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> None:
+    """VIP 1.5x multiplier only fires for positive deltas."""
+    assert database.apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip) == expected
 
 
 # Borrow --------------------------------------------------------------------
@@ -143,14 +122,12 @@ async def test_borrow_first_time_creates_row_and_disburses() -> None:
     assert result is not None
     assert result.new_balance == 500
     assert result.principal == 500
-    assert result.interest == 0
 
     view = await database.get_loan_view(user_id=1)
     assert view is not None
     assert view.principal == 500
     assert view.total_borrowed == 500
     assert view.opened_at is not None
-    assert view.last_accrual_at is not None
 
 
 async def test_borrow_accumulates_principal_on_existing_loan() -> None:
@@ -216,15 +193,14 @@ async def test_borrow_rejects_non_positive_amount(amount: int) -> None:
 # Repay ---------------------------------------------------------------------
 
 
-async def test_repay_pays_interest_before_principal() -> None:
-    """Interest is paid down before principal."""
+async def test_repay_pays_principal_only() -> None:
+    """Repayment debits the requested amount from principal in one shot."""
     await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await _set_loan_interest(user_id=1, interest=200)
     result = await database.repay(user_id=1, name="alice", amount=300)
     assert result is not None
-    assert result.interest_repaid == 200
-    assert result.principal_repaid == 100
-    assert result.remaining_debt == 900
+    assert result.principal_repaid == 300
+    assert result.remaining_debt == 700
+    assert result.new_balance == 700
 
 
 async def test_repay_clamps_to_debt_total() -> None:
@@ -233,7 +209,6 @@ async def test_repay_clamps_to_debt_total() -> None:
     result = await database.repay(user_id=1, name="alice", amount=10_000)
     assert result is not None
     assert result.principal_repaid == 500
-    assert result.interest_repaid == 0
     assert result.remaining_debt == 0
     assert result.new_balance == 0
 
@@ -245,7 +220,7 @@ async def test_repay_clamps_to_balance_when_balance_smaller() -> None:
     assert placed is not None
     result = await database.repay(user_id=1, name="alice", amount=10_000)
     assert result is not None
-    assert result.principal_repaid + result.interest_repaid == 400
+    assert result.principal_repaid == 400
     assert result.new_balance == 0
     assert result.remaining_debt == 600
 
@@ -305,40 +280,22 @@ async def test_credit_with_repayment_full_credit_when_no_debt() -> None:
     )
     assert result.new_balance == 100
     assert result.credited_amount == 100
-    assert result.interest_repaid == 0
     assert result.principal_repaid == 0
     assert result.remaining_debt == 0
 
 
-async def test_credit_with_repayment_diverts_50_percent_interest_first() -> None:
-    """With debt, 50% repays interest before touching principal."""
+async def test_credit_with_repayment_diverts_50_percent_to_principal() -> None:
+    """With debt, 50% of income pays down principal."""
     await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await _set_loan_interest(user_id=1, interest=200)
     result = await database.credit_with_repayment(
         user_id=1, name="alice", amount=200, kind=TransactionKind.CHAT_REWARD
     )
-    # 50% of 200 = 100 → all 100 paid to interest (200 outstanding)
-    assert result.interest_repaid == 100
-    assert result.principal_repaid == 0
+    assert result.principal_repaid == 100
     assert result.credited_amount == 100
-    assert result.remaining_debt == 100 + 1_000
+    assert result.remaining_debt == 900
 
 
-async def test_credit_with_repayment_spills_to_principal_after_interest() -> None:
-    """If 50% exceeds interest, the rest pays down principal."""
-    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await _set_loan_interest(user_id=1, interest=30)
-    result = await database.credit_with_repayment(
-        user_id=1, name="alice", amount=200, kind=TransactionKind.CHAT_REWARD
-    )
-    # 50% of 200 = 100; 30 to interest, 70 to principal
-    assert result.interest_repaid == 30
-    assert result.principal_repaid == 70
-    assert result.credited_amount == 100
-    assert result.remaining_debt == 1_000 - 70
-
-
-async def test_credit_with_repayment_caps_at_debt_total() -> None:
+async def test_credit_with_repayment_caps_at_principal_total() -> None:
     """Repayment clamps to total debt when 50% exceeds outstanding."""
     await database.borrow(user_id=1, name="alice", amount=50, credit_limit_value=1_000)
     placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
@@ -347,7 +304,6 @@ async def test_credit_with_repayment_caps_at_debt_total() -> None:
         user_id=1, name="alice", amount=1_000, kind=TransactionKind.CHAT_REWARD
     )
     assert result.principal_repaid == 50
-    assert result.interest_repaid == 0
     assert result.credited_amount == 950
     assert result.remaining_debt == 0
     assert result.new_balance == 950
@@ -397,27 +353,58 @@ async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
     assert await database.get_balance(user_id=1) == 100
 
 
-# Interest accrual integration ---------------------------------------------
+# Daily loan reset ---------------------------------------------------------
 
 
-async def test_borrow_accrues_pending_interest_before_limit_check() -> None:
-    """A follow-up borrow includes pending interest in the limit check."""
-    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await _backdate_last_accrual(user_id=1, days_ago=7)
-    result = await database.borrow(user_id=1, name="alice", amount=100, credit_limit_value=10_000)
-    assert result is not None
-    assert result.interest == 70
+async def test_loan_expires_at_next_taipei_midnight() -> None:
+    """A loan opened before today's Taipei midnight is wiped on next access."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    await _backdate_loan_opened_at(user_id=1, days_ago=2)
+    view = await database.get_loan_view(user_id=1)
+    assert view is not None
+    assert view.principal == 0
+    assert view.opened_at is None
 
 
-async def test_repay_accrues_pending_interest_first() -> None:
-    """A repay applied after time has passed pays down freshly accrued interest."""
-    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await _backdate_last_accrual(user_id=1, days_ago=10)
-    result = await database.repay(user_id=1, name="alice", amount=50)
-    assert result is not None
-    assert result.interest_repaid == 50
+async def test_loan_stays_active_within_the_same_taipei_day() -> None:
+    """A loan opened earlier the same Taipei day is still outstanding."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    view = await database.get_loan_view(user_id=1)
+    assert view is not None
+    assert view.principal == 500
+    assert view.opened_at is not None
+
+
+async def test_borrow_after_expiry_re_arms_daily_window() -> None:
+    """A new borrow after expiry creates a fresh daily window."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    await _backdate_loan_opened_at(user_id=1, days_ago=3)
+
+    second = await database.borrow(user_id=1, name="alice", amount=400, credit_limit_value=1_000)
+    assert second is not None
+    assert second.principal == 400
+    view = await database.get_loan_view(user_id=1)
+    assert view is not None
+    assert view.opened_at is not None
+
+
+async def test_expired_loan_does_not_reduce_balance() -> None:
+    """The daily reset wipes principal but does not claw back borrowed funds."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    await _backdate_loan_opened_at(user_id=1, days_ago=2)
+    assert await database.get_balance(user_id=1) == 500
+
+
+async def test_credit_with_repayment_after_expiry_credits_full_amount() -> None:
+    """After the daily reset the 50% auto-repay no longer applies."""
+    await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
+    await _backdate_loan_opened_at(user_id=1, days_ago=2)
+    result = await database.credit_with_repayment(
+        user_id=1, name="alice", amount=200, kind=TransactionKind.CHAT_REWARD
+    )
+    assert result.credited_amount == 200
     assert result.principal_repaid == 0
-    assert result.remaining_debt == (1_000 + 100) - 50
+    assert result.remaining_debt == 0
 
 
 # get_loan_view ------------------------------------------------------------
@@ -434,8 +421,6 @@ async def test_get_loan_view_account_without_loan_returns_zero_state() -> None:
     view = await database.get_loan_view(user_id=1)
     assert view is not None
     assert view.principal == 0
-    assert view.interest_stored == 0
-    assert view.last_accrual_at is None
     assert view.opened_at is None
     assert view.total_borrowed == 0
     assert view.total_repaid == 0
@@ -450,31 +435,6 @@ async def test_get_loan_view_after_borrow_and_repay_tracks_totals() -> None:
     assert view.principal == 300
     assert view.total_borrowed == 500
     assert view.total_repaid == 200
-
-
-# Debt leaderboard ---------------------------------------------------------
-
-
-async def test_top_debtors_orders_by_effective_debt_with_pending_interest() -> None:
-    """Debt ranking includes read-time pending interest without persisting it."""
-    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await database.borrow(user_id=2, name="bob", amount=1_200, credit_limit_value=10_000)
-    await _backdate_last_accrual(user_id=1, days_ago=30)
-
-    rows = await database.top_debtors(limit=2)
-
-    assert rows[0][:4] == (1, "alice", 1_000, 300)
-    assert rows[1][:4] == (2, "bob", 1_200, 0)
-
-
-async def test_top_debtors_excludes_specified_users() -> None:
-    """Excluded accounts do not appear on the debt leaderboard."""
-    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    await database.borrow(user_id=99, name="house", amount=2_000, credit_limit_value=10_000)
-
-    rows = await database.top_debtors(limit=10, exclude_user_ids=(99,))
-
-    assert rows == [(1, "alice", 1_000, 0, "")]
 
 
 # Audit log ----------------------------------------------------------------
@@ -505,7 +465,6 @@ async def test_chat_reward_logs_credited_slice_with_debt_context() -> None:
         user_id=1, name="alice", amount=100, kind=TransactionKind.CHAT_REWARD
     )
     rows = await _list_transactions(user_id=1)
-    # 50 paid to principal, 50 credited to balance; post-state debt 450
     assert rows == [
         (TransactionKind.BORROW.value, 500, 500),
         (TransactionKind.CHAT_REWARD.value, 50, 450),
@@ -586,5 +545,4 @@ async def test_settle_game_logs_applied_delta_not_requested_delta() -> None:
     await database.add_balance(user_id=1, name="alice", amount=10)
     await database.settle_game(user_id=1, name="alice", delta=-1000)
     rows = await _list_transactions(user_id=1)
-    # Clamp at 0 means only 10 actually left the account
     assert rows == [(TransactionKind.CASINO_PAYOUT.value, -10, 0)]

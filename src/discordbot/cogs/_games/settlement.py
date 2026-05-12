@@ -2,7 +2,11 @@
 
 from discordbot.typings.games import WagerSettlement, BlackjackSettlement
 from discordbot.cogs._games.blackjack import BlackjackHand, settle, is_bust, is_blackjack
-from discordbot.cogs._economy.database import apply_round_settlement
+from discordbot.cogs._economy.database import (
+    get_vip,
+    apply_round_settlement,
+    apply_vip_blackjack_bonus,
+)
 
 
 def blackjack_detail(hand: BlackjackHand) -> str:
@@ -69,6 +73,11 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     starts; unfinished in-memory rounds vanish on bot restart without touching
     balances.
 
+    VIP players receive a 1.5x payout on winning rounds; pushes and losses
+    are passed through unchanged. The VIP flag is permanent, so reading it
+    outside the settlement transaction is safe — a freshly-bought VIP that
+    races a settlement only misses the bonus on a single in-flight round.
+
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
@@ -82,18 +91,23 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     Returns:
         Database-backed settlement result after both ledgers are updated.
     """
+    is_vip = await get_vip(user_id=player_id)
+    effective_delta = apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip)
     new_balance, house_balance = await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
-        player_delta=delta,
+        player_delta=effective_delta,
         dealer_id=dealer_id,
         dealer_name=dealer_name,
         dealer_avatar_url=dealer_avatar_url,
-        dealer_delta=-delta,
+        dealer_delta=-effective_delta,
     )
     return WagerSettlement(
-        delta=delta, payout=max(delta, 0), new_balance=new_balance, house_balance=house_balance
+        delta=effective_delta,
+        payout=max(effective_delta, 0),
+        new_balance=new_balance,
+        house_balance=house_balance,
     )
 
 

@@ -1,4 +1,4 @@
-"""Slash commands that surface point balances, the leaderboard, transfers, and loans."""
+"""Slash commands that surface point balances, leaderboards, transfers, and loans."""
 
 from datetime import UTC, datetime
 
@@ -6,17 +6,20 @@ import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.typings.economy import VIP_PURCHASE_COST, BASE_CHECKIN_REWARD_AMOUNT
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import (
     repay,
     top_n,
     borrow,
+    buy_vip,
+    checkin,
+    get_vip,
     transfer,
+    top_losers,
     get_account,
     get_balance,
-    top_debtors,
     credit_limit,
-    accrual_delta,
     get_loan_view,
 )
 from discordbot.cogs._economy.presentation import (
@@ -28,11 +31,13 @@ from discordbot.cogs._economy.presentation import (
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
-_DEBT_LEADERBOARD_COLOR = 0xE67E22
+_LOSS_LEADERBOARD_COLOR = 0xE67E22
 _TRANSFER_COLOR = 0x5865F2
 _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
+_CHECKIN_COLOR = 0x9B59B6
+_VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
 
 
@@ -49,15 +54,11 @@ def _rank_line(*, position: int, name: str, balance: int) -> str:
     return f"{rank} **{name}**  {amount_code(amount=balance)} {CURRENCY_NAME}"
 
 
-def _debt_rank_line(*, position: int, name: str, principal: int, interest: int) -> str:
-    """Formats one debt leaderboard row."""
+def _loss_rank_line(*, position: int, name: str, loss: int) -> str:
+    """Formats one loss-leaderboard row."""
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     rank = medals.get(position, f"`#{position}`")
-    total = principal + interest
-    return (
-        f"{rank} **{name}**  欠 {amount_code(amount=total)} {CURRENCY_NAME} "
-        f"(本金 {amount_code(amount=principal)} / 利息 {amount_code(amount=interest)})"
-    )
+    return f"{rank} **{name}**  輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
 
 
 async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> None:
@@ -67,7 +68,7 @@ async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> 
 
 
 class EconomyCogs(commands.Cog):
-    """Player-facing point balance and loan commands.
+    """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -103,7 +104,8 @@ class EconomyCogs(commands.Cog):
         user = interaction.user
         amount = await get_balance(user_id=user.id)
         loan = await get_loan_view(user_id=user.id)
-        limit = credit_limit(user=user)
+        is_vip = await get_vip(user_id=user.id)
+        limit = credit_limit(user=user, is_vip=is_vip)
         age_days = (datetime.now(tz=UTC) - user.created_at).days
 
         embed = Embed(
@@ -112,27 +114,21 @@ class EconomyCogs(commands.Cog):
         embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
 
-        has_debt = loan is not None and (loan.principal > 0 or loan.interest_stored > 0)
+        has_debt = loan is not None and loan.principal > 0
         if has_debt and loan is not None:
-            pending_interest = 0
-            if loan.last_accrual_at is not None and loan.principal > 0:
-                pending_interest = accrual_delta(
-                    principal=loan.principal,
-                    last_accrual_at=loan.last_accrual_at,
-                    now=datetime.now(tz=UTC),
-                )
-            effective_interest = loan.interest_stored + pending_interest
             embed.add_field(
-                name="債務",
+                name="今日欠款",
                 value=(
                     f"本金 {amount_code(amount=loan.principal)}\n"
-                    f"利息 {amount_code(amount=effective_interest)}\n"
-                    "-# 收入 50% 自動還款"
+                    "-# 收入 50% 自動還款 | 每天 0:00 自動清零"
                 ),
                 inline=False,
             )
 
-        embed.set_footer(text=f"帳號 {age_days} 天 | 借款上限 {currency_text(amount=limit)}")
+        vip_badge = " · 👑 VIP" if is_vip else ""
+        embed.set_footer(
+            text=f"帳號 {age_days} 天 | 借款上限 {currency_text(amount=limit)}{vip_badge}"
+        )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -183,58 +179,49 @@ class EconomyCogs(commands.Cog):
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
-        name="debt_leaderboard",
-        description=f"Show the global top 10 {CURRENCY_NAME} debtors.",
-        name_localizations={Locale.zh_TW: "欠債排行榜", Locale.ja: "借金ランキング"},
+        name="loss_leaderboard",
+        description=f"Show today's biggest {CURRENCY_NAME} losers in the casino.",
+        name_localizations={Locale.zh_TW: "輸錢榜", Locale.ja: "負け額ランキング"},
         description_localizations={
-            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}欠款前 10 名",
-            Locale.ja: f"グローバル{CURRENCY_NAME}借入トップ10を表示します。",
+            Locale.zh_TW: f"顯示今日輸最多{CURRENCY_NAME}的前 10 名 (每天 0:00 重置)",
+            Locale.ja: f"本日{CURRENCY_NAME}を最も失った上位10名 (毎日 0:00 リセット)。",
         },
         nsfw=False,
     )
-    async def debt_leaderboard(self, interaction: Interaction) -> None:
-        """Replies with the top 10 borrowers by outstanding debt.
+    async def loss_leaderboard(self, interaction: Interaction) -> None:
+        """Replies with the top 10 net casino losers for the current day.
 
         Args:
             interaction: The interaction that triggered the command.
         """
         await interaction.response.defer()
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_debtors(limit=10, exclude_user_ids=exclude_user_ids)
+        rows = await top_losers(limit=10, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
-                title=f"🧾 {CURRENCY_NAME} Debt Top 10",
-                description="### 目前沒有人欠款\n/borrow 借款後會出現在這裡",
-                color=_DEBT_LEADERBOARD_COLOR,
+                title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
+                description="### 今天還沒有人輸錢\n/blackjack 開局就可能進榜",
+                color=_LOSS_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        _, champion_name, champion_principal, champion_interest, champion_avatar_url = rows[0]
-        champion_debt = champion_principal + champion_interest
+        _, champion_name, champion_loss, champion_avatar_url = rows[0]
 
         embed = Embed(
-            title=f"🧾 {CURRENCY_NAME} Debt Top 10",
-            description=f"## 🥇 {champion_name}\n欠 {bold_currency(amount=champion_debt)}",
-            color=_DEBT_LEADERBOARD_COLOR,
+            title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
+            description=f"## 🥇 {champion_name}\n輸 {bold_currency(amount=champion_loss)}",
+            color=_LOSS_LEADERBOARD_COLOR,
         )
-        embed.set_author(name="目前欠最多", icon_url=champion_avatar_url or None)
+        embed.set_author(name="今日輸最多", icon_url=champion_avatar_url or None)
         _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
-        embed.add_field(
-            name="第一名債務",
-            value=(
-                f"本金 {amount_code(amount=champion_principal)}\n"
-                f"利息 {amount_code(amount=champion_interest)}"
-            ),
-            inline=False,
-        )
         if len(rows) > 1:
             others = "\n".join(
-                _debt_rank_line(position=position, name=row[1], principal=row[2], interest=row[3])
+                _loss_rank_line(position=position, name=row[1], loss=row[2])
                 for position, row in enumerate(iterable=rows[1:], start=2)
             )
-            embed.add_field(name="其他借款人", value=others, inline=False)
-        embed.set_footer(text="排序包含目前讀取時可計算的未入帳利息")
+            embed.add_field(name="其他賠錢人", value=others, inline=False)
+        embed.set_footer(text="每天 0:00 (Asia/Taipei) 重置")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -399,16 +386,14 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="borrow",
-        description=f"Borrow {CURRENCY_NAME} against your Discord account age.",
+        description=f"Borrow {CURRENCY_NAME} that auto-expires at midnight (Asia/Taipei).",
         name_localizations={Locale.zh_TW: "貸款", Locale.ja: "借入"},
         description_localizations={
             Locale.zh_TW: (
-                f"用 Discord 帳號年齡換取{CURRENCY_NAME}借款 "
-                "(日利息 1%, 之後賺到的點數會自動 50% 抵債)"
+                f"借入{CURRENCY_NAME}, 每天 0:00 自動清零 (額度依 Discord 帳號年齡, VIP 2x)"
             ),
             Locale.ja: (
-                f"Discord アカウント年齢に応じて{CURRENCY_NAME}を借入します "
-                "(日利1%, 以降の獲得分は50%自動返済)。"
+                f"{CURRENCY_NAME}を借入します (毎日0:00自動リセット, 上限はアカウント年齢に依存, VIPは2倍)。"
             ),
         },
         nsfw=False,
@@ -428,7 +413,7 @@ class EconomyCogs(commands.Cog):
             min_value=1,
         ),
     ) -> None:
-        """Borrows ``amount`` points against the caller's credit limit.
+        """Borrows ``amount`` points against the caller's daily credit window.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -438,7 +423,8 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
-        limit = credit_limit(user=user)
+        is_vip = await get_vip(user_id=user.id)
+        limit = credit_limit(user=user, is_vip=is_vip)
         result = await borrow(
             user_id=user.id,
             name=user.name,
@@ -448,13 +434,13 @@ class EconomyCogs(commands.Cog):
         )
         if result is None:
             loan = await get_loan_view(user_id=user.id)
-            current_debt = (loan.principal + loan.interest_stored) if loan else 0
+            current_debt = loan.principal if loan else 0
             remaining = max(limit - current_debt, 0)
             embed = Embed(
                 title="借款失敗",
                 description=(
                     f"### 剩餘額度 {currency_text(amount=remaining)}\n"
-                    f"申請後會超過上限 {bold_currency(amount=limit)}"
+                    f"申請後會超過今日上限 {bold_currency(amount=limit)}"
                 ),
                 color=_ERROR_COLOR,
             )
@@ -480,7 +466,10 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         embed.set_footer(
-            text=f"日利息 1% | 收入 50% 自動還款 | 上限 {currency_text(amount=limit)}"
+            text=(
+                f"每天 0:00 (Asia/Taipei) 自動清零 | 收入 50% 自動還款 | "
+                f"上限 {currency_text(amount=limit)}"
+            )
         )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
@@ -489,8 +478,8 @@ class EconomyCogs(commands.Cog):
         description=f"Repay your outstanding {CURRENCY_NAME} loan from your balance.",
         name_localizations={Locale.zh_TW: "還款", Locale.ja: "返済"},
         description_localizations={
-            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款 (利息優先, 本金其次)",
-            Locale.ja: f"残高から{CURRENCY_NAME}の借入を返済します (利息優先, 本金次)。",
+            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款",
+            Locale.ja: f"残高から{CURRENCY_NAME}の借入を返済します。",
         },
         nsfw=False,
     )
@@ -509,7 +498,7 @@ class EconomyCogs(commands.Cog):
             min_value=1,
         ),
     ) -> None:
-        """Pays down outstanding interest then principal from the caller's balance.
+        """Pays down outstanding principal from the caller's balance.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -526,7 +515,7 @@ class EconomyCogs(commands.Cog):
         if result is None:
             balance_now = await get_balance(user_id=user.id)
             loan = await get_loan_view(user_id=user.id)
-            debt = (loan.principal + loan.interest_stored) if loan else 0
+            debt = loan.principal if loan else 0
             if debt == 0:
                 reason = "目前沒有欠款"
             elif balance_now == 0:
@@ -539,20 +528,16 @@ class EconomyCogs(commands.Cog):
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        effective = result.interest_repaid + result.principal_repaid
         embed = Embed(
             title="🧾 還款完成",
-            description=f"### {currency_text(amount=-effective, signed=True)} 扣款",
+            description=f"### {currency_text(amount=-result.principal_repaid, signed=True)} 扣款",
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
         embed.add_field(
             name="本次還款",
-            value=(
-                f"利息 {amount_code(amount=result.interest_repaid)}\n"
-                f"本金 {amount_code(amount=result.principal_repaid)}"
-            ),
+            value=f"本金 {amount_code(amount=result.principal_repaid)}",
             inline=True,
         )
         embed.add_field(
@@ -562,6 +547,114 @@ class EconomyCogs(commands.Cog):
                 f"餘額 {amount_code(amount=result.new_balance)}"
             ),
             inline=True,
+        )
+        await _send_expiring_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="checkin",
+        description=f"Daily {CURRENCY_NAME} check-in with a 7-day streak bonus.",
+        name_localizations={Locale.zh_TW: "簽到", Locale.ja: "デイリーチェックイン"},
+        description_localizations={
+            Locale.zh_TW: f"每日簽到領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME}, 連續 7 天加成",
+            Locale.ja: (f"毎日{BASE_CHECKIN_REWARD_AMOUNT:,}{CURRENCY_NAME}, 7日連続でボーナス。"),
+        },
+        nsfw=False,
+    )
+    async def checkin_command(self, interaction: Interaction) -> None:
+        """Claims today's check-in reward; ephemeral so only the caller sees it.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        result = await checkin(user_id=user.id, name=user.name, avatar_url=user.display_avatar.url)
+        if result is None:
+            embed = Embed(
+                title="今天已經簽到過了",
+                description="### 0:00 (Asia/Taipei) 後再回來簽吧",
+                color=_ERROR_COLOR,
+            )
+            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        vip_badge = " · 👑 VIP 2x" if result.is_vip else ""
+        embed = Embed(
+            title="📅 每日簽到",
+            description=f"## {currency_text(amount=result.amount, signed=True)} 入帳",
+            color=_CHECKIN_COLOR,
+        )
+        embed.set_author(name=f"{user.display_name} 的簽到", icon_url=user.display_avatar.url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.add_field(name="連續簽到", value=f"第 {result.streak} / 7 天", inline=True)
+        embed.add_field(name="目前餘額", value=amount_code(amount=result.new_balance), inline=True)
+        embed.set_footer(text=f"連續 7 天為一個 cycle | 每天 0:00 (Asia/Taipei) 重置{vip_badge}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @nextcord.slash_command(
+        name="vip",
+        description=f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}.",
+        name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
+        description_localizations={
+            Locale.zh_TW: f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP",
+            Locale.ja: f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入します。",
+        },
+        nsfw=False,
+    )
+    async def vip_command(self, interaction: Interaction) -> None:
+        """Buys the permanent VIP perk for a one-time fixed cost.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        user = interaction.user
+        already_vip = await get_vip(user_id=user.id)
+        if already_vip:
+            embed = Embed(
+                title="已經是 VIP",
+                description="### 你已經擁有永久 VIP 了, 不用再買一次",
+                color=_VIP_COLOR,
+            )
+            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
+        result = await buy_vip(user_id=user.id, name=user.name, avatar_url=user.display_avatar.url)
+        if result is None:
+            balance_now = await get_balance(user_id=user.id)
+            embed = Embed(
+                title="VIP 購買失敗",
+                description=(
+                    f"### 餘額不足\n"
+                    f"目前 {bold_currency(amount=balance_now)}\n"
+                    f"需要 {bold_currency(amount=VIP_PURCHASE_COST)}"
+                ),
+                color=_ERROR_COLOR,
+            )
+            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
+        embed = Embed(
+            title="👑 升級 VIP 成功",
+            description=f"### {currency_text(amount=-result.cost, signed=True)} 扣款",
+            color=_VIP_COLOR,
+        )
+        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.add_field(
+            name="VIP 永久權益",
+            value=("- 賭場贏錢賠率 **1.5x**\n- 每日簽到點數 **2x**\n- 貸款額度 **2x**"),
+            inline=False,
+        )
+        embed.add_field(
+            name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
         )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 

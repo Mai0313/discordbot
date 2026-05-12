@@ -12,6 +12,13 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 5_000
+BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 100_000
+VIP_PURCHASE_COST: Final[int] = 10_000_000
+# Daily check-in streak cycles through 1..7 then loops back to 1.
+CHECKIN_STREAK_CYCLE: Final[int] = 7
+# Streak bonus formula: base * (1 + (streak - 1) * 0.5). Day 1 = 1.0x,
+# day 7 = 4.0x of base. VIP doubles base before this multiplier.
+CHECKIN_STREAK_BONUS_STEP: Final[float] = 0.5
 
 
 class TransactionKind(StrEnum):
@@ -20,6 +27,7 @@ class TransactionKind(StrEnum):
     Attributes:
         MESSAGE_REWARD: Base reward for every non-bot user message.
         CHAT_REWARD: Streaming AI reply token reward.
+        CHECKIN_REWARD: Daily check-in payout, including streak bonus.
         CASINO_BET: Wager debit, including deferred settlement losses.
         CASINO_PAYOUT: Player-side payout from a finished casino round.
         HOUSE_SETTLE: Dealer-side mirror of a player settlement.
@@ -27,10 +35,12 @@ class TransactionKind(StrEnum):
         REPAY: Manual repayment via ``repay``.
         TRANSFER_OUT: Sender side of ``/give``.
         TRANSFER_IN: Receiver side of ``/give``.
+        VIP_PURCHASE: Debit for buying the permanent VIP perk.
     """
 
     MESSAGE_REWARD = "message_reward"
     CHAT_REWARD = "chat_reward"
+    CHECKIN_REWARD = "checkin_reward"
     CASINO_BET = "casino_bet"
     CASINO_PAYOUT = "casino_payout"
     HOUSE_SETTLE = "house_settle"
@@ -38,21 +48,20 @@ class TransactionKind(StrEnum):
     REPAY = "repay"
     TRANSFER_OUT = "transfer_out"
     TRANSFER_IN = "transfer_in"
+    VIP_PURCHASE = "vip_purchase"
 
 
 class LoanView(BaseModel):
     """Read-only snapshot of a user's loan state.
 
-    Callers add the pending accrual (see ``accrual_delta`` in
-    ``cogs/_economy/database.py``) to ``interest_stored`` to obtain the
-    effective interest as of the read time. ``last_accrual_at`` is the
-    point in time the stored interest reflects.
+    Loan principal is wiped at the Taipei daily midnight reset; ``opened_at``
+    is therefore always today's borrow timestamp (or ``None`` after the
+    nightly reset has cleared it).
 
     Attributes:
-        principal: Outstanding loan principal.
-        interest_stored: Interest already accrued and persisted.
-        last_accrual_at: Timestamp the stored interest was last brought up to date.
-        opened_at: Timestamp the user first borrowed; ``None`` if never borrowed.
+        principal: Outstanding loan principal that has not yet expired.
+        opened_at: Timestamp the user first borrowed today; ``None`` once
+            the daily reset has cleared the loan.
         total_borrowed: Lifetime gross borrowed amount.
         total_repaid: Lifetime gross repaid amount.
     """
@@ -60,8 +69,6 @@ class LoanView(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     principal: int
-    interest_stored: int
-    last_accrual_at: datetime | None
     opened_at: datetime | None
     total_borrowed: int
     total_repaid: int
@@ -73,16 +80,14 @@ class CreditResult(BaseModel):
     Attributes:
         new_balance: User balance after the credit.
         credited_amount: Amount that landed in balance; ``amount - to_repay``.
-        interest_repaid: Amount that paid down ``loan_interest``.
         principal_repaid: Amount that paid down ``loan_principal``.
-        remaining_debt: ``loan_principal + loan_interest`` after the operation.
+        remaining_debt: ``loan_principal`` after the operation.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int
     credited_amount: int
-    interest_repaid: int
     principal_repaid: int
     remaining_debt: int
 
@@ -93,14 +98,12 @@ class BorrowResult(BaseModel):
     Attributes:
         new_balance: User balance after the disbursement.
         principal: Outstanding principal after this borrow.
-        interest: Outstanding interest after the implicit accrual.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int
     principal: int
-    interest: int
 
 
 class RepayResult(BaseModel):
@@ -108,15 +111,13 @@ class RepayResult(BaseModel):
 
     Attributes:
         new_balance: User balance after the deduction.
-        interest_repaid: Amount that paid down ``loan_interest``.
         principal_repaid: Amount that paid down ``loan_principal``.
-        remaining_debt: ``loan_principal + loan_interest`` after the operation.
+        remaining_debt: ``loan_principal`` after the operation.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int
-    interest_repaid: int
     principal_repaid: int
     remaining_debt: int
 
@@ -167,9 +168,48 @@ class TransferResult(BaseModel):
     receiver_balance: int
 
 
+class CheckinResult(BaseModel):
+    """Outcome of a successful daily check-in.
+
+    Attributes:
+        new_balance: User balance after the payout.
+        amount: Total amount credited for this check-in (base * streak bonus * VIP multiplier).
+        streak: Streak counter persisted on the account after this check-in
+            (1..``CHECKIN_STREAK_CYCLE``).
+        is_vip: VIP status of the account at check-in time, surfaced so the
+            embed can label the bonus correctly.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    new_balance: int
+    amount: int
+    streak: int
+    is_vip: bool
+
+
+class VipPurchaseResult(BaseModel):
+    """Outcome of a successful VIP purchase.
+
+    Attributes:
+        new_balance: User balance after the 10M debit.
+        cost: Points deducted for the purchase.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    new_balance: int
+    cost: int
+
+
 __all__ = [
+    "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
+    "CHECKIN_STREAK_BONUS_STEP",
+    "CHECKIN_STREAK_CYCLE",
+    "VIP_PURCHASE_COST",
     "BorrowResult",
+    "CheckinResult",
     "CreditResult",
     "LoanView",
     "PlacedBet",
@@ -177,4 +217,5 @@ __all__ = [
     "RepayResult",
     "TransactionKind",
     "TransferResult",
+    "VipPurchaseResult",
 ]
