@@ -9,24 +9,26 @@ from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.games import GameParticipant
 from discordbot.typings.models import ModelSettings
-from discordbot.typings.economy import PreparedBet
-from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
+from discordbot.cogs._games.views import (
+    MAX_BLACKJACK_PLAYERS,
+    BlackjackLobbyView,
+    build_blackjack_lobby_embed,
+)
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.cleanup import (
     track_game_message,
     delete_tracked_game_messages,
     schedule_game_message_delete,
 )
-from discordbot.cogs._games.blackjack import BlackjackHand
 from discordbot.cogs._economy.database import get_balance
-from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
-from discordbot.cogs._games.presentation import ERROR_COLOR, blackjack_outcome_presentation
+from discordbot.cogs._games.presentation import ERROR_COLOR
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 
 
 class GamesCogs(commands.Cog):
-    """Slash commands for casino games against an AI dealer.
+    """Slash commands for multiplayer casino games against an AI dealer.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -94,45 +96,82 @@ class GamesCogs(commands.Cog):
         self._startup_cleanup_done = True
         await delete_tracked_game_messages(bot=self.bot)
 
-    async def _prepare_bet(
-        self, *, interaction: Interaction, requested_bet: int
-    ) -> PreparedBet | None:
-        """Checks the effective bet or sends an insufficient-balance embed.
+    async def _participant_from_user(
+        self, *, user: nextcord.User | nextcord.Member, requested_bet: int
+    ) -> tuple[GameParticipant | None, int]:
+        """Builds a lobby participant after clamping the requested bet."""
+        balance = await get_balance(user_id=user.id)
+        if requested_bet <= 0 or balance <= 0:
+            return None, balance
+        return (
+            GameParticipant(
+                user_id=user.id,
+                account_name=user.name,
+                display_name=user.display_name,
+                avatar_url=user.display_avatar.url,
+                bet=min(requested_bet, balance),
+                balance_at_start=balance,
+                is_allin=requested_bet > balance,
+            ),
+            balance,
+        )
 
-        Bets are settled only when a round finishes. If the bot restarts during
-        an in-memory round, no balance mutation has happened yet.
-        """
+    async def _prepare_lobby_participant(
+        self, *, interaction: Interaction, requested_bet: int
+    ) -> GameParticipant | None:
+        """Prepares a user who pressed the lobby Join button."""
         if interaction.user is None:
             return None
-        balance = await get_balance(user_id=interaction.user.id)
-        if requested_bet <= 0 or balance <= 0:
-            message = await interaction.followup.send(
-                embed=Embed(
-                    title="餘額不足",
-                    description=(
-                        f"### {bold_currency(amount=balance)}\n"
-                        f"沒有可下注的{CURRENCY_NAME}\n"
-                        f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
-                    ),
-                    color=ERROR_COLOR,
-                ),
-                wait=True,
+        participant, balance = await self._participant_from_user(
+            user=interaction.user, requested_bet=requested_bet
+        )
+        if participant is None:
+            await interaction.followup.send(
+                embed=self._insufficient_balance_embed(balance=balance), ephemeral=True
             )
-            schedule_game_message_delete(message=message)
-            return None
-        return PreparedBet(
-            amount=min(requested_bet, balance),
-            balance_at_start=balance,
-            is_allin=requested_bet > balance,
+        return participant
+
+    async def _refresh_lobby_participants(
+        self, *, participants: list[GameParticipant], requested_bet: int
+    ) -> tuple[list[GameParticipant], list[str]]:
+        """Re-checks balances when the lobby owner starts the table."""
+        refreshed: list[GameParticipant] = []
+        dropped: list[str] = []
+        for participant in participants:
+            balance = await get_balance(user_id=participant.user_id)
+            if requested_bet <= 0 or balance <= 0:
+                dropped.append(participant.display_name)
+                continue
+            refreshed.append(
+                participant.model_copy(
+                    update={
+                        "bet": min(requested_bet, balance),
+                        "balance_at_start": balance,
+                        "is_allin": requested_bet > balance,
+                    }
+                )
+            )
+        return refreshed, dropped
+
+    def _insufficient_balance_embed(self, *, balance: int) -> Embed:
+        """Builds the shared insufficient-balance embed for casino games."""
+        return Embed(
+            title="餘額不足",
+            description=(
+                f"### {bold_currency(amount=balance)}\n"
+                f"沒有可下注的{CURRENCY_NAME}\n"
+                f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
+            ),
+            color=ERROR_COLOR,
         )
 
     @nextcord.slash_command(
         name="blackjack",
-        description="Play one round of 21 against the dealer.",
+        description="Open a 21 lobby against the dealer.",
         name_localizations={Locale.zh_TW: "二十一點", Locale.ja: "ブラックジャック"},
         description_localizations={
-            Locale.zh_TW: "跟莊家玩一局 21 點",
-            Locale.ja: "親と21（ブラックジャック）を1ラウンド遊びます。",
+            Locale.zh_TW: "開一桌 21 點 lobby",
+            Locale.ja: "21（ブラックジャック）の lobby を開きます。",
         },
         nsfw=False,
     )
@@ -151,7 +190,7 @@ class GamesCogs(commands.Cog):
             min_value=1,
         ),
     ) -> None:
-        """Starts one Blackjack hand. The Hit/Stand view drives the rest of the round.
+        """Opens a Blackjack lobby. The owner starts the table from the lobby.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -161,87 +200,33 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        prepared_bet = await self._prepare_bet(interaction=interaction, requested_bet=bet)
-        if prepared_bet is None:
-            return
-        bet = prepared_bet.amount
-        is_allin = prepared_bet.is_allin
-
-        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
-
-        hand = BlackjackHand(rng=self.rng, bet=bet)
-        hand.deal_initial()
-
-        taunt = await self.dealer.taunt_bet(
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            balance_at_start=prepared_bet.balance_at_start,
-            bet=bet,
-            game="blackjack",
+        owner, balance = await self._participant_from_user(
+            user=interaction.user, requested_bet=bet
         )
-
-        # Natural Blackjack (or dealer Blackjack) ends the hand before the
-        # player gets to act; settle and post the final embed straight away.
-        if hand.finished:
-            settlement = await settle_blackjack_round(
-                hand=hand,
-                player_id=interaction.user.id,
-                player_account_name=interaction.user.name,
-                player_avatar_url=interaction.user.display_avatar.url,
-                dealer_id=dealer_id,
-                dealer_name=dealer_name,
-                dealer_avatar_url=dealer_avatar_url,
+        if owner is None:
+            message = await interaction.followup.send(
+                embed=self._insufficient_balance_embed(balance=balance), wait=True
             )
-            banter = await self.dealer.settle(
-                author_name=interaction.user.name,
-                player_name=interaction.user.display_name,
-                outcome=settlement.outcome,
-                bet=bet,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                game="blackjack",
-                detail=settlement.detail,
-            )
-            outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
-            embed = build_final_embed(
-                dealer_name=dealer_name,
-                player_name=interaction.user.display_name,
-                player_avatar_url=interaction.user.display_avatar.url,
-                hand=hand,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                dealer_line=banter,
-                outcome_label=outcome_label,
-                color=color,
-                is_allin=is_allin,
-                round_note=blackjack_early_finish_note(hand=hand),
-            )
-            message = await interaction.followup.send(embed=embed, wait=True)
-            await track_game_message(message=message)
             schedule_game_message_delete(message=message)
             return
 
-        view = BlackjackView(
+        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
+        view = BlackjackLobbyView(
+            owner=owner,
+            requested_bet=bet,
+            rng=self.rng,
             dealer=self.dealer,
-            hand=hand,
-            owner_id=interaction.user.id,
-            author_name=interaction.user.name,
-            player_name=interaction.user.display_name,
-            player_avatar_url=interaction.user.display_avatar.url,
             dealer_id=dealer_id,
             dealer_name=dealer_name,
             dealer_avatar_url=dealer_avatar_url,
-            balance_at_start=prepared_bet.balance_at_start,
-            is_allin=is_allin,
+            prepare_participant=self._prepare_lobby_participant,
+            refresh_participants=self._refresh_lobby_participants,
         )
-        embed = build_in_progress_embed(
-            dealer_name=dealer_name,
-            player_name=interaction.user.display_name,
-            player_avatar_url=interaction.user.display_avatar.url,
-            hand=hand,
-            balance_at_start=prepared_bet.balance_at_start,
-            dealer_line=taunt,
-            is_allin=is_allin,
+        embed = build_blackjack_lobby_embed(
+            owner=owner,
+            participants=view.participants,
+            requested_bet=bet,
+            max_players=MAX_BLACKJACK_PLAYERS,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
         await track_game_message(message=message)

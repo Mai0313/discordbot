@@ -6,9 +6,11 @@ from random import Random
 
 import pytest
 
+from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import (
     Card,
     BlackjackHand,
+    BlackjackRound,
     settle,
     is_bust,
     hand_value,
@@ -66,6 +68,17 @@ def _hand_with(player: list[Card], dealer: list[Card], bet: int = 100) -> Blackj
     hand.dealer = dealer
     hand.finished = True
     return hand
+
+
+def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
+    return GameParticipant(
+        user_id=user_id,
+        account_name=display_name.lower(),
+        display_name=display_name,
+        bet=bet,
+        balance_at_start=1_000,
+        is_allin=False,
+    )
 
 
 def test_settle_player_blackjack_pays_three_to_two() -> None:
@@ -184,6 +197,48 @@ def test_dealer_keeps_drawing_below_17() -> None:
     hand.stand()
     final = hand.dealer_total()
     assert final >= 17 or is_bust(cards=hand.dealer)
+
+
+def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
+    """The multiplayer round advances in join order and resolves dealer play once."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=12345),
+        participants=[
+            _participant(user_id=1, display_name="Alice"),
+            _participant(user_id=2, display_name="Bob"),
+        ],
+    )
+    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
+    round_state.players[1].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+
+    assert round_state.active_player() == round_state.players[0]
+    round_state.stand(user_id=1)
+    assert round_state.active_player() == round_state.players[1]
+    round_state.stand(user_id=2)
+
+    assert round_state.finished is True
+    assert round_state.dealer_played is True
+    assert round_state.dealer_total() >= 17 or is_bust(cards=round_state.dealer)
+
+
+def test_blackjack_round_rejects_action_from_non_active_player() -> None:
+    """Only the current player can mutate the shared round."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[
+            _participant(user_id=1, display_name="Alice"),
+            _participant(user_id=2, display_name="Bob"),
+        ],
+    )
+    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
+    round_state.players[1].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+
+    with pytest.raises(expected_exception=ValueError, match="turn"):
+        round_state.hit(user_id=2)
+
+    assert len(round_state.players[0].cards) == 2
 
 
 def test_render_hand_hides_first_card() -> None:

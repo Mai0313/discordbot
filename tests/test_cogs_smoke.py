@@ -17,8 +17,8 @@ from discordbot.cogs._economy import database
 from discordbot.cogs.template import TemplateCogs
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
+from discordbot.cogs._games.views import BlackjackLobbyView
 from discordbot.cogs.parse_threads import ThreadsCogs
-from discordbot.cogs._games.blackjack import Card, BlackjackHand
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -542,20 +542,6 @@ async def fake_game_balance(user_id: int) -> int:
     return 100
 
 
-async def fake_settle_blackjack_round(  # noqa: PLR0913 -- mirrors settlement helper signature
-    hand: BlackjackHand,
-    player_id: int,
-    player_account_name: str,
-    player_avatar_url: str,
-    dealer_id: int,
-    dealer_name: str,
-    dealer_avatar_url: str,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        outcome="win", delta=15, new_balance=115, house_balance=-15, detail="natural"
-    )
-
-
 class FakeDealer:
     async def taunt_bet(
         self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: str
@@ -581,18 +567,6 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
-    monkeypatch.setattr(games, "settle_blackjack_round", fake_settle_blackjack_round)
-    hand = BlackjackHand(rng=games.SystemRandom(), bet=10)
-    hand.player = [Card(rank="A", suit="♠"), Card(rank="K", suit="♣")]
-    hand.dealer = [Card(rank="9", suit="♠"), Card(rank="8", suit="♣")]
-    hand.finished = True
-
-    monkeypatch.setattr(target=BlackjackHand, name="deal_initial", value=lambda self: None)
-
-    def fake_blackjack_hand(rng: games.SystemRandom, bet: int) -> BlackjackHand:
-        return hand
-
-    monkeypatch.setattr(games, "BlackjackHand", fake_blackjack_hand)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     cog.__dict__["dealer"] = FakeDealer()
@@ -600,6 +574,29 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet=10)
     assert blackjack_interaction.followup.sent[0]["wait"] is True
+    assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
+
+
+async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setattr(games, "get_balance", fake_game_balance)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog.__dict__["dealer"] = FakeDealer()
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=10)
+    lobby_view = owner_interaction.followup.sent[0]["view"]
+    assert isinstance(lobby_view, BlackjackLobbyView)
+
+    start_button = next(
+        child for child in lobby_view.children if getattr(child, "label", "") == "開始"
+    )
+    other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
+    await start_button.callback(other_interaction)
+
+    assert other_interaction.followup.sent[0]["content"] == "只有發起者可以開始"
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:

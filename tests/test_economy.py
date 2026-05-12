@@ -1,6 +1,5 @@
 """Tests for the economy persistence layer."""
 
-from types import SimpleNamespace
 from random import SystemRandom
 import asyncio
 from pathlib import Path
@@ -13,8 +12,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._games import views
 from discordbot.cogs._economy import database
+from discordbot.typings.games import GameParticipant, BlackjackSettlement
 from discordbot.cogs._games.views import BlackjackView
-from discordbot.cogs._games.blackjack import Card, BlackjackHand
+from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
 
 
@@ -66,6 +66,35 @@ class _InteractionStub:
     def __init__(self, *, message: _MessageStub) -> None:
         self.message = message
         self.response = _ResponseStub()
+
+
+def _participant(
+    *,
+    user_id: int = 1,
+    account_name: str = "alice",
+    display_name: str = "Alice",
+    bet: int = 50,
+    balance_at_start: int = 100,
+) -> GameParticipant:
+    """Builds a prepared Blackjack participant for view tests."""
+    return GameParticipant(
+        user_id=user_id,
+        account_name=account_name,
+        display_name=display_name,
+        bet=bet,
+        balance_at_start=balance_at_start,
+        is_allin=False,
+    )
+
+
+def _round_from_hand(*, hand: BlackjackHand, participant: GameParticipant) -> BlackjackRound:
+    """Adapts a single-player hand into the multiplayer round shape."""
+    round_state = BlackjackRound.from_participants(rng=hand.rng, participants=[participant])
+    round_state.players[0].cards = list(hand.player)
+    round_state.players[0].finished = hand.finished
+    round_state.dealer = list(hand.dealer)
+    round_state.finished = hand.finished
+    return round_state
 
 
 @pytest.fixture(autouse=True)
@@ -460,18 +489,17 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
 
     dealer = _DealerStub()
     message = _MessageStub()
+    participant = _participant()
     view = BlackjackView(
         dealer=dealer,
-        hand=hand,
-        owner_id=1,
+        round_state=_round_from_hand(hand=hand, participant=participant),
+        starter_id=1,
         author_name="alice",
-        player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_at_start=100,
     )
 
-    await asyncio.gather(view._finalize(message=message), view._finalize(message=message))
+    await asyncio.gather(view.finalize(message=message), view.finalize(message=message))
 
     assert await database.get_balance(user_id=1) == 150
     assert await database.get_balance(user_id=99) == -50
@@ -500,21 +528,20 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
 
     dealer = _DealerStub()
     message = _MessageStub()
+    participant = _participant()
     view = BlackjackView(
         dealer=dealer,
-        hand=hand,
-        owner_id=1,
+        round_state=_round_from_hand(hand=hand, participant=participant),
+        starter_id=1,
         author_name="alice",
-        player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_at_start=100,
     )
     view.message = message
 
     await view.on_timeout()
 
-    assert hand.finished is True
+    assert view.round_state.finished is True
     assert await database.get_balance(user_id=1) == 50
     assert await database.get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
@@ -533,10 +560,10 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
         cleanup_messages.append(message)
 
-    async def delayed_settle_blackjack_round(**_kwargs: object) -> SimpleNamespace:
+    async def delayed_settle_blackjack_round(**_kwargs: object) -> BlackjackSettlement:
         settlement_started.set()
         await continue_settlement.wait()
-        return SimpleNamespace(
+        return BlackjackSettlement(
             outcome="win", delta=50, payout=50, new_balance=150, house_balance=-50, detail="win"
         )
 
@@ -553,15 +580,14 @@ async def test_blackjack_view_locks_actions_while_finalizing(
 
     dealer = _DealerStub()
     message = _MessageStub()
+    participant = _participant(balance_at_start=50)
     view = BlackjackView(
         dealer=dealer,
-        hand=hand,
-        owner_id=1,
+        round_state=_round_from_hand(hand=hand, participant=participant),
+        starter_id=1,
         author_name="alice",
-        player_name="Alice",
         dealer_id=99,
         dealer_name="house",
-        balance_at_start=50,
     )
 
     hit_button, stand_button = view.children
@@ -571,11 +597,11 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     hit_task = asyncio.create_task(coro=hit_button.callback(_InteractionStub(message=message)))
     await asyncio.sleep(delay=0)
 
-    assert len(hand.player) == 2
+    assert len(view.round_state.players[0].cards) == 2
     continue_settlement.set()
     await asyncio.gather(stand_task, hit_task)
 
-    assert len(hand.player) == 2
+    assert len(view.round_state.players[0].cards) == 2
     assert dealer.settle_calls == 1
     assert dealer.hint_calls == 0
     assert message.edit_calls == 1

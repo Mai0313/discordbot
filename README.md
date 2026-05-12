@@ -57,17 +57,17 @@ The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every D
 
 **Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. `/checkin` claims a daily 100,000 虛擬歡樂豆 with a 7-day streak bonus (linear: day 1 = 1×, day 7 = 4×). Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
 
-**Spending 虛擬歡樂豆:** casino games validate the bet when the round starts, then apply the signed result only when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the round. An unfinished in-memory round is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
+**Spending 虛擬歡樂豆:** casino games open a lobby first. The owner can start alone or wait for other players to join; only the owner can start the table. Bets are validated when a player joins and refreshed when the table starts, then the signed result is applied only when the table resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the player. An unfinished in-memory table is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the table and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show each player's round delta and post-settlement balance; `/house` carries the dealer's ledger balance.
 
 **VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 虛擬歡樂豆. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
 
 Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
-| Slash command      | Game                                                                                                                                                     |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/blackjack <bet>` | Standard 21 with Hit / Stand buttons. Natural Blackjack pays 1.5×; the dealer drips a sarcastic hint after every hit using only the visible dealer card. |
+| Slash command      | Game                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <bet>` | Multiplayer-ready 21 lobby with Join / Leave / Start buttons, then per-player Hit / Stand turns. Natural Blackjack pays 1.5×; the dealer uses only the visible dealer card for hints. |
 
-**Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack wins immediately and pays 1.5×; a dealer natural Blackjack settles immediately unless the player also has Blackjack, in which case the hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
+**Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack skips that player's action and pays 1.5× at table settlement; a dealer natural Blackjack settles the table immediately unless a player also has Blackjack, in which case that player's hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
 **Managing 虛擬歡樂豆:**
 
@@ -114,7 +114,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age (resets at Taipei 00:00)           |
 | `/repay <amount>`                 | Repay outstanding principal from your balance                                         |
 | `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                 |
-| `/blackjack <bet>`                | Play one round of 21 with Hit / Stand buttons; natural Blackjack settles immediately  |
+| `/blackjack <bet>`                | Open a 21 lobby; players join before the owner starts, then take Hit / Stand turns    |
 | `/house`                          | Show the dealer's accumulated win/loss across casino games                            |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                                  |
 | `/maple_equip <name>`             | Search MapleStory equipment                                                           |

@@ -57,17 +57,17 @@
 
 **获得点数：** 每则非 bot 用户消息都会获得 5,000 点数。AI 流式回复会再追加以 `total_tokens` (input + output) 计算的 bonus，实际数字会显示在回复 footer。`/checkin` 每天可领 100,000 点数，连续 7 天为一个 cycle（线性加成：第 1 天 1×、第 7 天 4×）。Threads 解析与 `/download_video` 不会在基础消息奖励之外再付额外 action reward。
 
-**花用点数：** 赌场游戏会在开局时检查 bet，等 round 结算时才套用本局正负结果。如果下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝开局。机器人重启时，未完成的 in-memory round 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下注金额，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 的「庄家余额」是 house ledger balance，不是本局赚多少，所以正数不会加 `+`。
+**花用点数：** 赌场游戏会先开 lobby。房主可以单人开始，也可以等其他玩家加入；只有房主可以开始 table。玩家加入时会检查 bet，开始时会重新确认余额，等 table 结算时才套用本局正负结果。如果下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝玩家。机器人重启时，未完成的 in-memory table 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下整桌下注，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 会显示每位玩家的本局 delta 与结算后余额；`/house` 才看 house ledger balance。
 
 **VIP：** `/vip` 一次性花费 10,000,000 点数购买永久 VIP 标记。VIP 会获得 1.5x 赌场赢钱加成（只乘正 delta）、2x 签到基础点数、2x 借款上限。
 
 游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。游戏 response 的 message ID 会存在本地，bot 重启后会在下次 startup 删掉上次留下的进行中或已结算游戏 embed。`/give` 的转点记录会保留，不自动删除。
 
-| Slash command       | 玩法                                                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `/blackjack <下注>` | 标准 21 点，附 Hit / Stand button；天生 Blackjack 赔 1.5 倍；玩家每次 hit 庄家会用看得到的 dealer card 给带刺的 hint。 |
+| Slash command       | 玩法                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <下注>` | 支持多人 21 点 lobby，含 Join / Leave / Start button，开始后依序 Hit / Stand；天生 Blackjack 赔 1.5 倍，庄家只用看得到的 dealer card 给 hint。 |
 
-**21 点提前结算规则：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌。玩家起手 Blackjack 会直接赢并赔 1.5 倍；庄家起手 Blackjack 会直接结算，除非玩家同时也是 Blackjack，否则玩家输。这不是任意凑到 21 点都会提前结束，只有起手 natural Blackjack 才会跳过 Hit / Stand。
+**21 点提前结算规则：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌。玩家起手 Blackjack 会跳过该玩家操作，table 结算时赔 1.5 倍；庄家起手 Blackjack 会直接结算整桌，除非玩家同时也是 Blackjack，否则玩家输。这不是任意凑到 21 点都会提前结束，只有起手 natural Blackjack 才会跳过 Hit / Stand。
 
 **管理点数：**
 
@@ -101,31 +101,31 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 
 ## 指令
 
-| 指令                            | 说明                                                                       |
-| ------------------------------- | -------------------------------------------------------------------------- |
-| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                        |
-| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                            |
-| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频              |
-| `/balance`                      | 查看你目前的点数余额、贷款与 VIP 状态（跨服务器）                          |
-| `/checkin`                      | 领取今日签到奖励（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）    |
-| `/vip`                          | 购买永久 VIP（1.5x 赌场赔率、2x 签到、2x 借款上限）                        |
-| `/leaderboard`                  | 全域点数 Top 10                                                            |
-| `/loss_leaderboard`             | 今日输最多 Top 10（每天 Taipei 00:00 重置）                                |
-| `/borrow <金额>`                | 依 Discord 账号年龄借点数（每天 Taipei 00:00 自动归零）                    |
-| `/repay <金额>`                 | 从余额偿还未还本金                                                         |
-| `/give <成员> <点数>`           | 把点数转给其他成员                                                         |
-| `/blackjack <下注>`             | 跟 AI 庄家玩一局 21 点（含 Hit / Stand button；起手 Blackjack 会直接结算） |
-| `/house`                        | 查看庄家在赌场游戏累积的输赢                                               |
-| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                     |
-| `/maple_equip <名称>`           | 搜索枫之谷装备                                                             |
-| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                             |
-| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                             |
-| `/maple_quest <名称>`           | 搜索枫之谷任务                                                             |
-| `/maple_map <名称>`             | 搜索枫之谷地图                                                             |
-| `/maple_item <名称>`            | 搜索枫之谷物品来源                                                         |
-| `/maple_stats`                  | 查看枫之谷数据库统计                                                       |
-| `/help`                         | 显示机器人使用指南                                                         |
-| `/ping`                         | 测试机器人延迟                                                             |
+| 指令                            | 说明                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                     |
+| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                         |
+| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频           |
+| `/balance`                      | 查看你目前的点数余额、贷款与 VIP 状态（跨服务器）                       |
+| `/checkin`                      | 领取今日签到奖励（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置） |
+| `/vip`                          | 购买永久 VIP（1.5x 赌场赔率、2x 签到、2x 借款上限）                     |
+| `/leaderboard`                  | 全域点数 Top 10                                                         |
+| `/loss_leaderboard`             | 今日输最多 Top 10（每天 Taipei 00:00 重置）                             |
+| `/borrow <金额>`                | 依 Discord 账号年龄借点数（每天 Taipei 00:00 自动归零）                 |
+| `/repay <金额>`                 | 从余额偿还未还本金                                                      |
+| `/give <成员> <点数>`           | 把点数转给其他成员                                                      |
+| `/blackjack <下注>`             | 开一个 21 点 lobby，玩家加入后由房主开始，再依序 Hit / Stand            |
+| `/house`                        | 查看庄家在赌场游戏累积的输赢                                            |
+| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                  |
+| `/maple_equip <名称>`           | 搜索枫之谷装备                                                          |
+| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                          |
+| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                          |
+| `/maple_quest <名称>`           | 搜索枫之谷任务                                                          |
+| `/maple_map <名称>`             | 搜索枫之谷地图                                                          |
+| `/maple_item <名称>`            | 搜索枫之谷物品来源                                                      |
+| `/maple_stats`                  | 查看枫之谷数据库统计                                                    |
+| `/help`                         | 显示机器人使用指南                                                      |
+| `/ping`                         | 测试机器人延迟                                                          |
 
 ## 自托管
 

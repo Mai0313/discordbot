@@ -153,6 +153,51 @@ class DealerAI:
             end_user_id=author_name,
         )
 
+    async def table_settle(  # noqa: PLR0913 -- table summary needs every field for the prompt
+        self,
+        *,
+        author_name: str,
+        table_name: str,
+        player_count: int,
+        net_delta: int,
+        game: GameKind,
+        detail: str,
+    ) -> str:
+        """Returns one dealer line for a multiplayer table settlement.
+
+        Args:
+            author_name: Discord username used as the LiteLLM end-user ID.
+            table_name: Display label for the table.
+            player_count: Number of settled players.
+            net_delta: Sum of all player deltas from the table.
+            game: Game type for the prompt.
+            detail: Compact per-player result summary.
+
+        Returns:
+            A trimmed model-generated line, or a fallback line on request
+            failure or empty output.
+        """
+        game_labels: dict[GameKind, str] = {"blackjack": "21 點"}
+        if net_delta > 0:
+            fallback = "今天這桌有點旺, 但賭場不會天天讓你們舒服"
+        elif net_delta < 0:
+            fallback = "一桌人一起送, 我收得都不好意思了"
+        else:
+            fallback = "忙了半天打平, 這桌也算會拖時間"
+        user_text = (
+            f"遊戲: {game_labels[game]}\n"
+            f"桌名: {table_name}\n"
+            f"玩家數: {player_count}\n"
+            f"全桌玩家淨變動總和 ({CURRENCY_NAME}): {net_delta:+d}\n"
+            f"局面細節: {detail}"
+        )
+        return await self._ask(
+            instructions=DEALER_SETTLE_PROMPT,
+            user_text=user_text,
+            fallback=fallback,
+            end_user_id=author_name,
+        )
+
     async def hint(
         self, *, author_name: str, player_name: str, player_total: int, dealer_visible: int
     ) -> str:

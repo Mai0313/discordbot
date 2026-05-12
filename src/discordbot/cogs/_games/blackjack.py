@@ -8,7 +8,7 @@ from random import Random
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, SettleOutcome
+from discordbot.typings.games import Card, SettleOutcome, GameParticipant
 
 
 def draw_card(rng: Random) -> Card:
@@ -144,6 +144,169 @@ class BlackjackHand(BaseModel):
             Best total for the dealer's hand.
         """
         return hand_value(cards=self.dealer)
+
+
+class BlackjackPlayerHand(BaseModel):
+    """Mutable Blackjack hand state for one participant at a shared table.
+
+    Attributes:
+        participant: Discord player and wager metadata.
+        cards: Cards currently held by the player.
+        finished: True once this player no longer needs Hit / Stand actions.
+    """
+
+    participant: GameParticipant
+    cards: list[Card] = Field(default_factory=list)
+    finished: bool = False
+
+    def total(self) -> int:
+        """Returns the current best total for this player's hand."""
+        return hand_value(cards=self.cards)
+
+    def is_blackjack(self) -> bool:
+        """Returns whether this player's first two cards are a natural Blackjack."""
+        return is_blackjack(cards=self.cards)
+
+    def is_bust(self) -> bool:
+        """Returns whether this player has busted."""
+        return is_bust(cards=self.cards)
+
+
+class BlackjackRound(BaseModel):
+    """Mutable state for a multiplayer Blackjack table.
+
+    One dealer hand is shared by every player. Players act in lobby join order,
+    while natural Blackjacks and busted hands are skipped automatically.
+
+    Attributes:
+        rng: Random source used for card draws.
+        players: Per-player hand states.
+        dealer: Dealer cards shared by the table.
+        current_player_index: Index of the player whose turn is active.
+        dealer_played: True once the dealer has drawn for all standing players.
+        finished: True once no more player actions remain.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    rng: Random
+    players: list[BlackjackPlayerHand]
+    dealer: list[Card] = Field(default_factory=list)
+    current_player_index: int = 0
+    dealer_played: bool = False
+    finished: bool = False
+
+    @classmethod
+    def from_participants(
+        cls, *, rng: Random, participants: list[GameParticipant]
+    ) -> "BlackjackRound":
+        """Builds a round from registered lobby participants."""
+        players = [BlackjackPlayerHand(participant=participant) for participant in participants]
+        return cls(rng=rng, players=players)
+
+    def deal_initial(self) -> None:
+        """Deals two cards to every player and two cards to the dealer."""
+        for player in self.players:
+            player.cards = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
+        self.dealer = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
+        dealer_blackjack = is_blackjack(cards=self.dealer)
+        for player in self.players:
+            if dealer_blackjack or player.is_blackjack():
+                player.finished = True
+        self._advance_or_finish()
+
+    def active_player(self) -> BlackjackPlayerHand | None:
+        """Returns the player whose turn is active, if any."""
+        if self.finished:
+            return None
+        if self.current_player_index >= len(self.players):
+            return None
+        player = self.players[self.current_player_index]
+        if player.finished:
+            self._advance_or_finish()
+            return self.active_player()
+        return player
+
+    def hit(self, *, user_id: int) -> Card:
+        """Draws one card for the active player.
+
+        Args:
+            user_id: Discord user ID that must match the active player.
+
+        Returns:
+            The drawn card.
+
+        Raises:
+            ValueError: The user is not the active player.
+        """
+        player = self._require_active_player(user_id=user_id)
+        card = draw_card(rng=self.rng)
+        player.cards.append(card)
+        if player.is_bust():
+            player.finished = True
+            self._advance_or_finish()
+        return card
+
+    def stand(self, *, user_id: int) -> None:
+        """Marks the active player as standing and advances the table."""
+        player = self._require_active_player(user_id=user_id)
+        player.finished = True
+        self._advance_or_finish()
+
+    def stand_all_remaining(self) -> None:
+        """Marks every unresolved player as standing, then finishes the table."""
+        for player in self.players:
+            player.finished = True
+        self._finish_after_players_done()
+
+    def dealer_total(self) -> int:
+        """Returns the current best total for the dealer hand."""
+        return hand_value(cards=self.dealer)
+
+    def dealer_visible_value(self) -> int:
+        """Returns the visible dealer card value for hint prompts."""
+        hand = BlackjackHand(rng=self.rng, bet=0, dealer=list(self.dealer))
+        return dealer_visible_value(hand=hand)
+
+    def settlement_hand(self, *, player: BlackjackPlayerHand) -> BlackjackHand:
+        """Builds the single-player hand shape used by settlement helpers."""
+        return BlackjackHand(
+            rng=self.rng,
+            bet=player.participant.bet,
+            player=list(player.cards),
+            dealer=list(self.dealer),
+            finished=True,
+        )
+
+    def _require_active_player(self, *, user_id: int) -> BlackjackPlayerHand:
+        player = self.active_player()
+        if player is None or player.participant.user_id != user_id:
+            raise ValueError("Not this player's turn")
+        return player
+
+    def _advance_or_finish(self) -> None:
+        while self.current_player_index < len(self.players):
+            if not self.players[self.current_player_index].finished:
+                return
+            self.current_player_index += 1
+        self._finish_after_players_done()
+
+    def _finish_after_players_done(self) -> None:
+        if self.finished:
+            return
+        if self._needs_dealer_play():
+            self._play_dealer()
+        self.finished = True
+
+    def _needs_dealer_play(self) -> bool:
+        if is_blackjack(cards=self.dealer):
+            return False
+        return any(not player.is_blackjack() and not player.is_bust() for player in self.players)
+
+    def _play_dealer(self) -> None:
+        while hand_value(cards=self.dealer) < 17:
+            self.dealer.append(draw_card(rng=self.rng))
+        self.dealer_played = True
 
 
 def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:

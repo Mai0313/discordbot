@@ -33,6 +33,30 @@ class Card(BaseModel):
         return f"{self.rank}{self.suit}"
 
 
+class GameParticipant(BaseModel):
+    """A Discord user registered for a casino game session.
+
+    Attributes:
+        user_id: Discord user ID for the account row and interaction checks.
+        account_name: Stable Discord username stored in the economy account row.
+        display_name: Guild-aware display name shown in game embeds.
+        avatar_url: Last-seen Discord avatar URL for the economy account row.
+        bet: Effective wager for this player after all-in clamping.
+        balance_at_start: Balance observed when the game session starts.
+        is_allin: True when the requested bet was clamped to the player's balance.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    account_name: str
+    display_name: str
+    avatar_url: str = ""
+    bet: int
+    balance_at_start: int
+    is_allin: bool
+
+
 class WagerSettlement(BaseModel):
     """Database-backed settlement result for a finished wager.
 
@@ -63,4 +87,26 @@ class BlackjackSettlement(WagerSettlement):
     detail: str
 
 
-__all__ = ["BlackjackSettlement", "Card", "GameKind", "SettleOutcome", "WagerSettlement"]
+class BlackjackPlayerResult(BaseModel):
+    """Settlement result for one player at a Blackjack table.
+
+    Attributes:
+        participant: Player identity and wager metadata.
+        settlement: Database-backed result for that player's hand.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    participant: GameParticipant
+    settlement: BlackjackSettlement
+
+
+__all__ = [
+    "BlackjackPlayerResult",
+    "BlackjackSettlement",
+    "Card",
+    "GameKind",
+    "GameParticipant",
+    "SettleOutcome",
+    "WagerSettlement",
+]

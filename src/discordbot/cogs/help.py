@@ -68,9 +68,10 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**Games**\n"
-            "`/blackjack` play one round of 21. Bets settle only when the round ends, "
-            "over-bets auto all-in, idle hands auto-stand after 180 seconds, "
-            "and final game messages are cleaned up after 3 minutes."
+            "`/blackjack` opens a 21 lobby. Other players can join before the owner starts, "
+            "single-player starts are still allowed, bets settle only when the table ends, "
+            "idle hands auto-stand after 180 seconds, and final game messages are cleaned up "
+            "after 3 minutes."
         ),
         "ping": "**Ping** — `/ping`\nCheck the bot's response latency.",
     },
@@ -130,8 +131,9 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**小遊戲**\n"
-            "`/blackjack` 跟莊家玩一局 21 點，bet 會在結算時處理，超過餘額會自動 all-in，"
-            "不操作 180 秒會自動 stand 結算，final game message 會在 3 分鐘後清掉"
+            "`/blackjack` 會開一個 21 點 lobby，其他玩家可以先加入，只有房主能開始，"
+            "單人也可以直接開始，bet 會在整桌結束時結算，超過餘額會自動 all-in，"
+            "不操作 180 秒會自動 stand，final game message 會在 3 分鐘後清掉"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
     },
@@ -192,9 +194,9 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**ゲーム**\n"
-            "`/blackjack` 21を1ラウンド遊びます。ベットはラウンド終了時に精算され、"
-            "残高超過は自動 all-in、180秒操作がない場合は自動 stand で精算され、"
-            "final game message は3分後に削除されます。"
+            "`/blackjack` 21の lobby を開きます。他のプレイヤーは owner が開始する前に参加でき、"
+            "1人でも開始できます。ベットは table 終了時に精算され、残高超過は自動 all-in、"
+            "180秒操作がない場合は自動 stand、final game message は3分後に削除されます。"
         ),
         "ping": "**Ping** — `/ping`\nボットの応答遅延を確認します。",
     },

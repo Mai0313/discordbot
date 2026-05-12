@@ -57,17 +57,17 @@
 
 **獲得虛擬歡樂豆：** 每則非 bot 使用者訊息都會獲得 5,000 虛擬歡樂豆。AI 串流回覆會再追加以 `total_tokens` (input + output) 計算的 bonus，實際數字會顯示在回覆 footer。`/checkin` 每天可領 100,000 虛擬歡樂豆，連續 7 天為一個 cycle（線性加成：第 1 天 1×、第 7 天 4×）。Threads 解析與 `/download_video` 不會在基礎訊息獎勵之外再付額外 action reward。
 
-**花用虛擬歡樂豆：** 賭場遊戲會在開局時檢查 bet，等 round 結算時才套用本局正負結果。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕開局。機器人重啟時，未完成的 in-memory round 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
+**花用虛擬歡樂豆：** 賭場遊戲會先開 lobby。房主可以單人開始，也可以等其他玩家加入；只有房主可以開始 table。玩家加入時會檢查 bet，開始時會重新確認餘額，等 table 結算時才套用本局正負結果。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕玩家。機器人重啟時，未完成的 in-memory table 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下整桌下注，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 會顯示每位玩家的本局 delta 與結算後餘額；`/house` 才看 house ledger balance。
 
 **VIP：** `/vip` 一次性花費 10,000,000 虛擬歡樂豆購買永久 VIP 標記。VIP 會獲得 1.5x 賭場贏錢加成（只乘正 delta）、2x 簽到基礎點數、2x 借款上限。
 
 遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、`/borrow`、`/repay` 查詢 embed 也會在送出後清掉。遊戲 response 的 message ID 會存在本機，bot 重啟後會在下次 startup 刪掉上次留下的進行中或已結算遊戲 embed。`/give` 的轉點紀錄會保留，不自動刪除。
 
-| Slash command       | 玩法                                                                                                                   |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `/blackjack <下注>` | 標準 21 點，附 Hit / Stand button；天生 Blackjack 賠 1.5 倍；玩家每次 hit 莊家會用看得到的 dealer card 給帶刺的 hint。 |
+| Slash command       | 玩法                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <下注>` | 支援多人 21 點 lobby，含 Join / Leave / Start button，開始後依序 Hit / Stand；天生 Blackjack 賠 1.5 倍，莊家只用看得到的 dealer card 給 hint。 |
 
-**21 點提前結算規則：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌。玩家起手 Blackjack 會直接贏並賠 1.5 倍；莊家起手 Blackjack 會直接結算，除非玩家同時也是 Blackjack，否則玩家輸。這不是任意湊到 21 點都會提前結束，只有起手 natural Blackjack 才會跳過 Hit / Stand。
+**21 點提前結算規則：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌。玩家起手 Blackjack 會跳過該玩家操作，table 結算時賠 1.5 倍；莊家起手 Blackjack 會直接結算整桌，除非玩家同時也是 Blackjack，否則玩家輸。這不是任意湊到 21 點都會提前結束，只有起手 natural Blackjack 才會跳過 Hit / Stand。
 
 **管理虛擬歡樂豆：**
 
@@ -101,31 +101,31 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 
 ## 指令
 
-| 指令                            | 說明                                                                       |
-| ------------------------------- | -------------------------------------------------------------------------- |
-| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                        |
-| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                            |
-| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片              |
-| `/balance`                      | 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）                    |
-| `/checkin`                      | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）    |
-| `/vip`                          | 購買永久 VIP（1.5x 賭場賠率、2x 簽到、2x 借款上限）                        |
-| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                      |
-| `/loss_leaderboard`             | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                                |
-| `/borrow <金額>`                | 依 Discord 帳號年齡借虛擬歡樂豆（每天 Taipei 00:00 自動歸零）              |
-| `/repay <金額>`                 | 從餘額償還未還本金                                                         |
-| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                   |
-| `/blackjack <下注>`             | 跟 AI 莊家玩一局 21 點（含 Hit / Stand button；起手 Blackjack 會直接結算） |
-| `/house`                        | 查看莊家在賭場遊戲累積的輸贏                                               |
-| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                     |
-| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                             |
-| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                             |
-| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                             |
-| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                             |
-| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                             |
-| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                         |
-| `/maple_stats`                  | 查看楓之谷資料庫統計                                                       |
-| `/help`                         | 顯示機器人使用指南                                                         |
-| `/ping`                         | 測試機器人延遲                                                             |
+| 指令                            | 說明                                                                    |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                     |
+| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                         |
+| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片           |
+| `/balance`                      | 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）                 |
+| `/checkin`                      | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置） |
+| `/vip`                          | 購買永久 VIP（1.5x 賭場賠率、2x 簽到、2x 借款上限）                     |
+| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                   |
+| `/loss_leaderboard`             | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                             |
+| `/borrow <金額>`                | 依 Discord 帳號年齡借虛擬歡樂豆（每天 Taipei 00:00 自動歸零）           |
+| `/repay <金額>`                 | 從餘額償還未還本金                                                      |
+| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                |
+| `/blackjack <下注>`             | 開一個 21 點 lobby，玩家加入後由房主開始，再依序 Hit / Stand            |
+| `/house`                        | 查看莊家在賭場遊戲累積的輸贏                                            |
+| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                  |
+| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                          |
+| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                          |
+| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                          |
+| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                          |
+| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                          |
+| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                      |
+| `/maple_stats`                  | 查看楓之谷資料庫統計                                                    |
+| `/help`                         | 顯示機器人使用指南                                                      |
+| `/ping`                         | 測試機器人延遲                                                          |
 
 ## 自架設
 
