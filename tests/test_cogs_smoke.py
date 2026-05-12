@@ -608,6 +608,24 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     assert blackjack_interaction.followup.sent[0]["wait"] is True
 
 
+async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
+    calls: list[SimpleNamespace] = []
+
+    async def record_cleanup(*, bot: SimpleNamespace) -> None:
+        calls.append(bot)
+
+    monkeypatch.setattr(games, "delete_tracked_game_messages", record_cleanup)
+    cog = GamesCogs(bot=bot)
+
+    await cog.on_ready()
+    await cog.on_ready()
+
+    assert calls == [bot]
+
+
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
     added: list[
         tuple[

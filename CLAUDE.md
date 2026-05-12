@@ -92,7 +92,7 @@ Slash commands `/dice`, `/dragon_gate`, and `/blackjack`, one game per invocatio
 - **Pure rules** live in `cogs/_games/dice.py`, `cogs/_games/dragon_gate.py`, and `cogs/_games/blackjack.py`. Side-effect-free; tests inject a seeded `random.Random`, production uses `random.SystemRandom()`. Dragon Gate uses Ace high, wins only when the shot card is strictly between the two gate cards, loses on boundary/outside, and pushes when the gate cards have no rank gap.
 - **Natural Blackjack**: `is_blackjack` means exactly two cards totaling 21. Player natural settles immediately at 1.5×. Dealer natural also settles immediately unless player also has natural (push). The final embed adds an "提前結束原因" field when this skips the Hit / Stand flow.
 - **Shared settlement** lives in `cogs/_games/settlement.py`. `settle_wager(...)` is the single DB-settlement path; `settle_blackjack_round(...)` wraps it for Blackjack. Used by dice, Dragon Gate, interactive Blackjack (`views.py`), and natural-Blackjack early settles.
-- **Response cleanup** lives in `cogs/_games/cleanup.py`. Final casino messages schedule deletion 180 seconds after settlement; zero-balance rejection embeds and game-related economy lookups (`/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, `/repay`) schedule deletion after send. `/give` transfer records are intentionally kept. Keep Blackjack timeout settlement separate so abandoned hands still settle before their final embed cleanup starts.
+- **Response cleanup** lives in `cogs/_games/cleanup.py`. Game response messages are persisted by `(channel_id, message_id)` in `data/game_cleanup.db` as soon as the round message is created, so `GamesCogs.on_ready` can delete stale messages left by a previous bot process. Final casino messages schedule deletion 180 seconds after settlement; zero-balance rejection embeds and game-related economy lookups (`/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, `/repay`) schedule deletion after send. `/give` transfer records are intentionally kept. Keep Blackjack timeout settlement separate so abandoned hands still settle before their final embed cleanup starts.
 - **Presentation helpers** (`cogs/_games/presentation.py`) centralize outcome labels / colors, all-in wording, bet field text, and the settlement footer. `莊家餘額` is an absolute ledger balance with no leading `+`; only the player round delta shows a sign.
 - **`BlackjackView`** drives Hit / Stand. `interaction_check` restricts buttons to `owner_id`; `on_timeout` auto-stands. `_finalize` is guarded by an `asyncio.Lock` + `_settled` flag so Hit / Stand / timeout can't pay out twice.
 - **Dealer hint visibility**: the embed hides the dealer's first card and shows the second. `dealer_visible_value(...)` must reflect this so `DealerAI.hint(...)` never sees hidden-card info.
@@ -157,6 +157,7 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 - `downloads/`, `threads/` — ephemeral media scratch (cleaned up by their respective cogs).
 - `messages.db` — message log.
 - `economy.db` — point balances, loan state, and `point_transaction` audit log.
+- `game_cleanup.db` — pending casino response `(channel_id, message_id)` records for restart cleanup.
 - `model_prices.json` — cached LiteLLM price table.
 
 ## Coding conventions

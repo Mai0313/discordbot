@@ -59,7 +59,7 @@
 
 **花用点数：** 赌场游戏会在开局时检查 bet，等 round 结算时才套用本局正负结果。如果下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝开局。机器人重启时，未完成的 in-memory round 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下注金额，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 的「庄家余额」是 house ledger balance，不是本局赚多少，所以正数不会加 `+`。
 
-游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。`/give` 的转点记录会保留，不自动删除。
+游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。游戏 response 的 message ID 会存在本地，bot 重启后会在下次 startup 删掉上次留下的进行中或已结算游戏 embed。`/give` 的转点记录会保留，不自动删除。
 
 | Slash command         | 玩法                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -207,6 +207,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 兼容端点
 
 - **消息记录**：机器人所在频道的消息会记录到本地 SQLite (`data/messages.db`)。数据仅存在你的服务器，不会外传。
 - **点数数据库**：每位用户的点数余额存储在另一个本地 SQLite 文件 (`data/economy.db`)，会记录 Discord user ID、最近一次看到的 username、avatar URL，以及余额相关计数。余额会跨机器人运行的所有服务器共享。
+- **游戏清理数据库**：等待清理的游戏 response 只会把 Discord channel ID 与 message ID 存在 `data/game_cleanup.db`，让 bot 重启后能删除残留的游戏 embed。
 - **API 调用**：文字、图片、支持的文件附件、内嵌媒体，以及发送者身份（当前对话上下文中参与者的 display name、username 与 Discord user ID）仅在机器人需要回复时才会发送至配置的 LLM API，例如在 guild 被标记或收到 DM 时。user ID 会一并传入，让机器人在被要求时可以标记其他成员。不会与其他第三方分享数据。
 - **权限**：机器人需要 Message Content 意图用于标记聊天和可选的本地记录。斜线指令与嵌入/附件权限用于交互功能。
 - **停用**：服务器管理员可通过调整机器人配置来停用消息记录。

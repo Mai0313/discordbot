@@ -59,7 +59,7 @@
 
 **花用虛擬歡樂豆：** 賭場遊戲會在開局時檢查 bet，等 round 結算時才套用本局正負結果。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕開局。機器人重啟時，未完成的 in-memory round 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
 
-遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查詢 embed 也會在送出後清掉。`/give` 的轉點紀錄會保留，不自動刪除。
+遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查詢 embed 也會在送出後清掉。遊戲 response 的 message ID 會存在本機，bot 重啟後會在下次 startup 刪掉上次留下的進行中或已結算遊戲 embed。`/give` 的轉點紀錄會保留，不自動刪除。
 
 | Slash command         | 玩法                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -207,6 +207,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 相容端點
 
 - **訊息記錄**：機器人所在頻道的訊息會記錄到本機 SQLite (`data/messages.db`)。資料僅存在你的伺服器，不會外傳。
 - **虛擬歡樂豆資料庫**：每位使用者的虛擬歡樂豆餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，會記錄 Discord user ID、最近一次看到的 username、avatar URL，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
+- **遊戲清理資料庫**：等待清理的遊戲 response 只會把 Discord channel ID 與 message ID 存在 `data/game_cleanup.db`，讓 bot 重啟後能刪除殘留的遊戲 embed。
 - **API 呼叫**：文字、圖片、支援的檔案附件、內嵌媒體，以及發送者身份（目前對話上下文中參與者的 display name、username 與 Discord user ID）僅在機器人需要回覆時才會發送至設定的 LLM API，例如在 guild 被標記或收到 DM 時。user ID 會一併傳入，讓機器人在被要求時可以標記其他成員。不會與其他第三方分享資料。
 - **權限**：機器人需要 Message Content 意圖用於標記聊天和可選的本地記錄。斜線指令與嵌入/附件權限用於互動功能。
 - **停用**：伺服器擁有者可透過調整機器人設定來停用訊息記錄。

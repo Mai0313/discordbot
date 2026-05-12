@@ -15,7 +15,11 @@ from discordbot.typings.economy import PreparedBet
 from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
+from discordbot.cogs._games.cleanup import (
+    track_game_message,
+    delete_tracked_game_messages,
+    schedule_game_message_delete,
+)
 from discordbot.cogs._games.blackjack import BlackjackHand
 from discordbot.cogs._economy.database import get_balance
 from discordbot.cogs._games.settlement import (
@@ -64,6 +68,7 @@ class GamesCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.rng = SystemRandom()
+        self._startup_cleanup_done = False
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -105,6 +110,14 @@ class GamesCogs(commands.Cog):
         if self.bot.user is None:
             return (0, "莊家", "")
         return (self.bot.user.id, self.bot.user.display_name, self.bot.user.display_avatar.url)
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Deletes stale game messages left by a previous bot process."""
+        if self._startup_cleanup_done:
+            return
+        self._startup_cleanup_done = True
+        await delete_tracked_game_messages(bot=self.bot)
 
     async def _prepare_bet(
         self, *, interaction: Interaction, requested_bet: int
@@ -205,6 +218,7 @@ class GamesCogs(commands.Cog):
             )
         )
         message = await interaction.followup.send(embed=in_progress, wait=True)
+        await track_game_message(message=message)
 
         await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
         result = play_dice(rng=self.rng)
@@ -333,6 +347,7 @@ class GamesCogs(commands.Cog):
             )
         )
         message = await interaction.followup.send(embed=in_progress, wait=True)
+        await track_game_message(message=message)
 
         await asyncio.sleep(delay=_DICE_REVEAL_DELAY_SECONDS)
         result = play_dragon_gate(rng=self.rng)
@@ -486,6 +501,7 @@ class GamesCogs(commands.Cog):
                 round_note=blackjack_early_finish_note(hand=hand),
             )
             message = await interaction.followup.send(embed=embed, wait=True)
+            await track_game_message(message=message)
             schedule_game_message_delete(message=message)
             return
 
@@ -512,6 +528,7 @@ class GamesCogs(commands.Cog):
             is_allin=is_allin,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        await track_game_message(message=message)
         view.message = message
 
 
