@@ -2,9 +2,9 @@
 
 Usage::
 
-    uv run python scripts/modify_balance.py 123456789012345678 500 --name alice
-    uv run python scripts/modify_balance.py 123456789012345678 -200
-    uv run python scripts/modify_balance.py 123456789012345678 -999 --allow-negative
+    uv run python scripts/modify_balance.py 1010833712956592200 500 --name mai9999
+    uv run python scripts/modify_balance.py 1010833712956592200 -200
+    uv run python scripts/modify_balance.py 1010833712956592200 -999 --allow-negative
     uv run python scripts/modify_balance.py all 50000
 """
 
