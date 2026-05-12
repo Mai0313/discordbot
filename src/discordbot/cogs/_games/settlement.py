@@ -67,8 +67,10 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     *,
     player_id: int,
     player_account_name: str,
+    player_avatar_url: str = "",
     dealer_id: int,
     dealer_name: str,
+    dealer_avatar_url: str = "",
     bet: int,
     delta: int,
 ) -> WagerSettlement:
@@ -81,8 +83,10 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
+        player_avatar_url: Last-seen Discord avatar URL for the player.
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
+        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
         bet: Effective bet amount that was already withdrawn.
         delta: Player net point change for the round.
 
@@ -93,9 +97,11 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     new_balance, house_balance = await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
+        player_avatar_url=player_avatar_url,
         payout=payout,
         dealer_id=dealer_id,
         dealer_name=dealer_name,
+        dealer_avatar_url=dealer_avatar_url,
         dealer_delta=-delta,
     )
     return WagerSettlement(
@@ -103,13 +109,15 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     )
 
 
-async def settle_blackjack_round(
+async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
     *,
     hand: BlackjackHand,
     player_id: int,
     player_account_name: str,
+    player_avatar_url: str = "",
     dealer_id: int,
     dealer_name: str,
+    dealer_avatar_url: str = "",
 ) -> BlackjackSettlement:
     """Settles player payout and mirrored house ledger for one finished hand.
 
@@ -117,8 +125,10 @@ async def settle_blackjack_round(
         hand: Finished Blackjack hand to settle.
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
+        player_avatar_url: Last-seen Discord avatar URL for the player.
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
+        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
 
     Returns:
         Blackjack settlement result including outcome and dealer prompt detail.
@@ -130,8 +140,10 @@ async def settle_blackjack_round(
     wager = await settle_wager(
         player_id=player_id,
         player_account_name=player_account_name,
+        player_avatar_url=player_avatar_url,
         dealer_id=dealer_id,
         dealer_name=dealer_name,
+        dealer_avatar_url=dealer_avatar_url,
         bet=hand.bet,
         delta=delta,
     )

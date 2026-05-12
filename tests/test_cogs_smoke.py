@@ -493,8 +493,14 @@ async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
     return ("Bot", -50, 100, 150)
 
 
-async def fake_transfer(
-    sender_id: int, sender_name: str, receiver_id: int, receiver_name: str, amount: int
+async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
+    sender_id: int,
+    sender_name: str,
+    sender_avatar_url: str,
+    receiver_id: int,
+    receiver_name: str,
+    receiver_avatar_url: str,
+    amount: int,
 ) -> database.TransferResult:
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
@@ -507,7 +513,9 @@ def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
     return
 
 
-async def fake_place_bet(user_id: int, name: str, requested_bet: int) -> database.PlacedBet:
+async def fake_place_bet(
+    user_id: int, name: str, avatar_url: str, requested_bet: int
+) -> database.PlacedBet:
     return database.PlacedBet(amount=10, balance_after=90, is_allin=False)
 
 
@@ -518,16 +526,24 @@ async def fake_zero_balance(user_id: int) -> int:
 async def fake_settle_wager(  # noqa: PLR0913 -- mirrors settlement helper signature
     player_id: int,
     player_account_name: str,
+    player_avatar_url: str,
     dealer_id: int,
     dealer_name: str,
+    dealer_avatar_url: str,
     bet: int,
     delta: int,
 ) -> SimpleNamespace:
     return SimpleNamespace(delta=10, new_balance=110, house_balance=-10)
 
 
-async def fake_settle_blackjack_round(
-    hand: BlackjackHand, player_id: int, player_account_name: str, dealer_id: int, dealer_name: str
+async def fake_settle_blackjack_round(  # noqa: PLR0913 -- mirrors settlement helper signature
+    hand: BlackjackHand,
+    player_id: int,
+    player_account_name: str,
+    player_avatar_url: str,
+    dealer_id: int,
+    dealer_name: str,
+    dealer_avatar_url: str,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         outcome="win", delta=15, new_balance=115, house_balance=-15, detail="natural"

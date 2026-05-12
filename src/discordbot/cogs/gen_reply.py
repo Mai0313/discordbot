@@ -575,7 +575,9 @@ class ReplyGeneratorCogs(commands.Cog):
         return input_rate * input_tokens + output_rate * output_tokens
 
     @staticmethod
-    async def _award_chat_points(user_id: int, name: str, amount: int) -> int | None:
+    async def _award_chat_points(
+        user_id: int, name: str, avatar_url: str, amount: int
+    ) -> int | None:
         """Persists chat-reward points and returns the new balance, or None on DB failure.
 
         Routed through ``credit_with_repayment`` so 50% of every reward
@@ -586,7 +588,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         try:
             result = await credit_with_repayment(
-                user_id=user_id, name=name, amount=amount, kind=TransactionKind.CHAT_REWARD
+                user_id=user_id,
+                name=name,
+                avatar_url=avatar_url,
+                amount=amount,
+                kind=TransactionKind.CHAT_REWARD,
             )
             return result.new_balance
         except Exception:
@@ -646,7 +652,10 @@ class ReplyGeneratorCogs(commands.Cog):
         new_balance: int | None = None
         if total_tokens > 0:
             new_balance = await self._award_chat_points(
-                user_id=message.author.id, name=message.author.name, amount=total_tokens
+                user_id=message.author.id,
+                name=message.author.name,
+                avatar_url=message.author.display_avatar.url,
+                amount=total_tokens,
             )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)

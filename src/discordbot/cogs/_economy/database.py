@@ -38,7 +38,19 @@ inside the same single-row UPDATE. The audit log lives in a separate
 from typing import Any, Final
 from datetime import UTC, datetime
 
-from sqlalchemy import Index, String, Integer, DateTime, case, desc, func, event, select, update
+from sqlalchemy import (
+    Index,
+    String,
+    Integer,
+    DateTime,
+    case,
+    desc,
+    func,
+    text,
+    event,
+    select,
+    update,
+)
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -98,6 +110,7 @@ class UserAccount(Base):
     Attributes:
         user_id: Discord user ID; primary key.
         name: Last-seen Discord username (refreshed on every write).
+        avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
         balance: Current spendable point balance.
         total_earned: Lifetime points earned (chat rewards, game wins, transfers in).
         total_spent: Lifetime points removed (game losses, transfers out).
@@ -122,6 +135,7 @@ class UserAccount(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="")
+    avatar_url: Mapped[str] = mapped_column(String(length=2048), default="", nullable=False)
     balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -189,6 +203,14 @@ async def _ensure_schema() -> None:
         return
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        result = await conn.execute(statement=text(text="PRAGMA table_info(user_account)"))
+        existing_columns = {row[1] for row in result.all()}
+        if "avatar_url" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN avatar_url VARCHAR(2048) NOT NULL DEFAULT ''"
+                )
+            )
     _schema_ready_for = _engine
 
 
@@ -263,7 +285,7 @@ def accrual_delta(*, principal: int, last_accrual_at: datetime, now: datetime) -
 
 
 def _build_credit_upsert(
-    *, user_id: int, name: str, amount: int, now: datetime
+    *, user_id: int, name: str, amount: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT that credits ``amount`` points (caller guarantees ``amount > 0``).
 
@@ -280,6 +302,7 @@ def _build_credit_upsert(
     stmt = insert(UserAccount).values(
         user_id=user_id,
         name=insert_name,
+        avatar_url=avatar_url,
         balance=amount,
         total_earned=amount,
         total_spent=0,
@@ -292,13 +315,15 @@ def _build_credit_upsert(
     }
     if name:
         set_["name"] = insert_name
+    if avatar_url:
+        set_["avatar_url"] = avatar_url
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
         UserAccount.balance
     )
 
 
 def _build_clamped_settle_upsert(
-    *, user_id: int, name: str, delta: int, now: datetime
+    *, user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with the resulting balance clamped at 0.
 
@@ -315,6 +340,7 @@ def _build_clamped_settle_upsert(
     stmt = insert(UserAccount).values(
         user_id=user_id,
         name=insert_name,
+        avatar_url=avatar_url,
         balance=initial_balance,
         total_earned=initial_balance,
         total_spent=0,
@@ -332,13 +358,15 @@ def _build_clamped_settle_upsert(
     }
     if name:
         set_["name"] = insert_name
+    if avatar_url:
+        set_["avatar_url"] = avatar_url
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
         UserAccount.balance
     )
 
 
 def _build_signed_delta_upsert(
-    *, user_id: int, name: str, delta: int, now: datetime
+    *, user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with NO clamp on the resulting balance.
 
@@ -356,6 +384,7 @@ def _build_signed_delta_upsert(
     stmt = insert(UserAccount).values(
         user_id=user_id,
         name=insert_name,
+        avatar_url=avatar_url,
         balance=delta,
         total_earned=initial_earned,
         total_spent=initial_spent,
@@ -369,6 +398,8 @@ def _build_signed_delta_upsert(
     }
     if name:
         set_["name"] = insert_name
+    if avatar_url:
+        set_["avatar_url"] = avatar_url
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
         UserAccount.balance
     )
@@ -466,6 +497,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
     *,
     user_id: int,
     name: str,
+    avatar_url: str,
     amount: int,
     kind: TransactionKind,
     note: str | None,
@@ -507,6 +539,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             base_stmt = insert(UserAccount).values(
                 user_id=user_id,
                 name=insert_name,
+                avatar_url=avatar_url,
                 balance=amount,
                 total_earned=amount,
                 total_spent=0,
@@ -525,6 +558,8 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             }
             if name:
                 set_values["name"] = insert_name
+            if avatar_url:
+                set_values["avatar_url"] = avatar_url
             upsert_stmt = base_stmt.on_conflict_do_update(
                 index_elements=["user_id"], set_=set_values
             ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
@@ -571,6 +606,8 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
         }
         if name and name != existing_name:
             update_values["name"] = name
+        if avatar_url:
+            update_values["avatar_url"] = avatar_url
 
         stmt = (
             update(UserAccount)
@@ -615,6 +652,7 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
     *,
     user_id: int,
     name: str,
+    avatar_url: str,
     delta: int,
     kind: TransactionKind,
     now: datetime,
@@ -631,7 +669,9 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
         statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
     )
     pre_balance = pre_result.scalar_one_or_none() or 0
-    stmt = _build_clamped_settle_upsert(user_id=user_id, name=name, delta=delta, now=now)
+    stmt = _build_clamped_settle_upsert(
+        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
+    )
     result = await session.execute(statement=stmt)
     new_balance = result.scalar_one()
     applied = new_balance - pre_balance
@@ -647,8 +687,8 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
     return new_balance
 
 
-async def _house_settle_in_session(
-    session: AsyncSession, *, user_id: int, name: str, delta: int, now: datetime
+async def _house_settle_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
+    session: AsyncSession, *, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
     """Applies a signed delta to the dealer ledger and logs the audit row.
 
@@ -656,7 +696,9 @@ async def _house_settle_in_session(
     allowed to go negative. The applied delta equals the requested delta
     so no pre-read is required.
     """
-    stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
+    stmt = _build_signed_delta_upsert(
+        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
+    )
     result = await session.execute(statement=stmt)
     new_balance = result.scalar_one()
     await _log_transaction_in_session(
@@ -671,7 +713,7 @@ async def _house_settle_in_session(
     return new_balance
 
 
-async def add_balance(user_id: int, name: str, amount: int) -> int:
+async def add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
     """Adds points to the user balance without touching the loan state.
 
     Non-positive amounts no-op and return the existing balance so callers
@@ -689,6 +731,7 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
         user_id: Discord user ID to credit.
         name: Last-seen Discord username to store on the account.
         amount: Number of points to add.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         The user's current balance after the operation.
@@ -697,7 +740,7 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
     if amount <= 0:
         return await get_balance(user_id=user_id)
     stmt = _build_credit_upsert(
-        user_id=user_id, name=name, amount=amount, now=datetime.now(tz=UTC)
+        user_id=user_id, name=name, avatar_url=avatar_url, amount=amount, now=datetime.now(tz=UTC)
     )
     async with open_session() as session:
         result = await session.execute(statement=stmt)
@@ -705,8 +748,14 @@ async def add_balance(user_id: int, name: str, amount: int) -> int:
         return result.scalar_one()
 
 
-async def credit_with_repayment(
-    *, user_id: int, name: str, amount: int, kind: TransactionKind, note: str | None = None
+async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors one income event
+    *,
+    user_id: int,
+    name: str,
+    amount: int,
+    kind: TransactionKind,
+    note: str | None = None,
+    avatar_url: str = "",
 ) -> CreditResult:
     """Credits ``amount`` to the user while diverting 50% to repay debt first.
 
@@ -722,6 +771,7 @@ async def credit_with_repayment(
         kind: Audit-log category for this credit (e.g. ``CHAT_REWARD``,
             ``CASINO_PAYOUT``).
         note: Optional free-text annotation for the audit row.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         Outcome capturing post-credit balance, the credited slice, and the
@@ -742,6 +792,7 @@ async def credit_with_repayment(
             session=session,
             user_id=user_id,
             name=name,
+            avatar_url=avatar_url,
             amount=amount,
             kind=kind,
             note=note,
@@ -751,7 +802,9 @@ async def credit_with_repayment(
         return result
 
 
-async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | None:
+async def place_bet(
+    user_id: int, name: str, requested_bet: int, avatar_url: str = ""
+) -> PlacedBet | None:
     """Atomically withdraws a wager.
 
     Bets larger than the current balance are clamped to the full available
@@ -765,6 +818,7 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
         user_id: Discord user ID placing the wager.
         name: Last-seen Discord username to store on the account.
         requested_bet: Requested wager amount in points.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         The withdrawn wager details, or `None` when the user has no spendable
@@ -796,6 +850,8 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
             }
             if name and name != existing_name:
                 update_values["name"] = name
+            if avatar_url:
+                update_values["avatar_url"] = avatar_url
 
             stmt = (
                 update(UserAccount)
@@ -829,7 +885,7 @@ async def place_bet(user_id: int, name: str, requested_bet: int) -> PlacedBet | 
         return None
 
 
-async def settle_game(user_id: int, name: str, delta: int) -> int:
+async def settle_game(user_id: int, name: str, delta: int, avatar_url: str = "") -> int:
     """Applies a signed player balance adjustment.
 
     Casino commands withdraw the bet up front with `place_bet()` and then pass
@@ -842,6 +898,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
         user_id: Discord user ID whose balance is adjusted.
         name: Last-seen Discord username to store on the account.
         delta: Signed point adjustment to apply.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         The user's current balance after settlement.
@@ -853,6 +910,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
             session=session,
             user_id=user_id,
             name=name,
+            avatar_url=avatar_url,
             delta=delta,
             kind=TransactionKind.CASINO_PAYOUT,
             now=now,
@@ -861,7 +919,7 @@ async def settle_game(user_id: int, name: str, delta: int) -> int:
         return new_balance
 
 
-async def house_settle(user_id: int, name: str, delta: int) -> int:
+async def house_settle(user_id: int, name: str, delta: int, avatar_url: str = "") -> int:
     """Records a dealer-side settlement.
 
     Used to track the bot's casino P&L over time. The dealer has effectively
@@ -878,6 +936,7 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
         user_id: Discord user ID for the dealer ledger row.
         name: Last-seen display name to store on the ledger row.
         delta: Signed point adjustment to apply.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         The dealer ledger balance after settlement, which may be negative.
@@ -886,7 +945,12 @@ async def house_settle(user_id: int, name: str, delta: int) -> int:
     now = datetime.now(tz=UTC)
     async with open_session() as session:
         new_balance = await _house_settle_in_session(
-            session=session, user_id=user_id, name=name, delta=delta, now=now
+            session=session,
+            user_id=user_id,
+            name=name,
+            avatar_url=avatar_url,
+            delta=delta,
+            now=now,
         )
         await session.commit()
         return new_balance
@@ -896,9 +960,11 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     *,
     player_id: int,
     player_account_name: str,
+    player_avatar_url: str = "",
     payout: int,
     dealer_id: int,
     dealer_name: str,
+    dealer_avatar_url: str = "",
     dealer_delta: int,
 ) -> tuple[int, int]:
     """Credits the player payout (with auto-repay) and mirrors house P&L atomically.
@@ -912,9 +978,11 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
+        player_avatar_url: Last-seen Discord avatar URL for the player.
         payout: Gross amount to credit back to the player.
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
+        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
         dealer_delta: Signed change to apply to the dealer ledger balance.
 
     Returns:
@@ -928,6 +996,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
                 session=session,
                 user_id=player_id,
                 name=player_account_name,
+                avatar_url=player_avatar_url,
                 amount=payout,
                 kind=TransactionKind.CASINO_PAYOUT,
                 note=None,
@@ -941,14 +1010,19 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
             player_balance = read_result.scalar_one_or_none() or 0
 
         dealer_balance = await _house_settle_in_session(
-            session=session, user_id=dealer_id, name=dealer_name, delta=dealer_delta, now=now
+            session=session,
+            user_id=dealer_id,
+            name=dealer_name,
+            avatar_url=dealer_avatar_url,
+            delta=dealer_delta,
+            now=now,
         )
         await session.commit()
         return player_balance, dealer_balance
 
 
 async def borrow(
-    *, user_id: int, name: str, amount: int, credit_limit_value: int
+    *, user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
 ) -> BorrowResult | None:
     """Disburses ``amount`` points to the user as new principal.
 
@@ -964,6 +1038,7 @@ async def borrow(
         amount: Amount to borrow (must be positive).
         credit_limit_value: Maximum allowed post-borrow total debt; the
             caller is expected to compute this with ``credit_limit``.
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         ``BorrowResult`` capturing the new balance and loan state, or
@@ -993,6 +1068,7 @@ async def borrow(
         base_stmt = insert(UserAccount).values(
             user_id=user_id,
             name=insert_name,
+            avatar_url=avatar_url,
             balance=amount,
             total_earned=0,
             total_spent=0,
@@ -1014,6 +1090,8 @@ async def borrow(
         }
         if name:
             set_values["name"] = insert_name
+        if avatar_url:
+            set_values["avatar_url"] = avatar_url
         upsert_stmt = base_stmt.on_conflict_do_update(
             index_elements=["user_id"], set_=set_values
         ).returning(UserAccount.balance, UserAccount.loan_principal, UserAccount.loan_interest)
@@ -1036,7 +1114,9 @@ async def borrow(
         )
 
 
-async def repay(*, user_id: int, name: str, amount: int) -> RepayResult | None:
+async def repay(
+    *, user_id: int, name: str, amount: int, avatar_url: str = ""
+) -> RepayResult | None:
     """Pays down interest first then principal, debited from the user's balance.
 
     Effective repayment is clamped to ``min(amount, balance, debt_total)``
@@ -1049,6 +1129,7 @@ async def repay(*, user_id: int, name: str, amount: int) -> RepayResult | None:
         user_id: Discord user ID for the borrower.
         name: Last-seen Discord username.
         amount: Maximum amount to apply against debt (must be positive).
+        avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
         ``RepayResult`` on success, or ``None`` when there's no debt, no
@@ -1098,6 +1179,8 @@ async def repay(*, user_id: int, name: str, amount: int) -> RepayResult | None:
             }
             if name and name != existing_name:
                 update_values["name"] = name
+            if avatar_url:
+                update_values["avatar_url"] = avatar_url
 
             stmt = (
                 update(UserAccount)
@@ -1218,8 +1301,15 @@ async def get_loan_view(*, user_id: int) -> LoanView | None:
         )
 
 
-async def transfer(
-    *, sender_id: int, sender_name: str, receiver_id: int, receiver_name: str, amount: int
+async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver identity snapshots
+    *,
+    sender_id: int,
+    sender_name: str,
+    sender_avatar_url: str = "",
+    receiver_id: int,
+    receiver_name: str,
+    receiver_avatar_url: str = "",
+    amount: int,
 ) -> TransferResult | None:
     """Atomically moves points from sender to receiver.
 
@@ -1233,8 +1323,10 @@ async def transfer(
     Args:
         sender_id: Discord user ID to debit.
         sender_name: Last-seen Discord username to store on the sender account.
+        sender_avatar_url: Last-seen Discord avatar URL for the sender.
         receiver_id: Discord user ID to credit.
         receiver_name: Last-seen Discord username to store on the receiver account.
+        receiver_avatar_url: Last-seen Discord avatar URL for the receiver.
         amount: Number of points to transfer.
 
     Returns:
@@ -1254,6 +1346,8 @@ async def transfer(
         }
         if sender_name:
             debit_values["name"] = sender_name
+        if sender_avatar_url:
+            debit_values["avatar_url"] = sender_avatar_url
 
         debit_stmt = (
             update(UserAccount)
@@ -1269,7 +1363,11 @@ async def transfer(
         sender_balance = debit_row[0]
 
         credit_stmt = _build_credit_upsert(
-            user_id=receiver_id, name=receiver_name, amount=amount, now=now
+            user_id=receiver_id,
+            name=receiver_name,
+            avatar_url=receiver_avatar_url,
+            amount=amount,
+            now=now,
         )
         credit_result = await session.execute(statement=credit_stmt)
         receiver_balance = credit_result.scalar_one()

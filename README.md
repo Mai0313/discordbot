@@ -201,7 +201,7 @@ All slash commands register globally on first start (no per-guild pinning). Disc
 This bot complies with Discord's Terms of Service and Developer Policy.
 
 - **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite (`data/messages.db`). Data stays on your server and is never shared externally.
-- **虛擬歡樂豆 Database**: Per-user 虛擬歡樂豆 balances live in a separate local SQLite file (`data/economy.db`). Only the Discord user ID, the most recently seen username, and balance counters are stored. Balances are shared across every server the bot runs in.
+- **虛擬歡樂豆 Database**: Per-user 虛擬歡樂豆 balances live in a separate local SQLite file (`data/economy.db`). The Discord user ID, the most recently seen username, avatar URL, and balance counters are stored. Balances are shared across every server the bot runs in.
 - **API Calls**: Text, images, supported file attachments, embedded media, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is responding, such as when it is mentioned in a guild or messaged in DM. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
 - **Opt-out**: Server owners can disable message logging by adjusting the bot configuration.

@@ -91,8 +91,8 @@ class GamesCogs(commands.Cog):
         """
         return DealerAI(client=self.client, model=self.dealer_model)
 
-    def _dealer_identity(self) -> tuple[int, str]:
-        """Returns ``(dealer_id, dealer_name)`` from the bot's own user record.
+    def _dealer_identity(self) -> tuple[int, str, str]:
+        """Returns ``(dealer_id, dealer_name, dealer_avatar_url)`` from the bot user.
 
         Slash commands only fire after the gateway has connected, so
         ``self.bot.user`` is guaranteed non-None at call time. We still fall
@@ -101,8 +101,8 @@ class GamesCogs(commands.Cog):
         user (e.g. mid-reconnect).
         """
         if self.bot.user is None:
-            return (0, "莊家")
-        return (self.bot.user.id, self.bot.user.display_name)
+            return (0, "莊家", "")
+        return (self.bot.user.id, self.bot.user.display_name, self.bot.user.display_avatar.url)
 
     async def _place_bet(
         self, *, interaction: Interaction, requested_bet: int
@@ -115,7 +115,10 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return None
         placed_bet = await place_bet(
-            user_id=interaction.user.id, name=interaction.user.name, requested_bet=requested_bet
+            user_id=interaction.user.id,
+            name=interaction.user.name,
+            avatar_url=interaction.user.display_avatar.url,
+            requested_bet=requested_bet,
         )
         if placed_bet is None:
             balance = await get_balance(user_id=interaction.user.id)
@@ -176,7 +179,7 @@ class GamesCogs(commands.Cog):
         bet = placed_bet.amount
         is_allin = placed_bet.is_allin
 
-        dealer_id, dealer_name = self._dealer_identity()
+        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
@@ -211,8 +214,10 @@ class GamesCogs(commands.Cog):
         settlement = await settle_wager(
             player_id=interaction.user.id,
             player_account_name=interaction.user.name,
+            player_avatar_url=interaction.user.display_avatar.url,
             dealer_id=dealer_id,
             dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
             bet=bet,
             delta=delta,
         )
@@ -293,7 +298,7 @@ class GamesCogs(commands.Cog):
         bet = placed_bet.amount
         is_allin = placed_bet.is_allin
 
-        dealer_id, dealer_name = self._dealer_identity()
+        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
         taunt = await self.dealer.taunt_bet(
             author_name=interaction.user.name,
@@ -330,8 +335,10 @@ class GamesCogs(commands.Cog):
         settlement = await settle_wager(
             player_id=interaction.user.id,
             player_account_name=interaction.user.name,
+            player_avatar_url=interaction.user.display_avatar.url,
             dealer_id=dealer_id,
             dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
             bet=bet,
             delta=delta,
         )
@@ -419,7 +426,7 @@ class GamesCogs(commands.Cog):
         bet = placed_bet.amount
         is_allin = placed_bet.is_allin
 
-        dealer_id, dealer_name = self._dealer_identity()
+        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
 
         hand = BlackjackHand(rng=self.rng, bet=bet)
         hand.deal_initial()
@@ -439,8 +446,10 @@ class GamesCogs(commands.Cog):
                 hand=hand,
                 player_id=interaction.user.id,
                 player_account_name=interaction.user.name,
+                player_avatar_url=interaction.user.display_avatar.url,
                 dealer_id=dealer_id,
                 dealer_name=dealer_name,
+                dealer_avatar_url=dealer_avatar_url,
             )
             banter = await self.dealer.settle(
                 author_name=interaction.user.name,
@@ -477,8 +486,10 @@ class GamesCogs(commands.Cog):
             owner_id=interaction.user.id,
             author_name=interaction.user.name,
             player_name=interaction.user.display_name,
+            player_avatar_url=interaction.user.display_avatar.url,
             dealer_id=dealer_id,
             dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
             balance_after_bet=placed_bet.balance_after,
             is_allin=is_allin,
         )

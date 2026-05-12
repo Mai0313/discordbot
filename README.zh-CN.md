@@ -201,7 +201,7 @@ DISCORD_TEST_SERVER_ID=你的测试服务器id
 本机器人遵守 Discord 服务条款与开发者政策。
 
 - **消息记录**：机器人所在频道的消息会记录到本地 SQLite (`data/messages.db`)。数据仅存在你的服务器，不会外传。
-- **点数数据库**：每位用户的点数余额存储在另一个本地 SQLite 文件 (`data/economy.db`)，只记录 Discord user ID、最近一次看到的 username，以及余额相关计数。余额会跨机器人运行的所有服务器共享。
+- **点数数据库**：每位用户的点数余额存储在另一个本地 SQLite 文件 (`data/economy.db`)，会记录 Discord user ID、最近一次看到的 username、avatar URL，以及余额相关计数。余额会跨机器人运行的所有服务器共享。
 - **API 调用**：文字、图片、支持的文件附件、内嵌媒体，以及发送者身份（当前对话上下文中参与者的 display name、username 与 Discord user ID）仅在机器人需要回复时才会发送至配置的 LLM API，例如在 guild 被标记或收到 DM 时。user ID 会一并传入，让机器人在被要求时可以标记其他成员。不会与其他第三方分享数据。
 - **权限**：机器人需要 Message Content 意图用于标记聊天和可选的本地记录。斜线指令与嵌入/附件权限用于交互功能。
 - **停用**：服务器管理员可通过调整机器人配置来停用消息记录。

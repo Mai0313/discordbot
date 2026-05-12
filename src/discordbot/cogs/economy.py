@@ -225,8 +225,10 @@ class EconomyCogs(commands.Cog):
         transfer_result = await transfer(
             sender_id=interaction.user.id,
             sender_name=interaction.user.name,
+            sender_avatar_url=interaction.user.display_avatar.url,
             receiver_id=member.id,
             receiver_name=member.name,
+            receiver_avatar_url=member.display_avatar.url,
             amount=amount,
         )
         if transfer_result is None:
@@ -352,7 +354,11 @@ class EconomyCogs(commands.Cog):
         user = interaction.user
         limit = credit_limit(user=user)
         result = await borrow(
-            user_id=user.id, name=user.name, amount=amount, credit_limit_value=limit
+            user_id=user.id,
+            name=user.name,
+            avatar_url=user.display_avatar.url,
+            amount=amount,
+            credit_limit_value=limit,
         )
         if result is None:
             loan = await get_loan_view(user_id=user.id)
@@ -419,7 +425,9 @@ class EconomyCogs(commands.Cog):
             return
         user = interaction.user
 
-        result = await repay(user_id=user.id, name=user.name, amount=amount)
+        result = await repay(
+            user_id=user.id, name=user.name, avatar_url=user.display_avatar.url, amount=amount
+        )
         if result is None:
             balance_now = await get_balance(user_id=user.id)
             loan = await get_loan_view(user_id=user.id)

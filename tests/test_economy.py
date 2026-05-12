@@ -6,6 +6,7 @@ from pathlib import Path
 from collections.abc import AsyncIterator
 
 import pytest
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._games import views
@@ -55,6 +56,17 @@ async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     await engine.dispose()
 
 
+async def _stored_avatar_url(*, user_id: int) -> str:
+    """Reads the cached avatar URL for one account."""
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=select(database.UserAccount.avatar_url).where(
+                database.UserAccount.user_id == user_id
+            )
+        )
+        return result.scalar_one()
+
+
 async def test_add_balance_creates_user() -> None:
     """First write upserts the row and returns the new balance."""
     new = await database.add_balance(user_id=42, name="alice", amount=100)
@@ -82,6 +94,68 @@ async def test_add_balance_refreshes_name() -> None:
     await database.add_balance(user_id=42, name="alice_renamed", amount=10)
     rows = await database.top_n(limit=1)
     assert rows[0][1] == "alice_renamed"
+
+
+async def test_add_balance_stores_and_refreshes_avatar_url() -> None:
+    """Subsequent writes refresh the cached avatar URL."""
+    await database.add_balance(
+        user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/a.png"
+    )
+    assert await _stored_avatar_url(user_id=42) == "https://cdn.example/a.png"
+
+    await database.add_balance(
+        user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/b.png"
+    )
+    assert await _stored_avatar_url(user_id=42) == "https://cdn.example/b.png"
+
+
+async def test_existing_economy_db_gets_avatar_url_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-avatar economy DB is migrated before avatar-aware writes run."""
+    db_path = tmp_path / "legacy-economy.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.execute(
+            statement=text(
+                text="""
+                CREATE TABLE user_account (
+                    user_id INTEGER NOT NULL PRIMARY KEY,
+                    name VARCHAR(128),
+                    balance INTEGER NOT NULL,
+                    total_earned INTEGER NOT NULL,
+                    total_spent INTEGER NOT NULL,
+                    updated_at DATETIME,
+                    loan_principal INTEGER NOT NULL,
+                    loan_interest INTEGER NOT NULL,
+                    loan_total_borrowed INTEGER NOT NULL,
+                    loan_total_repaid INTEGER NOT NULL,
+                    loan_last_accrual_at DATETIME,
+                    loan_opened_at DATETIME
+                )
+                """
+            )
+        )
+        await conn.execute(
+            statement=text(
+                text="""
+                INSERT INTO user_account (
+                    user_id, name, balance, total_earned, total_spent, updated_at,
+                    loan_principal, loan_interest, loan_total_borrowed, loan_total_repaid,
+                    loan_last_accrual_at, loan_opened_at
+                )
+                VALUES (42, 'alice', 10, 10, 0, CURRENT_TIMESTAMP, 0, 0, 0, 0, NULL, NULL)
+                """
+            )
+        )
+    monkeypatch.setattr(target=database, name="_engine", value=engine)
+
+    await database.add_balance(
+        user_id=42, name="alice", amount=5, avatar_url="https://cdn.example/avatar.png"
+    )
+
+    assert await _stored_avatar_url(user_id=42) == "https://cdn.example/avatar.png"
+    await engine.dispose()
 
 
 async def test_place_bet_withdraws_requested_amount() -> None:

@@ -137,8 +137,10 @@ class BlackjackView(ui.View):
         owner_id: Discord user ID allowed to press the buttons.
         author_name: Discord username used as the litellm end-user-id (ASCII-safe).
         player_name: Display name used in the embed.
+        player_avatar_url: Last-seen Discord avatar URL for the player account row.
         dealer_id: Discord user ID of the bot itself (used for the house ledger).
         dealer_name: Display name of the bot, surfaced in embeds and the house ledger row.
+        dealer_avatar_url: Last-seen Discord avatar URL for the dealer ledger row.
         balance_after_bet: Player's balance immediately after the bet was deducted.
         is_allin: True when the original bet was clamped down to the player's balance.
         message: Reference to the rendered Discord message; set on first edit.
@@ -152,8 +154,10 @@ class BlackjackView(ui.View):
         owner_id: int,
         author_name: str,
         player_name: str,
+        player_avatar_url: str = "",
         dealer_id: int,
         dealer_name: str,
+        dealer_avatar_url: str = "",
         balance_after_bet: int,
         is_allin: bool = False,
     ) -> None:
@@ -165,8 +169,10 @@ class BlackjackView(ui.View):
             owner_id: Discord user ID allowed to interact.
             author_name: Discord username used as the litellm end-user-id.
             player_name: Display name used in the embed.
+            player_avatar_url: Last-seen Discord avatar URL for the player account row.
             dealer_id: Discord user ID of the bot itself (house ledger key).
             dealer_name: Bot's display name; shown in embeds and stored on the house ledger row.
+            dealer_avatar_url: Last-seen Discord avatar URL for the dealer ledger row.
             balance_after_bet: Player balance after the bet was withdrawn.
             is_allin: True when the original bet was clamped down to ``balance``.
         """
@@ -176,8 +182,10 @@ class BlackjackView(ui.View):
         self.owner_id = owner_id
         self.author_name = author_name
         self.player_name = player_name
+        self.player_avatar_url = player_avatar_url
         self.dealer_id = dealer_id
         self.dealer_name = dealer_name
+        self.dealer_avatar_url = dealer_avatar_url
         self.balance_after_bet = balance_after_bet
         self.is_allin = is_allin
         self.message: Message | None = None
@@ -275,8 +283,10 @@ class BlackjackView(ui.View):
                 hand=self.hand,
                 player_id=self.owner_id,
                 player_account_name=self.author_name,
+                player_avatar_url=self.player_avatar_url,
                 dealer_id=self.dealer_id,
                 dealer_name=self.dealer_name,
+                dealer_avatar_url=self.dealer_avatar_url,
             )
             outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
             banter = await self.dealer.settle(

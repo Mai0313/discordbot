@@ -201,7 +201,7 @@ DISCORD_TEST_SERVER_ID=你的測試伺服器id
 本機器人遵守 Discord 服務條款與開發者政策。
 
 - **訊息記錄**：機器人所在頻道的訊息會記錄到本機 SQLite (`data/messages.db`)。資料僅存在你的伺服器，不會外傳。
-- **虛擬歡樂豆資料庫**：每位使用者的虛擬歡樂豆餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，只記錄 Discord user ID、最近一次看到的 username，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
+- **虛擬歡樂豆資料庫**：每位使用者的虛擬歡樂豆餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，會記錄 Discord user ID、最近一次看到的 username、avatar URL，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
 - **API 呼叫**：文字、圖片、支援的檔案附件、內嵌媒體，以及發送者身份（目前對話上下文中參與者的 display name、username 與 Discord user ID）僅在機器人需要回覆時才會發送至設定的 LLM API，例如在 guild 被標記或收到 DM 時。user ID 會一併傳入，讓機器人在被要求時可以標記其他成員。不會與其他第三方分享資料。
 - **權限**：機器人需要 Message Content 意圖用於標記聊天和可選的本地記錄。斜線指令與嵌入/附件權限用於互動功能。
 - **停用**：伺服器擁有者可透過調整機器人設定來停用訊息記錄。
