@@ -64,7 +64,7 @@ async def _set_loan_interest(*, user_id: int, interest: int) -> None:
 
 async def _backdate_last_accrual(*, user_id: int, days_ago: int) -> None:
     """Test helper: simulates time passing by pushing last_accrual_at back."""
-    past = datetime.now(tz=UTC) - timedelta(days=days_ago)
+    past = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=days_ago)
     async with database.open_session() as session:
         await session.execute(
             statement=update(database.UserAccount)

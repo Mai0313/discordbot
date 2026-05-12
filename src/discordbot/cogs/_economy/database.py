@@ -36,7 +36,7 @@ inside the same single-row UPDATE. The audit log lives in a separate
 """
 
 from typing import Any, Final
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone, timedelta
 
 from sqlalchemy import (
     Index,
@@ -73,8 +73,14 @@ from discordbot.typings.economy import (
 _PLACE_BET_MAX_RETRIES: Final[int] = 8
 _CREDIT_WITH_REPAYMENT_MAX_RETRIES: Final[int] = 8
 _REPAY_MAX_RETRIES: Final[int] = 8
+TAIWAN_TIMEZONE: Final[timezone] = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
+
+
+def _database_now() -> datetime:
+    """Returns the wall-clock timestamp used for persisted economy rows."""
+    return datetime.now(tz=TAIWAN_TIMEZONE)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -114,7 +120,7 @@ class UserAccount(Base):
         balance: Current spendable point balance.
         total_earned: Lifetime points earned (chat rewards, game wins, transfers in).
         total_spent: Lifetime points removed (game losses, transfers out).
-        updated_at: UTC timestamp of the last write.
+        updated_at: Taiwan-local timestamp of the last write.
         loan_principal: Currently outstanding loan principal.
         loan_interest: Currently accrued (and not-yet-paid) interest.
         loan_total_borrowed: Lifetime gross borrowed amount.
@@ -141,8 +147,8 @@ class UserAccount(Base):
     total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(tz=UTC),
-        onupdate=lambda: datetime.now(tz=UTC),
+        default=_database_now,
+        onupdate=_database_now,
     )
     loan_principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     loan_interest: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -169,7 +175,7 @@ class PointTransaction(Base):
         balance_after: Balance after this transaction.
         debt_after: ``loan_principal + loan_interest`` after this transaction.
         note: Optional free-text annotation (e.g. counterparty for transfers).
-        occurred_at: UTC timestamp of the event.
+        occurred_at: Taiwan-local timestamp of the event.
     """
 
     __tablename__ = "point_transaction"
@@ -261,8 +267,8 @@ def accrual_delta(*, principal: int, last_accrual_at: datetime, now: datetime) -
     accumulate across calls instead of being permanently rounded off.
 
     SQLite returns naive datetimes for ``DateTime(timezone=True)`` columns,
-    so both arguments are coerced to UTC-aware before arithmetic — the
-    persisted timestamps were always written as UTC.
+    so both arguments are coerced to Taiwan-local aware before arithmetic,
+    matching the timezone used for persisted economy timestamps.
 
     Args:
         principal: Outstanding principal at the reference time.
@@ -275,9 +281,9 @@ def accrual_delta(*, principal: int, last_accrual_at: datetime, now: datetime) -
     if principal <= 0:
         return 0
     if last_accrual_at.tzinfo is None:
-        last_accrual_at = last_accrual_at.replace(tzinfo=UTC)
+        last_accrual_at = last_accrual_at.replace(tzinfo=TAIWAN_TIMEZONE)
     if now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
+        now = now.replace(tzinfo=TAIWAN_TIMEZONE)
     elapsed_days = (now - last_accrual_at).total_seconds() / 86400.0
     if elapsed_days <= 0:
         return 0
@@ -740,7 +746,7 @@ async def add_balance(user_id: int, name: str, amount: int, avatar_url: str = ""
     if amount <= 0:
         return await get_balance(user_id=user_id)
     stmt = _build_credit_upsert(
-        user_id=user_id, name=name, avatar_url=avatar_url, amount=amount, now=datetime.now(tz=UTC)
+        user_id=user_id, name=name, avatar_url=avatar_url, amount=amount, now=_database_now()
     )
     async with open_session() as session:
         result = await session.execute(statement=stmt)
@@ -786,7 +792,7 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
             principal_repaid=0,
             remaining_debt=0,
         )
-    now = datetime.now(tz=UTC)
+    now = _database_now()
     async with open_session() as session:
         result = await _credit_with_repayment_in_session(
             session=session,
@@ -842,7 +848,7 @@ async def place_bet(
             starting_balance, existing_name = row[0], row[1]
             effective_bet = min(requested_bet, starting_balance)
 
-            now = datetime.now(tz=UTC)
+            now = _database_now()
             update_values: dict[str, Any] = {
                 "balance": UserAccount.balance - effective_bet,
                 "total_spent": UserAccount.total_spent + effective_bet,
@@ -904,7 +910,7 @@ async def settle_game(user_id: int, name: str, delta: int, avatar_url: str = "")
         The user's current balance after settlement.
     """
     await _ensure_schema()
-    now = datetime.now(tz=UTC)
+    now = _database_now()
     async with open_session() as session:
         new_balance = await _settle_game_in_session(
             session=session,
@@ -942,7 +948,7 @@ async def house_settle(user_id: int, name: str, delta: int, avatar_url: str = ""
         The dealer ledger balance after settlement, which may be negative.
     """
     await _ensure_schema()
-    now = datetime.now(tz=UTC)
+    now = _database_now()
     async with open_session() as session:
         new_balance = await _house_settle_in_session(
             session=session,
@@ -989,7 +995,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
         A `(player_balance_after, dealer_balance_after)` tuple.
     """
     await _ensure_schema()
-    now = datetime.now(tz=UTC)
+    now = _database_now()
     async with open_session() as session:
         if payout > 0:
             credit_result = await _credit_with_repayment_in_session(
@@ -1047,7 +1053,7 @@ async def borrow(
     await _ensure_schema()
     if amount <= 0:
         return None
-    now = datetime.now(tz=UTC)
+    now = _database_now()
 
     async with open_session() as session:
         await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
@@ -1138,7 +1144,7 @@ async def repay(
     await _ensure_schema()
     if amount <= 0:
         return None
-    now = datetime.now(tz=UTC)
+    now = _database_now()
 
     async with open_session() as session:
         await _accrue_interest_in_session(session=session, user_id=user_id, now=now)
@@ -1337,7 +1343,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     if amount <= 0 or sender_id == receiver_id:
         return None
 
-    now = datetime.now(tz=UTC)
+    now = _database_now()
     async with open_session() as session:
         debit_values: dict[str, Any] = {
             "balance": UserAccount.balance - amount,

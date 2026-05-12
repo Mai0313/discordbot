@@ -3,6 +3,7 @@
 from random import SystemRandom
 import asyncio
 from pathlib import Path
+from datetime import datetime
 from collections.abc import AsyncIterator
 
 import pytest
@@ -108,6 +109,32 @@ async def test_add_balance_stores_and_refreshes_avatar_url() -> None:
         user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/b.png"
     )
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/b.png"
+
+
+async def test_write_timestamps_use_taiwan_local_time() -> None:
+    """Account and audit timestamps are persisted as Taiwan-local wall time."""
+    before = datetime.now(tz=database.TAIWAN_TIMEZONE).replace(tzinfo=None)
+    await database.credit_with_repayment(
+        user_id=42,
+        name="alice",
+        amount=10,
+        kind=database.TransactionKind.CHAT_REWARD,
+    )
+    after = datetime.now(tz=database.TAIWAN_TIMEZONE).replace(tzinfo=None)
+
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=select(database.UserAccount.updated_at, database.PointTransaction.occurred_at)
+            .join(
+                database.PointTransaction,
+                database.PointTransaction.user_id == database.UserAccount.user_id,
+            )
+            .where(database.UserAccount.user_id == 42)
+        )
+        updated_at, occurred_at = result.one()
+
+    assert before <= updated_at <= after
+    assert before <= occurred_at <= after
 
 
 async def test_existing_economy_db_gets_avatar_url_column(
