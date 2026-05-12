@@ -66,7 +66,7 @@ class EconomyCogs(commands.Cog):
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.set_footer(
-            text=f"跟機器人聊天可以累積{CURRENCY_NAME}, 輸入 /dice 或 /blackjack 來下注。"
+            text=f"跟機器人聊天可以累積{CURRENCY_NAME}, 輸入 /dice、/blackjack 或 /dragon_gate 來下注。"
         )
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
