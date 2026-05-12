@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from discordbot.cogs._games import views
 from discordbot.cogs._economy import database
 from discordbot.cogs._games.views import BlackjackView
 from discordbot.cogs._games.blackjack import Card, BlackjackHand
@@ -303,8 +304,18 @@ async def test_settle_blackjack_round_updates_player_and_house() -> None:
     assert await database.get_balance(user_id=99) == -50
 
 
-async def test_blackjack_view_finalizes_once_when_called_concurrently() -> None:
+async def test_blackjack_view_finalizes_once_when_called_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Concurrent finalization attempts must not pay out one Blackjack hand twice."""
+    cleanup_messages: list[object] = []
+
+    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+        cleanup_messages.append(message)
+
+    monkeypatch.setattr(
+        target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
+    )
     await database.add_balance(user_id=1, name="alice", amount=100)
     placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
     assert placed is not None
@@ -333,10 +344,21 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently() -> None:
     assert await database.get_balance(user_id=99) == -50
     assert dealer.settle_calls == 1
     assert message.edit_calls == 1
+    assert cleanup_messages == [message]
 
 
-async def test_blackjack_view_timeout_auto_stands_and_settles() -> None:
+async def test_blackjack_view_timeout_auto_stands_and_settles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A player who walks away is treated as standing and the wager resolves."""
+    cleanup_messages: list[object] = []
+
+    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+        cleanup_messages.append(message)
+
+    monkeypatch.setattr(
+        target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
+    )
     await database.add_balance(user_id=1, name="alice", amount=100)
     placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
     assert placed is not None
@@ -366,6 +388,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles() -> None:
     assert await database.get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
     assert message.edit_calls == 1
+    assert cleanup_messages == [message]
 
 
 async def test_add_balance_concurrent_credits_accumulate() -> None:

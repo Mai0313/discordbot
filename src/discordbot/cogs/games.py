@@ -14,6 +14,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.dice import play_dice, render_rolls
 from discordbot.cogs._games.views import BlackjackView, build_final_embed, build_in_progress_embed
 from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import BlackjackHand
 from discordbot.cogs._economy.database import PlacedBet, place_bet, get_balance
 from discordbot.cogs._games.settlement import (
@@ -111,7 +112,7 @@ class GamesCogs(commands.Cog):
         )
         if placed_bet is None:
             balance = await get_balance(user_id=interaction.user.id)
-            await interaction.followup.send(
+            message = await interaction.followup.send(
                 embed=Embed(
                     title=":x: 餘額不足",
                     description=(
@@ -120,8 +121,10 @@ class GamesCogs(commands.Cog):
                         f"跟機器人聊天可以累積{CURRENCY_NAME}。"
                     ),
                     color=ERROR_COLOR,
-                )
+                ),
+                wait=True,
             )
+            schedule_game_message_delete(message=message)
             return None
         return placed_bet
 
@@ -240,6 +243,7 @@ class GamesCogs(commands.Cog):
             )
         )
         await message.edit(embed=final)
+        schedule_game_message_delete(message=message)
 
     @nextcord.slash_command(
         name="blackjack",
@@ -330,7 +334,8 @@ class GamesCogs(commands.Cog):
                 is_allin=is_allin,
                 round_note=blackjack_early_finish_note(hand=hand),
             )
-            await interaction.followup.send(embed=embed)
+            message = await interaction.followup.send(embed=embed, wait=True)
+            schedule_game_message_delete(message=message)
             return
 
         view = BlackjackView(

@@ -6,6 +6,7 @@ import contextlib
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import BlackjackHand, render_hand, dealer_visible_value
 from discordbot.cogs._games.settlement import settle_blackjack_round
 from discordbot.cogs._games.presentation import (
@@ -309,6 +310,7 @@ class BlackjackView(ui.View):
             self.stop()
             with contextlib.suppress(Exception):
                 await message.edit(embed=embed, view=self)
+            schedule_game_message_delete(message=message)
 
 
 __all__: list[str] = [
