@@ -32,7 +32,7 @@ class VideoCogs(commands.Cog):
         description="Download a video from various platforms and send it back.",
         name_localizations={Locale.zh_TW: "下載影片", Locale.ja: "動画ダウンロード"},
         description_localizations={
-            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)。",
+            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)",
             Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
         },
         nsfw=False,

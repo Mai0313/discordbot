@@ -55,11 +55,11 @@ def blackjack_early_finish_note(hand: BlackjackHand) -> str | None:
     player_blackjack = is_blackjack(cards=hand.player)
     dealer_blackjack = is_blackjack(cards=hand.dealer)
     if player_blackjack and dealer_blackjack:
-        return "雙方起手 Blackjack, 本局直接平手。"
+        return "雙方起手 Blackjack, 本局直接平手"
     if player_blackjack:
-        return "你起手 Blackjack, 本局直接結算。"
+        return "你起手 Blackjack, 本局直接結算"
     if dealer_blackjack:
-        return "莊家起手 Blackjack, 依規則本局直接結算。"
+        return "莊家起手 Blackjack, 依規則本局直接結算"
     return None
 
 

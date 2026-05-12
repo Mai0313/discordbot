@@ -92,7 +92,7 @@ class DealerAI:
         return await self._ask(
             instructions=DEALER_TAUNT_BET_PROMPT,
             user_text=user_text,
-            fallback="下好離手, 不要等下哭。",
+            fallback="下好離手, 不要等下哭",
             end_user_id=author_name,
         )
 
@@ -138,12 +138,12 @@ class DealerAI:
             "dealer_bust": "莊家爆牌, 玩家贏",
         }
         fallback_lines: dict[SettleOutcome, str] = {
-            "win": "算你今天運氣好, 下一把不會這麼順。",
-            "lose": "下次再來送錢吧。",
-            "push": "白忙一場, 賭場最開心的就是這種局。",
-            "blackjack": "Blackjack? 算你會玩, 下一把見真章。",
-            "player_bust": "爆了爆了, 沒事多算算數字好嗎。",
-            "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了。",
+            "win": "算你今天運氣好, 下一把不會這麼順",
+            "lose": "下次再來送錢吧",
+            "push": "白忙一場, 賭場最開心的就是這種局",
+            "blackjack": "Blackjack? 算你會玩, 下一把見真章",
+            "player_bust": "爆了爆了, 沒事多算算數字好嗎",
+            "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
         }
         user_text = (
             f"遊戲: {game_labels[game]}\n"
@@ -184,6 +184,6 @@ class DealerAI:
         return await self._ask(
             instructions=DEALER_HINT_PROMPT,
             user_text=user_text,
-            fallback="看你自己的, 我可不會手下留情。",
+            fallback="看你自己的, 我可不會手下留情",
             end_user_id=author_name,
         )

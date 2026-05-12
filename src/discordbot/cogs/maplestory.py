@@ -50,7 +50,7 @@ class MapleStoryCogs(commands.Cog):
     async def _send_error(self, interaction: Interaction) -> None:
         """Sends a generic error message to the user."""
         embed = Embed(
-            title=":x: 錯誤", description="無法載入資料，請聯絡管理員。", color=_ERROR_COLOR
+            title=":x: 錯誤", description="無法載入資料，請聯絡管理員", color=_ERROR_COLOR
         )
         await interaction.followup.send(embed=embed)
 
@@ -58,7 +58,7 @@ class MapleStoryCogs(commands.Cog):
         """Sends a 'not found' message to the user."""
         embed = Embed(
             title=":mag: 搜尋結果",
-            description=f"找不到名稱包含「{query}」的{kind}。",
+            description=f"找不到名稱包含「{query}」的{kind}",
             color=_NOT_FOUND_COLOR,
         )
         await interaction.followup.send(embed=embed)

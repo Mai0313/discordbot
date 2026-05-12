@@ -63,7 +63,7 @@ _HELP_CONTENT = {
         "description": "以下是我能為你做的所有事情!",
         "ai_chat": (
             "**AI 對話**\n"
-            "tag 我或私訊我即可開始對話。\n"
+            "tag 我或私訊我即可開始對話\n"
             "- 傳送文字來問問題\n"
             "- 附加圖片或支援的檔案進行分析\n"
             "- 請我生成圖片或影片\n"
@@ -72,15 +72,15 @@ _HELP_CONTENT = {
         ),
         "threads": (
             "**Threads 解析**\n"
-            "貼上 Threads.net 或 Threads.com 的連結，我會自動擷取內容與媒體。"
+            "貼上 Threads.net 或 Threads.com 的連結，我會自動擷取內容與媒體"
             "如果是回覆的連結，我也會把原始貼文與中間每一層回覆一起帶出來當作上下文，"
-            "並用灰階漸層色帶區分層級。"
-            "如果內容超過 Discord 限制，會用 warning reaction 標記。"
+            "並用灰階漸層色帶區分層級"
+            "如果內容超過 Discord 限制，會用 warning reaction 標記"
         ),
         "video": (
             "**影片下載** — `/download_video`\n"
-            "支援從 YouTube、Facebook、Instagram、X、TikTok 等平台下載影片。"
-            "可以選 quality；檔案太大時會自動 retry 一次低畫質。"
+            "支援從 YouTube、Facebook、Instagram、X、TikTok 等平台下載影片"
+            "可以選 quality；檔案太大時會自動 retry 一次低畫質"
         ),
         "maplestory": (
             "**MapleStory Artale** — `/maple_*`\n"
@@ -91,22 +91,22 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
-            f"AI chat 回覆會累積{CURRENCY_NAME}, {CURRENCY_NAME}跨 server 共用。\n"
+            f"AI chat 回覆會累積{CURRENCY_NAME}, {CURRENCY_NAME}跨 server 共用\n"
             "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名\n"
             "`/give` 轉虛擬歡樂豆 · `/house` 看莊家累積 P&L\n"
             "`/borrow` 依 Discord 帳號年齡借款 (日利息 1%); "
-            "`/repay` 從餘額還款 (利息優先)。\n"
-            "借款後賺到的點數會自動 50% 用來抵債 (利息優先, 本金其次)。\n"
-            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` 結果 3 分鐘後自動清掉。"
+            "`/repay` 從餘額還款 (利息優先)\n"
+            "借款後賺到的點數會自動 50% 用來抵債 (利息優先, 本金其次)\n"
+            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` 結果 3 分鐘後自動清掉"
         ),
         "games": (
             "**小遊戲**\n"
-            "`/dice` 用三顆骰子跟莊家比大小。\n"
-            "`/dragon_gate` 射一張牌嚴格落在兩張門牌中間。\n"
-            "`/blackjack` 跟莊家玩一局 21 點。bet 會先扣，超過餘額會自動 all-in，"
-            "不操作 180 秒會自動 stand 結算，final game message 會在 3 分鐘後清掉。"
+            "`/dice` 用三顆骰子跟莊家比大小\n"
+            "`/dragon_gate` 射一張牌嚴格落在兩張門牌中間\n"
+            "`/blackjack` 跟莊家玩一局 21 點bet 會先扣，超過餘額會自動 all-in，"
+            "不操作 180 秒會自動 stand 結算，final game message 會在 3 分鐘後清掉"
         ),
-        "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲。",
+        "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
     },
     Locale.ja: {
         "title": "ボット利用ガイド",
@@ -185,7 +185,7 @@ class HelpCogs(commands.Cog):
         description="Show a guide on how to use this bot.",
         name_localizations={Locale.zh_TW: "使用說明", Locale.ja: "ヘルプ"},
         description_localizations={
-            Locale.zh_TW: "顯示機器人的使用指南。",
+            Locale.zh_TW: "顯示機器人的使用指南",
             Locale.ja: "ボットの使い方ガイドを表示します。",
         },
         nsfw=False,

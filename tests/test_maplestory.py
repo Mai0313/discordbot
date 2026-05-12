@@ -472,7 +472,7 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
     view.select_result._selected_values = ["loading"]
     await view.select_result.callback(interaction)
     assert interaction.response.deferred
-    assert interaction.followup.sent[0]["content"] == "請先選擇有效的結果。"
+    assert interaction.followup.sent[0]["content"] == "請先選擇有效的結果"
 
     valid_interaction = _FakeInteraction()
     view.select_result._selected_values = ["Slime"]

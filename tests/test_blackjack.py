@@ -96,7 +96,7 @@ def test_blackjack_early_finish_note_explains_dealer_natural() -> None:
         player=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
         dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
     )
-    assert blackjack_early_finish_note(hand=hand) == "莊家起手 Blackjack, 依規則本局直接結算。"
+    assert blackjack_early_finish_note(hand=hand) == "莊家起手 Blackjack, 依規則本局直接結算"
 
 
 def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:

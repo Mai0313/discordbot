@@ -142,7 +142,7 @@ class MapleDropSearchView(View):
 
         selected = select.values[0]
         if selected == "loading":
-            await interaction.followup.send("請先選擇有效的結果。", ephemeral=True)
+            await interaction.followup.send("請先選擇有效的結果", ephemeral=True)
             return
 
         resolver = _RESOLVERS.get(self.search_type)

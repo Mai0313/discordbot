@@ -58,7 +58,7 @@ class EconomyCogs(commands.Cog):
         description=f"Check your current {CURRENCY_NAME} balance and loan status.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額與欠款狀態。",
+            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額與欠款狀態",
             Locale.ja: f"現在の{CURRENCY_NAME}残高と借入状況を確認します。",
         },
         nsfw=False,
@@ -78,7 +78,7 @@ class EconomyCogs(commands.Cog):
         limit = credit_limit(user=user)
         age_days = (datetime.now(tz=UTC) - user.created_at).days
 
-        description = f"{user.mention} 目前持有 **{currency_text(amount=amount)}**。"
+        description = f"{user.mention} 目前持有 **{currency_text(amount=amount)}**"
         embed = Embed(
             title=f":coin: {CURRENCY_NAME}餘額", description=description, color=_BALANCE_COLOR
         )
@@ -96,7 +96,7 @@ class EconomyCogs(commands.Cog):
                 )
             effective_interest = loan.interest_stored + pending_interest
             embed.description = (
-                f"{description}\n下次賺到的點數會自動 50% 用來償還欠款 (利息優先, 本金其次)。"
+                f"{description}\n下次賺到的點數會自動 50% 用來償還欠款 (利息優先, 本金其次)"
             )
             embed.add_field(
                 name="未還本金", value=currency_text(amount=loan.principal), inline=True
@@ -110,7 +110,7 @@ class EconomyCogs(commands.Cog):
         ]
         if not has_debt:
             footer_lines.append(
-                f"跟機器人聊天可以累積{CURRENCY_NAME}, /dice、/blackjack 或 /dragon_gate 可下注。"
+                f"跟機器人聊天可以累積{CURRENCY_NAME}, /dice、/blackjack 或 /dragon_gate 可下注"
             )
         embed.set_footer(text="\n".join(footer_lines))
         await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -120,7 +120,7 @@ class EconomyCogs(commands.Cog):
         description=f"Show the global top {CURRENCY_NAME} holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}前 10 名。",
+            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}前 10 名",
             Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
         },
         nsfw=False,
@@ -139,7 +139,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f":trophy: {CURRENCY_NAME}排行榜",
-                description=f"目前還沒有人有{CURRENCY_NAME}。",
+                description=f"目前還沒有人有{CURRENCY_NAME}",
                 color=_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -164,7 +164,7 @@ class EconomyCogs(commands.Cog):
         description=f"Transfer your {CURRENCY_NAME} to another member.",
         name_localizations={Locale.zh_TW: "轉虛擬歡樂豆", Locale.ja: "虛擬歡樂豆送付"},
         description_localizations={
-            Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員。",
+            Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員",
             Locale.ja: f"他のメンバーに{CURRENCY_NAME}を送ります。",
         },
         nsfw=False,
@@ -177,7 +177,7 @@ class EconomyCogs(commands.Cog):
             description=f"The member to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "受取人"},
             description_localizations={
-                Locale.zh_TW: f"要接收{CURRENCY_NAME}的成員。",
+                Locale.zh_TW: f"要接收{CURRENCY_NAME}的成員",
                 Locale.ja: f"{CURRENCY_NAME}を受け取るメンバー。",
             },
             required=True,
@@ -187,7 +187,7 @@ class EconomyCogs(commands.Cog):
             description=f"How much {CURRENCY_NAME} to transfer (must be positive).",
             name_localizations={Locale.zh_TW: "虛擬歡樂豆", Locale.ja: "虛擬歡樂豆"},
             description_localizations={
-                Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)。",
+                Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)",
                 Locale.ja: f"送る{CURRENCY_NAME} (1以上)。",
             },
             required=True,
@@ -209,7 +209,7 @@ class EconomyCogs(commands.Cog):
             await interaction.followup.send(
                 embed=Embed(
                     title=":x: 轉虛擬歡樂豆失敗",
-                    description=f"不能把{CURRENCY_NAME}轉給機器人。",
+                    description=f"不能把{CURRENCY_NAME}轉給機器人",
                     color=_ERROR_COLOR,
                 )
             )
@@ -217,7 +217,7 @@ class EconomyCogs(commands.Cog):
         if member.id == interaction.user.id:
             await interaction.followup.send(
                 embed=Embed(
-                    title=":x: 轉虛擬歡樂豆失敗", description="不能轉給自己。", color=_ERROR_COLOR
+                    title=":x: 轉虛擬歡樂豆失敗", description="不能轉給自己", color=_ERROR_COLOR
                 )
             )
             return
@@ -236,7 +236,7 @@ class EconomyCogs(commands.Cog):
                     title=":x: 轉虛擬歡樂豆失敗",
                     description=(
                         f"餘額不足, 你目前只有 **{currency_text(amount=balance_now)}**, "
-                        f"想轉 **{currency_text(amount=amount)}**。"
+                        f"想轉 **{currency_text(amount=amount)}**"
                     ),
                     color=_ERROR_COLOR,
                 )
@@ -250,7 +250,7 @@ class EconomyCogs(commands.Cog):
                 f"**{currency_text(amount=amount)}**\n"
                 f"你剩下 **{currency_text(amount=transfer_result.sender_balance)}**, "
                 f"{member.display_name} 現在有 "
-                f"**{currency_text(amount=transfer_result.receiver_balance)}**。"
+                f"**{currency_text(amount=transfer_result.receiver_balance)}**"
             ),
             color=_TRANSFER_COLOR,
         )
@@ -261,7 +261,7 @@ class EconomyCogs(commands.Cog):
         description="Show the dealer's running win/loss across every game.",
         name_localizations={Locale.zh_TW: "莊家戰績", Locale.ja: "ディーラー戦績"},
         description_localizations={
-            Locale.zh_TW: "顯示莊家在所有遊戲累積的輸贏 (跨伺服器)。",
+            Locale.zh_TW: "顯示莊家在所有遊戲累積的輸贏 (跨伺服器)",
             Locale.ja: "ディーラーの全サーバー累計の勝敗を表示します。",
         },
         nsfw=False,
@@ -277,9 +277,7 @@ class EconomyCogs(commands.Cog):
             await _send_expiring_followup(
                 interaction=interaction,
                 embed=Embed(
-                    title=":x: 無法查詢",
-                    description="目前無法取得機器人身份。",
-                    color=_ERROR_COLOR,
+                    title=":x: 無法查詢", description="目前無法取得機器人身份", color=_ERROR_COLOR
                 ),
             )
             return
@@ -295,11 +293,11 @@ class EconomyCogs(commands.Cog):
             name = name or account[0]
 
         if balance > 0:
-            verdict = f"莊家目前淨贏 **{currency_text(amount=balance)}**。"
+            verdict = f"莊家目前淨贏 **{currency_text(amount=balance)}**"
         elif balance < 0:
-            verdict = f"莊家目前淨虧 **{currency_text(amount=abs(balance))}**。"
+            verdict = f"莊家目前淨虧 **{currency_text(amount=abs(balance))}**"
         else:
-            verdict = "莊家目前剛好打平。"
+            verdict = "莊家目前剛好打平"
 
         embed = Embed(
             title=f":game_die: {name} - 莊家戰績", description=verdict, color=_HOUSE_COLOR
@@ -308,7 +306,7 @@ class EconomyCogs(commands.Cog):
             name="莊家從玩家身上贏到", value=currency_text(amount=total_earned), inline=True
         )
         embed.add_field(name="莊家賠給玩家", value=currency_text(amount=total_spent), inline=True)
-        embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負。")
+        embed.set_footer(text="跨伺服器累積; 莊家資金無上限, 餘額可為負")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -318,7 +316,7 @@ class EconomyCogs(commands.Cog):
         description_localizations={
             Locale.zh_TW: (
                 f"用 Discord 帳號年齡換取{CURRENCY_NAME}借款 "
-                "(日利息 1%, 之後賺到的點數會自動 50% 抵債)。"
+                "(日利息 1%, 之後賺到的點數會自動 50% 抵債)"
             ),
             Locale.ja: (
                 f"Discord アカウント年齢に応じて{CURRENCY_NAME}を借入します "
@@ -335,7 +333,7 @@ class EconomyCogs(commands.Cog):
             description=f"How much {CURRENCY_NAME} to borrow (must be positive).",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要借入的{CURRENCY_NAME} (必須大於 0)。",
+                Locale.zh_TW: f"要借入的{CURRENCY_NAME} (必須大於 0)",
                 Locale.ja: f"借入する{CURRENCY_NAME} (1以上)。",
             },
             required=True,
@@ -363,9 +361,9 @@ class EconomyCogs(commands.Cog):
             embed = Embed(
                 title=":x: 借款失敗",
                 description=(
-                    f"額度不足。借款上限 **{currency_text(amount=limit)}**, "
+                    f"額度不足借款上限 **{currency_text(amount=limit)}**, "
                     f"目前欠款 **{currency_text(amount=current_debt)}**, "
-                    f"還能再借 **{currency_text(amount=remaining)}**。"
+                    f"還能再借 **{currency_text(amount=remaining)}**"
                 ),
                 color=_ERROR_COLOR,
             )
@@ -375,14 +373,14 @@ class EconomyCogs(commands.Cog):
         embed = Embed(
             title=":coin: 借款成功",
             description=(
-                f"已撥款 **{currency_text(amount=amount)}** 到 {user.mention} 的帳戶。\n"
+                f"已撥款 **{currency_text(amount=amount)}** 到 {user.mention} 的帳戶\n"
                 f"目前持有 **{currency_text(amount=result.new_balance)}**, "
-                f"未還本金 **{currency_text(amount=result.principal)}**。\n"
-                "之後賺到的點數會自動 50% 用來償還, 利息每日 1%。"
+                f"未還本金 **{currency_text(amount=result.principal)}**\n"
+                "之後賺到的點數會自動 50% 用來償還, 利息每日 1%"
             ),
             color=_BORROW_COLOR,
         )
-        embed.set_footer(text=f"借款上限 {currency_text(amount=limit)}。")
+        embed.set_footer(text=f"借款上限 {currency_text(amount=limit)}")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -390,7 +388,7 @@ class EconomyCogs(commands.Cog):
         description=f"Repay your outstanding {CURRENCY_NAME} loan from your balance.",
         name_localizations={Locale.zh_TW: "還款", Locale.ja: "返済"},
         description_localizations={
-            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款 (利息優先, 本金其次)。",
+            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款 (利息優先, 本金其次)",
             Locale.ja: f"残高から{CURRENCY_NAME}の借入を返済します (利息優先, 本金次)。",
         },
         nsfw=False,
@@ -403,7 +401,7 @@ class EconomyCogs(commands.Cog):
             description=f"Maximum {CURRENCY_NAME} to apply against the debt.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME} (自動 clamp 到欠款額)。",
+                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME} (自動 clamp 到欠款額)",
                 Locale.ja: f"返済する{CURRENCY_NAME}の上限 (借入額にクランプ)。",
             },
             required=True,
@@ -427,11 +425,11 @@ class EconomyCogs(commands.Cog):
             loan = await get_loan_view(user_id=user.id)
             debt = (loan.principal + loan.interest_stored) if loan else 0
             if debt == 0:
-                reason = "你目前沒有欠款。"
+                reason = "你目前沒有欠款"
             elif balance_now == 0:
-                reason = f"目前餘額為 0, 無法還款 (欠 **{currency_text(amount=debt)}**)。"
+                reason = f"目前餘額為 0, 無法還款 (欠 **{currency_text(amount=debt)}**)"
             else:
-                reason = "還款失敗, 請稍後再試。"
+                reason = "還款失敗, 請稍後再試"
             embed = Embed(title=":x: 還款失敗", description=reason, color=_ERROR_COLOR)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
@@ -442,9 +440,9 @@ class EconomyCogs(commands.Cog):
             description=(
                 f"從 {user.mention} 餘額扣款 **{currency_text(amount=effective)}** "
                 f"(利息 **{currency_text(amount=result.interest_repaid)}**, "
-                f"本金 **{currency_text(amount=result.principal_repaid)}**)。\n"
+                f"本金 **{currency_text(amount=result.principal_repaid)}**)\n"
                 f"目前持有 **{currency_text(amount=result.new_balance)}**, "
-                f"剩餘欠款 **{currency_text(amount=result.remaining_debt)}**。"
+                f"剩餘欠款 **{currency_text(amount=result.remaining_debt)}**"
             ),
             color=_REPAY_COLOR,
         )

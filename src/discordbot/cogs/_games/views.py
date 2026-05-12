@@ -194,9 +194,7 @@ class BlackjackView(ui.View):
             True when the interaction user owns the round, otherwise False.
         """
         if interaction.user is None or interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                content="這局不是你的, 別插手。", ephemeral=True
-            )
+            await interaction.response.send_message(content="這局不是你的, 別插手", ephemeral=True)
             return False
         return True
 

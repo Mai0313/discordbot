@@ -42,7 +42,7 @@ class TemplateCogs(commands.Cog):
         description="Check the bot's response time.",
         name_localizations={Locale.zh_TW: "延遲測試", Locale.ja: "ピングテスト"},
         description_localizations={
-            Locale.zh_TW: "測試機器人的回應時間。",
+            Locale.zh_TW: "測試機器人的回應時間",
             Locale.ja: "ボットの応答速度をテストします。",
         },
         nsfw=False,

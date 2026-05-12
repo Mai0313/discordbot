@@ -124,8 +124,8 @@ class GamesCogs(commands.Cog):
                     title=":x: 餘額不足",
                     description=(
                         f"你目前只有 **{currency_text(amount=balance)}**, "
-                        f"沒有可下注的{CURRENCY_NAME}。\n"
-                        f"跟機器人聊天可以累積{CURRENCY_NAME}。"
+                        f"沒有可下注的{CURRENCY_NAME}\n"
+                        f"跟機器人聊天可以累積{CURRENCY_NAME}"
                     ),
                     color=ERROR_COLOR,
                 ),
@@ -140,7 +140,7 @@ class GamesCogs(commands.Cog):
         description="Roll three dice against the dealer; whoever totals higher wins.",
         name_localizations={Locale.zh_TW: "比大小", Locale.ja: "サイコロ勝負"},
         description_localizations={
-            Locale.zh_TW: "用三顆骰子跟莊家比點數總和, 大的贏。",
+            Locale.zh_TW: "用三顆骰子跟莊家比點數總和, 大的贏",
             Locale.ja: "3個のサイコロで親と勝負し、合計が大きい方が勝ち。",
         },
         nsfw=False,
@@ -153,7 +153,7 @@ class GamesCogs(commands.Cog):
             description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
                 Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
             },
             required=True,
@@ -257,7 +257,7 @@ class GamesCogs(commands.Cog):
         description="Shoot one card between two gate cards; inside wins.",
         name_localizations={Locale.zh_TW: "射龍門", Locale.ja: "ドラゴンゲート"},
         description_localizations={
-            Locale.zh_TW: "下注後開兩張門牌, 第三張嚴格落在中間就贏。",
+            Locale.zh_TW: "下注後開兩張門牌, 第三張嚴格落在中間就贏",
             Locale.ja: "2枚のゲートカードの間に3枚目が入れば勝ち。",
         },
         nsfw=False,
@@ -270,7 +270,7 @@ class GamesCogs(commands.Cog):
             description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
                 Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
             },
             required=True,
@@ -383,7 +383,7 @@ class GamesCogs(commands.Cog):
         description="Play one round of 21 against the dealer.",
         name_localizations={Locale.zh_TW: "二十一點", Locale.ja: "ブラックジャック"},
         description_localizations={
-            Locale.zh_TW: "跟莊家玩一局 21 點。",
+            Locale.zh_TW: "跟莊家玩一局 21 點",
             Locale.ja: "親と21（ブラックジャック）を1ラウンド遊びます。",
         },
         nsfw=False,
@@ -396,7 +396,7 @@ class GamesCogs(commands.Cog):
             description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)。",
+                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
                 Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
             },
             required=True,
