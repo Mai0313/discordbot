@@ -453,6 +453,7 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "top_n", fake_top_n)
+    monkeypatch.setattr(economy, "top_debtors", fake_top_debtors)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
@@ -461,11 +462,12 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.balance.callback(cog, interaction)
     await EconomyCogs.leaderboard.callback(cog, interaction)
+    await EconomyCogs.debt_leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
     )
-    assert len(interaction.followup.sent) == 4
+    assert len(interaction.followup.sent) == 5
     assert scheduled
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
@@ -487,6 +489,12 @@ async def fake_top_n(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
     return [(1, "alice", 150, "https://cdn.example/alice.png")]
+
+
+async def fake_top_debtors(
+    limit: int, exclude_user_ids: tuple[int, ...] = ()
+) -> list[tuple[int, str, int, int, str]]:
+    return [(1, "alice", 1_000, 25, "https://cdn.example/alice.png")]
 
 
 async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
@@ -641,18 +649,37 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
     assert "discordbot.cogs.template" in loaded[0][0]
 
 
-async def test_cli_message_and_command_error_branches() -> None:
+async def test_cli_message_and_command_error_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     processed: list[SimpleNamespace] = []
+    rewards: list[dict[str, object]] = []
 
     async def record_processed(message: SimpleNamespace) -> None:
         processed.append(message)
 
-    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True), process_commands=record_processed)
+    async def record_reward(**kwargs: object) -> database.CreditResult:
+        rewards.append(kwargs)
+        return database.CreditResult(
+            new_balance=5_000,
+            credited_amount=5_000,
+            interest_repaid=0,
+            principal_repaid=0,
+            remaining_debt=0,
+        )
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True),
+        process_commands=record_processed,
+        _award_base_message_points=cli.DiscordBot._award_base_message_points,
+    )
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
     await cli.DiscordBot.on_message(bot, message=user_message)
     assert processed == [user_message]
+    assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
+    assert rewards[0]["kind"] == cli.TransactionKind.MESSAGE_REWARD
     await cli.DiscordBot.on_message(bot, message=SimpleNamespace(author=bot.user))
     assert len(processed) == 1
+    assert len(rewards) == 1
 
     sent: list[DiscordPayload] = []
 

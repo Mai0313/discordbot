@@ -55,11 +55,11 @@
 
 机器人会用本地 SQLite (`data/economy.db`) 持久保存每位 Discord 用户的点数余额，**点数跨服务器共享**，同一个账号在任何 guild 看到的余额都一样。
 
-**获得点数：** 每次 AI 流式回复会以 `total_tokens` (input + output) 为点数奖励，实际数字会显示在回复 footer。目前只有跟机器人聊天会给点数 — Threads 解析与 `/download_video` 刻意都不付点。
+**获得点数：** 每则非 bot 用户消息都会获得 5,000 点数。AI 流式回复会再追加以 `total_tokens` (input + output) 计算的 bonus，实际数字会显示在回复 footer。Threads 解析与 `/download_video` 不会在基础消息奖励之外再付额外 action reward。
 
 **花用点数：** 赌场游戏会在开局时检查 bet，等 round 结算时才套用本局正负结果。如果下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝开局。机器人重启时，未完成的 in-memory round 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下注金额，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 的「庄家余额」是 house ledger balance，不是本局赚多少，所以正数不会加 `+`。
 
-游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/house` 查询 embed 也会在送出后清掉。`/give` 的转点记录会保留，不自动删除。
+游戏相关 response embed 会在三分钟后自动删除：赌场游戏 final embed 从回合结算后开始算，余额不足拒绝开局的回复从送出后开始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查询 embed 也会在送出后清掉。`/give` 的转点记录会保留，不自动删除。
 
 | Slash command         | 玩法                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -73,8 +73,13 @@
 
 - `/balance` — 查看自己的余额。
 - `/leaderboard` — 机器人所有服务器的全域 Top 10（庄家自己的账户会被排除）。
+- `/debt_leaderboard` — 查看全域欠债 Top 10，排序会包含读取当下可计算的 pending interest。
+- `/borrow <金额>` — 依 Discord 账号年龄借点数，loan 使用每日 1% simple interest。
+- `/repay <金额>` — 从目前余额还款，先还 interest，再还 principal。
 - `/give <成员> <金额>` — 把点数转给其他人（不能转给自己或机器人）。
 - `/house` — 查看庄家在 `/dice`、`/dragon_gate` 与 `/blackjack` 累积的输赢。庄家资金无上限，所以 ledger balance 可以是负数（代表整体玩家从庄家手里赢走的点数比较多）。
+
+借款后，每次 income event 会先自动拿 50% 还债，剩下才进钱包。
 
 ### 枫之谷 Artale 数据库
 
@@ -101,6 +106,9 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 | `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频              |
 | `/balance`                      | 查看你目前的点数余额（跨服务器）                                           |
 | `/leaderboard`                  | 全域点数 Top 10                                                            |
+| `/debt_leaderboard`             | 全域欠债 Top 10                                                            |
+| `/borrow <金额>`                | 依 Discord 账号年龄借点数                                                  |
+| `/repay <金额>`                 | 从余额偿还欠款                                                             |
 | `/give <成员> <点数>`           | 把点数转给其他成员                                                         |
 | `/dice <下注>`                  | 跟 AI 庄家掷三颗骰子比大小                                                 |
 | `/dragon_gate <下注>`           | 跟 AI 庄家玩射龙门，第三张严格落在两张门牌中间就赢                         |

@@ -6,15 +6,19 @@ they cannot be mutated after they leave the database layer.
 """
 
 from enum import StrEnum
+from typing import Final
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
+
+BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 5_000
 
 
 class TransactionKind(StrEnum):
     """Categorises a row in the ``point_transaction`` audit log.
 
     Attributes:
+        MESSAGE_REWARD: Base reward for every non-bot user message.
         CHAT_REWARD: Streaming AI reply token reward.
         CASINO_BET: Wager debit, including deferred settlement losses.
         CASINO_PAYOUT: Player-side payout from a finished casino round.
@@ -25,6 +29,7 @@ class TransactionKind(StrEnum):
         TRANSFER_IN: Receiver side of ``/give``.
     """
 
+    MESSAGE_REWARD = "message_reward"
     CHAT_REWARD = "chat_reward"
     CASINO_BET = "casino_bet"
     CASINO_PAYOUT = "casino_payout"
@@ -163,6 +168,7 @@ class TransferResult(BaseModel):
 
 
 __all__ = [
+    "BASE_MESSAGE_REWARD_AMOUNT",
     "BorrowResult",
     "CreditResult",
     "LoanView",

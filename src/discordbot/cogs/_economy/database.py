@@ -1468,3 +1468,54 @@ async def top_n(
         stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
         return [(row[0], row[1], row[2], row[3]) for row in result.all()]
+
+
+async def top_debtors(
+    *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
+) -> list[tuple[int, str, int, int, str]]:
+    """Returns accounts ordered by effective outstanding debt descending.
+
+    The stored interest column is only brought up to date on loan writes, so
+    this read path adds pending interest in Python before sorting. That keeps
+    the debt leaderboard consistent with ``/balance`` without mutating rows
+    just because someone viewed the ranking.
+
+    Args:
+        limit: Maximum number of accounts to return.
+        exclude_user_ids: User IDs to filter out before applying the limit.
+
+    Returns:
+        `(user_id, name, principal, interest, avatar_url)` tuples ordered by
+        `principal + interest` descending. ``interest`` includes pending
+        accrual as of the read time.
+    """
+    await _ensure_schema()
+    if limit <= 0:
+        return []
+
+    now = _database_now()
+    async with open_session() as session:
+        stmt = select(
+            UserAccount.user_id,
+            UserAccount.name,
+            UserAccount.loan_principal,
+            UserAccount.loan_interest,
+            UserAccount.loan_last_accrual_at,
+            UserAccount.avatar_url,
+        ).where((UserAccount.loan_principal > 0) | (UserAccount.loan_interest > 0))
+        if exclude_user_ids:
+            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
+        result = await session.execute(statement=stmt)
+        rows = result.all()
+
+    debtors: list[tuple[int, str, int, int, str]] = []
+    for row in rows:
+        principal = row[2]
+        interest = row[3]
+        if principal > 0 and row[4] is not None:
+            interest += accrual_delta(principal=principal, last_accrual_at=row[4], now=now)
+        if principal + interest > 0:
+            debtors.append((row[0], row[1], principal, interest, row[5]))
+
+    debtors.sort(key=lambda debtor: debtor[2] + debtor[3], reverse=True)
+    return debtors[:limit]

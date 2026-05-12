@@ -12,6 +12,8 @@ from nextcord.ext import tasks, commands
 
 from discordbot import setup_logging
 from discordbot.typings.config import DiscordConfig
+from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, TransactionKind
+from discordbot.cogs._economy.database import credit_with_repayment
 
 
 class DiscordBot(commands.Bot):
@@ -109,6 +111,20 @@ class DiscordBot(commands.Bot):
         """Ensures the bot is ready before starting the status task."""
         await self.wait_until_ready()
 
+    @staticmethod
+    async def _award_base_message_points(*, message: Message) -> None:
+        """Awards the global per-message base reward."""
+        try:
+            await credit_with_repayment(
+                user_id=message.author.id,
+                name=message.author.name,
+                avatar_url=message.author.display_avatar.url,
+                amount=BASE_MESSAGE_REWARD_AMOUNT,
+                kind=TransactionKind.MESSAGE_REWARD,
+            )
+        except Exception:
+            logfire.warn("Failed to award base message points", _exc_info=True)
+
     async def on_message(self, message: Message) -> None:
         """Handles incoming messages.
 
@@ -118,6 +134,7 @@ class DiscordBot(commands.Bot):
         if message.author == self.user or message.author.bot:
             return
 
+        await self._award_base_message_points(message=message)
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:

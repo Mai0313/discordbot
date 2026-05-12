@@ -2,6 +2,7 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
+from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 _HELP_CONTENT = {
@@ -15,7 +16,7 @@ _HELP_CONTENT = {
             "- Attach images or supported files for analysis\n"
             "- Ask me to generate images or videos\n"
             "- Send a long article / URL and ask for a summary\n"
-            f"- Earn {CURRENCY_NAME} from streaming AI replies"
+            f"- AI replies add token-based {CURRENCY_NAME} bonuses"
         ),
         "threads": (
             "**Threads Parser**\n"
@@ -39,14 +40,16 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
-            f"Earn {CURRENCY_NAME} from AI chat replies, then use them across servers.\n"
-            "`/balance` check your balance · `/leaderboard` show the global top 10\n"
+            f"Every message earns {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}; "
+            "AI chat replies add token-based bonuses.\n"
+            "`/balance` check your balance · `/leaderboard` show the global top 10 · "
+            "`/debt_leaderboard` show the top debtors\n"
             f"`/give` transfer {CURRENCY_NAME} · `/house` show the dealer's running P&L\n"
             "`/borrow` take out a loan (cap scales with your Discord account age, "
             "1%/day simple interest); `/repay` pay debt from your balance.\n"
             "Every income event after a loan auto-applies 50% toward debt (interest first).\n"
-            "`/balance`, `/leaderboard`, `/house`, `/borrow`, and `/repay` results "
-            "clean themselves up after 3 minutes."
+            "`/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, "
+            "and `/repay` results clean themselves up after 3 minutes."
         ),
         "games": (
             "**Games**\n"
@@ -68,7 +71,7 @@ _HELP_CONTENT = {
             "- 附加圖片或支援的檔案進行分析\n"
             "- 請我生成圖片或影片\n"
             "- 傳送長文 / 網址請我做摘要\n"
-            f"- AI 串流回覆會獎勵{CURRENCY_NAME}"
+            f"- AI 回覆會追加 token 計算的{CURRENCY_NAME} bonus"
         ),
         "threads": (
             "**Threads 解析**\n"
@@ -91,13 +94,16 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
-            f"AI chat 回覆會累積{CURRENCY_NAME}, {CURRENCY_NAME}跨 server 共用\n"
-            "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名\n"
+            f"每則訊息會獲得 {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}, "
+            f"AI chat 回覆另外追加 token bonus, {CURRENCY_NAME}跨 server 共用\n"
+            "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名 · "
+            "`/debt_leaderboard` 看欠債前 10 名\n"
             "`/give` 轉虛擬歡樂豆 · `/house` 看莊家累積 P&L\n"
             "`/borrow` 依 Discord 帳號年齡借款 (日利息 1%); "
             "`/repay` 從餘額還款 (利息優先)\n"
             "借款後賺到的點數會自動 50% 用來抵債 (利息優先, 本金其次)\n"
-            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` 結果 3 分鐘後自動清掉"
+            "`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、"
+            "`/borrow`、`/repay` 結果 3 分鐘後自動清掉"
         ),
         "games": (
             "**小遊戲**\n"
@@ -118,7 +124,7 @@ _HELP_CONTENT = {
             "- 画像や対応ファイルを添付して分析\n"
             "- 画像や動画の生成をリクエスト\n"
             "- 長文 / URLを送って要約をリクエスト\n"
-            f"- AIのストリーミング返信で{CURRENCY_NAME}を獲得"
+            f"- AI返信ではtokenベースの{CURRENCY_NAME}ボーナスも獲得"
         ),
         "threads": (
             "**Threads パーサー**\n"
@@ -142,13 +148,16 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
-            f"AI チャット返信で{CURRENCY_NAME}を獲得し、サーバーをまたいで使えます。\n"
-            "`/balance` 残高と借入状況を確認 · `/leaderboard` グローバルトップ10\n"
+            f"すべてのメッセージで{BASE_MESSAGE_REWARD_AMOUNT:,}{CURRENCY_NAME}を獲得し、"
+            "AI チャット返信ではtokenベースのボーナスも入ります。\n"
+            "`/balance` 残高と借入状況を確認 · `/leaderboard` グローバルトップ10 · "
+            "`/debt_leaderboard` 借入トップ10\n"
             f"`/give` {CURRENCY_NAME}送付 · `/house` ディーラーの累計損益\n"
             "`/borrow` Discord アカウント年齢に応じて借入 (日利1%); "
             "`/repay` 残高から返済 (利息優先)。\n"
             "借入後の獲得点数は50%が自動的に返済に充当されます (利息優先、元本次)。\n"
-            "`/balance`、`/leaderboard`、`/house`、`/borrow`、`/repay` の結果は3分後に自動削除されます。"
+            "`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、"
+            "`/borrow`、`/repay` の結果は3分後に自動削除されます。"
         ),
         "games": (
             "**ゲーム**\n"

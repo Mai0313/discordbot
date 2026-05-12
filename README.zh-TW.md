@@ -55,11 +55,11 @@
 
 機器人會用本機 SQLite (`data/economy.db`) 持久保存每位 Discord 使用者的虛擬歡樂豆餘額，**虛擬歡樂豆跨伺服器共用**，同一個帳號在任何 guild 看到的餘額都一樣。
 
-**獲得虛擬歡樂豆：** 每次 AI 串流回覆會以 `total_tokens` (input + output) 為虛擬歡樂豆獎勵，實際數字會顯示在回覆 footer。目前只有跟機器人聊天會給虛擬歡樂豆 — Threads 解析與 `/download_video` 刻意都不付。
+**獲得虛擬歡樂豆：** 每則非 bot 使用者訊息都會獲得 5,000 虛擬歡樂豆。AI 串流回覆會再追加以 `total_tokens` (input + output) 計算的 bonus，實際數字會顯示在回覆 footer。Threads 解析與 `/download_video` 不會在基礎訊息獎勵之外再付額外 action reward。
 
 **花用虛擬歡樂豆：** 賭場遊戲會在開局時檢查 bet，等 round 結算時才套用本局正負結果。如果下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕開局。機器人重啟時，未完成的 in-memory round 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下注金額，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 的「莊家餘額」是 house ledger balance，不是本局賺多少，所以正數不會加 `+`。
 
-遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/house` 查詢 embed 也會在送出後清掉。`/give` 的轉點紀錄會保留，不自動刪除。
+遊戲相關 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/balance`、`/leaderboard`、`/debt_leaderboard`、`/house`、`/borrow`、`/repay` 查詢 embed 也會在送出後清掉。`/give` 的轉點紀錄會保留，不自動刪除。
 
 | Slash command         | 玩法                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -73,8 +73,13 @@
 
 - `/balance` — 查看自己的餘額。
 - `/leaderboard` — 機器人所有伺服器的全域 Top 10（莊家自己的帳戶會被排除）。
+- `/debt_leaderboard` — 查看全域欠債 Top 10，排序會包含讀取當下可計算的 pending interest。
+- `/borrow <金額>` — 依 Discord 帳號年齡借虛擬歡樂豆，loan 使用每日 1% simple interest。
+- `/repay <金額>` — 從目前餘額還款，先還 interest，再還 principal。
 - `/give <成員> <金額>` — 把虛擬歡樂豆轉給其他人（不能轉給自己或機器人）。
 - `/house` — 查看莊家在 `/dice`、`/dragon_gate` 與 `/blackjack` 累積的輸贏。莊家資金無上限，所以 ledger balance 可以是負數（代表整體玩家從莊家手上贏走的虛擬歡樂豆比較多）。
+
+借款後，每次 income event 會先自動拿 50% 還債，剩下才進錢包。
 
 ### 楓之谷 Artale 資料庫
 
@@ -101,6 +106,9 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 | `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片              |
 | `/balance`                      | 查看你目前的虛擬歡樂豆餘額（跨伺服器）                                     |
 | `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                      |
+| `/debt_leaderboard`             | 全域欠債 Top 10                                                            |
+| `/borrow <金額>`                | 依 Discord 帳號年齡借虛擬歡樂豆                                            |
+| `/repay <金額>`                 | 從餘額償還欠款                                                             |
 | `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                   |
 | `/dice <下注>`                  | 跟 AI 莊家擲三顆骰子比大小                                                 |
 | `/dragon_gate <下注>`           | 跟 AI 莊家玩射龍門，第三張嚴格落在兩張門牌中間就贏                         |

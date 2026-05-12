@@ -452,6 +452,31 @@ async def test_get_loan_view_after_borrow_and_repay_tracks_totals() -> None:
     assert view.total_repaid == 200
 
 
+# Debt leaderboard ---------------------------------------------------------
+
+
+async def test_top_debtors_orders_by_effective_debt_with_pending_interest() -> None:
+    """Debt ranking includes read-time pending interest without persisting it."""
+    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
+    await database.borrow(user_id=2, name="bob", amount=1_200, credit_limit_value=10_000)
+    await _backdate_last_accrual(user_id=1, days_ago=30)
+
+    rows = await database.top_debtors(limit=2)
+
+    assert rows[0][:4] == (1, "alice", 1_000, 300)
+    assert rows[1][:4] == (2, "bob", 1_200, 0)
+
+
+async def test_top_debtors_excludes_specified_users() -> None:
+    """Excluded accounts do not appear on the debt leaderboard."""
+    await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
+    await database.borrow(user_id=99, name="house", amount=2_000, credit_limit_value=10_000)
+
+    rows = await database.top_debtors(limit=10, exclude_user_ids=(99,))
+
+    assert rows == [(1, "alice", 1_000, 0, "")]
+
+
 # Audit log ----------------------------------------------------------------
 
 

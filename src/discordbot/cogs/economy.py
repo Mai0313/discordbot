@@ -14,6 +14,7 @@ from discordbot.cogs._economy.database import (
     transfer,
     get_account,
     get_balance,
+    top_debtors,
     credit_limit,
     accrual_delta,
     get_loan_view,
@@ -27,6 +28,7 @@ from discordbot.cogs._economy.presentation import (
 
 _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
+_DEBT_LEADERBOARD_COLOR = 0xE67E22
 _TRANSFER_COLOR = 0x5865F2
 _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
@@ -45,6 +47,17 @@ def _rank_line(*, position: int, name: str, balance: int) -> str:
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     rank = medals.get(position, f"`#{position}`")
     return f"{rank} **{name}**  {amount_code(amount=balance)} {CURRENCY_NAME}"
+
+
+def _debt_rank_line(*, position: int, name: str, principal: int, interest: int) -> str:
+    """Formats one debt leaderboard row."""
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank = medals.get(position, f"`#{position}`")
+    total = principal + interest
+    return (
+        f"{rank} **{name}**  欠 {amount_code(amount=total)} {CURRENCY_NAME} "
+        f"(本金 {amount_code(amount=principal)} / 利息 {amount_code(amount=interest)})"
+    )
 
 
 async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> None:
@@ -173,6 +186,67 @@ class EconomyCogs(commands.Cog):
                 for position, row in enumerate(iterable=rows[3:], start=4)
             )
             embed.add_field(name="其他玩家", value=others, inline=False)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="debt_leaderboard",
+        description=f"Show the global top 10 {CURRENCY_NAME} debtors.",
+        name_localizations={Locale.zh_TW: "欠債排行榜", Locale.ja: "借金ランキング"},
+        description_localizations={
+            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}欠款前 10 名",
+            Locale.ja: f"グローバル{CURRENCY_NAME}借入トップ10を表示します。",
+        },
+        nsfw=False,
+    )
+    async def debt_leaderboard(self, interaction: Interaction) -> None:
+        """Replies with the top 10 borrowers by outstanding debt.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer()
+        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
+        rows = await top_debtors(limit=10, exclude_user_ids=exclude_user_ids)
+        if not rows:
+            embed = Embed(
+                title=f"🧾 {CURRENCY_NAME} Debt Top 10",
+                description="### 目前沒有人欠款\n/borrow 借款後會出現在這裡",
+                color=_DEBT_LEADERBOARD_COLOR,
+            )
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
+        _, champion_name, champion_principal, champion_interest, champion_avatar_url = rows[0]
+        champion_debt = champion_principal + champion_interest
+
+        embed = Embed(
+            title=f"🧾 {CURRENCY_NAME} Debt Top 10",
+            description=f"## 🥇 {champion_name}\n欠 {bold_currency(amount=champion_debt)}",
+            color=_DEBT_LEADERBOARD_COLOR,
+        )
+        embed.set_author(name="目前欠最多", icon_url=champion_avatar_url or None)
+        _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
+        embed.add_field(
+            name="第一名債務",
+            value=(
+                f"本金 {amount_code(amount=champion_principal)}\n"
+                f"利息 {amount_code(amount=champion_interest)}"
+            ),
+            inline=False,
+        )
+        if len(rows) > 1:
+            top_three = "\n".join(
+                _debt_rank_line(position=position, name=row[1], principal=row[2], interest=row[3])
+                for position, row in enumerate(iterable=rows[1:3], start=2)
+            )
+            embed.add_field(name="前三名", value=top_three, inline=False)
+        if len(rows) > 3:
+            others = "\n".join(
+                _debt_rank_line(position=position, name=row[1], principal=row[2], interest=row[3])
+                for position, row in enumerate(iterable=rows[3:], start=4)
+            )
+            embed.add_field(name="其他玩家", value=others, inline=False)
+        embed.set_footer(text="排序包含目前讀取時可計算的未入帳利息")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(

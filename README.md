@@ -55,11 +55,11 @@ Use `/download_video` to download videos from multiple platforms:
 
 The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
-**Earning 虛擬歡樂豆:** every streaming AI reply awards 虛擬歡樂豆 equal to its `total_tokens` (input + output), shown in the reply footer. Chatting with the bot is currently the only way to earn — Threads parsing and `/download_video` deliberately don't pay.
+**Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
 
 **Spending 虛擬歡樂豆:** casino games validate the bet when the round starts, then apply the signed result only when the round resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the round. An unfinished in-memory round is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the bet and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show the house ledger balance, not the current round's profit, so positive house balances are displayed without a leading `+`.
 
-Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, and `/house` lookup embeds after they are sent. Transfer records from `/give` are intentionally kept.
+Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/debt_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Transfer records from `/give` are intentionally kept.
 
 | Slash command        | Game                                                                                                                                                     |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -73,8 +73,13 @@ Game-related response embeds are automatically deleted after three minutes: fina
 
 - `/balance` — show your current balance.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
+- `/debt_leaderboard` — global Top 10 outstanding debts, including read-time pending interest.
+- `/borrow <amount>` — borrow against your Discord account age. Loans use 1% per-day simple interest.
+- `/repay <amount>` — repay debt from your current balance, interest first and principal second.
 - `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
 - `/house` — show the dealer's accumulated win/loss across `/dice`, `/dragon_gate`, and `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
+
+After borrowing, 50% of each income event automatically repays debt before the rest lands in the wallet.
 
 ### MapleStory Artale Database
 
@@ -101,6 +106,9 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                |
 | `/balance`                        | Show your current 虛擬歡樂豆 balance (cross-server)                                  |
 | `/leaderboard`                    | Global Top 10 虛擬歡樂豆 holders                                                     |
+| `/debt_leaderboard`               | Global Top 10 outstanding debts                                                      |
+| `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age                                   |
+| `/repay <amount>`                 | Repay outstanding debt from your balance                                             |
 | `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                |
 | `/dice <bet>`                     | Roll three dice against the AI dealer                                                |
 | `/dragon_gate <bet>`              | Shoot one card between two gate cards; strictly inside wins                          |
