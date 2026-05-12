@@ -175,15 +175,9 @@ class EconomyCogs(commands.Cog):
         embed.set_author(name="目前第一名", icon_url=champion_avatar_url or None)
         _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
         if len(rows) > 1:
-            top_three = "\n".join(
-                _rank_line(position=position, name=row[1], balance=row[2])
-                for position, row in enumerate(iterable=rows[1:3], start=2)
-            )
-            embed.add_field(name="前三名", value=top_three, inline=False)
-        if len(rows) > 3:
             others = "\n".join(
                 _rank_line(position=position, name=row[1], balance=row[2])
-                for position, row in enumerate(iterable=rows[3:], start=4)
+                for position, row in enumerate(iterable=rows[1:], start=2)
             )
             embed.add_field(name="其他玩家", value=others, inline=False)
         await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -235,17 +229,11 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         if len(rows) > 1:
-            top_three = "\n".join(
-                _debt_rank_line(position=position, name=row[1], principal=row[2], interest=row[3])
-                for position, row in enumerate(iterable=rows[1:3], start=2)
-            )
-            embed.add_field(name="前三名", value=top_three, inline=False)
-        if len(rows) > 3:
             others = "\n".join(
                 _debt_rank_line(position=position, name=row[1], principal=row[2], interest=row[3])
-                for position, row in enumerate(iterable=rows[3:], start=4)
+                for position, row in enumerate(iterable=rows[1:], start=2)
             )
-            embed.add_field(name="其他玩家", value=others, inline=False)
+            embed.add_field(name="其他借款人", value=others, inline=False)
         embed.set_footer(text="排序包含目前讀取時可計算的未入帳利息")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
