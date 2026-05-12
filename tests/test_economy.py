@@ -115,16 +115,15 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
     """Account and audit timestamps are persisted as Taiwan-local wall time."""
     before = datetime.now(tz=database.TAIWAN_TIMEZONE).replace(tzinfo=None)
     await database.credit_with_repayment(
-        user_id=42,
-        name="alice",
-        amount=10,
-        kind=database.TransactionKind.CHAT_REWARD,
+        user_id=42, name="alice", amount=10, kind=database.TransactionKind.CHAT_REWARD
     )
     after = datetime.now(tz=database.TAIWAN_TIMEZONE).replace(tzinfo=None)
 
     async with database.open_session() as session:
         result = await session.execute(
-            statement=select(database.UserAccount.updated_at, database.PointTransaction.occurred_at)
+            statement=select(
+                database.UserAccount.updated_at, database.PointTransaction.occurred_at
+            )
             .join(
                 database.PointTransaction,
                 database.PointTransaction.user_id == database.UserAccount.user_id,

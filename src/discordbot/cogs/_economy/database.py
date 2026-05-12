@@ -146,9 +146,7 @@ class UserAccount(Base):
     total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=_database_now,
-        onupdate=_database_now,
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
     loan_principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     loan_interest: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
