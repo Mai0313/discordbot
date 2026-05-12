@@ -192,7 +192,7 @@ class BlackjackView(ui.View):
         self.balance_after_bet = balance_after_bet
         self.is_allin = is_allin
         self.message: Message | None = None
-        self._settlement_lock = asyncio.Lock()
+        self._round_lock = asyncio.Lock()
         self._settled = False
 
     async def interaction_check(self, interaction: Interaction) -> bool:
@@ -211,10 +211,13 @@ class BlackjackView(ui.View):
 
     async def on_timeout(self) -> None:
         """If the player walked away, auto-stand the hand and finalise it."""
-        if self.hand.finished or self.message is None:
+        if self.message is None:
             return
-        self.hand.stand()
-        await self._finalize(message=self.message)
+        async with self._round_lock:
+            if self._settled or self.hand.finished:
+                return
+            self.hand.stand()
+            await self._finalize_locked(message=self.message)
 
     @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary)
     async def hit(self, _button: ui.Button, interaction: Interaction) -> None:
@@ -230,26 +233,29 @@ class BlackjackView(ui.View):
         await interaction.response.defer()
         if interaction.message is None:
             return
-        self.hand.hit()
-        if self.hand.finished:
-            await self._finalize(message=interaction.message)
-            return
-        hint = await self.dealer.hint(
-            author_name=self.author_name,
-            player_name=self.player_name,
-            player_total=self.hand.player_total(),
-            dealer_visible=dealer_visible_value(hand=self.hand),
-        )
-        embed = build_in_progress_embed(
-            dealer_name=self.dealer_name,
-            player_name=self.player_name,
-            player_avatar_url=self.player_avatar_url,
-            hand=self.hand,
-            balance_after_bet=self.balance_after_bet,
-            dealer_line=hint,
-            is_allin=self.is_allin,
-        )
-        await interaction.message.edit(embed=embed, view=self)
+        async with self._round_lock:
+            if self._settled or self.hand.finished:
+                return
+            self.hand.hit()
+            if self.hand.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            hint = await self.dealer.hint(
+                author_name=self.author_name,
+                player_name=self.player_name,
+                player_total=self.hand.player_total(),
+                dealer_visible=dealer_visible_value(hand=self.hand),
+            )
+            embed = build_in_progress_embed(
+                dealer_name=self.dealer_name,
+                player_name=self.player_name,
+                player_avatar_url=self.player_avatar_url,
+                hand=self.hand,
+                balance_after_bet=self.balance_after_bet,
+                dealer_line=hint,
+                is_allin=self.is_allin,
+            )
+            await interaction.message.edit(embed=embed, view=self)
 
     @ui.button(label="停手", emoji="✋", style=ButtonStyle.secondary)
     async def stand(self, _button: ui.Button, interaction: Interaction) -> None:
@@ -264,8 +270,11 @@ class BlackjackView(ui.View):
         await interaction.response.defer()
         if interaction.message is None:
             return
-        self.hand.stand()
-        await self._finalize(message=interaction.message)
+        async with self._round_lock:
+            if self._settled or self.hand.finished:
+                return
+            self.hand.stand()
+            await self._finalize_locked(message=interaction.message)
 
     async def _finalize(self, *, message: Message) -> None:
         """Settles DB, asks the dealer for a closing line, and updates the embed.
@@ -278,50 +287,54 @@ class BlackjackView(ui.View):
         (negated, since dealer P&L is the inverse of player P&L), so global
         casino performance is always visible via ``/house``.
         """
-        async with self._settlement_lock:
-            if self._settled:
-                return
-            self._settled = True
+        async with self._round_lock:
+            await self._finalize_locked(message=message)
 
-            settlement = await settle_blackjack_round(
-                hand=self.hand,
-                player_id=self.owner_id,
-                player_account_name=self.author_name,
-                player_avatar_url=self.player_avatar_url,
-                dealer_id=self.dealer_id,
-                dealer_name=self.dealer_name,
-                dealer_avatar_url=self.dealer_avatar_url,
-            )
-            outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
-            banter = await self.dealer.settle(
-                author_name=self.author_name,
-                player_name=self.player_name,
-                outcome=settlement.outcome,
-                bet=self.hand.bet,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                game="blackjack",
-                detail=settlement.detail,
-            )
-            embed = build_final_embed(
-                dealer_name=self.dealer_name,
-                player_name=self.player_name,
-                player_avatar_url=self.player_avatar_url,
-                hand=self.hand,
-                delta=settlement.delta,
-                new_balance=settlement.new_balance,
-                dealer_line=banter,
-                outcome_label=outcome_label,
-                color=color,
-                is_allin=self.is_allin,
-            )
-            for child in self.children:
-                if isinstance(child, ui.Button):
-                    child.disabled = True
-            self.stop()
-            with contextlib.suppress(Exception):
-                await message.edit(embed=embed, view=self)
-            schedule_game_message_delete(message=message)
+    async def _finalize_locked(self, *, message: Message) -> None:
+        """Finalizes a round while the caller holds the round lock."""
+        if self._settled:
+            return
+        self._settled = True
+
+        settlement = await settle_blackjack_round(
+            hand=self.hand,
+            player_id=self.owner_id,
+            player_account_name=self.author_name,
+            player_avatar_url=self.player_avatar_url,
+            dealer_id=self.dealer_id,
+            dealer_name=self.dealer_name,
+            dealer_avatar_url=self.dealer_avatar_url,
+        )
+        outcome_label, color = blackjack_outcome_presentation(outcome=settlement.outcome)
+        banter = await self.dealer.settle(
+            author_name=self.author_name,
+            player_name=self.player_name,
+            outcome=settlement.outcome,
+            bet=self.hand.bet,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
+            game="blackjack",
+            detail=settlement.detail,
+        )
+        embed = build_final_embed(
+            dealer_name=self.dealer_name,
+            player_name=self.player_name,
+            player_avatar_url=self.player_avatar_url,
+            hand=self.hand,
+            delta=settlement.delta,
+            new_balance=settlement.new_balance,
+            dealer_line=banter,
+            outcome_label=outcome_label,
+            color=color,
+            is_allin=self.is_allin,
+        )
+        for child in self.children:
+            if isinstance(child, ui.Button):
+                child.disabled = True
+        self.stop()
+        with contextlib.suppress(Exception):
+            await message.edit(embed=embed, view=self)
+        schedule_game_message_delete(message=message)
 
 
 __all__: list[str] = [

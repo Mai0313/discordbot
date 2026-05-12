@@ -1,5 +1,6 @@
 """Tests for the economy persistence layer."""
 
+from types import SimpleNamespace
 from random import SystemRandom
 import asyncio
 from pathlib import Path
@@ -22,12 +23,19 @@ class _DealerStub:
 
     def __init__(self) -> None:
         self.settle_calls = 0
+        self.hint_calls = 0
 
     async def settle(self, **_kwargs: object) -> str:
         """Returns deterministic banter and tracks settlement calls."""
         self.settle_calls += 1
         await asyncio.sleep(delay=0)
         return "settled"
+
+    async def hint(self, **_kwargs: object) -> str:
+        """Returns deterministic in-progress banter and tracks hint calls."""
+        self.hint_calls += 1
+        await asyncio.sleep(delay=0)
+        return "hint"
 
 
 class _MessageStub:
@@ -39,6 +47,25 @@ class _MessageStub:
     async def edit(self, **_kwargs: object) -> None:
         """Records a Discord message edit."""
         self.edit_calls += 1
+
+
+class _ResponseStub:
+    """Minimal interaction response stub for button callback tests."""
+
+    def __init__(self) -> None:
+        self.deferred = False
+
+    async def defer(self) -> None:
+        """Records that the button interaction was deferred."""
+        self.deferred = True
+
+
+class _InteractionStub:
+    """Minimal button interaction stub."""
+
+    def __init__(self, *, message: _MessageStub) -> None:
+        self.message = message
+        self.response = _ResponseStub()
 
 
 @pytest.fixture(autouse=True)
@@ -488,6 +515,66 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert await database.get_balance(user_id=1) == 50
     assert await database.get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
+    assert message.edit_calls == 1
+    assert cleanup_messages == [message]
+
+
+async def test_blackjack_view_locks_actions_while_finalizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late Hit cannot mutate a hand that is already finalizing from Stand."""
+    cleanup_messages: list[object] = []
+    settlement_started = asyncio.Event()
+    continue_settlement = asyncio.Event()
+
+    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+        cleanup_messages.append(message)
+
+    async def delayed_settle_blackjack_round(**_kwargs: object) -> SimpleNamespace:
+        settlement_started.set()
+        await continue_settlement.wait()
+        return SimpleNamespace(
+            outcome="win", delta=50, payout=100, new_balance=150, house_balance=-50, detail="win"
+        )
+
+    monkeypatch.setattr(
+        target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
+    )
+    monkeypatch.setattr(
+        target=views, name="settle_blackjack_round", value=delayed_settle_blackjack_round
+    )
+
+    hand = BlackjackHand(rng=SystemRandom(), bet=50)
+    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
+    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+
+    dealer = _DealerStub()
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        hand=hand,
+        owner_id=1,
+        author_name="alice",
+        player_name="Alice",
+        dealer_id=99,
+        dealer_name="house",
+        balance_after_bet=50,
+    )
+
+    hit_button, stand_button = view.children
+    stand_task = asyncio.create_task(coro=stand_button.callback(_InteractionStub(message=message)))
+    await settlement_started.wait()
+
+    hit_task = asyncio.create_task(coro=hit_button.callback(_InteractionStub(message=message)))
+    await asyncio.sleep(delay=0)
+
+    assert len(hand.player) == 2
+    continue_settlement.set()
+    await asyncio.gather(stand_task, hit_task)
+
+    assert len(hand.player) == 2
+    assert dealer.settle_calls == 1
+    assert dealer.hint_calls == 0
     assert message.edit_calls == 1
     assert cleanup_messages == [message]
 
