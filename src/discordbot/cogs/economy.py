@@ -77,7 +77,6 @@ class EconomyCogs(commands.Cog):
 
         embed = Embed(color=_BALANCE_COLOR, description=f"💰 **{currency_text(amount=amount)}**")
         embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
-        embed.set_thumbnail(url=user.display_avatar.url)
 
         has_debt = loan is not None and (loan.principal > 0 or loan.interest_stored > 0)
         if has_debt and loan is not None:
@@ -116,7 +115,7 @@ class EconomyCogs(commands.Cog):
         # Exclude the bot's own house-ledger row so the casino's house P&L
         # never crowds out real players on the leaderboard.
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_n(limit=10, exclude_user_ids=exclude_user_ids)
+        rows = await top_n(limit=3, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME}排行榜",
@@ -126,29 +125,20 @@ class EconomyCogs(commands.Cog):
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        medals = ("🥇", "🥈", "🥉")
-        champion_name = rows[0][1]
-        champion_balance = rows[0][2]
         champion_avatar_url = rows[0][3]
-        lines: list[str] = []
+
+        medals = ("🥇", "🥈", "🥉")
+        sections: list[str] = []
         for index, row in enumerate(iterable=rows):
             name, amount = row[1], row[2]
-            if index < 3:
-                lines.append(f"{medals[index]} **{name}** · `{amount:,}`")
-            else:
-                lines.append(f"{name} · {amount:,}")
+            sections.append(f"### {medals[index]} {name}\n-# 持有 `{amount:,}` {CURRENCY_NAME}")
 
-        embed = Embed(title=f"🏆 {CURRENCY_NAME}排行榜", color=_LEADERBOARD_COLOR)
-        embed.set_author(
-            name=f"👑 本期霸主 · {champion_name}", icon_url=champion_avatar_url or None
+        embed = Embed(
+            title=f"🏆 {CURRENCY_NAME}排行榜",
+            description="\n".join(sections),
+            color=_LEADERBOARD_COLOR,
         )
-        if champion_avatar_url:
-            embed.set_thumbnail(url=champion_avatar_url)
-        embed.description = (
-            f"持有 **{currency_text(amount=champion_balance)}**\n"
-            "━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
-        )
-        embed.set_footer(text=f"共 {len(rows)} 位玩家 · /balance 查自己")
+        embed.set_author(name="本期霸主", icon_url=champion_avatar_url or None)
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -245,7 +235,6 @@ class EconomyCogs(commands.Cog):
             color=_TRANSFER_COLOR,
         )
         embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
-        embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(
             name=f"{sender.display_name} 的餘額",
             value=f"`{transfer_result.sender_balance:,}`",
@@ -305,7 +294,6 @@ class EconomyCogs(commands.Cog):
 
         embed = Embed(title="🎰 莊家戰績", description=verdict, color=color)
         embed.set_author(name=f"{name} 的賭場", icon_url=bot_user.display_avatar.url)
-        embed.set_thumbnail(url=bot_user.display_avatar.url)
         embed.add_field(name="贏到", value=f"`{total_earned:,}`", inline=True)
         embed.add_field(name="賠出", value=f"`{total_spent:,}`", inline=True)
         embed.set_footer(text="跨伺服器累積 · 莊家資金無上限")
@@ -381,7 +369,6 @@ class EconomyCogs(commands.Cog):
             color=_BORROW_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        embed.set_thumbnail(url=user.display_avatar.url)
         embed.add_field(name="目前餘額", value=f"`{result.new_balance:,}`", inline=True)
         embed.add_field(name="未還本金", value=f"`{result.principal:,}`", inline=True)
         embed.set_footer(text=f"日利息 1% · 收入 50% 自動抵債 · 上限 {limit:,}")
@@ -448,7 +435,6 @@ class EconomyCogs(commands.Cog):
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        embed.set_thumbnail(url=user.display_avatar.url)
         embed.add_field(name="利息", value=f"`{result.interest_repaid:,}`", inline=True)
         embed.add_field(name="本金", value=f"`{result.principal_repaid:,}`", inline=True)
         embed.add_field(name="剩餘欠款", value=f"`{result.remaining_debt:,}`", inline=True)
