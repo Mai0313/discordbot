@@ -91,7 +91,9 @@ Persistent point balances backing the global message reward, AI chat reward, cas
 
 ### Games (`cogs/games.py` + `cogs/_games/`)
 
-Slash command `/blackjack`, one game per invocation against an AI dealer. No lobby, no shared table.
+Slash command `/blackjack`, one game per invocation against an AI dealer.
+
+All mini-games should support multiplayer. The default flow is: initiator opens a game, the bot shows join buttons for other players, then the initiator starts the game. Add game-specific setup steps in the lobby only when the rules need them. A single player must still be allowed to start so the same commands keep working in DMs.
 
 - **Pure rules** live in `cogs/_games/blackjack.py`. Side-effect-free; tests inject a seeded `random.Random`, production uses `random.SystemRandom()`.
 - **Natural Blackjack**: `is_blackjack` means exactly two cards totaling 21. Player natural settles immediately at 1.5×. Dealer natural also settles immediately unless player also has natural (push). The final embed adds an "提前結束原因" field when this skips the Hit / Stand flow.
