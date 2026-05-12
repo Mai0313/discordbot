@@ -32,6 +32,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Cog = `commands.Cog` subclass + module-level **sync** `def setup(bot): bot.add_cog(..., override=True)`.
 - Cogs don't import peers directly; cross-cog calls go through the bot instance or shared typings.
 - Slash commands need `name_localizations` / `description_localizations` for `en-US`, `zh-TW`, `ja`. See `cogs/help.py` and `cogs/maplestory.py` for the pattern.
+- Every user-facing feature or behavior change must update `cogs/help.py` (`_HELP_CONTENT`) in the same change so `/help` stays accurate; keep `tests/test_help.py` passing.
 - Cog-private helpers live in sibling `_<cog>/` packages (e.g. `_gen_reply/`, `_maplestory/`).
 
 ### AI pipeline (`cogs/gen_reply.py` + `cogs/_gen_reply/prompts.py`)
