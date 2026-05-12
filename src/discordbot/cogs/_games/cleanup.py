@@ -152,17 +152,37 @@ async def list_pending_game_messages() -> list[PendingGameMessage]:
         return []
 
 
+async def _fetch_tracked_message(*, bot: commands.Bot, record: PendingGameMessage) -> Message:
+    """Fetches a tracked message from a concrete Discord channel."""
+    channel = bot.get_channel(record.channel_id)
+    if channel is None or not hasattr(channel, "fetch_message"):
+        channel = await bot.fetch_channel(record.channel_id)
+    if not hasattr(channel, "fetch_message"):
+        msg = f"Channel {record.channel_id} cannot fetch messages"
+        raise TypeError(msg)
+    return await channel.fetch_message(record.message_id)
+
+
 async def delete_tracked_game_messages(*, bot: commands.Bot) -> None:
     """Deletes persisted game responses left by an earlier bot process."""
     records = await list_pending_game_messages()
     deleted_count = 0
     for record in records:
+        deleted = False
         try:
-            channel = bot.get_partial_messageable(record.channel_id)
-            message = channel.get_partial_message(record.message_id)
+            message = await _fetch_tracked_message(bot=bot, record=record)
             await message.delete()
+            deleted = True
         except nextcord.NotFound:
-            pass
+            deleted = True
+        except TypeError:
+            logfire.warn(
+                "Failed to resolve stale game response channel",
+                channel_id=record.channel_id,
+                message_id=record.message_id,
+                _exc_info=True,
+            )
+            continue
         except (nextcord.Forbidden, nextcord.HTTPException):
             logfire.warn(
                 "Failed to delete stale game response",
@@ -172,7 +192,8 @@ async def delete_tracked_game_messages(*, bot: commands.Bot) -> None:
             )
             continue
         await forget_game_message(message_id=record.message_id)
-        deleted_count += 1
+        if deleted:
+            deleted_count += 1
     if records:
         logfire.info(
             "Deleted stale game responses", deleted_count=deleted_count, pending_count=len(records)

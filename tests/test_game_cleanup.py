@@ -54,8 +54,8 @@ class _ChannelStub:
         self.id = channel_id
 
 
-class _PartialMessageStub:
-    """Partial message returned by a fake bot for startup cleanup."""
+class _FetchedMessageStub:
+    """Fetched message returned by a fake channel for startup cleanup."""
 
     def __init__(
         self, *, channel_id: int, message_id: int, deleted: list[tuple[int, int]]
@@ -69,16 +69,16 @@ class _PartialMessageStub:
         self.deleted.append((self.channel_id, self.message_id))
 
 
-class _PartialMessageableStub:
-    """Minimal partial messageable returned by the fake bot."""
+class _FetchMessageChannelStub:
+    """Minimal message channel returned by the fake bot."""
 
     def __init__(self, *, channel_id: int, deleted: list[tuple[int, int]]) -> None:
         self.channel_id = channel_id
         self.deleted = deleted
 
-    def get_partial_message(self, message_id: int, /) -> _PartialMessageStub:
-        """Returns a partial message stub."""
-        return _PartialMessageStub(
+    async def fetch_message(self, message_id: int, /) -> _FetchedMessageStub:
+        """Returns a fetched message stub."""
+        return _FetchedMessageStub(
             channel_id=self.channel_id, message_id=message_id, deleted=self.deleted
         )
 
@@ -86,12 +86,31 @@ class _PartialMessageableStub:
 class _BotStub:
     """Minimal bot shape for startup cleanup."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, cached_channel: object | None = None) -> None:
         self.deleted: list[tuple[int, int]] = []
+        self.cached_channel = cached_channel
+        self.fetch_calls: list[int] = []
 
-    def get_partial_messageable(self, channel_id: int, /) -> _PartialMessageableStub:
-        """Returns a partial channel stub."""
-        return _PartialMessageableStub(channel_id=channel_id, deleted=self.deleted)
+    def get_channel(self, channel_id: int, /) -> object | None:
+        """Returns the configured cached channel."""
+        return self.cached_channel
+
+    async def fetch_channel(self, channel_id: int, /) -> _FetchMessageChannelStub:
+        """Returns a concrete message channel stub."""
+        self.fetch_calls.append(channel_id)
+        return _FetchMessageChannelStub(channel_id=channel_id, deleted=self.deleted)
+
+
+class _UnfetchableBotStub:
+    """Bot stub that resolves a channel object that cannot fetch messages."""
+
+    def get_channel(self, channel_id: int, /) -> None:
+        """Returns no cached channel."""
+        return
+
+    async def fetch_channel(self, channel_id: int, /) -> object:
+        """Returns a non-messageable channel shape."""
+        return object()
 
 
 class _FollowupStub:
@@ -165,7 +184,33 @@ async def test_delete_tracked_game_messages_deletes_stale_restart_records() -> N
     await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", bot))
 
     assert bot.deleted == [(20, 10)]
+    assert bot.fetch_calls == [20]
     assert await cleanup.list_pending_game_messages() == []
+
+
+async def test_delete_tracked_game_messages_skips_non_messageable_cached_channel() -> None:
+    """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
+    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    await cleanup.track_game_message(message=cast("Message", message))
+    bot = _BotStub(cached_channel=object())
+
+    await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", bot))
+
+    assert bot.deleted == [(20, 10)]
+    assert bot.fetch_calls == [20]
+    assert await cleanup.list_pending_game_messages() == []
+
+
+async def test_delete_tracked_game_messages_keeps_unresolved_channel_records() -> None:
+    """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
+    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    await cleanup.track_game_message(message=cast("Message", message))
+
+    await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
+
+    assert await cleanup.list_pending_game_messages() == [
+        cleanup.PendingGameMessage(channel_id=20, message_id=10)
+    ]
 
 
 async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
