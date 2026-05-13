@@ -155,7 +155,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME} Top 10",
-                description="### 尚未開張\n/blackjack 開局就會上榜",
+                description="### 尚未開張\n/blackjack 或 /dragon_gate 開局就會上榜",
                 color=_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -200,7 +200,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
-                description="### 今天還沒有人輸錢\n/blackjack 開局就可能進榜",
+                description="### 今天還沒有人輸錢\n/blackjack 或 /dragon_gate 開局就可能進榜",
                 color=_LOSS_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -337,7 +337,7 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def house(self, interaction: Interaction) -> None:
-        """Shows the bot's accumulated dealer P&L across `/blackjack`.
+        """Shows the bot's accumulated dealer P&L across casino games.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -650,7 +650,7 @@ class EconomyCogs(commands.Cog):
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
         embed.add_field(
             name="VIP 永久權益",
-            value=("- 賭場贏錢賠率 **1.5x**\n- 每日簽到點數 **2x**\n- 貸款額度 **2x**"),
+            value=("- Blackjack payout **1.5x**\n- 每日簽到點數 **2x**\n- 貸款額度 **2x**"),
             inline=False,
         )
         embed.add_field(

@@ -15,7 +15,11 @@ from discordbot.cogs._economy import database
 from discordbot.typings.games import GameParticipant, BlackjackSettlement
 from discordbot.cogs._games.views import BlackjackView
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
-from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
+from discordbot.cogs._games.settlement import (
+    settle_wager,
+    settle_blackjack_round,
+    settle_dragon_gate_player,
+)
 
 
 class _DealerStub:
@@ -1017,3 +1021,17 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     )
     assert settlement.delta == -100
     assert settlement.house_balance == 100
+
+
+async def test_dragon_gate_settlement_does_not_apply_vip_blackjack_bonus() -> None:
+    """射龍門 winnings use pot odds only; the Blackjack VIP bonus is not applied."""
+    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    purchase = await database.buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+
+    settlement = await settle_dragon_gate_player(
+        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=100
+    )
+
+    assert settlement.delta == 100
+    assert settlement.house_balance == -100

@@ -69,9 +69,12 @@ _HELP_CONTENT = {
         "games": (
             "**Games**\n"
             "`/blackjack` opens a 21 lobby. Other players can join before the owner starts, "
-            "single-player starts are still allowed, bets settle only when the table ends, "
-            "idle hands auto-stand after 180 seconds, and final game messages are cleaned up "
-            "after 3 minutes."
+            "single-player starts are still allowed, the table stake follows the owner's "
+            "effective wager, and idle hands auto-stand after 180 seconds.\n"
+            "`/dragon_gate` opens an In-Between lobby with a shared pot. Everyone pays the "
+            "ante into the pot, the owner starts, players rotate through gate bets until "
+            "the pot is cleared, and pillar hits pay the table extra.\n"
+            "Final game messages are cleaned up after 3 minutes."
         ),
         "ping": "**Ping** — `/ping`\nCheck the bot's response latency.",
     },
@@ -127,13 +130,18 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
-            "VIP 賭場贏錢 1.5x, 簽到 2x 點數, 貸款額度 2x"
+            "VIP Blackjack payout 1.5x, 簽到 2x 點數, 貸款額度 2x"
         ),
         "games": (
             "**小遊戲**\n"
             "`/blackjack` 會開一個 21 點 lobby，其他玩家可以先加入，只有房主能開始，"
-            "單人也可以直接開始，bet 會在整桌結束時結算，超過餘額會自動 all-in，"
-            "不操作 180 秒會自動 stand，final game message 會在 3 分鐘後清掉"
+            "單人也可以直接開始，房主超過餘額的 bet 會用實際餘額當 table stake，"
+            "後續玩家預設跟這個金額，"
+            "不操作 180 秒會自動 stand\n"
+            "`/dragon_gate` 會開一桌射龍門，所有玩家先繳底注進彩金池，只有房主能開始，"
+            "玩家依序看門柱、選擇下注，射進龍門就從彩金池拿錢，射偏賠 1 倍，"
+            "撞柱賠 2 倍，同點門柱要先猜大或猜小，第三張又同點賠 3 倍\n"
+            "final game message 會在 3 分鐘後清掉"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
     },
@@ -195,8 +203,12 @@ _HELP_CONTENT = {
         "games": (
             "**ゲーム**\n"
             "`/blackjack` 21の lobby を開きます。他のプレイヤーは owner が開始する前に参加でき、"
-            "1人でも開始できます。ベットは table 終了時に精算され、残高超過は自動 all-in、"
-            "180秒操作がない場合は自動 stand、final game message は3分後に削除されます。"
+            "1人でも開始できます。owner の有効ベットが table stake になり、"
+            "参加者はその金額を既定で賭けます。"
+            "180秒操作がない場合は自動 stand。\n"
+            "`/dragon_gate` は共有potのインビトウィーン table を開きます。全員がanteをpotに入れ、"
+            "owner が開始し、順番にgate betを行い、pot が空になるまで続きます。\n"
+            "final game message は3分後に削除されます。"
         ),
         "ping": "**Ping** — `/ping`\nボットの応答遅延を確認します。",
     },

@@ -78,7 +78,7 @@ class DealerAI:
             A trimmed model-generated line, or the fallback line on request
             failure or empty output.
         """
-        game_labels: dict[GameKind, str] = {"blackjack": "21 點"}
+        game_labels: dict[GameKind, str] = {"blackjack": "21 點", "dragon_gate": "射龍門"}
         user_text = (
             f"遊戲: {game_labels[game]}\n"
             f"玩家: {player_name}\n"
@@ -120,7 +120,7 @@ class DealerAI:
             A trimmed model-generated line, or an outcome-specific fallback line
             on request failure or empty output.
         """
-        game_labels: dict[GameKind, str] = {"blackjack": "21 點"}
+        game_labels: dict[GameKind, str] = {"blackjack": "21 點", "dragon_gate": "射龍門"}
         outcome_labels: dict[SettleOutcome, str] = {
             "win": "玩家贏",
             "lose": "玩家輸",
@@ -177,7 +177,7 @@ class DealerAI:
             A trimmed model-generated line, or a fallback line on request
             failure or empty output.
         """
-        game_labels: dict[GameKind, str] = {"blackjack": "21 點"}
+        game_labels: dict[GameKind, str] = {"blackjack": "21 點", "dragon_gate": "射龍門"}
         if net_delta > 0:
             fallback = "今天這桌有點旺, 但賭場不會天天讓你們舒服"
         elif net_delta < 0:

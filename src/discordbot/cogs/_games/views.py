@@ -78,7 +78,10 @@ def _participant_lines(*, participants: list[GameParticipant], owner_id: int) ->
     for index, participant in enumerate(participants, start=1):
         owner_label = " 發起者" if participant.user_id == owner_id else ""
         wager = currency_text(amount=participant.bet)
-        lines.append(f"{index}. {participant.display_name}{owner_label} | 下注 {wager}")
+        lines.append(
+            f"{index}. {participant.display_name}{owner_label} | "
+            f"下注 {wager}{allin_note(is_allin=participant.is_allin)}"
+        )
     return "\n".join(lines)
 
 
@@ -98,7 +101,7 @@ def build_blackjack_lobby_embed(
         inline=False,
     )
     embed.set_footer(
-        text=(f"每人最高下注 {currency_text(amount=requested_bet)} | 發起者開始後進入同一張桌")
+        text=(f"基本下注 {currency_text(amount=requested_bet)} | 發起者開始後進入同一張桌")
     )
     return embed
 

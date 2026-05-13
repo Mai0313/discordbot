@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
-GameKind = Literal["blackjack"]
+GameKind = Literal["blackjack", "dragon_gate"]
 
 
 class Card(BaseModel):
@@ -41,9 +41,9 @@ class GameParticipant(BaseModel):
         account_name: Stable Discord username stored in the economy account row.
         display_name: Guild-aware display name shown in game embeds.
         avatar_url: Last-seen Discord avatar URL for the economy account row.
-        bet: Effective wager for this player after all-in clamping.
+        bet: Effective wager for this player.
         balance_at_start: Balance observed when the game session starts.
-        is_allin: True when the requested bet was clamped to the player's balance.
+        is_allin: True when the effective wager consumes the full observed balance.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -55,6 +55,17 @@ class GameParticipant(BaseModel):
     bet: int
     balance_at_start: int
     is_allin: bool
+
+
+class GameParticipantIdentity(BaseModel):
+    """Stable Discord identity for constructing a game participant."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    account_name: str
+    display_name: str
+    avatar_url: str = ""
 
 
 class WagerSettlement(BaseModel):
@@ -101,12 +112,28 @@ class BlackjackPlayerResult(BaseModel):
     settlement: BlackjackSettlement
 
 
+class DragonGatePlayerResult(BaseModel):
+    """Settlement result for one player at a 射龍門 table.
+
+    Attributes:
+        participant: Player identity and ante metadata.
+        settlement: Database-backed result for the player's cumulative table delta.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    participant: GameParticipant
+    settlement: WagerSettlement
+
+
 __all__ = [
     "BlackjackPlayerResult",
     "BlackjackSettlement",
     "Card",
+    "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
+    "GameParticipantIdentity",
     "SettleOutcome",
     "WagerSettlement",
 ]

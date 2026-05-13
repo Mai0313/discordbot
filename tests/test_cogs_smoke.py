@@ -19,6 +19,7 @@ from discordbot.utils.threads import ThreadsOutput
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.views import BlackjackLobbyView
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,6 +75,7 @@ class FakeFollowup:
 class FakeInteraction:
     def __init__(self, *, user: FakeUser | None = None) -> None:
         self.user = user or FakeUser()
+        self.message: FakeDiscordMessage | None = None
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edits: list[OriginalEditPayload] = []
@@ -576,6 +578,11 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
 
+    dragon_gate_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction, ante=10)
+    assert dragon_gate_interaction.followup.sent[0]["wait"] is True
+    assert isinstance(dragon_gate_interaction.followup.sent[0]["view"], DragonGateLobbyView)
+
 
 async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -597,6 +604,62 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     await start_button.callback(other_interaction)
 
     assert other_interaction.followup.sent[0]["content"] == "只有發起者可以開始"
+
+
+async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+
+    async def balance_by_user(user_id: int) -> int:
+        return {1: 300, 2: 50_000_000}[user_id]
+
+    monkeypatch.setattr(games, "get_balance", balance_by_user)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog.__dict__["dealer"] = FakeDealer()
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=1_000_000)
+    lobby_view = owner_interaction.followup.sent[0]["view"]
+    assert isinstance(lobby_view, BlackjackLobbyView)
+    assert lobby_view.requested_bet == 300
+    assert lobby_view.participants[0].bet == 300
+    assert lobby_view.participants[0].is_allin is True
+
+    join_button = next(
+        child for child in lobby_view.children if getattr(child, "label", "") == "加入"
+    )
+    join_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
+    join_interaction.message = FakeDiscordMessage()
+    await join_button.callback(join_interaction)
+
+    bob = lobby_view.participants[1]
+    assert bob.display_name == "Bob"
+    assert bob.bet == 300
+    assert bob.balance_at_start == 50_000_000
+    assert bob.is_allin is False
+
+
+async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setattr(games, "get_balance", fake_game_balance)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog.__dict__["dealer"] = FakeDealer()
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.dragon_gate.callback(cog, owner_interaction, ante=10)
+    lobby_view = owner_interaction.followup.sent[0]["view"]
+    assert isinstance(lobby_view, DragonGateLobbyView)
+
+    start_button = next(
+        child for child in lobby_view.children if getattr(child, "label", "") == "開始"
+    )
+    other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
+    await start_button.callback(other_interaction)
+
+    assert other_interaction.followup.sent[0]["content"] == "只有房主可以開始"
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
