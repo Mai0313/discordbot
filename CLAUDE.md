@@ -52,42 +52,31 @@ Flow per `on_message`:
     - `VIDEO` → `client.videos.create` + poll until `completed`, upload MP4.
     - `SUMMARY` → slow path, `SUMMARY_PROMPT`, `history_limit=100`.
     - `QA` → slow path, `REPLY_PROMPT`, `history_limit=30`.
-4. **Slow path** (`_handle_message_reply` → `_handle_streaming`): streams `response.output_text.delta` and appends a footer with model name, token usage, cost, and chat-reward balance. The balance comes from `_award_chat_points` (calls `credit_with_repayment` in `cogs/_economy/database.py`) on `response.completed`; on DB failure the footer degrades gracefully rather than blocking the reply. The first 30 chars create a `reply`; subsequent chunks `edit` it. A `🌐` reaction is added if any `response.output_text.annotation.added` event fires (web search was invoked).
+4. **Slow path** (`_handle_message_reply` → `_handle_streaming`): streams `response.output_text.delta` and appends a footer with model name, token usage, cost, and chat-reward balance. The balance comes from `_award_chat_points` (calls `credit_with_repayment`) on `response.completed`; on DB failure the footer degrades gracefully rather than blocking the reply. The first 30 chars create a `reply`; subsequent chunks `edit` it. A `🌐` reaction is added if any `response.output_text.annotation.added` event fires (web search was invoked).
 5. **Per-provider tools**: `ModelSettings.tools` dispatches by substring match on `name` to Gemini's `googleSearch`+`urlContext`, Claude's `web_search_*`+`web_fetch_*`, or OpenAI's `web_search`. Extend that property for new providers.
 6. **Progress UX**: status is communicated via reactions on the **user's** message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 / ❌). The bot never sends an intermediate "thinking…" message — preserve this.
-7. **Attachment ingestion** (`_get_attachment_parts`) is gated by `get_supported_modalities(model_name=slow_model.name)` from `utils/model_pricing.py`. Attachments whose modality the slow model doesn't accept are dropped before any LLM call. Images go through `_image_to_part` (PIL resize + JPEG re-encode, sent as `input_image` data URI); everything else (`video/*`, `application/pdf`, `text/plain`, …) goes through `_attachment_to_part` as `input_file`. For Discord embeds, `media.discordapp.net` `proxy_url` is preferred over the origin URL since CDN links expire.
+7. **Attachment ingestion** (`_get_attachment_parts`) is gated by `get_supported_modalities(model_name=slow_model.name)`. Attachments whose modality the slow model doesn't accept are dropped before any LLM call. Images go through `_image_to_part` (PIL resize + JPEG re-encode, sent as `input_image` data URI); everything else (`video/*`, `application/pdf`, `text/plain`, …) goes through `_attachment_to_part` as `input_file`. For Discord embeds, `media.discordapp.net` `proxy_url` is preferred over the origin URL since CDN links expire.
 8. History / reference / current messages are fetched in parallel via `asyncio.gather`. The tasks list is built in a `for` loop on its own line, then gathered — don't collapse into a comprehension.
 
 ### Economy (`cogs/economy.py` + `cogs/_economy/database.py` + `typings/economy.py`)
 
 Persistent point balances backing the global message reward, AI chat reward, casino games, house ledger, loans, daily check-in, VIP, and `/balance` / `/checkin` / `/vip` / `/leaderboard` / `/loss_leaderboard` / `/give` / `/house` / `/borrow` / `/repay`.
 
-- **DB**: SQLite at `data/economy.db` (NOT `messages.db`). The `AsyncEngine` is a module-level singleton (`_engine`). Do not move it onto a `cached_property` — that's the same memory-leak pattern `log_msg.py` already learned.
+- **DB**: SQLite at `data/economy.db` (NOT `messages.db`). The `AsyncEngine` is a module-level singleton (`_engine`). Do not move it onto a `cached_property` — that's the same memory-leak pattern `log_msg.py` already learned. Each helper opens `AsyncSession(bind=_engine, expire_on_commit=False)` directly so tests can monkeypatch `_engine` and the swap takes effect immediately.
 - **Schema**:
-    - `UserAccount(user_id PK, name, avatar_url, balance, total_earned, total_spent, updated_at, loan_principal, loan_total_borrowed, loan_total_repaid, loan_opened_at, is_vip, last_checkin_at, checkin_streak)`. **No `guild_id`** — points are cross-server by design, so `/leaderboard` is a global Top 10 and loans, VIP, and check-in are also cross-server. `name` and `avatar_url` are last-seen Discord profile metadata refreshed opportunistically on economy writes. Loan / VIP / check-in columns live on the same row so message reward / chat reward / casino payout can pay debt and check-in can update streak inside one UPDATE.
-    - `PointTransaction(id PK, user_id, kind, delta, balance_after, debt_after, note, occurred_at)` — append-only audit log; every balance-mutating helper writes one row via `_log_transaction_in_session`. `delta == 0` is intentionally skipped to keep push settlements out of the log. `debt_after` mirrors `loan_principal` only (interest is gone). `kind` values come from `typings.economy.TransactionKind`. Indexed on `(occurred_at, kind)` so `top_losers` can scan one day of casino rows cheaply.
-    - **Legacy migration**: `_ensure_schema()` `ALTER TABLE`-drops the obsolete `loan_interest` / `loan_last_accrual_at` columns on startup if they exist (older DBs declared them `NOT NULL` without a default, so leaving them around would break new `INSERT`s). It also `ALTER TABLE`-adds `is_vip`, `last_checkin_at`, `checkin_streak` with column-level defaults so existing rows backfill cleanly.
-- **API surface** (all native async; each function opens `AsyncSession(bind=_engine, expire_on_commit=False)` directly so tests can monkeypatch `_engine` and the swap takes effect immediately):
-    - `add_balance(user_id, name, amount)` — **low-level credit primitive**, does not log, does not auto-repay. Used by tests and internal helpers.
-    - `credit_with_repayment(user_id, name, amount, kind, note=None)` — message reward / chat reward / casino payout path. **50% of every income event auto-repays outstanding principal** (no interest tier anymore). Always calls `_reset_expired_loan_in_session` first so a loan past Taipei midnight is wiped before settlement. Returns `CreditResult`.
-    - `place_bet(user_id, name, requested_bet)` — low-level atomic upfront wager withdrawal retained for tests / internal tools. Slash games do **not** use it anymore. Logs `CASINO_BET`.
-    - `settle_game(user_id, name, delta)` — player payout. Clamps to ≥ 0. Logs the *applied* delta (post-clamp) as `CASINO_PAYOUT`.
-    - `house_settle(user_id, name, delta)` — dealer-side mirror of player payouts (negated). **Does not clamp at zero** — the bot's balance can and should go negative when the casino is losing. Logs `HOUSE_SETTLE`.
-    - `transfer(...)` — atomic conditional debit + credit; returns `TransferResult` or `None`. Logs `TRANSFER_OUT` + `TRANSFER_IN` in the same transaction.
-    - `apply_round_settlement(...)` — atomic casino settlement; applies the player's signed net delta only after the round resolves. Positive player deltas go through `credit_with_repayment` (so casino profit auto-repays principal); negative player deltas debit without a zero clamp, so a finished loss can make the player balance negative. Dealer side mirrors through `house_settle`.
-    - `borrow(user_id, name, amount, credit_limit_value)` — `principal + amount ≤ credit_limit_value` or rejected. Disburses to balance but **does not** bump `total_earned`. Logs `BORROW`.
-    - `repay(user_id, name, amount)` — debits positive user balance, pays down principal only. Clamps to `min(amount, balance, principal)` and returns `None` when balance is zero or negative or there is nothing to repay. Does **not** bump `total_spent` (repayment isn't gameplay spending; `loan_total_repaid` is the tracking column). Logs `REPAY`.
-    - `get_loan_view(user_id)` — read-only `LoanView` snapshot of `(principal, opened_at)` after applying any pending daily reset.
-    - `credit_limit(user, *, is_vip=False)` — pure function; tiered by Discord account age (`User.created_at`, snowflake-derived, free): \<30d→1k, \<180d→10k, \<1y→50k, \<3y→200k, ≥3y→500k. Doubled when `is_vip=True`. Identical in DMs / guilds / across servers. Inline tier table in the function body — don't extract a module-level constant.
-    - `checkin(user_id, name, avatar_url)` — daily check-in. SELECT-then-conditional-UPDATE within a retry loop, gated on the observed `last_checkin_at` so two concurrent calls can't double-credit on the same Taipei day. New users go through `INSERT … ON CONFLICT DO NOTHING` and fall back to the UPDATE path on conflict. `_next_checkin_streak` (pure) decides the next streak counter; missed days or completion of a 7-day cycle reset to 1. `checkin_reward(streak, is_vip)` is `BASE_CHECKIN_REWARD_AMOUNT * (1 + (streak-1) * CHECKIN_STREAK_BONUS_STEP)`, then doubled when `is_vip=True`. Returns `CheckinResult` or `None` (already claimed today). Logs `CHECKIN_REWARD`.
-    - `buy_vip(user_id, name, avatar_url)` — one-shot purchase debiting `VIP_PURCHASE_COST` and flipping `is_vip=True`. Conditional UPDATE rejects when balance is insufficient or the user is already VIP. Logs `VIP_PURCHASE`.
-    - `get_vip(user_id)` — boolean lookup; defaults to `False` for unseen users so `settle_wager` can short-circuit without an extra branch.
-    - `apply_vip_blackjack_bonus(delta, is_vip)` — pure function; returns `int(delta * 3 // 2)` when `delta > 0` and `is_vip`, else the raw delta. Applied at `settle_wager` time so the rule lives in the game layer, not the generic credit primitive.
-    - `top_n(limit, exclude_user_ids=())` — `/leaderboard` data source; always called with `(bot.user.id,)` so the house never crowds out real players.
-    - `top_losers(limit, exclude_user_ids=())` — `/loss_leaderboard` data source; sums `CASINO_BET` + `CASINO_PAYOUT` deltas in `point_transaction` since today's Taipei midnight, keeps net-negative players, and orders by absolute loss. Read-only; never mutates rows.
-    - `get_account(user_id)` — used by `/house` to surface gross flows.
-- **Bet flow**: slash games validate and clamp the requested bet at start, but do **not** mutate balance until settlement. The round resolves through `cogs/_games/settlement.py:settle_wager(...)`, which reads `get_vip(player_id)`, runs the signed `player_delta` through `apply_vip_blackjack_bonus`, then passes it into `apply_round_settlement` and mirrors `-player_delta` into `house_settle`. Regular win applies `+bet` (×1.5 for VIPs), push applies `0`, loss applies `-bet` (VIP bonus only multiplies positive deltas), natural Blackjack applies `int(bet * 3 // 2)`. If the bot restarts before settlement, the in-memory round is discarded with no balance change; if a player spends points before a finished loss settles, the debit is still applied and may make the balance negative.
-- **Loan flow**: `/borrow` disburses against `credit_limit(user, is_vip=…)`; `/repay` pays down principal only from balance. **There is no interest** — every loan helper calls `_reset_expired_loan_in_session` before reading state, and any loan opened before today's Taipei midnight has its `loan_principal` (and `loan_opened_at`) cleared as a "lazy daily reset" before the rest of the operation runs. The 50% auto-repay rule applies on every `MESSAGE_REWARD`, `CHAT_REWARD`, and casino payout; `/give` receiver is **not** auto-repaid (gifts shouldn't be confiscated). `/balance` shows the `未還本金` field when the user has debt, a 👑 VIP badge when applicable, and a `帳號年齡 X 天 · 借款上限 Y · 每天 00:00 Asia/Taipei 重置` footer either way.
+    - `UserAccount(user_id PK, ...)` — **no `guild_id`**, points are cross-server by design (so `/leaderboard`, loans, VIP, check-in are all cross-server). Loan / VIP / check-in columns live on the same row so message reward / chat reward / casino payout can pay debt and check-in can update streak inside one UPDATE. `name` / `avatar_url` are last-seen Discord metadata refreshed opportunistically on economy writes.
+    - `PointTransaction` — append-only audit log; every balance-mutating helper writes one row via `_log_transaction_in_session`. `delta == 0` is intentionally skipped to keep push settlements out of the log. `kind` values come from `typings.economy.TransactionKind`. Indexed on `(occurred_at, kind)` so `top_losers` can scan one day of casino rows cheaply.
+    - **Legacy migration**: `_ensure_schema()` `ALTER TABLE`-drops obsolete `loan_interest` / `loan_last_accrual_at` columns on startup (older DBs declared them `NOT NULL` without a default), and `ALTER TABLE`-adds `is_vip` / `last_checkin_at` / `checkin_streak` with column-level defaults so existing rows backfill cleanly.
+- **Design rules** (read `cogs/_economy/database.py` for full signatures):
+    - **50% auto-repay**: `credit_with_repayment` is the income path for message reward / chat reward / casino payout — half of every positive event pays down outstanding principal. `/give` recipients are **not** auto-repaid (gifts shouldn't be confiscated).
+    - **No interest, daily reset**: every loan helper calls `_reset_expired_loan_in_session` first; any loan opened before today's Taipei midnight has `loan_principal` (and `loan_opened_at`) cleared as a lazy daily reset before anything else runs.
+    - **House ledger can go negative**: `house_settle` mirrors player payouts and does **not** clamp at zero. Player-side `settle_game` (legacy clamp path) clamps at zero, but `apply_round_settlement` (current casino path) lets a finished loss drive the player's balance negative if they spent the bet between deal and settle.
+    - **Casino settlement is one atomic step**: slash games validate/clamp the bet up front but don't mutate balance until the round resolves through `cogs/_games/settlement.py:settle_wager`, which applies the signed `player_delta` via `apply_round_settlement` and mirrors `-player_delta` into `house_settle`.
+    - **`credit_limit(user, *, is_vip)`** is pure and tiered by Discord account age (snowflake-derived): \<30d→1k, \<180d→10k, \<1y→50k, \<3y→200k, ≥3y→500k. Doubled for VIPs. Inline tier table in the function body — don't extract a module-level constant.
+    - **VIP Blackjack bonus** (`apply_vip_blackjack_bonus`) returns `int(delta * 3 // 2)` only when `delta > 0` and `is_vip`. Applied at `settle_wager` time so the rule lives in the game layer.
+    - **Check-in concurrency**: `checkin` is SELECT-then-conditional-UPDATE in a retry loop gated on the observed `last_checkin_at`, so two concurrent calls can't double-credit on the same Taipei day. New users go through `INSERT … ON CONFLICT DO NOTHING` and fall back to the UPDATE path on conflict.
+    - **Leaderboards exclude the house**: `top_n` is always called with `(bot.user.id,)`. `top_losers` sums `CASINO_BET` + `CASINO_PAYOUT` since today's Taipei midnight and is read-only.
+- **`/balance`** shows the `未還本金` field when debt exists, a 👑 VIP badge when applicable, and a `帳號年齡 X 天 · 借款上限 Y · 每天 00:00 Asia/Taipei 重置` footer either way.
 
 ### Games (`cogs/games.py` + `cogs/_games/`)
 
@@ -128,12 +117,9 @@ When a moderator times out the bot itself, this cog detects the `on_member_updat
 
 ### Config (`src/discordbot/typings/`)
 
-Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasChoices("ENV_NAME")` so env-var names are explicit. `.env` is auto-loaded at import time.
+Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasChoices("ENV_NAME")` so env-var names are explicit. `.env` is auto-loaded at import time. `ModelSettings(name, effort)` builds the Responses-API reasoning block and dispatches the right provider's web-search tool; accepted input modalities are looked up via `utils/model_pricing.get_supported_modalities` (kept out of `typings/` to avoid `utils/` imports).
 
-- `DiscordConfig` — `DISCORD_BOT_TOKEN` (required).
-- `LLMConfig` — `OPENAI_BASE_URL`, `OPENAI_API_KEY`.
-- `ModelSettings` / `RouteDecision` (not env config, same package). `ModelSettings(name, effort)` builds the Responses-API reasoning block and dispatches the right provider's web-search tool. Accepted input modalities are looked up via `utils/model_pricing.get_supported_modalities` (kept out of `typings/` to avoid `utils/` imports).
-- `economy.py` — pure frozen `pydantic.BaseModel` types (`LoanView`, `CreditResult`, `BorrowResult`, `RepayResult`, `CheckinResult`, `VipPurchaseResult`), the `TransactionKind` enum (`CHECKIN_REWARD`, `VIP_PURCHASE`, …), and tunable constants (`BASE_CHECKIN_REWARD_AMOUNT`, `CHECKIN_STREAK_CYCLE`, `CHECKIN_STREAK_BONUS_STEP`, `VIP_PURCHASE_COST`). Imported by `cogs/_economy/database.py` and `cogs/help.py`. Pure types go here even when they're not env-backed config, as long as they don't pull in `cogs/` or `utils/`.
+`typings/economy.py` holds pure frozen `pydantic.BaseModel` types, the `TransactionKind` enum, and tunable constants (`BASE_CHECKIN_REWARD_AMOUNT`, `CHECKIN_STREAK_CYCLE`, `CHECKIN_STREAK_BONUS_STEP`, `VIP_PURCHASE_COST`). Pure types go here even when they're not env-backed config, as long as they don't pull in `cogs/` or `utils/`.
 
 Keep `Field(description=..., examples=...)` populated when adding configurable values — descriptions are load-bearing here.
 
@@ -151,20 +137,17 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 
 ### Utilities (`src/discordbot/utils/`)
 
-- `model_pricing.py` — lazy LiteLLM price-table fetch + on-disk cache at `data/model_prices.json`. Exposes `get_token_rates()` (streaming footer) and `get_supported_modalities()` (`_get_attachment_parts` gate). Defaults to `{"text", "image"}` for under-populated upstream entries. Returns `(0.0, 0.0)` for unknown models so the footer shows `$0.00000000` rather than a bogus estimate.
-- `images.py` — `get_pil_image` / `get_image_data` / `convert_base64_to_data_uri`. The image-edit path passes `use_b64=False` to get raw `bytes`.
-- `downloader.py` — yt-dlp wrapper. Returns a `DownloadResult` context manager that unlinks the file on exit.
-- `threads.py` — Threads URL parser / scraper. Normalises `threads.com` → `www.threads.net` and strips query strings.
+- `model_pricing.py` — lazy LiteLLM price-table fetch + on-disk cache at `data/model_prices.json`. Exposes `get_token_rates()` and `get_supported_modalities()`. Defaults to `{"text", "image"}` for under-populated upstream entries. Returns `(0.0, 0.0)` for unknown models so the footer shows `$0.00000000` rather than a bogus estimate.
+- `images.py` — the image-edit path passes `use_b64=False` to get raw `bytes` (not base64).
+- `downloader.py` — yt-dlp wrapper. `DownloadResult` is a context manager that unlinks the file on exit.
 
 ### Data dir (`data/`)
 
-- `logs/` — per-run tee'd logs.
-- `maplestory/` — Artale JSON dataset.
-- `downloads/`, `threads/` — ephemeral media scratch (cleaned up by their respective cogs).
 - `messages.db` — message log.
-- `economy.db` — point balances, daily-resetting loan principal, VIP flag, daily check-in streak state, and `point_transaction` audit log.
+- `economy.db` — point balances, daily-resetting loan principal, VIP flag, check-in streak, `point_transaction` audit log.
 - `game_cleanup.db` — pending casino response `(channel_id, message_id)` records for restart cleanup.
 - `model_prices.json` — cached LiteLLM price table.
+- `downloads/`, `threads/` are ephemeral scratch cleaned up by their respective cogs.
 
 ## Coding conventions
 
