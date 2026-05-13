@@ -57,6 +57,10 @@ class ResponseStub:
         """Records an ephemeral or public interaction message."""
         self.sent.append(kwargs)
 
+    def is_done(self) -> bool:
+        """Returns whether the interaction response has already been used."""
+        return self.deferred or bool(self.sent) or bool(self.modals)
+
     async def send_modal(self, modal: object) -> None:
         """Records a modal launch."""
         self.modals.append(modal)
@@ -313,7 +317,7 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start() -> None:
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
     other_interaction = InteractionStub(user_id=2, message=message)
     await start_button.callback(other_interaction)
-    assert other_interaction.followup.sent[0]["content"] == "只有房主可以開始"
+    assert other_interaction.response.sent[0]["content"] == "只有房主可以開始"
 
     owner_interaction = InteractionStub(user_id=1, message=message)
     await start_button.callback(owner_interaction)
@@ -363,6 +367,8 @@ async def test_dragon_gate_view_pair_choice_bet_and_finalize(
     view.sync_controls()
     assert view._button(custom_id="dg:higher").disabled is False
     assert view._button(custom_id="dg:min").disabled is True
+    assert view._button(custom_id="dg:half").emoji is not None
+    assert view._button(custom_id="dg:half").emoji.name == "🌓"
 
     choose_higher = view._button(custom_id="dg:higher")
     await choose_higher.callback(InteractionStub(user_id=1, message=message))

@@ -1,6 +1,7 @@
 """AI dealer that produces short banter lines for the casino games."""
 
 from typing import cast
+import asyncio
 
 from openai import AsyncOpenAI
 import logfire
@@ -14,6 +15,8 @@ from discordbot.cogs._games.prompts import (
     DEALER_TAUNT_BET_PROMPT,
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
+
+DEALER_AI_TIMEOUT_SECONDS = 5.0
 
 
 class DealerAI:
@@ -39,17 +42,25 @@ class DealerAI:
     ) -> str:
         """Calls the LLM and returns the trimmed text, falling back on any error."""
         try:
-            responses = await self.client.responses.create(
-                model=self.model.name,
-                instructions=instructions,
-                input=cast(
-                    "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
-                ),
-                reasoning=self.model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": end_user_id},
-                extra_body={"mock_testing_fallbacks": False},
+            async with asyncio.timeout(delay=DEALER_AI_TIMEOUT_SECONDS):
+                responses = await self.client.responses.create(
+                    model=self.model.name,
+                    instructions=instructions,
+                    input=cast(
+                        "ResponseInputParam",
+                        [EasyInputMessageParam(role="user", content=user_text)],
+                    ),
+                    reasoning=self.model.reasoning,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
+        except TimeoutError:
+            logfire.warn(
+                "Dealer AI request timed out; using fallback line",
+                timeout_seconds=DEALER_AI_TIMEOUT_SECONDS,
             )
+            return fallback
         except Exception:
             logfire.warn("Dealer AI request failed; using fallback line", _exc_info=True)
             return fallback

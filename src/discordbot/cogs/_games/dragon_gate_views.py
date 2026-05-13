@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 import asyncio
 import contextlib
 
+import logfire
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
@@ -264,10 +265,9 @@ class DragonGateLobbyView(ui.View):
             await self.message.edit(embed=embed, view=self)
         schedule_game_message_delete(message=self.message)
 
-    @ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
+    @ui.button(label="加入", emoji="✅", style=ButtonStyle.success, custom_id="dg:lobby:join")
     async def join(self, _button: ui.Button, interaction: Interaction) -> None:
         """Adds the interacting user to the lobby."""
-        await interaction.response.defer()
         if interaction.user is None:
             return
         async with self._lock:
@@ -277,6 +277,7 @@ class DragonGateLobbyView(ui.View):
             if interaction.user.id in self._participants:
                 await self._send_notice(interaction=interaction, content="你已經在這桌了")
                 return
+            await interaction.response.defer()
             participant = await self.prepare_participant(interaction=interaction, ante=self.ante)
             if participant is None:
                 return
@@ -285,10 +286,9 @@ class DragonGateLobbyView(ui.View):
                 message=interaction.message, status=f"{participant.display_name} 已加入"
             )
 
-    @ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
+    @ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary, custom_id="dg:lobby:leave")
     async def leave(self, _button: ui.Button, interaction: Interaction) -> None:
         """Removes the interacting user from the lobby."""
-        await interaction.response.defer()
         if interaction.user is None:
             return
         async with self._lock:
@@ -302,19 +302,20 @@ class DragonGateLobbyView(ui.View):
             if participant is None:
                 await self._send_notice(interaction=interaction, content="你不在這桌")
                 return
+            await interaction.response.defer()
             await self._refresh_message(
                 message=interaction.message, status=f"{participant.display_name} 已離開"
             )
 
-    @ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
+    @ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary, custom_id="dg:lobby:start")
     async def start(self, _button: ui.Button, interaction: Interaction) -> None:
         """Starts the game if the lobby owner pressed the button."""
-        await interaction.response.defer()
         if interaction.user is None:
             return
         if interaction.user.id != self.owner.user_id:
             await self._send_notice(interaction=interaction, content="只有房主可以開始")
             return
+        await interaction.response.defer()
         async with self._lock:
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
@@ -328,13 +329,11 @@ class DragonGateLobbyView(ui.View):
                 await self._refresh_message(message=interaction.message, status="房主餘額不足")
                 return
             self._started = True
-            if dropped:
-                names = "、".join(dropped)
-                await self._send_notice(
-                    interaction=interaction, content=f"餘額不足已移出: {names}"
-                )
-            self.stop()
-            await self._start_dragon_gate(message=interaction.message)
+        if dropped:
+            names = "、".join(dropped)
+            await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
+        self.stop()
+        await self._start_dragon_gate(message=interaction.message)
 
     async def _start_dragon_gate(self, message: Message | None) -> None:
         if message is None:
@@ -380,8 +379,22 @@ class DragonGateLobbyView(ui.View):
         )
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        with contextlib.suppress(Exception):
-            await interaction.followup.send(content=content, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content=content, ephemeral=True)
+                return
+            await interaction.response.send_message(content=content, ephemeral=True)
+        except Exception:
+            logfire.warn("Failed to send Dragon Gate lobby notice", _exc_info=True)
+
+    async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
+        """Logs lobby component failures instead of only printing to stderr."""
+        logfire.error(
+            "Dragon Gate lobby interaction failed",
+            item_label=getattr(item, "label", None),
+            user_id=getattr(interaction.user, "id", None),
+            _exc_info=(type(error), error, error.__traceback__),
+        )
 
     def _disable_buttons(self) -> None:
         for child in self.children:
@@ -438,12 +451,12 @@ class DragonGateView(ui.View):
                 return
             await self._finalize_locked(message=self.message, reason="逾時未操作, 剩餘彩金歸莊家")
 
-    @ui.button(label="猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher")
+    @ui.button(label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher")
     async def choose_higher(self, _button: ui.Button, interaction: Interaction) -> None:
         """Chooses higher for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="higher")
 
-    @ui.button(label="猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower")
+    @ui.button(label="同點猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower")
     async def choose_lower(self, _button: ui.Button, interaction: Interaction) -> None:
         """Chooses lower for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="lower")
@@ -455,7 +468,7 @@ class DragonGateView(ui.View):
             interaction=interaction, amount=self.round_state.current_min_bet()
         )
 
-    @ui.button(label="半池", emoji="◐", style=ButtonStyle.primary, custom_id="dg:half")
+    @ui.button(label="半池", emoji="🌓", style=ButtonStyle.primary, custom_id="dg:half")
     async def bet_half_pot(self, _button: ui.Button, interaction: Interaction) -> None:
         """Bets roughly half the current pot."""
         amount = max(self.round_state.current_min_bet(), self.round_state.current_max_bet() // 2)
@@ -649,8 +662,22 @@ class DragonGateView(ui.View):
         await self._send_notice(interaction=interaction, content=content)
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        with contextlib.suppress(Exception):
-            await interaction.followup.send(content=content, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content=content, ephemeral=True)
+                return
+            await interaction.response.send_message(content=content, ephemeral=True)
+        except Exception:
+            logfire.warn("Failed to send Dragon Gate action notice", _exc_info=True)
+
+    async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
+        """Logs active-table component failures instead of only printing to stderr."""
+        logfire.error(
+            "Dragon Gate action interaction failed",
+            item_label=getattr(item, "label", None),
+            user_id=getattr(interaction.user, "id", None),
+            _exc_info=(type(error), error, error.__traceback__),
+        )
 
     def _disable_buttons(self) -> None:
         for child in self.children:

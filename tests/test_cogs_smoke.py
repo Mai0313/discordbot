@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
-from typing import TYPE_CHECKING, Self, Unpack, TypedDict
+from typing import TYPE_CHECKING, Self, Unpack, TypedDict, cast
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import nextcord
@@ -12,12 +13,15 @@ from discordbot import cli
 from discordbot.cogs import games, video, economy, template, auto_unmute, parse_threads
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
+from discordbot.cogs._games import dealer as dealer_module
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs._economy import database
 from discordbot.cogs.template import TemplateCogs
 from discordbot.utils.threads import ThreadsOutput
+from discordbot.typings.models import ModelSettings
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.views import BlackjackLobbyView
+from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from collections.abc import AsyncIterator
 
+    from openai import AsyncOpenAI
     import pytest
 
 
@@ -61,6 +66,9 @@ class FakeResponse:
 
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         self.sent.append(kwargs)
+
+    def is_done(self) -> bool:
+        return self.deferred or bool(self.sent)
 
 
 class FakeFollowup:
@@ -125,6 +133,17 @@ class FakeDiscordMessage:
 
     async def delete(self) -> None:
         self.deleted = True
+
+
+class HangingResponses:
+    async def create(self, **_kwargs: object) -> SimpleNamespace:
+        await asyncio.sleep(delay=10)
+        return SimpleNamespace(output_text="late")
+
+
+class HangingClient:
+    def __init__(self) -> None:
+        self.responses = HangingResponses()
 
 
 class DownloadResultStub:
@@ -653,7 +672,21 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(other_interaction)
 
-    assert other_interaction.followup.sent[0]["content"] == "只有房主可以開始"
+    assert other_interaction.response.sent[0]["content"] == "只有房主可以開始"
+
+
+async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dealer_module, "DEALER_AI_TIMEOUT_SECONDS", 0.01)
+    dealer = DealerAI(
+        client=cast("AsyncOpenAI", HangingClient()),
+        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+    )
+
+    line = await dealer.taunt_bet(
+        author_name="alice", player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
+    )
+
+    assert line == "下好離手, 不要等下哭"
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
