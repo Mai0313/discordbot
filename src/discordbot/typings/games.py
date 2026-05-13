@@ -41,9 +41,9 @@ class GameParticipant(BaseModel):
         account_name: Stable Discord username stored in the economy account row.
         display_name: Guild-aware display name shown in game embeds.
         avatar_url: Last-seen Discord avatar URL for the economy account row.
-        bet: Effective wager for this player after all-in clamping.
+        bet: Effective wager for this player.
         balance_at_start: Balance observed when the game session starts.
-        is_allin: True when the requested bet was clamped to the player's balance.
+        is_allin: True when the effective wager consumes the full observed balance.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -55,6 +55,17 @@ class GameParticipant(BaseModel):
     bet: int
     balance_at_start: int
     is_allin: bool
+
+
+class GameParticipantIdentity(BaseModel):
+    """Stable Discord identity for constructing a game participant."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    account_name: str
+    display_name: str
+    avatar_url: str = ""
 
 
 class WagerSettlement(BaseModel):
@@ -122,6 +133,7 @@ __all__ = [
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
+    "GameParticipantIdentity",
     "SettleOutcome",
     "WagerSettlement",
 ]

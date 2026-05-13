@@ -31,6 +31,7 @@ nav:
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md
                   - views: Reference/discordbot/cogs/_games/views.md
+                  - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md

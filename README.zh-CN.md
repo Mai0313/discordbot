@@ -57,7 +57,7 @@
 
 **获得点数：** 每则非 bot 用户消息都会获得 5,000 点数。AI 流式回复会再追加以 `total_tokens` (input + output) 计算的 bonus，实际数字会显示在回复 footer。`/checkin` 每天可领 100,000 点数，连续 7 天为一个 cycle（线性加成：第 1 天 1×、第 7 天 4×）。Threads 解析与 `/download_video` 不会在基础消息奖励之外再付额外 action reward。
 
-**花用点数：** 赌场游戏会先开 lobby。房主可以单人开始，也可以等其他玩家加入；只有房主可以开始 table。Blackjack bet 会在玩家加入时检查，开始时重新确认余额，等 table 结算时才套用本局正负结果。如果 Blackjack 下注超过目前余额，系统会自动 clamp 成 all-in；只有余额为 0 或负数时才会拒绝玩家。射龙门则使用底注：每位加入者都必须付得起底注，table 会追踪共享彩金池，玩家轮流下注直到彩金池清空或 table timeout。机器人重启时，未完成的 in-memory table 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下整桌下注，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 会显示每位玩家的本局 delta 与结算后余额；`/house` 才看 house ledger balance。
+**花用点数：** 赌场游戏会先开 lobby。房主可以单人开始，也可以等其他玩家加入；只有房主可以开始 table。Blackjack bet 会在玩家加入时检查，开始时重新确认余额，等 table 结算时才套用本局正负结果。如果 Blackjack 房主输入超过目前余额的 bet，lobby 的 table stake 会 clamp 成房主实际 all-in 金额，后续玩家默认跟这个金额，不会被原本过大的输入值强制全下；只有余额为 0 或负数时才会拒绝玩家。射龙门则使用底注：每位加入者都必须付得起底注，table 会追踪共享彩金池，玩家轮流下注直到彩金池清空或 table timeout。机器人重启时，未完成的 in-memory table 会直接作废不扣款，但已结算的 loss 仍然可以把玩家余额扣到负数。庄家是个 AI，开局会嘴一下整桌下注，结算时会依结果嘴或夸玩家。Embed 上「庄家」的显示名称直接用机器人自己的 Discord display name，所以未来 `gen_reply` 看历史消息时会把这些对白认作自己过去的发言，而不是某个无名 dealer。游戏结算 footer 会显示每位玩家的本局 delta 与结算后余额；`/house` 才看 house ledger balance。
 
 **VIP：** `/vip` 一次性花费 10,000,000 点数购买永久 VIP 标记。VIP 会获得 1.5x Blackjack payout、2x 签到基础点数、2x 借款上限。
 

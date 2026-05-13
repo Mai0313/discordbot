@@ -57,7 +57,7 @@
 
 **獲得虛擬歡樂豆：** 每則非 bot 使用者訊息都會獲得 5,000 虛擬歡樂豆。AI 串流回覆會再追加以 `total_tokens` (input + output) 計算的 bonus，實際數字會顯示在回覆 footer。`/checkin` 每天可領 100,000 虛擬歡樂豆，連續 7 天為一個 cycle（線性加成：第 1 天 1×、第 7 天 4×）。Threads 解析與 `/download_video` 不會在基礎訊息獎勵之外再付額外 action reward。
 
-**花用虛擬歡樂豆：** 賭場遊戲會先開 lobby。房主可以單人開始，也可以等其他玩家加入；只有房主可以開始 table。Blackjack bet 會在玩家加入時檢查，開始時重新確認餘額，等 table 結算時才套用本局正負結果。如果 Blackjack 下注超過目前餘額，系統會自動 clamp 成 all-in；只有餘額為 0 或負數時才會拒絕玩家。射龍門則使用底注：每位加入者都必須付得起底注，table 會追蹤共享彩金池，玩家輪流下注直到彩金池清空或 table timeout。機器人重啟時，未完成的 in-memory table 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下整桌下注，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 會顯示每位玩家的本局 delta 與結算後餘額；`/house` 才看 house ledger balance。
+**花用虛擬歡樂豆：** 賭場遊戲會先開 lobby。房主可以單人開始，也可以等其他玩家加入；只有房主可以開始 table。Blackjack bet 會在玩家加入時檢查，開始時重新確認餘額，等 table 結算時才套用本局正負結果。如果 Blackjack 房主輸入超過目前餘額的 bet，lobby 的 table stake 會 clamp 成房主實際 all-in 金額，後續玩家預設跟這個金額，不會被原本過大的輸入值強制全下；只有餘額為 0 或負數時才會拒絕玩家。射龍門則使用底注：每位加入者都必須付得起底注，table 會追蹤共享彩金池，玩家輪流下注直到彩金池清空或 table timeout。機器人重啟時，未完成的 in-memory table 會直接作廢不扣款，但已結算的 loss 仍然可以把玩家餘額扣到負數。莊家是個 AI，開局會嘴一下整桌下注，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 會顯示每位玩家的本局 delta 與結算後餘額；`/house` 才看 house ledger balance。
 
 **VIP：** `/vip` 一次性花費 10,000,000 虛擬歡樂豆購買永久 VIP 標記。VIP 會獲得 1.5x Blackjack payout、2x 簽到基礎點數、2x 借款上限。
 

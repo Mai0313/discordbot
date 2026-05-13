@@ -9,7 +9,7 @@ from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.games import GameParticipant
+from discordbot.typings.games import GameParticipant, GameParticipantIdentity
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.views import (
     MAX_BLACKJACK_PLAYERS,
@@ -17,6 +17,7 @@ from discordbot.cogs._games.views import (
     build_blackjack_lobby_embed,
 )
 from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.wagers import build_wager_participant
 from discordbot.cogs._games.cleanup import (
     track_game_message,
     delete_tracked_game_messages,
@@ -100,22 +101,27 @@ class GamesCogs(commands.Cog):
         self._startup_cleanup_done = True
         await delete_tracked_game_messages(bot=self.bot)
 
+    @staticmethod
+    def _identity_from_user(*, user: nextcord.User | nextcord.Member) -> GameParticipantIdentity:
+        """Builds the shared game identity for a Discord user."""
+        return GameParticipantIdentity(
+            user_id=user.id,
+            account_name=user.name,
+            display_name=user.display_name,
+            avatar_url=user.display_avatar.url,
+        )
+
     async def _participant_from_user(
         self, *, user: nextcord.User | nextcord.Member, requested_bet: int
     ) -> tuple[GameParticipant | None, int]:
         """Builds a lobby participant after clamping the requested bet."""
         balance = await get_balance(user_id=user.id)
-        if requested_bet <= 0 or balance <= 0:
-            return None, balance
         return (
-            GameParticipant(
-                user_id=user.id,
-                account_name=user.name,
-                display_name=user.display_name,
-                avatar_url=user.display_avatar.url,
-                bet=min(requested_bet, balance),
-                balance_at_start=balance,
-                is_allin=requested_bet > balance,
+            build_wager_participant(
+                identity=self._identity_from_user(user=user),
+                balance=balance,
+                wager=requested_bet,
+                mode="clamp",
             ),
             balance,
         )
@@ -140,17 +146,12 @@ class GamesCogs(commands.Cog):
     ) -> tuple[GameParticipant | None, int]:
         """Builds a 射龍門 lobby participant after checking the table ante."""
         balance = await get_balance(user_id=user.id)
-        if ante <= 0 or balance < ante:
-            return None, balance
         return (
-            GameParticipant(
-                user_id=user.id,
-                account_name=user.name,
-                display_name=user.display_name,
-                avatar_url=user.display_avatar.url,
-                bet=ante,
-                balance_at_start=balance,
-                is_allin=balance == ante,
+            build_wager_participant(
+                identity=self._identity_from_user(user=user),
+                balance=balance,
+                wager=ante,
+                mode="exact",
             ),
             balance,
         )
@@ -179,14 +180,21 @@ class GamesCogs(commands.Cog):
         dropped: list[str] = []
         for participant in participants:
             balance = await get_balance(user_id=participant.user_id)
-            if ante <= 0 or balance < ante:
+            refreshed_participant = build_wager_participant(
+                identity=GameParticipantIdentity(
+                    user_id=participant.user_id,
+                    account_name=participant.account_name,
+                    display_name=participant.display_name,
+                    avatar_url=participant.avatar_url,
+                ),
+                balance=balance,
+                wager=ante,
+                mode="exact",
+            )
+            if refreshed_participant is None:
                 dropped.append(participant.display_name)
                 continue
-            refreshed.append(
-                participant.model_copy(
-                    update={"bet": ante, "balance_at_start": balance, "is_allin": balance == ante}
-                )
-            )
+            refreshed.append(refreshed_participant)
         return refreshed, dropped
 
     async def _refresh_lobby_participants(
@@ -197,18 +205,21 @@ class GamesCogs(commands.Cog):
         dropped: list[str] = []
         for participant in participants:
             balance = await get_balance(user_id=participant.user_id)
-            if requested_bet <= 0 or balance <= 0:
+            refreshed_participant = build_wager_participant(
+                identity=GameParticipantIdentity(
+                    user_id=participant.user_id,
+                    account_name=participant.account_name,
+                    display_name=participant.display_name,
+                    avatar_url=participant.avatar_url,
+                ),
+                balance=balance,
+                wager=requested_bet,
+                mode="clamp",
+            )
+            if refreshed_participant is None:
                 dropped.append(participant.display_name)
                 continue
-            refreshed.append(
-                participant.model_copy(
-                    update={
-                        "bet": min(requested_bet, balance),
-                        "balance_at_start": balance,
-                        "is_allin": requested_bet > balance,
-                    }
-                )
-            )
+            refreshed.append(refreshed_participant)
         return refreshed, dropped
 
     def _insufficient_balance_embed(self, *, balance: int) -> Embed:
@@ -250,11 +261,11 @@ class GamesCogs(commands.Cog):
         interaction: Interaction,
         bet: int = SlashOption(
             name="bet",
-            description=f"How much {CURRENCY_NAME} to wager (auto all-ins if over your balance).",
+            description=f"Table stake in {CURRENCY_NAME}; over-betting opens at your balance.",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"下注的{CURRENCY_NAME} (超過餘額會自動 all-in)",
-                Locale.ja: f"賭ける{CURRENCY_NAME} (残高を超えると自動 all-in)。",
+                Locale.zh_TW: f"這桌的基本下注{CURRENCY_NAME} (超過餘額會用你的餘額開桌)",
+                Locale.ja: f"Table の基本賭け金{CURRENCY_NAME} (残高超過なら残高で開きます)。",
             },
             required=True,
             min_value=1,
@@ -280,10 +291,11 @@ class GamesCogs(commands.Cog):
             schedule_game_message_delete(message=message)
             return
 
+        table_bet = owner.bet
         dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
         view = BlackjackLobbyView(
             owner=owner,
-            requested_bet=bet,
+            requested_bet=table_bet,
             rng=self.rng,
             dealer=self.dealer,
             dealer_id=dealer_id,
@@ -295,7 +307,7 @@ class GamesCogs(commands.Cog):
         embed = build_blackjack_lobby_embed(
             owner=owner,
             participants=view.participants,
-            requested_bet=bet,
+            requested_bet=table_bet,
             max_players=MAX_BLACKJACK_PLAYERS,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
