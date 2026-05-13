@@ -35,7 +35,7 @@ class DealerAI:
         self.model = model
 
     async def _ask(
-        self, *, instructions: str, user_text: str, fallback: str, end_user_id: str
+        self, instructions: str, user_text: str, fallback: str, end_user_id: str
     ) -> str:
         """Calls the LLM and returns the trimmed text, falling back on any error."""
         try:
@@ -57,13 +57,7 @@ class DealerAI:
         return text or fallback
 
     async def taunt_bet(
-        self,
-        *,
-        author_name: str,
-        player_name: str,
-        balance_at_start: int,
-        bet: int,
-        game: GameKind,
+        self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: GameKind
     ) -> str:
         """Returns a dealer line for a newly placed bet.
 
@@ -94,7 +88,6 @@ class DealerAI:
 
     async def settle(  # noqa: PLR0913 -- the round summary needs every field for the prompt
         self,
-        *,
         author_name: str,
         player_name: str,
         outcome: SettleOutcome,
@@ -155,7 +148,6 @@ class DealerAI:
 
     async def table_settle(  # noqa: PLR0913 -- table summary needs every field for the prompt
         self,
-        *,
         author_name: str,
         table_name: str,
         player_count: int,
@@ -199,7 +191,7 @@ class DealerAI:
         )
 
     async def hint(
-        self, *, author_name: str, player_name: str, player_total: int, dealer_visible: int
+        self, author_name: str, player_name: str, player_total: int, dealer_visible: int
     ) -> str:
         """Returns a dealer hint for a Blackjack hit-or-stand decision.
 

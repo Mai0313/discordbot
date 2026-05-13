@@ -105,12 +105,7 @@ class MapleDropSearchView(View):
     """Interactive select menu for Artale search results."""
 
     def __init__(
-        self,
-        service: MapleStoryService,
-        search_type: str,
-        query: str,
-        *,
-        timeout: float | None = 300,
+        self, service: MapleStoryService, search_type: str, query: str, timeout: float | None = 300
     ) -> None:
         """Initializes the search view.
 

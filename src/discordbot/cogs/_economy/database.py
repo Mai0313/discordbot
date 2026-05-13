@@ -303,7 +303,7 @@ def open_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
-def credit_limit(*, user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
+def credit_limit(user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
     """Returns the borrowing cap for a Discord account based on its age.
 
     Computed entirely from ``user.created_at`` (which Discord reconstructs
@@ -335,7 +335,7 @@ def credit_limit(*, user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- 
     return base * 2 if is_vip else base
 
 
-def checkin_reward(*, streak: int, is_vip: bool) -> int:
+def checkin_reward(streak: int, is_vip: bool) -> int:
     """Returns the gross check-in payout for a streak day.
 
     The reward formula is ``BASE * (1 + (streak - 1) * CHECKIN_STREAK_BONUS_STEP)``
@@ -354,7 +354,7 @@ def checkin_reward(*, streak: int, is_vip: bool) -> int:
     return int(base * multiplier)
 
 
-def apply_vip_blackjack_bonus(*, delta: int, is_vip: bool) -> int:
+def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     """Applies the VIP 1.5x payout multiplier on a winning player delta.
 
     The bonus only fires on positive deltas (wins). Pushes and losses pass
@@ -373,7 +373,7 @@ def apply_vip_blackjack_bonus(*, delta: int, is_vip: bool) -> int:
 
 
 def _build_credit_upsert(
-    *, user_id: int, name: str, amount: int, now: datetime, avatar_url: str = ""
+    user_id: int, name: str, amount: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT that credits ``amount`` points (caller guarantees ``amount > 0``).
 
@@ -411,7 +411,7 @@ def _build_credit_upsert(
 
 
 def _build_clamped_settle_upsert(
-    *, user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
+    user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with the resulting balance clamped at 0.
 
@@ -454,7 +454,7 @@ def _build_clamped_settle_upsert(
 
 
 def _build_signed_delta_upsert(
-    *, user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
+    user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with NO clamp on the resulting balance.
 
@@ -495,7 +495,6 @@ def _build_signed_delta_upsert(
 
 async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on purpose
     session: AsyncSession,
-    *,
     user_id: int,
     kind: TransactionKind,
     delta: int,
@@ -533,7 +532,7 @@ async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on 
 
 
 async def _reset_expired_loan_in_session(
-    session: AsyncSession, *, user_id: int, now: datetime
+    session: AsyncSession, user_id: int, now: datetime
 ) -> None:
     """Wipes ``loan_principal`` when the loan was opened before today's midnight.
 
@@ -570,7 +569,6 @@ async def _reset_expired_loan_in_session(
 
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row income pipeline kept linear for readability
     session: AsyncSession,
-    *,
     user_id: int,
     name: str,
     avatar_url: str,
@@ -714,7 +712,6 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
 
 async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both ledger keys + kind
     session: AsyncSession,
-    *,
     user_id: int,
     name: str,
     avatar_url: str,
@@ -753,7 +750,7 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
 
 
 async def _casino_debit_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
-    session: AsyncSession, *, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
     """Applies a casino loss without clamping the player's balance at zero."""
     stmt = _build_signed_delta_upsert(
@@ -774,7 +771,7 @@ async def _casino_debit_in_session(  # noqa: PLR0913 -- session helper needs led
 
 
 async def _house_settle_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
-    session: AsyncSession, *, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
     """Applies a signed delta to the dealer ledger and logs the audit row.
 
@@ -835,7 +832,6 @@ async def add_balance(user_id: int, name: str, amount: int, avatar_url: str = ""
 
 
 async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors one income event
-    *,
     user_id: int,
     name: str,
     amount: int,
@@ -1044,15 +1040,14 @@ async def house_settle(user_id: int, name: str, delta: int, avatar_url: str = ""
 
 
 async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
-    *,
     player_id: int,
     player_account_name: str,
-    player_avatar_url: str = "",
     player_delta: int,
     dealer_id: int,
     dealer_name: str,
-    dealer_avatar_url: str = "",
     dealer_delta: int,
+    player_avatar_url: str = "",
+    dealer_avatar_url: str = "",
 ) -> tuple[int, int]:
     """Applies a finished round's net delta and mirrors house P&L atomically.
 
@@ -1126,7 +1121,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
 
 
 async def borrow(
-    *, user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
+    user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
 ) -> BorrowResult | None:
     """Disburses ``amount`` points to the user as new principal.
 
@@ -1209,9 +1204,7 @@ async def borrow(
         return BorrowResult(new_balance=balance_after, principal=principal_after)
 
 
-async def repay(
-    *, user_id: int, name: str, amount: int, avatar_url: str = ""
-) -> RepayResult | None:
+async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> RepayResult | None:
     """Pays down principal, debited from the user's balance.
 
     Effective repayment is clamped to ``min(amount, balance, principal)``
@@ -1303,7 +1296,6 @@ async def repay(
 
 
 def _next_checkin_streak(
-    *,
     last_checkin_at: datetime | None,
     current_streak: int,
     today_midnight: datetime,
@@ -1337,7 +1329,7 @@ def _next_checkin_streak(
 
 
 async def _insert_first_checkin_in_session(
-    *, session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
 ) -> tuple[int, int, int, bool] | None:
     """Inserts a fresh user row crediting the day-1 check-in reward.
 
@@ -1384,7 +1376,6 @@ async def _insert_first_checkin_in_session(
 
 
 async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper carries account identity + observed row
-    *,
     session: AsyncSession,
     user_id: int,
     name: str,
@@ -1450,7 +1441,7 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
     return reward, balance_after, streak_after, bool(vip_after)
 
 
-async def checkin(*, user_id: int, name: str, avatar_url: str = "") -> CheckinResult | None:
+async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResult | None:
     """Records a daily check-in and credits the streak-adjusted reward.
 
     Returns ``None`` when the user has already checked in today (Taipei
@@ -1542,7 +1533,7 @@ async def checkin(*, user_id: int, name: str, avatar_url: str = "") -> CheckinRe
         return None
 
 
-async def buy_vip(*, user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
+async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
     """Promotes the user to VIP after debiting ``VIP_PURCHASE_COST`` points.
 
     Returns ``None`` when the user is already VIP, has insufficient balance,
@@ -1680,7 +1671,7 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
         return (row[0], row[1], row[2], row[3])
 
 
-async def get_loan_view(*, user_id: int) -> LoanView | None:
+async def get_loan_view(user_id: int) -> LoanView | None:
     """Returns a stored snapshot of the user's loan state.
 
     The principal is read after applying the daily reset so callers always
@@ -1716,14 +1707,13 @@ async def get_loan_view(*, user_id: int) -> LoanView | None:
 
 
 async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver identity snapshots
-    *,
     sender_id: int,
     sender_name: str,
-    sender_avatar_url: str = "",
     receiver_id: int,
     receiver_name: str,
-    receiver_avatar_url: str = "",
     amount: int,
+    sender_avatar_url: str = "",
+    receiver_avatar_url: str = "",
 ) -> TransferResult | None:
     """Atomically moves points from sender to receiver.
 
@@ -1811,7 +1801,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 
 
 async def top_n(
-    *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
+    limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
     """Returns accounts ordered by balance descending.
 
@@ -1842,7 +1832,7 @@ async def top_n(
 
 
 async def top_losers(
-    *, limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
+    limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
     """Returns the biggest net casino losers since today's Taipei midnight.
 

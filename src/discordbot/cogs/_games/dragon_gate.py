@@ -45,12 +45,12 @@ class DragonGateBetRangeError(DragonGateError):
     """Raised when a bet is outside the current legal range."""
 
 
-def draw_card(*, rng: Random) -> Card:
+def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe."""
     return Card(rank=rng.choice(seq=RANKS), suit=rng.choice(seq=SUITS))
 
 
-def card_value(*, card: Card) -> int:
+def card_value(card: Card) -> int:
     """Returns the 射龍門 point value for a card, with Ace low."""
     if card.rank == "A":
         return 1
@@ -63,7 +63,7 @@ def card_value(*, card: Card) -> int:
     return int(card.rank)
 
 
-def render_cards(*, cards: list[Card]) -> str:
+def render_cards(cards: list[Card]) -> str:
     """Formats cards for display."""
     return " ".join(str(card) for card in cards)
 
@@ -128,7 +128,7 @@ class DragonGateRound(BaseModel):
 
     @classmethod
     def from_participants(
-        cls, *, rng: Random, participants: list[GameParticipant], ante: int
+        cls, rng: Random, participants: list[GameParticipant], ante: int
     ) -> "DragonGateRound":
         """Builds and starts a 射龍門 round from lobby participants."""
         if ante <= 0:
@@ -151,7 +151,7 @@ class DragonGateRound(BaseModel):
         """Returns the maximum legal bet for the active turn."""
         return max(self.pot, 0)
 
-    def choose_pair_direction(self, *, user_id: int, direction: DragonGateDirection) -> None:
+    def choose_pair_direction(self, user_id: int, direction: DragonGateDirection) -> None:
         """Stores the active player's high/low choice for a same-point gate."""
         active_turn = self._require_active_turn(user_id=user_id)
         if not active_turn.is_pair:
@@ -166,7 +166,7 @@ class DragonGateRound(BaseModel):
             and self.active_turn.direction is None
         )
 
-    def place_bet(self, *, user_id: int, amount: int) -> DragonGateTurnResult:
+    def place_bet(self, user_id: int, amount: int) -> DragonGateTurnResult:
         """Resolves the active player's bet by drawing the third card.
 
         Args:
@@ -214,7 +214,7 @@ class DragonGateRound(BaseModel):
             self._deal_next_turn()
         return result
 
-    def player_delta(self, *, user_id: int) -> int:
+    def player_delta(self, user_id: int) -> int:
         """Returns a player's cumulative net delta for the table."""
         return self.player_deltas.get(user_id, 0)
 
@@ -227,7 +227,7 @@ class DragonGateRound(BaseModel):
             pillars=[draw_card(rng=self.rng), draw_card(rng=self.rng)],
         )
 
-    def _require_active_turn(self, *, user_id: int) -> DragonGateTurn:
+    def _require_active_turn(self, user_id: int) -> DragonGateTurn:
         if self.finished or self.active_turn is None:
             raise DragonGateTableFinishedError("Table is finished")
         if self.active_turn.participant.user_id != user_id:
@@ -235,7 +235,7 @@ class DragonGateRound(BaseModel):
         return self.active_turn
 
     def _resolve_turn(
-        self, *, turn: DragonGateTurn, third_card: Card, amount: int
+        self, turn: DragonGateTurn, third_card: Card, amount: int
     ) -> tuple[DragonGateOutcome, int]:
         third_value = card_value(card=third_card)
         if turn.is_pair:
@@ -247,7 +247,7 @@ class DragonGateRound(BaseModel):
         return "outside_lose", -amount
 
     def _resolve_pair_turn(
-        self, *, turn: DragonGateTurn, third_value: int, amount: int
+        self, turn: DragonGateTurn, third_value: int, amount: int
     ) -> tuple[DragonGateOutcome, int]:
         pillar_value = turn.lower_value
         if third_value == pillar_value:

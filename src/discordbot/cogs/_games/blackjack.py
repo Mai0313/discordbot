@@ -198,7 +198,7 @@ class BlackjackRound(BaseModel):
 
     @classmethod
     def from_participants(
-        cls, *, rng: Random, participants: list[GameParticipant]
+        cls, rng: Random, participants: list[GameParticipant]
     ) -> "BlackjackRound":
         """Builds a round from registered lobby participants."""
         players = [BlackjackPlayerHand(participant=participant) for participant in participants]
@@ -227,7 +227,7 @@ class BlackjackRound(BaseModel):
             return self.active_player()
         return player
 
-    def hit(self, *, user_id: int) -> Card:
+    def hit(self, user_id: int) -> Card:
         """Draws one card for the active player.
 
         Args:
@@ -247,7 +247,7 @@ class BlackjackRound(BaseModel):
             self._advance_or_finish()
         return card
 
-    def stand(self, *, user_id: int) -> None:
+    def stand(self, user_id: int) -> None:
         """Marks the active player as standing and advances the table."""
         player = self._require_active_player(user_id=user_id)
         player.finished = True
@@ -268,7 +268,7 @@ class BlackjackRound(BaseModel):
         hand = BlackjackHand(rng=self.rng, bet=0, dealer=list(self.dealer))
         return dealer_visible_value(hand=hand)
 
-    def settlement_hand(self, *, player: BlackjackPlayerHand) -> BlackjackHand:
+    def settlement_hand(self, player: BlackjackPlayerHand) -> BlackjackHand:
         """Builds the single-player hand shape used by settlement helpers."""
         return BlackjackHand(
             rng=self.rng,
@@ -278,7 +278,7 @@ class BlackjackRound(BaseModel):
             finished=True,
         )
 
-    def _require_active_player(self, *, user_id: int) -> BlackjackPlayerHand:
+    def _require_active_player(self, user_id: int) -> BlackjackPlayerHand:
         player = self.active_player()
         if player is None or player.participant.user_id != user_id:
             raise ValueError("Not this player's turn")

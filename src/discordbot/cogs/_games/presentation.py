@@ -30,7 +30,7 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
     return blackjack_result[outcome]
 
 
-def allin_note(*, is_allin: bool) -> str:
+def allin_note(is_allin: bool) -> str:
     """Returns the shared suffix for auto all-in rounds.
 
     Args:
@@ -42,7 +42,7 @@ def allin_note(*, is_allin: bool) -> str:
     return " | all-in" if is_allin else ""
 
 
-def wager_footer(*, bet: int, balance_at_start: int, is_allin: bool, status: str) -> str:
+def wager_footer(bet: int, balance_at_start: int, is_allin: bool, status: str) -> str:
     """Formats the shared footer for an unresolved round.
 
     Args:
@@ -61,7 +61,7 @@ def wager_footer(*, bet: int, balance_at_start: int, is_allin: bool, status: str
     )
 
 
-def settlement_footer(*, delta: int, new_balance: int, is_allin: bool) -> str:
+def settlement_footer(delta: int, new_balance: int, is_allin: bool) -> str:
     """Formats the shared final-round settlement footer.
 
     Keeps only the two numbers the player needs to see at a glance: the
@@ -82,13 +82,13 @@ def settlement_footer(*, delta: int, new_balance: int, is_allin: bool) -> str:
     )
 
 
-def dealer_quote(*, text: str) -> str:
+def dealer_quote(text: str) -> str:
     """Formats dealer banter as a compact quote block."""
     if not text:
         return ""
     return "> " + text.replace("\n", "\n> ")
 
 
-def duel_lines(*, player_name: str, player_value: str, dealer_name: str, dealer_value: str) -> str:
+def duel_lines(player_name: str, player_value: str, dealer_name: str, dealer_value: str) -> str:
     """Formats a two-sided game board as one embed field value."""
     return f"**{player_name}**\n{player_value}\n\n**{dealer_name}**\n{dealer_value}"

@@ -95,7 +95,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 async def modify_balance(
-    *, user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
+    user_id: int, name: str, delta: int, allow_negative: bool = False, dry_run: bool = False
 ) -> BalanceChange:
     """Applies a manual economy balance adjustment via the database API.
 
@@ -164,7 +164,7 @@ async def modify_balance(
 
 
 async def modify_all_balances(
-    *, delta: int, allow_negative: bool = False, dry_run: bool = False
+    delta: int, allow_negative: bool = False, dry_run: bool = False
 ) -> BulkBalanceChange:
     """Applies a manual balance adjustment to every existing economy account.
 

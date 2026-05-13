@@ -106,7 +106,7 @@ class VideoCogs(commands.Cog):
                 await interaction.edit_original_message(content=":x: 下載失敗\n檔案無法下載")
 
     async def _deliver(
-        self, *, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
+        self, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
     ) -> None:
         """Sends the downloaded file as a fresh followup and collapses the placeholder.
 

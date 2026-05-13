@@ -153,7 +153,7 @@ Every loggable `on_message` is UPSERTed into the `messages` table in `data/messa
 
 - **Ruff** is formatter + linter, configured in `pyproject.toml`. Don't blanket-`# noqa`; prefer the narrowest possible `# noqa: <rule>` with a one-line reason.
 - **mypy** runs in pre-commit. `Any` is a last resort.
-- **Keyword arguments are required for every call**, including single-arg ones (`create_engine(url=...)`, `re.compile(pattern=...)`, `BytesIO(initial_bytes=...)`). Exceptions:
+- **Keyword arguments are required for every call**, including single-arg ones (`create_engine(url=...)`, `re.compile(pattern=...)`, `BytesIO(initial_bytes=...)`). This is a call-site style rule: write `f(a=1, b=2)` when calling functions, but do not add a bare `*` in new function signatures solely to force keyword-only arguments. Prefer `def f(a: int, b: int) -> None:` over `def f(*, a: int, b: int) -> None:` unless an external API or correctness issue explicitly requires keyword-only parameters. Exceptions:
     1. Signature-level positional-only (`Path("a/b")`, exception constructors, `logfire.info("…")`).
     2. Variadic `*args` collectors (`contextlib.suppress(Exception, OSError)`, `AliasChoices("ENV_NAME")`).
     3. One-line stdlib idioms (`len(x)`, `str(x)`, `s.split(",")`).

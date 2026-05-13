@@ -8,7 +8,7 @@ WagerMode = Literal["clamp", "exact"]
 
 
 def build_wager_participant(
-    *, identity: GameParticipantIdentity, balance: int, wager: int, mode: WagerMode
+    identity: GameParticipantIdentity, balance: int, wager: int, mode: WagerMode
 ) -> GameParticipant | None:
     """Builds a participant for a table stake under the requested wager mode.
 

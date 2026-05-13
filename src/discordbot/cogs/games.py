@@ -102,7 +102,7 @@ class GamesCogs(commands.Cog):
         await delete_tracked_game_messages(bot=self.bot)
 
     @staticmethod
-    def _identity_from_user(*, user: nextcord.User | nextcord.Member) -> GameParticipantIdentity:
+    def _identity_from_user(user: nextcord.User | nextcord.Member) -> GameParticipantIdentity:
         """Builds the shared game identity for a Discord user."""
         return GameParticipantIdentity(
             user_id=user.id,
@@ -112,7 +112,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _participant_from_user(
-        self, *, user: nextcord.User | nextcord.Member, requested_bet: int
+        self, user: nextcord.User | nextcord.Member, requested_bet: int
     ) -> tuple[GameParticipant | None, int]:
         """Builds a lobby participant after clamping the requested bet."""
         balance = await get_balance(user_id=user.id)
@@ -127,7 +127,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _prepare_lobby_participant(
-        self, *, interaction: Interaction, requested_bet: int
+        self, interaction: Interaction, requested_bet: int
     ) -> GameParticipant | None:
         """Prepares a user who pressed the lobby Join button."""
         if interaction.user is None:
@@ -142,7 +142,7 @@ class GamesCogs(commands.Cog):
         return participant
 
     async def _dragon_gate_participant_from_user(
-        self, *, user: nextcord.User | nextcord.Member, ante: int
+        self, user: nextcord.User | nextcord.Member, ante: int
     ) -> tuple[GameParticipant | None, int]:
         """Builds a 射龍門 lobby participant after checking the table ante."""
         balance = await get_balance(user_id=user.id)
@@ -157,7 +157,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _prepare_dragon_gate_participant(
-        self, *, interaction: Interaction, ante: int
+        self, interaction: Interaction, ante: int
     ) -> GameParticipant | None:
         """Prepares a user who pressed the 射龍門 lobby Join button."""
         if interaction.user is None:
@@ -173,7 +173,7 @@ class GamesCogs(commands.Cog):
         return participant
 
     async def _refresh_dragon_gate_participants(
-        self, *, participants: list[GameParticipant], ante: int
+        self, participants: list[GameParticipant], ante: int
     ) -> tuple[list[GameParticipant], list[str]]:
         """Re-checks 射龍門 ante balances when the lobby owner starts the table."""
         refreshed: list[GameParticipant] = []
@@ -198,7 +198,7 @@ class GamesCogs(commands.Cog):
         return refreshed, dropped
 
     async def _refresh_lobby_participants(
-        self, *, participants: list[GameParticipant], requested_bet: int
+        self, participants: list[GameParticipant], requested_bet: int
     ) -> tuple[list[GameParticipant], list[str]]:
         """Re-checks balances when the lobby owner starts the table."""
         refreshed: list[GameParticipant] = []
@@ -222,7 +222,7 @@ class GamesCogs(commands.Cog):
             refreshed.append(refreshed_participant)
         return refreshed, dropped
 
-    def _insufficient_balance_embed(self, *, balance: int) -> Embed:
+    def _insufficient_balance_embed(self, balance: int) -> Embed:
         """Builds the shared insufficient-balance embed for casino games."""
         return Embed(
             title="餘額不足",
@@ -234,7 +234,7 @@ class GamesCogs(commands.Cog):
             color=ERROR_COLOR,
         )
 
-    def _dragon_gate_insufficient_balance_embed(self, *, balance: int, ante: int) -> Embed:
+    def _dragon_gate_insufficient_balance_embed(self, balance: int, ante: int) -> Embed:
         """Builds the insufficient-balance embed for 射龍門 ante checks."""
         return Embed(
             title="餘額不足",

@@ -35,7 +35,7 @@ class PrepareParticipant(Protocol):
     """Callable used by lobby join buttons to validate a participant."""
 
     async def __call__(
-        self, *, interaction: Interaction, requested_bet: int
+        self, interaction: Interaction, requested_bet: int
     ) -> GameParticipant | None:
         """Returns a prepared participant or sends the interaction error."""
 
@@ -44,23 +44,23 @@ class RefreshParticipants(Protocol):
     """Callable used by lobby start to re-check balances."""
 
     async def __call__(
-        self, *, participants: list[GameParticipant], requested_bet: int
+        self, participants: list[GameParticipant], requested_bet: int
     ) -> tuple[list[GameParticipant], list[str]]:
         """Returns refreshed participants and display names removed from the table."""
 
 
-def _format_player_line(*, player: BlackjackPlayerHand) -> str:
+def _format_player_line(player: BlackjackPlayerHand) -> str:
     return f"{render_hand(cards=player.cards)}  **{player.total()}**"
 
 
-def _format_dealer_line(*, round_state: BlackjackRound, hide_hole: bool) -> str:
+def _format_dealer_line(round_state: BlackjackRound, hide_hole: bool) -> str:
     if hide_hole:
         return f"{render_hand(cards=round_state.dealer, hide_first=True)}  **?**"
     return f"{render_hand(cards=round_state.dealer)}  **{round_state.dealer_total()}**"
 
 
 def _status_for_player(
-    *, round_state: BlackjackRound, player: BlackjackPlayerHand, active_user_id: int | None
+    round_state: BlackjackRound, player: BlackjackPlayerHand, active_user_id: int | None
 ) -> str:
     if player.is_blackjack():
         return "Blackjack"
@@ -73,7 +73,7 @@ def _status_for_player(
     return "等待"
 
 
-def _participant_lines(*, participants: list[GameParticipant], owner_id: int) -> str:
+def _participant_lines(participants: list[GameParticipant], owner_id: int) -> str:
     lines: list[str] = []
     for index, participant in enumerate(participants, start=1):
         owner_label = " 發起者" if participant.user_id == owner_id else ""
@@ -86,7 +86,6 @@ def _participant_lines(*, participants: list[GameParticipant], owner_id: int) ->
 
 
 def build_blackjack_lobby_embed(
-    *,
     owner: GameParticipant,
     participants: list[GameParticipant],
     requested_bet: int,
@@ -107,7 +106,7 @@ def build_blackjack_lobby_embed(
 
 
 def build_in_progress_embed(
-    *, dealer_name: str, round_state: BlackjackRound, dealer_line: str
+    dealer_name: str, round_state: BlackjackRound, dealer_line: str
 ) -> Embed:
     """Builds the shared Blackjack table embed while players are acting."""
     active = round_state.active_player()
@@ -137,7 +136,7 @@ def build_in_progress_embed(
     return embed
 
 
-def _table_result_detail(*, results: list[BlackjackPlayerResult]) -> str:
+def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     lines: list[str] = []
     for result in results:
         outcome_label, _color = blackjack_outcome_presentation(outcome=result.settlement.outcome)
@@ -146,7 +145,7 @@ def _table_result_detail(*, results: list[BlackjackPlayerResult]) -> str:
     return "；".join(lines)
 
 
-def _table_color(*, results: list[BlackjackPlayerResult]) -> int:
+def _table_color(results: list[BlackjackPlayerResult]) -> int:
     total_delta = sum(result.settlement.delta for result in results)
     if total_delta > 0:
         return 0x57F287
@@ -156,7 +155,6 @@ def _table_color(*, results: list[BlackjackPlayerResult]) -> int:
 
 
 def build_final_embed(
-    *,
     dealer_name: str,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
@@ -201,7 +199,6 @@ class BlackjackLobbyView(ui.View):
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
         self,
-        *,
         owner: GameParticipant,
         requested_bet: int,
         rng: Random,
@@ -326,7 +323,7 @@ class BlackjackLobbyView(ui.View):
             self.stop()
             await self._start_blackjack(message=interaction.message)
 
-    async def _start_blackjack(self, *, message: Message | None) -> None:
+    async def _start_blackjack(self, message: Message | None) -> None:
         if message is None:
             return
         round_state = BlackjackRound.from_participants(
@@ -362,7 +359,7 @@ class BlackjackLobbyView(ui.View):
             view=view,
         )
 
-    async def _refresh_message(self, *, message: Message | None, status: str) -> None:
+    async def _refresh_message(self, message: Message | None, status: str) -> None:
         if message is None:
             return
         self.message = message
@@ -377,7 +374,7 @@ class BlackjackLobbyView(ui.View):
             view=self,
         )
 
-    async def _send_notice(self, *, interaction: Interaction, content: str) -> None:
+    async def _send_notice(self, interaction: Interaction, content: str) -> None:
         with contextlib.suppress(Exception):
             await interaction.followup.send(content=content, ephemeral=True)
 
@@ -392,7 +389,6 @@ class BlackjackView(ui.View):
 
     def __init__(  # noqa: PLR0913 -- view needs table, dealer, and ledger identity
         self,
-        *,
         dealer: DealerAI,
         round_state: BlackjackRound,
         starter_id: int,
@@ -488,16 +484,16 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    async def finalize(self, *, message: Message) -> None:
+    async def finalize(self, message: Message) -> None:
         """Settles every player exactly once."""
         async with self._round_lock:
             await self._finalize_locked(message=message)
 
-    async def _finalize(self, *, message: Message) -> None:
+    async def _finalize(self, message: Message) -> None:
         """Backward-compatible wrapper for tests and older internal callers."""
         await self.finalize(message=message)
 
-    async def _edit_in_progress_locked(self, *, message: Message) -> None:
+    async def _edit_in_progress_locked(self, message: Message) -> None:
         embed = build_in_progress_embed(
             dealer_name=self.dealer_name,
             round_state=self.round_state,
@@ -505,7 +501,7 @@ class BlackjackView(ui.View):
         )
         await message.edit(embed=embed, view=self)
 
-    async def _finalize_locked(self, *, message: Message) -> None:
+    async def _finalize_locked(self, message: Message) -> None:
         if self._settled:
             return
         self._settled = True
@@ -539,7 +535,7 @@ class BlackjackView(ui.View):
             await message.edit(embed=embed, view=self)
         schedule_game_message_delete(message=message)
 
-    async def _settlement_line(self, *, results: list[BlackjackPlayerResult]) -> str:
+    async def _settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
         if len(results) == 1:
             result = results[0]
             return await self.dealer.settle(

@@ -55,7 +55,7 @@ class FakeResponse:
         self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
 
-    async def defer(self, *, ephemeral: bool = False) -> None:
+    async def defer(self, ephemeral: bool = False) -> None:
         self.deferred = True
         self.deferred_ephemeral = ephemeral
 
@@ -73,7 +73,7 @@ class FakeFollowup:
 
 
 class FakeInteraction:
-    def __init__(self, *, user: FakeUser | None = None) -> None:
+    def __init__(self, user: FakeUser | None = None) -> None:
         self.user = user or FakeUser()
         self.message: FakeDiscordMessage | None = None
         self.response = FakeResponse()
@@ -86,12 +86,7 @@ class FakeInteraction:
 
 class FakeUser:
     def __init__(
-        self,
-        *,
-        user_id: int = 1,
-        name: str = "alice",
-        display_name: str = "Alice",
-        bot: bool = False,
+        self, user_id: int = 1, name: str = "alice", display_name: str = "Alice", bot: bool = False
     ) -> None:
         self.id = user_id
         self.name = name
@@ -122,7 +117,7 @@ class FakeDiscordMessage:
     async def add_reaction(self, emoji: str) -> None:
         self.reactions.append(emoji)
 
-    async def remove_reaction(self, *, emoji: str, member: FakeUser) -> None:
+    async def remove_reaction(self, emoji: str, member: FakeUser) -> None:
         self.removed.append((emoji, member))
 
     async def reply(self, **kwargs: Unpack[DiscordPayload]) -> None:
@@ -133,7 +128,7 @@ class FakeDiscordMessage:
 
 
 class DownloadResultStub:
-    def __init__(self, *, filename: Path) -> None:
+    def __init__(self, filename: Path) -> None:
         self.filename = filename
 
     def __enter__(self) -> Self:
@@ -151,18 +146,18 @@ class DownloadResultStub:
 
 
 class DownloaderStub:
-    def __init__(self, *, results: list[DownloadResultStub]) -> None:
+    def __init__(self, results: list[DownloadResultStub]) -> None:
         self.results = results
         self.calls: list[dict[str, str | bool]] = []
 
-    def download(self, *, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
+    def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
         kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
 
 
 class ParseResultStub:
-    def __init__(self, *, results: list[ThreadsOutput] | BaseException) -> None:
+    def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
         self.results = results
 
     def __enter__(self) -> list[ThreadsOutput]:
@@ -182,7 +177,7 @@ class ParseResultStub:
 
 
 class ThreadsDownloaderStub:
-    def __init__(self, *, results: list[ThreadsOutput] | BaseException) -> None:
+    def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
         self.results = results
 
     def parse(self, url: str) -> ParseResultStub:
@@ -193,12 +188,12 @@ class FakeSendChannel:
     def __init__(self, sent: list[str]) -> None:
         self.sent = sent
 
-    async def send(self, *, content: str) -> None:
+    async def send(self, content: str) -> None:
         self.sent.append(content)
 
 
 class FakeAuditEntry:
-    def __init__(self, *, target_id: int, user: FakeUser, reason: str) -> None:
+    def __init__(self, target_id: int, user: FakeUser, reason: str) -> None:
         self.target = SimpleNamespace(id=target_id)
         self.changes = SimpleNamespace(after=SimpleNamespace(communication_disabled_until=True))
         self.user = user
@@ -206,12 +201,11 @@ class FakeAuditEntry:
 
 
 class FakeGeneratedResponse:
-    def __init__(self, *, output_text: str) -> None:
+    def __init__(self, output_text: str) -> None:
         self.output_text = output_text
 
 
 def _thread_output(
-    *,
     text: str = "hello",
     image_urls: list[str] | None = None,
     video_paths: list[Path] | None = None,
@@ -306,7 +300,7 @@ async def test_video_deliver_and_download_branches(
 
 
 class _RaiseDownloader:
-    def download(self, *, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
+    def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
         raise RuntimeError("download failed")
 
 
@@ -415,7 +409,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     after = member
     handled: list[SelfTimeoutCall] = []
 
-    async def record_self_timeout(*, member: SimpleNamespace, until: datetime) -> None:
+    async def record_self_timeout(member: SimpleNamespace, until: datetime) -> None:
         handled.append({"member": member, "until": until})
 
     monkeypatch.setattr(cog, "_handle_self_timeout", record_self_timeout)
@@ -451,7 +445,7 @@ async def _async_none() -> None:
 async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPatch) -> None:
     scheduled: list[FakeDiscordMessage] = []
 
-    def record_scheduled(*, message: FakeDiscordMessage) -> None:
+    def record_scheduled(message: FakeDiscordMessage) -> None:
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
@@ -492,7 +486,7 @@ async def fake_get_balance(user_id: int) -> int:
     return 150
 
 
-async def fake_get_loan_view(*, user_id: int) -> None:
+async def fake_get_loan_view(user_id: int) -> None:
     return None
 
 
@@ -528,11 +522,11 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
 
-async def fake_checkin(*, user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
+async def fake_checkin(user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
     return database.CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
 
 
-async def fake_buy_vip(*, user_id: int, name: str, avatar_url: str) -> database.VipPurchaseResult:
+async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> database.VipPurchaseResult:
     return database.VipPurchaseResult(new_balance=500_000, cost=database.VIP_PURCHASE_COST)
 
 
@@ -668,7 +662,7 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     calls: list[SimpleNamespace] = []
 
-    async def record_cleanup(*, bot: SimpleNamespace) -> None:
+    async def record_cleanup(bot: SimpleNamespace) -> None:
         calls.append(bot)
 
     monkeypatch.setattr(games, "delete_tracked_game_messages", record_cleanup)

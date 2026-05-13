@@ -55,15 +55,14 @@ def blackjack_early_finish_note(hand: BlackjackHand) -> str | None:
 
 
 async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
-    *,
     player_id: int,
     player_account_name: str,
-    player_avatar_url: str = "",
     dealer_id: int,
     dealer_name: str,
-    dealer_avatar_url: str = "",
     bet: int,
     delta: int,
+    player_avatar_url: str = "",
+    dealer_avatar_url: str = "",
 ) -> WagerSettlement:
     """Applies player net delta and mirrors the result into the house ledger.
 
@@ -112,13 +111,12 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
 
 
 async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
-    *,
     hand: BlackjackHand,
     player_id: int,
     player_account_name: str,
-    player_avatar_url: str = "",
     dealer_id: int,
     dealer_name: str,
+    player_avatar_url: str = "",
     dealer_avatar_url: str = "",
 ) -> BlackjackSettlement:
     """Settles player payout and mirrored house ledger for one finished hand.
@@ -160,14 +158,13 @@ async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both play
 
 
 async def settle_dragon_gate_player(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
-    *,
     player_id: int,
     player_account_name: str,
-    player_avatar_url: str = "",
     dealer_id: int,
     dealer_name: str,
-    dealer_avatar_url: str = "",
     delta: int,
+    player_avatar_url: str = "",
+    dealer_avatar_url: str = "",
 ) -> WagerSettlement:
     """Settles one player's cumulative 射龍門 table delta.
 

@@ -80,7 +80,6 @@ class _FakeFollowup:
     async def send(
         self,
         content: str | None = None,
-        *,
         embed: Embed | None = None,
         view: MapleDropSearchView | None = None,
         ephemeral: bool | None = None,

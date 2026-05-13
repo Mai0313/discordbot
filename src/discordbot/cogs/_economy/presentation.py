@@ -3,7 +3,7 @@
 CURRENCY_NAME = "虛擬歡樂豆"
 
 
-def currency_text(*, amount: int, signed: bool = False) -> str:
+def currency_text(amount: int, signed: bool = False) -> str:
     """Formats an economy amount with the shared currency name.
 
     Args:
@@ -17,7 +17,7 @@ def currency_text(*, amount: int, signed: bool = False) -> str:
     return f"{number} {CURRENCY_NAME}"
 
 
-def amount_code(*, amount: int, signed: bool = False) -> str:
+def amount_code(amount: int, signed: bool = False) -> str:
     """Formats a numeric amount as inline-code text.
 
     Args:
@@ -31,6 +31,6 @@ def amount_code(*, amount: int, signed: bool = False) -> str:
     return f"`{number}`"
 
 
-def bold_currency(*, amount: int, signed: bool = False) -> str:
+def bold_currency(amount: int, signed: bool = False) -> str:
     """Formats a currency amount with bold Markdown emphasis."""
     return f"**{currency_text(amount=amount, signed=signed)}**"

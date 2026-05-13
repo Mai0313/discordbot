@@ -41,27 +41,27 @@ _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
 
 
-def _set_optional_thumbnail(*, embed: Embed, avatar_url: str) -> None:
+def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
     """Sets an embed thumbnail when an avatar URL is available."""
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
 
 
-def _rank_line(*, position: int, name: str, balance: int) -> str:
+def _rank_line(position: int, name: str, balance: int) -> str:
     """Formats one leaderboard row."""
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     rank = medals.get(position, f"`#{position}`")
     return f"{rank} **{name}**  {amount_code(amount=balance)} {CURRENCY_NAME}"
 
 
-def _loss_rank_line(*, position: int, name: str, loss: int) -> str:
+def _loss_rank_line(position: int, name: str, loss: int) -> str:
     """Formats one loss-leaderboard row."""
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     rank = medals.get(position, f"`#{position}`")
     return f"{rank} **{name}**  輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
 
 
-async def _send_expiring_followup(*, interaction: Interaction, embed: Embed) -> None:
+async def _send_expiring_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
     message = await interaction.followup.send(embed=embed, wait=True)
     schedule_game_message_delete(message=message)

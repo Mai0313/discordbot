@@ -702,7 +702,7 @@ class ThreadsDownloader(BaseModel):
             return f"https://www.threads.com/@{username}/post/{code}"
         return ""
 
-    def _build_output(self, post: Post, url: str, *, download: bool) -> ThreadsOutput:
+    def _build_output(self, post: Post, url: str, download: bool) -> ThreadsOutput:
         """Builds a ThreadsOutput object from a Post object."""
         post_code = post.code or "unknown"
         image_urls: list[str] = []

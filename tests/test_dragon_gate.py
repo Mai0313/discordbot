@@ -57,7 +57,7 @@ class ResponseStub:
         """Records an ephemeral or public interaction message."""
         self.sent.append(kwargs)
 
-    async def send_modal(self, *, modal: object) -> None:
+    async def send_modal(self, modal: object) -> None:
         """Records a modal launch."""
         self.modals.append(modal)
 
@@ -77,7 +77,7 @@ class FollowupStub:
 class InteractionStub:
     """Minimal interaction stub for view callbacks."""
 
-    def __init__(self, *, user_id: int = 1, message: MessageStub | None = None) -> None:
+    def __init__(self, user_id: int = 1, message: MessageStub | None = None) -> None:
         self.user = SimpleNamespace(
             id=user_id,
             name=f"user{user_id}",
@@ -108,7 +108,7 @@ class DealerStub:
 class RiggedRandom(Random):
     """Random subclass that returns a fixed rank/suit sequence."""
 
-    def __init__(self, *, choices: Sequence[str]) -> None:
+    def __init__(self, choices: Sequence[str]) -> None:
         super().__init__(x=0)
         self._scripted_choices: Iterator[str] = iter(choices)
 
@@ -275,14 +275,14 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start() -> None:
     message = MessageStub()
 
     async def prepare_participant(
-        *, interaction: InteractionStub, ante: int
+        interaction: InteractionStub, ante: int
     ) -> GameParticipant | None:
         assert ante == 100
         assert interaction.user.id == 2
         return bob
 
     async def refresh_participants(
-        *, participants: list[GameParticipant], ante: int
+        participants: list[GameParticipant], ante: int
     ) -> tuple[list[GameParticipant], list[str]]:
         assert ante == 100
         return participants, []
@@ -337,7 +337,7 @@ async def test_dragon_gate_view_pair_choice_bet_and_finalize(
             delta=delta, payout=max(delta, 0), new_balance=1_000 + delta, house_balance=-delta
         )
 
-    def record_delete(*, message: MessageStub) -> None:
+    def record_delete(message: MessageStub) -> None:
         deleted.append(message)
 
     monkeypatch.setattr(
@@ -470,9 +470,7 @@ async def test_dragon_gate_view_timeout_settles_remaining_pot(
         value=fake_settle_dragon_gate_player,
     )
     monkeypatch.setattr(
-        target=dragon_gate_views,
-        name="schedule_game_message_delete",
-        value=lambda *, message: None,
+        target=dragon_gate_views, name="schedule_game_message_delete", value=lambda message: None
     )
 
     message = MessageStub()

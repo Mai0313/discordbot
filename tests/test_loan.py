@@ -31,12 +31,12 @@ async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     await engine.dispose()
 
 
-def _user_with_age(*, days_old: int) -> SimpleNamespace:
+def _user_with_age(days_old: int) -> SimpleNamespace:
     """Returns a minimal stand-in for a Discord user with a known creation date."""
     return SimpleNamespace(created_at=datetime.now(tz=UTC) - timedelta(days=days_old))
 
 
-async def _list_transactions(*, user_id: int) -> list[tuple[str, int, int]]:
+async def _list_transactions(user_id: int) -> list[tuple[str, int, int]]:
     """Returns ``(kind, delta, debt_after)`` rows for a user, oldest first."""
     async with database.open_session() as session:
         result = await session.execute(
@@ -51,7 +51,7 @@ async def _list_transactions(*, user_id: int) -> list[tuple[str, int, int]]:
         return [(row[0], row[1], row[2]) for row in result.all()]
 
 
-async def _backdate_loan_opened_at(*, user_id: int, days_ago: int) -> None:
+async def _backdate_loan_opened_at(user_id: int, days_ago: int) -> None:
     """Test helper: simulates time passing by pushing loan_opened_at back."""
     past = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=days_ago)
     async with database.open_session() as session:

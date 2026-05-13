@@ -67,13 +67,12 @@ class _ResponseStub:
 class _InteractionStub:
     """Minimal button interaction stub."""
 
-    def __init__(self, *, message: _MessageStub) -> None:
+    def __init__(self, message: _MessageStub) -> None:
         self.message = message
         self.response = _ResponseStub()
 
 
 def _participant(
-    *,
     user_id: int = 1,
     account_name: str = "alice",
     display_name: str = "Alice",
@@ -91,7 +90,7 @@ def _participant(
     )
 
 
-def _round_from_hand(*, hand: BlackjackHand, participant: GameParticipant) -> BlackjackRound:
+def _round_from_hand(hand: BlackjackHand, participant: GameParticipant) -> BlackjackRound:
     """Adapts a single-player hand into the multiplayer round shape."""
     round_state = BlackjackRound.from_participants(rng=hand.rng, participants=[participant])
     round_state.players[0].cards = list(hand.player)
@@ -117,7 +116,7 @@ async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     await engine.dispose()
 
 
-async def _stored_avatar_url(*, user_id: int) -> str:
+async def _stored_avatar_url(user_id: int) -> str:
     """Reads the cached avatar URL for one account."""
     async with database.open_session() as session:
         result = await session.execute(
@@ -478,7 +477,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     """Concurrent finalization attempts must not pay out one Blackjack hand twice."""
     cleanup_messages: list[object] = []
 
-    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
@@ -518,7 +517,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     """A player who walks away is treated as standing and the wager resolves."""
     cleanup_messages: list[object] = []
 
-    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
@@ -561,7 +560,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     settlement_started = asyncio.Event()
     continue_settlement = asyncio.Event()
 
-    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
         cleanup_messages.append(message)
 
     async def delayed_settle_blackjack_round(**_kwargs: object) -> BlackjackSettlement:

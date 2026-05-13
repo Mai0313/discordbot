@@ -9,7 +9,7 @@ from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsDownlo
 def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownloader:
     """Provides a ThreadsDownloader that fakes media downloads."""
 
-    def fake_download_media(self: ThreadsDownloader, *, url: str, filename: str) -> Path:
+    def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
         assert url, "download url should not be empty"
         filepath = Path(self.output_folder) / filename
         filepath.write_bytes(data=b"fake media")

@@ -95,7 +95,7 @@ def _add_acquisition_fields(
 # ── Monster ─────────────────────────────────────────────────────────
 
 
-def create_monster_embed(monster: Monster, *, translate: TranslateFn = _identity) -> Embed:
+def create_monster_embed(monster: Monster, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for a monster.
 
     Args:
@@ -224,7 +224,7 @@ def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
         embed.add_field(name="\U0001f3f7\ufe0f 標籤", value=" | ".join(tags), inline=False)
 
 
-def create_equipment_embed(equip: Equipment, *, translate: TranslateFn = _identity) -> Embed:
+def create_equipment_embed(equip: Equipment, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for an equipment item.
 
     Args:
@@ -286,7 +286,7 @@ _STAT_LABELS = {
 }
 
 
-def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -> Embed:
+def create_scroll_embed(scroll: Scroll, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for a scroll.
 
     Args:
@@ -324,7 +324,7 @@ def create_scroll_embed(scroll: Scroll, *, translate: TranslateFn = _identity) -
 # ── NPC ─────────────────────────────────────────────────────────────
 
 
-def create_npc_embed(npc: NPC, *, translate: TranslateFn = _identity) -> Embed:
+def create_npc_embed(npc: NPC, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for an NPC.
 
     Args:
@@ -402,7 +402,7 @@ def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
     return lines
 
 
-def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> Embed:
+def create_quest_embed(quest: Quest, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for a quest.
 
     Args:
@@ -439,7 +439,7 @@ def create_quest_embed(quest: Quest, *, translate: TranslateFn = _identity) -> E
 # ── Map ─────────────────────────────────────────────────────────────
 
 
-def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity) -> Embed:
+def create_map_embed(map_entry: MapEntry, translate: TranslateFn = _identity) -> Embed:
     """Creates an embed for a map.
 
     Args:
@@ -480,7 +480,7 @@ def create_map_embed(map_entry: MapEntry, *, translate: TranslateFn = _identity)
 
 
 def create_item_source_embed(
-    item_name: str, monsters: Iterable[Monster], *, translate: TranslateFn = _identity
+    item_name: str, monsters: Iterable[Monster], translate: TranslateFn = _identity
 ) -> Embed:
     """Creates an embed showing which monsters drop an item.
 

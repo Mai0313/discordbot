@@ -31,7 +31,7 @@ class FakeReference:
 
 
 class FakeReaction:
-    def __init__(self, *, me: bool, emoji: str) -> None:
+    def __init__(self, me: bool, emoji: str) -> None:
         self.me = me
         self.emoji = emoji
 
@@ -58,7 +58,7 @@ class FakeReply:
         self.file: File | None = None
         self.embed: Embed | None = None
 
-    async def edit(self, *, content: str, view: View | None = None) -> None:
+    async def edit(self, content: str, view: View | None = None) -> None:
         """Records the replacement content and view passed to edit."""
         self.content = content
         self.view = view
@@ -67,7 +67,7 @@ class FakeReply:
 class FakeAuthor:
     """Minimal stand-in for ``Message.author`` used by the streaming helper."""
 
-    def __init__(self, *, bot: bool = False, user_id: int = 12345) -> None:
+    def __init__(self, bot: bool = False, user_id: int = 12345) -> None:
         """Initializes the fake author with stable id and name fields."""
         self.id = user_id
         self.name = "tester"
@@ -80,7 +80,7 @@ class FakeAuthor:
 class FakeMessage:
     """Provides a fake message object that records created replies."""
 
-    def __init__(self, *, content: str = "", author: FakeAuthor | None = None) -> None:
+    def __init__(self, content: str = "", author: FakeAuthor | None = None) -> None:
         """Initializes the fake message with no recorded replies."""
         self.replies: list[FakeReply] = []
         self.author = author or FakeAuthor()
@@ -98,14 +98,13 @@ class FakeMessage:
         self.reactions: list[FakeReaction] = []
 
     async def _history(
-        self, *, limit: int, before: FakeMessage, oldest_first: bool
+        self, limit: int, before: FakeMessage, oldest_first: bool
     ) -> AsyncIterator[FakeMessage]:
         if False:
             yield self
 
     async def reply(
         self,
-        *,
         content: str | None,
         view: View | None = None,
         file: File | None = None,
@@ -120,10 +119,10 @@ class FakeMessage:
         self.replies.append(reply)
         return reply
 
-    async def add_reaction(self, *, emoji: str) -> None:
+    async def add_reaction(self, emoji: str) -> None:
         self.added_reactions.append(emoji)
 
-    async def remove_reaction(self, *, emoji: str, member: FakeAuthor) -> None:
+    async def remove_reaction(self, emoji: str, member: FakeAuthor) -> None:
         self.removed_reactions.append((emoji, member))
 
     def is_system(self) -> bool:
@@ -133,7 +132,6 @@ class FakeMessage:
 class FakeAttachment:
     def __init__(
         self,
-        *,
         filename: str = "file.txt",
         content_type: str | None = "text/plain",
         payload: bytes = b"hello",
@@ -157,7 +155,6 @@ class FakeResponses:
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
         self,
-        *,
         model: str,
         instructions: str,
         input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
@@ -173,7 +170,6 @@ class FakeResponses:
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
-        *,
         model: str,
         instructions: str,
         input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
@@ -194,7 +190,6 @@ class FakeImages:
 
     async def generate(  # noqa: PLR0913 -- mirrors Images API generate signature
         self,
-        *,
         prompt: str,
         model: str,
         n: int,
@@ -208,7 +203,6 @@ class FakeImages:
 
     async def edit(  # noqa: PLR0913 -- mirrors Images API edit signature
         self,
-        *,
         image: list[bytes],
         prompt: str,
         model: str,
@@ -227,16 +221,16 @@ class FakeVideos:
         self.retrieve_calls = 0
 
     async def create(
-        self, *, model: str, prompt: str, extra_headers: dict[str, str]
+        self, model: str, prompt: str, extra_headers: dict[str, str]
     ) -> SimpleNamespace:
         return SimpleNamespace(id="video-1", status="processing")
 
-    async def retrieve(self, *, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
+    async def retrieve(self, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
         self.retrieve_calls += 1
         return SimpleNamespace(id="video-1", status="completed")
 
     async def download_content(
-        self, *, video_id: str, extra_headers: dict[str, str]
+        self, video_id: str, extra_headers: dict[str, str]
     ) -> SimpleNamespace:
         return SimpleNamespace(content=b"mp4")
 
@@ -313,7 +307,7 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
 async def test_regenerate_view_restricts_user_and_dispatches_original_message() -> None:
     called: list[FakeMessage] = []
 
-    async def fake_on_message(*, message: FakeMessage) -> None:
+    async def fake_on_message(message: FakeMessage) -> None:
         called.append(message)
 
     async def fake_send_message(**kwargs: Unpack[InteractionReplyPayload]) -> None:
@@ -447,7 +441,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     assert isinstance(attachment_processed["content"], list)
 
     async def fake_history(
-        *, limit: int, before: FakeMessage, oldest_first: bool
+        limit: int, before: FakeMessage, oldest_first: bool
     ) -> AsyncIterator[FakeMessage]:
         yield user_msg
         yield bot_msg
@@ -490,7 +484,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert message.replies[-1].content.startswith("<@1> caption")
 
     async def fake_streaming(
-        *, responses: SimpleNamespace, message: FakeMessage, view: View | None = None
+        responses: SimpleNamespace, message: FakeMessage, view: View | None = None
     ) -> str:
         streamed.append(message)
         return "done"
@@ -519,26 +513,23 @@ async def test_gen_reply_on_message_dispatches_routes(
     cog = _cog()
     calls: list[str] = []
 
-    async def fake_route(*, message: FakeMessage) -> str:
+    async def fake_route(message: FakeMessage) -> str:
         return route
 
-    async def fake_reaction(
-        *, message: FakeMessage, emoji: str, previous: str | None = None
-    ) -> None:
+    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> None:
         calls.append(f"reaction:{emoji}")
 
     async def fake_image_handler(
-        *, message: FakeMessage, user_prompt: str, view: View | None = None
+        message: FakeMessage, user_prompt: str, view: View | None = None
     ) -> None:
         calls.append("_handle_image_reply")
 
     async def fake_video_handler(
-        *, message: FakeMessage, user_prompt: str, view: View | None = None
+        message: FakeMessage, user_prompt: str, view: View | None = None
     ) -> None:
         calls.append("_handle_video_generation")
 
     async def fake_message_handler(
-        *,
         message: FakeMessage,
         system_prompt: str,
         context_prompt: str,
@@ -576,7 +567,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=dm_empty)
     assert dm_empty.replies[0].content == "?"
 
-    async def boom(*, message: FakeMessage) -> str:
+    async def boom(message: FakeMessage) -> str:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cog, "_route_message", boom)

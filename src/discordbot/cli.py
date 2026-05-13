@@ -112,7 +112,7 @@ class DiscordBot(commands.Bot):
         await self.wait_until_ready()
 
     @staticmethod
-    async def _award_base_message_points(*, message: Message) -> None:
+    async def _award_base_message_points(message: Message) -> None:
         """Awards the global per-message base reward."""
         try:
             await credit_with_repayment(

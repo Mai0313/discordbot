@@ -25,7 +25,7 @@ class _ResponseStub:
 class _DeletableMessageStub:
     """Minimal message stub that records deletion."""
 
-    def __init__(self, *, message_id: int = 123, channel_id: int = 456) -> None:
+    def __init__(self, message_id: int = 123, channel_id: int = 456) -> None:
         self.id = message_id
         self.channel = _ChannelStub(channel_id=channel_id)
         self.delete_calls = 0
@@ -50,16 +50,14 @@ class _AlreadyDeletedMessageStub:
 class _ChannelStub:
     """Minimal channel shape for persistent cleanup identity."""
 
-    def __init__(self, *, channel_id: int) -> None:
+    def __init__(self, channel_id: int) -> None:
         self.id = channel_id
 
 
 class _FetchedMessageStub:
     """Fetched message returned by a fake channel for startup cleanup."""
 
-    def __init__(
-        self, *, channel_id: int, message_id: int, deleted: list[tuple[int, int]]
-    ) -> None:
+    def __init__(self, channel_id: int, message_id: int, deleted: list[tuple[int, int]]) -> None:
         self.channel_id = channel_id
         self.message_id = message_id
         self.deleted = deleted
@@ -72,7 +70,7 @@ class _FetchedMessageStub:
 class _FetchMessageChannelStub:
     """Minimal message channel returned by the fake bot."""
 
-    def __init__(self, *, channel_id: int, deleted: list[tuple[int, int]]) -> None:
+    def __init__(self, channel_id: int, deleted: list[tuple[int, int]]) -> None:
         self.channel_id = channel_id
         self.deleted = deleted
 
@@ -86,7 +84,7 @@ class _FetchMessageChannelStub:
 class _BotStub:
     """Minimal bot shape for startup cleanup."""
 
-    def __init__(self, *, cached_channel: object | None = None) -> None:
+    def __init__(self, cached_channel: object | None = None) -> None:
         self.deleted: list[tuple[int, int]] = []
         self.cached_channel = cached_channel
         self.fetch_calls: list[int] = []
@@ -121,7 +119,7 @@ class _FollowupStub:
         self.sent_wait: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
 
-    async def send(self, *, embed: nextcord.Embed, wait: bool) -> object:
+    async def send(self, embed: nextcord.Embed, wait: bool) -> object:
         """Records the embed send and returns the message object."""
         self.sent_embed = embed
         self.sent_wait = wait
@@ -219,7 +217,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     """Game-related economy embeds must retrieve their message before cleanup."""
     scheduled_messages: list[object] = []
 
-    def fake_schedule_game_message_delete(*, message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
         scheduled_messages.append(message)
 
     monkeypatch.setattr(
@@ -252,7 +250,7 @@ async def test_schedule_game_message_delete_uses_default_ttl(
     """Scheduling uses the shared three-minute TTL by default."""
     scheduled_delay: float | None = None
 
-    async def fake_delete_game_message_after(*, message: object, delay: float) -> None:
+    async def fake_delete_game_message_after(message: object, delay: float) -> None:
         nonlocal scheduled_delay
         scheduled_delay = delay
 

@@ -34,7 +34,7 @@ CATEGORIES: dict[str, tuple[str, str]] = {
 }
 
 
-def fetch_html(url: str, *, max_retries: int = 3) -> str:
+def fetch_html(url: str, max_retries: int = 3) -> str:
     """Fetches HTML content from a URL with retry logic.
 
     Args:

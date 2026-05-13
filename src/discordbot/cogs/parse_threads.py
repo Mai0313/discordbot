@@ -56,7 +56,7 @@ class ThreadsCogs(commands.Cog):
         return Color.from_rgb(r=shade, g=shade, b=shade)
 
     @staticmethod
-    def _build_post_embed(output: ThreadsOutput, *, color: Color) -> Embed:
+    def _build_post_embed(output: ThreadsOutput, color: Color) -> Embed:
         """Builds an embed for a single Threads post."""
         embed = Embed(
             description=output.text, url=output.url, color=color, timestamp=output.taken_at

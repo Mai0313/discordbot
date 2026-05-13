@@ -72,12 +72,12 @@ def _pending_db_engine() -> Engine:
     return _pending_engine
 
 
-def _ensure_pending_table(*, conn: Connection) -> None:
+def _ensure_pending_table(conn: Connection) -> None:
     """Ensures the cleanup table exists before a read or write."""
     conn.execute(statement=text(text=_CREATE_PENDING_GAME_MESSAGES_SQL))
 
 
-def _message_record(*, message: Message) -> PendingGameMessage | None:
+def _message_record(message: Message) -> PendingGameMessage | None:
     """Extracts the persistent cleanup identity from a Discord message."""
     channel = getattr(message, "channel", None)
     channel_id = getattr(channel, "id", None)
@@ -87,7 +87,7 @@ def _message_record(*, message: Message) -> PendingGameMessage | None:
     return PendingGameMessage(channel_id=channel_id, message_id=message_id)
 
 
-def _track_game_message_sync(*, record: PendingGameMessage) -> None:
+def _track_game_message_sync(record: PendingGameMessage) -> None:
     """Persists a pending cleanup record."""
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
@@ -97,7 +97,7 @@ def _track_game_message_sync(*, record: PendingGameMessage) -> None:
         )
 
 
-def _forget_game_message_sync(*, message_id: int) -> None:
+def _forget_game_message_sync(message_id: int) -> None:
     """Removes a pending cleanup record."""
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
@@ -115,7 +115,7 @@ def _list_pending_game_messages_sync() -> list[PendingGameMessage]:
         return [PendingGameMessage(channel_id=int(row[0]), message_id=int(row[1])) for row in rows]
 
 
-async def track_game_message(*, message: Message) -> PendingGameMessage | None:
+async def track_game_message(message: Message) -> PendingGameMessage | None:
     """Records a game message so a restart can delete it later.
 
     Args:
@@ -135,7 +135,7 @@ async def track_game_message(*, message: Message) -> PendingGameMessage | None:
     return record
 
 
-async def forget_game_message(*, message_id: int) -> None:
+async def forget_game_message(message_id: int) -> None:
     """Deletes a game message cleanup record."""
     try:
         await asyncio.to_thread(_forget_game_message_sync, message_id=message_id)
@@ -152,7 +152,7 @@ async def list_pending_game_messages() -> list[PendingGameMessage]:
         return []
 
 
-async def _fetch_tracked_message(*, bot: commands.Bot, record: PendingGameMessage) -> Message:
+async def _fetch_tracked_message(bot: commands.Bot, record: PendingGameMessage) -> Message:
     """Fetches a tracked message from a concrete Discord channel."""
     channel = bot.get_channel(record.channel_id)
     if channel is None or not hasattr(channel, "fetch_message"):
@@ -163,7 +163,7 @@ async def _fetch_tracked_message(*, bot: commands.Bot, record: PendingGameMessag
     return await channel.fetch_message(record.message_id)
 
 
-async def delete_tracked_game_messages(*, bot: commands.Bot) -> None:
+async def delete_tracked_game_messages(bot: commands.Bot) -> None:
     """Deletes persisted game responses left by an earlier bot process."""
     records = await list_pending_game_messages()
     deleted_count = 0
@@ -201,7 +201,7 @@ async def delete_tracked_game_messages(*, bot: commands.Bot) -> None:
 
 
 async def delete_game_message_after(
-    *, message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
+    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
 ) -> None:
     """Deletes a game response after a delay.
 
@@ -223,7 +223,7 @@ async def delete_game_message_after(
 
 
 def schedule_game_message_delete(
-    *, message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
+    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
 ) -> None:
     """Schedules delayed deletion for a casino game response."""
     asyncio.create_task(  # noqa: RUF006 -- fire-and-forget cleanup cannot block commands.
