@@ -557,6 +557,24 @@ async def fake_game_balance(user_id: int) -> int:
     return 100
 
 
+async def _wealthy_game_balance(user_id: int) -> int:
+    return 1_000_000
+
+
+async def fake_dragon_gate_jackpot() -> int:
+    return 100_000
+
+
+async def fake_apply_jackpot_settlement(
+    player_id: int,
+    player_account_name: str,
+    player_delta: int,
+    game_id: str,
+    player_avatar_url: str = "",
+) -> tuple[int, int]:
+    return (100_000 + player_delta, 100_000 - player_delta)
+
+
 class FakeDealer:
     async def taunt_bet(
         self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: str
@@ -591,10 +609,12 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
 
+    monkeypatch.setattr(games, "fetch_dragon_gate_jackpot", fake_dragon_gate_jackpot)
+    monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
     dragon_gate_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction, ante=10)
-    assert dragon_gate_interaction.followup.sent[0]["wait"] is True
-    assert isinstance(dragon_gate_interaction.followup.sent[0]["view"], DragonGateLobbyView)
+    await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
+    assert dragon_gate_interaction.followup.sent[-1]["wait"] is True
+    assert isinstance(dragon_gate_interaction.followup.sent[-1]["view"], DragonGateLobbyView)
 
 
 async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -657,14 +677,15 @@ async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyP
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    monkeypatch.setattr(games, "get_balance", fake_game_balance)
+    monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
+    monkeypatch.setattr(games, "fetch_dragon_gate_jackpot", fake_dragon_gate_jackpot)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.dragon_gate.callback(cog, owner_interaction, ante=10)
-    lobby_view = owner_interaction.followup.sent[0]["view"]
+    await GamesCogs.dragon_gate.callback(cog, owner_interaction)
+    lobby_view = owner_interaction.followup.sent[-1]["view"]
     assert isinstance(lobby_view, DragonGateLobbyView)
 
     start_button = next(

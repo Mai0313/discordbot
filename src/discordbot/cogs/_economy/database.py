@@ -230,6 +230,45 @@ class PointTransaction(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class JackpotPool(Base):
+    """Per-game cumulative jackpot shared across every table of that game.
+
+    One row per game (keyed by ``game_id``). Wager flows update
+    ``pool_balance`` atomically while ``total_contributed`` /
+    ``total_claimed`` accumulate gross in/out flows so the seeded
+    on-the-house amount stays distinguishable from organic player
+    contributions.
+
+    Attributes:
+        game_id: Stable game identifier (e.g. ``"dragon_gate"``); primary key.
+        pool_balance: Current spendable jackpot for the game.
+        total_contributed: Lifetime gross amount that flowed into the pool
+            (positive deltas from player losses + ante).
+        total_claimed: Lifetime gross amount paid out from the pool
+            (absolute value of negative deltas from player wins).
+        seeded_amount: One-time on-the-house seed; bookkeeping only,
+            never decremented.
+        updated_at: Taiwan-local timestamp of the last write.
+    """
+
+    __tablename__ = "jackpot_pool"
+
+    game_id: Mapped[str] = mapped_column(String(length=32), primary_key=True)
+    pool_balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_contributed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_claimed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    seeded_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
+# Initial on-the-house seeds for each registered jackpot pool. The seed is
+# bookkeeping only — the bot's user_account row is never decremented to fund
+# it, so /house P&L stays unaffected by the donation.
+_JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
+
+
 # Track which engine the schema has already been bootstrapped on. Storing
 # the engine identity (not just a bool) means swapping `_engine` (e.g. tests
 # pointing it at a temp file) automatically forces another schema check;
@@ -290,6 +329,19 @@ async def _ensure_schema() -> None:
         if "loan_last_accrual_at" in existing_columns:
             await conn.execute(
                 statement=text(text="ALTER TABLE user_account DROP COLUMN loan_last_accrual_at")
+            )
+        for seed_game_id, seed_amount in _JACKPOT_SEEDS:
+            await conn.execute(
+                statement=insert(JackpotPool)
+                .values(
+                    game_id=seed_game_id,
+                    pool_balance=seed_amount,
+                    total_contributed=0,
+                    total_claimed=0,
+                    seeded_amount=seed_amount,
+                    updated_at=_database_now(),
+                )
+                .on_conflict_do_nothing(index_elements=["game_id"])
             )
     _schema_ready_for = _engine
 
@@ -1118,6 +1170,147 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
             )
         await session.commit()
         return player_balance, dealer_balance
+
+
+async def get_jackpot_pool(game_id: str) -> int:
+    """Returns the current ``pool_balance`` for a game's shared jackpot.
+
+    Reading the seeded row is the canonical way to surface the current
+    pool to a view (lobby start, every active-table refresh). Returns ``0``
+    when the row hasn't been seeded yet so a freshly-introduced game can
+    short-circuit cleanly.
+
+    Args:
+        game_id: Game identifier (e.g. ``"dragon_gate"``).
+
+    Returns:
+        The current pool balance in points.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+        )
+        return result.scalar_one_or_none() or 0
+
+
+async def _apply_jackpot_delta_in_session(
+    session: AsyncSession, game_id: str, delta: int, now: datetime
+) -> int:
+    """Applies a signed delta to a game's jackpot pool inside the caller's session.
+
+    Positive deltas accumulate ``total_contributed`` (player losses /
+    antes flowing into the pool); negative deltas accumulate
+    ``total_claimed`` with the absolute value (winning payouts flowing
+    out). The pool is allowed to dip below zero in edge cases (e.g. a
+    win larger than the remaining balance), mirroring the dealer ledger's
+    no-clamp behaviour.
+
+    Args:
+        session: Active SQLAlchemy session bound to ``_engine``.
+        game_id: Game identifier (jackpot row primary key).
+        delta: Signed point adjustment to apply to ``pool_balance``.
+        now: ``_database_now()`` value pinned for this transaction.
+
+    Returns:
+        The pool balance after the write.
+    """
+    contributed_add = max(delta, 0)
+    claimed_add = max(-delta, 0)
+    stmt = (
+        insert(JackpotPool)
+        .values(
+            game_id=game_id,
+            pool_balance=delta,
+            total_contributed=contributed_add,
+            total_claimed=claimed_add,
+            seeded_amount=0,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["game_id"],
+            set_={
+                "pool_balance": JackpotPool.pool_balance + delta,
+                "total_contributed": JackpotPool.total_contributed + contributed_add,
+                "total_claimed": JackpotPool.total_claimed + claimed_add,
+                "updated_at": now,
+            },
+        )
+        .returning(JackpotPool.pool_balance)
+    )
+    result = await session.execute(statement=stmt)
+    return result.scalar_one()
+
+
+async def apply_jackpot_settlement(
+    player_id: int,
+    player_account_name: str,
+    player_delta: int,
+    game_id: str,
+    player_avatar_url: str = "",
+) -> tuple[int, int]:
+    """Atomic player-and-jackpot settlement for a single wager event.
+
+    Mirrors ``apply_round_settlement`` but routes the counter-party flow
+    into the shared jackpot pool rather than the dealer ledger. Positive
+    player deltas (wins) credit the player via the 50% auto-repayment
+    path and drain the pool by the same amount; negative deltas (losses)
+    debit the player without a zero clamp and feed the pool. Both writes
+    share one SQLite transaction so a crash between them cannot leave the
+    pool drifting from the player result.
+
+    Args:
+        player_id: Discord user ID for the player.
+        player_account_name: Account name to store on the player row.
+        player_delta: Signed net change for the player. Losses are written
+            as a negative delta and the absolute value flows into the pool.
+        game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
+        player_avatar_url: Last-seen Discord avatar URL for the player.
+
+    Returns:
+        A ``(player_balance_after, jackpot_balance_after)`` tuple.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        if player_delta > 0:
+            credit_result = await _credit_with_repayment_in_session(
+                session=session,
+                user_id=player_id,
+                name=player_account_name,
+                avatar_url=player_avatar_url,
+                amount=player_delta,
+                kind=TransactionKind.CASINO_PAYOUT,
+                note=None,
+                now=now,
+            )
+            player_balance = credit_result.new_balance
+        elif player_delta < 0:
+            player_balance = await _casino_debit_in_session(
+                session=session,
+                user_id=player_id,
+                name=player_account_name,
+                avatar_url=player_avatar_url,
+                delta=player_delta,
+                now=now,
+            )
+        else:
+            read_result = await session.execute(
+                statement=select(UserAccount.balance).where(UserAccount.user_id == player_id)
+            )
+            player_balance = read_result.scalar_one_or_none() or 0
+
+        if player_delta == 0:
+            pool_result = await session.execute(
+                statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+            )
+            jackpot_balance = pool_result.scalar_one_or_none() or 0
+        else:
+            jackpot_balance = await _apply_jackpot_delta_in_session(
+                session=session, game_id=game_id, delta=-player_delta, now=now
+            )
+        await session.commit()
+        return player_balance, jackpot_balance
 
 
 async def borrow(

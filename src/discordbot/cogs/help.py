@@ -71,9 +71,14 @@ _HELP_CONTENT = {
             "`/blackjack` opens a 21 lobby. Other players can join before the owner starts, "
             "single-player starts are still allowed, the table stake follows the owner's "
             "effective wager, and idle hands auto-stand after 180 seconds.\n"
-            "`/dragon_gate` opens an In-Between lobby with a shared pot. Everyone pays the "
-            "ante into the pot, the owner starts, players rotate through gate bets until "
-            "the pot is cleared, and pillar hits pay the table extra.\n"
+            "`/dragon_gate` opens an In-Between table over a **global jackpot pool** "
+            "shared across every table. The ante is fixed at 5,000 (into the pool), the "
+            "minimum bet is 10,000, the maximum bet is the entire pool, and every bet "
+            "settles into the player row and the pool the instant it lands. Players can "
+            "leave mid-table via the Leave button; if their running delta is positive at "
+            "leave / timeout, that surplus is refunded into the pool (逆贏不拿). The "
+            "table only ends when the pool is exhausted, all players have left, or no "
+            "one has interacted for 180 seconds.\n"
             "Final game messages are cleaned up after 3 minutes."
         ),
         "ping": "**Ping** — `/ping`\nCheck the bot's response latency.",
@@ -138,9 +143,12 @@ _HELP_CONTENT = {
             "單人也可以直接開始，房主超過餘額的 bet 會用實際餘額當 table stake，"
             "後續玩家預設跟這個金額，"
             "不操作 180 秒會自動 stand\n"
-            "`/dragon_gate` 會開一桌射龍門，所有玩家先繳底注進彩金池，只有房主能開始，"
-            "玩家依序看門柱、選擇下注，射進龍門就從彩金池拿錢，射偏賠 1 倍，"
-            "撞柱賠 2 倍，同點門柱要先猜大或猜小，第三張又同點賠 3 倍\n"
+            "`/dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
+            "入場費固定 5,000 點(進彩金池), 最低下注 10,000, 上限就是當下彩金池\n"
+            "每次下注後玩家餘額與彩金池同步即時結算, 不再等桌結束\n"
+            "玩家可隨時按「離桌」中途退出, 不影響其他玩家繼續玩\n"
+            "離桌或 180 秒無互動超時時, 若該玩家當下淨贏 > 0, 該部分會逆向退回彩金池(逆贏不拿)"
+            "整桌結束的條件是彩金池被刷光, 所有玩家都離桌, 或 180 秒無人互動\n"
             "final game message 會在 3 分鐘後清掉"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
@@ -206,8 +214,12 @@ _HELP_CONTENT = {
             "1人でも開始できます。owner の有効ベットが table stake になり、"
             "参加者はその金額を既定で賭けます。"
             "180秒操作がない場合は自動 stand。\n"
-            "`/dragon_gate` は共有potのインビトウィーン table を開きます。全員がanteをpotに入れ、"
-            "owner が開始し、順番にgate betを行い、pot が空になるまで続きます。\n"
+            "`/dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
+            "In-Between table を開きます。anteは固定 5,000 (pool へ)、最低 bet は 10,000、"
+            "上限は pool の全額、各 bet は player 残高と pool に即時反映されます。\n"
+            "「離桌」ボタンで途中退場可能で他のプレイヤーは継続。退場 / 180 秒の無操作で "
+            "running delta が正なら、その分は pool へ返戻されます (逆贏不拿)。"
+            "table は pool 枯渇 / 全員退場 / 180 秒の無操作で終了します。\n"
             "final game message は3分後に削除されます。"
         ),
         "ping": "**Ping** — `/ping`\nボットの応答遅延を確認します。",

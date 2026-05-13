@@ -113,17 +113,32 @@ class BlackjackPlayerResult(BaseModel):
 
 
 class DragonGatePlayerResult(BaseModel):
-    """Settlement result for one player at a 射龍門 table.
+    """Final outcome for one player after a 射龍門 table closes.
+
+    Each bet settles into the player row and the shared jackpot pool the
+    moment it's placed, so the table close-out has no per-player wager
+    settlement to apply; this model just captures the running totals and
+    whether "逆贏不拿" was triggered for the leaver.
 
     Attributes:
         participant: Player identity and ante metadata.
-        settlement: Database-backed result for the player's cumulative table delta.
+        delta: Running win/loss for the table (ante excluded; ante was
+            already pushed into the jackpot when the round started).
+        final_balance: Player balance after the last settlement event
+            touching this account.
+        withdrawn: True when the player left voluntarily before timeout
+            or pool exhaustion.
+        refunded_to_pool: Amount refunded into the jackpot under
+            "逆贏不拿" when the player left while ahead.
     """
 
     model_config = ConfigDict(frozen=True)
 
     participant: GameParticipant
-    settlement: WagerSettlement
+    delta: int
+    final_balance: int
+    withdrawn: bool
+    refunded_to_pool: int = 0
 
 
 __all__ = [

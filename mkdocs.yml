@@ -65,12 +65,12 @@ nav:
               - threads: Reference/discordbot/utils/threads.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
+      - agents_dev: Scripts/agents_dev.md
       - artale_data: Scripts/artale_data.md
       - gen_docs: Scripts/gen_docs.md
       - gpt: Scripts/gpt.md
       - image_dev: Scripts/image_dev.md
       - modify_balance: Scripts/modify_balance.md
-      - openai_agents: Scripts/openai_agents.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md

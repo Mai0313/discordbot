@@ -1,12 +1,16 @@
 """Pure rules for 射龍門 (In-Between / Acey Deucey).
 
-The round keeps the central pot in memory and records each player's cumulative
-net delta. Database writes happen only when the Discord table finalizes, so a
-bot restart discards an unfinished table instead of half-settling it.
+The pot is no longer round-local: a single jackpot row in
+``data/economy.db`` is shared across every table of this game, so this
+module limits itself to rotation / pillar / direction state and emits a
+signed ``delta`` per turn. The view layer applies the delta atomically
+against the player row and the jackpot pool, then passes the updated
+pool back so ``current_min_bet`` / ``current_max_bet`` reflect the
+post-settlement value.
 """
 
 from random import Random
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
@@ -19,6 +23,10 @@ DragonGateOutcome = Literal[
 
 RANKS: tuple[str, ...] = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 SUITS: tuple[str, ...] = ("♠", "♥", "♦", "♣")
+
+GAME_ID: Final[str] = "dragon_gate"
+ANTE: Final[int] = 5_000
+MIN_BET: Final[int] = 10_000
 
 
 class DragonGateError(ValueError):
@@ -43,6 +51,10 @@ class DragonGatePairChoiceUnavailableError(DragonGateError):
 
 class DragonGateBetRangeError(DragonGateError):
     """Raised when a bet is outside the current legal range."""
+
+
+class DragonGateParticipantUnknownError(DragonGateError):
+    """Raised when a withdraw or lookup targets a user not at the table."""
 
 
 def draw_card(rng: Random) -> Card:
@@ -106,50 +118,53 @@ class DragonGateTurnResult(BaseModel):
     bet: int
     outcome: DragonGateOutcome
     delta: int
-    pot_after: int
     direction: DragonGateDirection | None = None
 
 
 class DragonGateRound(BaseModel):
-    """Mutable 射龍門 table state with a central pot and rotating turns."""
+    """Mutable 射龍門 table state with rotating turns over a shared jackpot.
+
+    ``player_deltas`` is the **in-memory** running total of each player's
+    wins minus losses since they joined the table (ante excluded; ante is
+    already settled into the jackpot when the round starts). The view
+    layer reads this on withdraw / timeout to decide whether to apply the
+    "逆贏不拿" refund (clawing winnings back into the jackpot when a
+    player leaves while ahead).
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     rng: Random
     participants: list[GameParticipant]
-    ante: int
-    pot: int = 0
     current_player_index: int = 0
     turn_number: int = 0
     active_turn: DragonGateTurn | None = None
     last_result: DragonGateTurnResult | None = None
     player_deltas: dict[int, int] = Field(default_factory=dict)
+    withdrawn_user_ids: set[int] = Field(default_factory=set)
     finished: bool = False
 
     @classmethod
     def from_participants(
-        cls, rng: Random, participants: list[GameParticipant], ante: int
+        cls, rng: Random, participants: list[GameParticipant]
     ) -> "DragonGateRound":
         """Builds and starts a 射龍門 round from lobby participants."""
-        if ante <= 0:
-            raise ValueError("Ante must be positive")
         if not participants:
             raise ValueError("At least one participant is required")
-        round_state = cls(rng=rng, participants=participants, ante=ante)
-        round_state.pot = ante * len(participants)
-        round_state.player_deltas = {participant.user_id: -ante for participant in participants}
+        round_state = cls(rng=rng, participants=participants)
+        round_state.player_deltas = {participant.user_id: 0 for participant in participants}
         round_state._deal_next_turn()
         return round_state
 
-    def current_min_bet(self) -> int:
-        """Returns the minimum legal bet for the active turn."""
-        if self.pot <= 0:
+    def current_min_bet(self, jackpot: int) -> int:
+        """Returns the minimum legal bet given the live jackpot snapshot."""
+        if jackpot <= 0:
             return 0
-        return min(self.ante, self.pot)
+        return min(MIN_BET, jackpot)
 
-    def current_max_bet(self) -> int:
-        """Returns the maximum legal bet for the active turn."""
-        return max(self.pot, 0)
+    def current_max_bet(self, jackpot: int) -> int:
+        """Returns the maximum legal bet given the live jackpot snapshot."""
+        return max(jackpot, 0)
 
     def choose_pair_direction(self, user_id: int, direction: DragonGateDirection) -> None:
         """Stores the active player's high/low choice for a same-point gate."""
@@ -166,32 +181,40 @@ class DragonGateRound(BaseModel):
             and self.active_turn.direction is None
         )
 
-    def place_bet(self, user_id: int, amount: int) -> DragonGateTurnResult:
+    def place_bet(self, user_id: int, amount: int, jackpot: int) -> DragonGateTurnResult:
         """Resolves the active player's bet by drawing the third card.
+
+        The jackpot itself lives in the database and is not mutated here;
+        the caller passes the current snapshot so the legal bet range can
+        be enforced. The returned ``delta`` is the signed change applied
+        to the player's balance (and inverted into the jackpot) by the
+        caller; this method only updates rotation state.
 
         Args:
             user_id: Discord user ID that must match the active player.
-            amount: Bet amount, constrained to current min bet..pot.
+            amount: Bet amount, constrained to current min bet..jackpot.
+            jackpot: Live jackpot balance used to bound the legal bet
+                range; tracked outside this module.
 
         Returns:
             The resolved turn result.
 
         Raises:
-            DragonGateError: The table is finished, it is not this user's turn,
-                the pair direction is missing, or the bet is outside the legal range.
+            DragonGateError: The table is finished, it is not this user's
+                turn, the pair direction is missing, or the bet is outside
+                the legal range.
         """
         active_turn = self._require_active_turn(user_id=user_id)
         if self.needs_pair_choice():
             raise DragonGatePairChoiceRequiredError("Pair direction is required")
 
-        minimum = self.current_min_bet()
-        maximum = self.current_max_bet()
+        minimum = self.current_min_bet(jackpot=jackpot)
+        maximum = self.current_max_bet(jackpot=jackpot)
         if amount < minimum or amount > maximum:
             raise DragonGateBetRangeError("Bet outside legal range")
 
         third_card = draw_card(rng=self.rng)
         outcome, delta = self._resolve_turn(turn=active_turn, third_card=third_card, amount=amount)
-        self.pot -= delta
         self.player_deltas[active_turn.participant.user_id] += delta
         result = DragonGateTurnResult(
             turn_number=active_turn.turn_number,
@@ -201,22 +224,76 @@ class DragonGateRound(BaseModel):
             bet=amount,
             outcome=outcome,
             delta=delta,
-            pot_after=self.pot,
             direction=active_turn.direction,
         )
         self.last_result = result
-        if self.pot <= 0:
-            self.pot = 0
-            self.finished = True
-            self.active_turn = None
-        else:
-            self.current_player_index = (self.current_player_index + 1) % len(self.participants)
-            self._deal_next_turn()
+        self._advance_to_next_active_turn()
         return result
 
     def player_delta(self, user_id: int) -> int:
         """Returns a player's cumulative net delta for the table."""
         return self.player_deltas.get(user_id, 0)
+
+    def is_active(self, user_id: int) -> bool:
+        """Returns whether the given user is still seated and not withdrawn."""
+        return (
+            any(participant.user_id == user_id for participant in self.participants)
+            and user_id not in self.withdrawn_user_ids
+        )
+
+    def active_participants(self) -> list[GameParticipant]:
+        """Returns participants who have not withdrawn from the table yet."""
+        return [
+            participant
+            for participant in self.participants
+            if participant.user_id not in self.withdrawn_user_ids
+        ]
+
+    def withdraw(self, user_id: int) -> int:
+        """Removes a player from the rotation and returns their running delta.
+
+        The caller is responsible for the financial side of "逆贏不拿":
+        when the returned delta is positive, the view layer pushes that
+        many points back into the jackpot. The rotation skips to the
+        next non-withdrawn player; if every seat is withdrawn the round
+        is marked finished.
+
+        Args:
+            user_id: Discord user ID of the leaver.
+
+        Returns:
+            The leaver's running delta at the moment of withdrawal.
+
+        Raises:
+            DragonGateParticipantUnknownError: ``user_id`` is not seated
+                at this table or has already withdrawn.
+        """
+        if not self.is_active(user_id=user_id):
+            raise DragonGateParticipantUnknownError("User is not active at this table")
+        self.withdrawn_user_ids.add(user_id)
+        delta = self.player_deltas.get(user_id, 0)
+        if not self.active_participants():
+            self.finished = True
+            self.active_turn = None
+            return delta
+        if self.active_turn is not None and self.active_turn.participant.user_id == user_id:
+            self._advance_to_next_active_turn()
+        return delta
+
+    def _advance_to_next_active_turn(self) -> None:
+        """Advances the cursor to the next non-withdrawn participant."""
+        if not self.active_participants():
+            self.finished = True
+            self.active_turn = None
+            return
+        seats = len(self.participants)
+        for _ in range(seats):
+            self.current_player_index = (self.current_player_index + 1) % seats
+            if self.participants[self.current_player_index].user_id not in self.withdrawn_user_ids:
+                self._deal_next_turn()
+                return
+        self.finished = True
+        self.active_turn = None
 
     def _deal_next_turn(self) -> None:
         self.turn_number += 1
@@ -260,12 +337,16 @@ class DragonGateRound(BaseModel):
 
 
 __all__ = [
+    "ANTE",
+    "GAME_ID",
+    "MIN_BET",
     "DragonGateBetRangeError",
     "DragonGateDirection",
     "DragonGateError",
     "DragonGateOutcome",
     "DragonGatePairChoiceRequiredError",
     "DragonGatePairChoiceUnavailableError",
+    "DragonGateParticipantUnknownError",
     "DragonGateRound",
     "DragonGateTableFinishedError",
     "DragonGateTurn",

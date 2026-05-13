@@ -15,11 +15,7 @@ from discordbot.cogs._economy import database
 from discordbot.typings.games import GameParticipant, BlackjackSettlement
 from discordbot.cogs._games.views import BlackjackView
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
-from discordbot.cogs._games.settlement import (
-    settle_wager,
-    settle_blackjack_round,
-    settle_dragon_gate_player,
-)
+from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
 
 
 class _DealerStub:
@@ -1022,15 +1018,70 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     assert settlement.house_balance == 100
 
 
-async def test_dragon_gate_settlement_does_not_apply_vip_blackjack_bonus() -> None:
-    """射龍門 winnings use pot odds only; the Blackjack VIP bonus is not applied."""
+async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None:
+    """Player wins pull points out of the jackpot row in one atomic step."""
+    await database.add_balance(user_id=1, name="alice", amount=10_000)
+    # _ensure_schema already seeded the dragon_gate pool at 100_000.
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+
+    player_balance, jackpot_after = await database.apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=20_000, game_id="dragon_gate"
+    )
+
+    assert player_balance == 30_000
+    assert jackpot_after == 80_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 80_000
+
+
+async def test_apply_jackpot_settlement_debits_player_and_grows_pool() -> None:
+    """Player losses flow into the jackpot without clamping the player at zero."""
+    await database.add_balance(user_id=1, name="alice", amount=15_000)
+
+    player_balance, jackpot_after = await database.apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=-25_000, game_id="dragon_gate"
+    )
+
+    assert player_balance == -10_000
+    assert jackpot_after == 125_000
+
+
+async def test_apply_jackpot_settlement_skips_vip_blackjack_bonus() -> None:
+    """射龍門 winnings stay at face value even for VIP accounts."""
     await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
 
-    settlement = await settle_dragon_gate_player(
-        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=100
+    player_balance_before = await database.get_balance(user_id=1)
+    pool_before = await database.get_jackpot_pool(game_id="dragon_gate")
+    player_balance, jackpot_after = await database.apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=100, game_id="dragon_gate"
     )
 
-    assert settlement.delta == 100
-    assert settlement.house_balance == -100
+    assert player_balance == player_balance_before + 100
+    assert jackpot_after == pool_before - 100
+
+
+async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
+    """Unseeded game ids surface as 0 instead of raising."""
+    assert await database.get_jackpot_pool(game_id="never_registered") == 0
+
+
+async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_ensure_schema seeds the dragon_gate pool exactly once across calls."""
+    db_path = tmp_path / "seed-economy.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    monkeypatch.setattr(target=database, name="_engine", value=engine)
+    monkeypatch.setattr(target=database, name="_schema_ready_for", value=None)
+
+    await database._ensure_schema()
+    first_balance = await database.get_jackpot_pool(game_id="dragon_gate")
+    assert first_balance == 100_000
+
+    # Calling again is idempotent: the seed must not pile on top of itself.
+    monkeypatch.setattr(target=database, name="_schema_ready_for", value=None)
+    await database._ensure_schema()
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+
+    await engine.dispose()
