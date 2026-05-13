@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
-GameKind = Literal["blackjack"]
+GameKind = Literal["blackjack", "dragon_gate"]
 
 
 class Card(BaseModel):
@@ -101,10 +101,25 @@ class BlackjackPlayerResult(BaseModel):
     settlement: BlackjackSettlement
 
 
+class DragonGatePlayerResult(BaseModel):
+    """Settlement result for one player at a 射龍門 table.
+
+    Attributes:
+        participant: Player identity and ante metadata.
+        settlement: Database-backed result for the player's cumulative table delta.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    participant: GameParticipant
+    settlement: WagerSettlement
+
+
 __all__ = [
     "BlackjackPlayerResult",
     "BlackjackSettlement",
     "Card",
+    "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
     "SettleOutcome",

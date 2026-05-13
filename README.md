@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with daily check-in, an optional VIP perk, daily-resetting loans, a casino mini-game, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with daily check-in, an optional VIP perk, daily-resetting loans, casino mini-games, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -57,15 +57,16 @@ The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every D
 
 **Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. `/checkin` claims a daily 100,000 虛擬歡樂豆 with a 7-day streak bonus (linear: day 1 = 1×, day 7 = 4×). Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
 
-**Spending 虛擬歡樂豆:** casino games open a lobby first. The owner can start alone or wait for other players to join; only the owner can start the table. Bets are validated when a player joins and refreshed when the table starts, then the signed result is applied only when the table resolves. If a bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the player. An unfinished in-memory table is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the table and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show each player's round delta and post-settlement balance; `/house` carries the dealer's ledger balance.
+**Spending 虛擬歡樂豆:** casino games open a lobby first. The owner can start alone or wait for other players to join; only the owner can start the table. Blackjack bets are validated when a player joins and refreshed when the table starts, then the signed result is applied only when the table resolves. If a Blackjack bet is higher than the player's current balance, it is automatically clamped to an all-in wager; only a zero or negative balance rejects the player. 射龍門 uses an ante instead: every joined player must be able to pay the ante, the table tracks a shared pot, and rotating player turns continue until the pot is cleared or the table times out. An unfinished in-memory table is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the table and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show each player's round delta and post-settlement balance; `/house` carries the dealer's ledger balance.
 
 **VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 虛擬歡樂豆. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
 
 Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
-| Slash command      | Game                                                                                                                                                                                  |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/blackjack <bet>` | Multiplayer-ready 21 lobby with Join / Leave / Start buttons, then per-player Hit / Stand turns. Natural Blackjack pays 1.5×; the dealer uses only the visible dealer card for hints. |
+| Slash command         | Game                                                                                                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <bet>`    | Multiplayer-ready 21 lobby with Join / Leave / Start buttons, then per-player Hit / Stand turns. Natural Blackjack pays 1.5×; the dealer uses only the visible dealer card for hints.                                                   |
+| `/dragon_gate <ante>` | Multiplayer 射龍門 lobby with a shared pot. Everyone contributes the ante, the owner starts, players rotate through gate bets, in-between wins from the pot, outside loses 1×, pillar hits lose 2×, and same-point pillar hits lose 3×. |
 
 **Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack skips that player's action and pays 1.5× at table settlement; a dealer natural Blackjack settles the table immediately unless a player also has Blackjack, in which case that player's hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
@@ -79,7 +80,7 @@ Game-related response embeds are automatically deleted after three minutes: fina
 - `/borrow <amount>` — borrow against your Discord account age. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
 - `/repay <amount>` — repay outstanding principal from your current balance.
 - `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
-- `/house` — show the dealer's accumulated win/loss across `/blackjack`. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
+- `/house` — show the dealer's accumulated win/loss across casino games. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
 After borrowing, 50% of each income event (message reward, chat reward, casino payout) automatically repays principal before the rest lands in the wallet. `/give` recipients are not auto-repaid.
 
@@ -115,6 +116,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/repay <amount>`                 | Repay outstanding principal from your balance                                         |
 | `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                 |
 | `/blackjack <bet>`                | Open a 21 lobby; players join before the owner starts, then take Hit / Stand turns    |
+| `/dragon_gate <ante>`             | Open a 射龍門 lobby with ante, shared pot, and rotating gate bets                     |
 | `/house`                          | Show the dealer's accumulated win/loss across casino games                            |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                                  |
 | `/maple_equip <name>`             | Search MapleStory equipment                                                           |

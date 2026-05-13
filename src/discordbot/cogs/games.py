@@ -1,4 +1,4 @@
-"""Casino-style games (`/blackjack`) wagering economy points."""
+"""Casino-style games (`/blackjack`, `/dragon_gate`) wagering economy points."""
 
 from random import SystemRandom
 from functools import cached_property
@@ -25,6 +25,10 @@ from discordbot.cogs._games.cleanup import (
 from discordbot.cogs._economy.database import get_balance
 from discordbot.cogs._games.presentation import ERROR_COLOR
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
+from discordbot.cogs._games.dragon_gate_views import (
+    DragonGateLobbyView,
+    build_dragon_gate_lobby_embed,
+)
 
 
 class GamesCogs(commands.Cog):
@@ -131,6 +135,60 @@ class GamesCogs(commands.Cog):
             )
         return participant
 
+    async def _dragon_gate_participant_from_user(
+        self, *, user: nextcord.User | nextcord.Member, ante: int
+    ) -> tuple[GameParticipant | None, int]:
+        """Builds a 射龍門 lobby participant after checking the table ante."""
+        balance = await get_balance(user_id=user.id)
+        if ante <= 0 or balance < ante:
+            return None, balance
+        return (
+            GameParticipant(
+                user_id=user.id,
+                account_name=user.name,
+                display_name=user.display_name,
+                avatar_url=user.display_avatar.url,
+                bet=ante,
+                balance_at_start=balance,
+                is_allin=balance == ante,
+            ),
+            balance,
+        )
+
+    async def _prepare_dragon_gate_participant(
+        self, *, interaction: Interaction, ante: int
+    ) -> GameParticipant | None:
+        """Prepares a user who pressed the 射龍門 lobby Join button."""
+        if interaction.user is None:
+            return None
+        participant, balance = await self._dragon_gate_participant_from_user(
+            user=interaction.user, ante=ante
+        )
+        if participant is None:
+            await interaction.followup.send(
+                embed=self._dragon_gate_insufficient_balance_embed(balance=balance, ante=ante),
+                ephemeral=True,
+            )
+        return participant
+
+    async def _refresh_dragon_gate_participants(
+        self, *, participants: list[GameParticipant], ante: int
+    ) -> tuple[list[GameParticipant], list[str]]:
+        """Re-checks 射龍門 ante balances when the lobby owner starts the table."""
+        refreshed: list[GameParticipant] = []
+        dropped: list[str] = []
+        for participant in participants:
+            balance = await get_balance(user_id=participant.user_id)
+            if ante <= 0 or balance < ante:
+                dropped.append(participant.display_name)
+                continue
+            refreshed.append(
+                participant.model_copy(
+                    update={"bet": ante, "balance_at_start": balance, "is_allin": balance == ante}
+                )
+            )
+        return refreshed, dropped
+
     async def _refresh_lobby_participants(
         self, *, participants: list[GameParticipant], requested_bet: int
     ) -> tuple[list[GameParticipant], list[str]]:
@@ -160,6 +218,18 @@ class GamesCogs(commands.Cog):
             description=(
                 f"### {bold_currency(amount=balance)}\n"
                 f"沒有可下注的{CURRENCY_NAME}\n"
+                f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
+            ),
+            color=ERROR_COLOR,
+        )
+
+    def _dragon_gate_insufficient_balance_embed(self, *, balance: int, ante: int) -> Embed:
+        """Builds the insufficient-balance embed for 射龍門 ante checks."""
+        return Embed(
+            title="餘額不足",
+            description=(
+                f"### {bold_currency(amount=balance)}\n"
+                f"射龍門需要先繳底注 {bold_currency(amount=ante)} 進彩金池\n"
                 f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
             ),
             color=ERROR_COLOR,
@@ -227,6 +297,71 @@ class GamesCogs(commands.Cog):
             participants=view.participants,
             requested_bet=bet,
             max_players=MAX_BLACKJACK_PLAYERS,
+        )
+        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        await track_game_message(message=message)
+        view.message = message
+
+    @nextcord.slash_command(
+        name="dragon_gate",
+        description="Open an In-Between table with a shared pot.",
+        name_localizations={Locale.zh_TW: "射龍門", Locale.ja: "インビトウィーン"},
+        description_localizations={
+            Locale.zh_TW: "開一桌有彩金池的射龍門",
+            Locale.ja: "共有ポット式のインビトウィーン table を開きます。",
+        },
+        nsfw=False,
+    )
+    async def dragon_gate(
+        self,
+        interaction: Interaction,
+        ante: int = SlashOption(
+            name="ante",
+            description=f"Table ante in {CURRENCY_NAME}; every player contributes this to the pot.",
+            name_localizations={Locale.zh_TW: "底注", Locale.ja: "アンティ"},
+            description_localizations={
+                Locale.zh_TW: f"每位玩家開局先放進彩金池的{CURRENCY_NAME}",
+                Locale.ja: f"各プレイヤーが開始時にpotへ入れる{CURRENCY_NAME}。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Opens a 射龍門 lobby. The owner starts the table from the lobby.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            ante: Points each player contributes to the initial pot.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+
+        owner, balance = await self._dragon_gate_participant_from_user(
+            user=interaction.user, ante=ante
+        )
+        if owner is None:
+            message = await interaction.followup.send(
+                embed=self._dragon_gate_insufficient_balance_embed(balance=balance, ante=ante),
+                wait=True,
+            )
+            schedule_game_message_delete(message=message)
+            return
+
+        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
+        view = DragonGateLobbyView(
+            owner=owner,
+            ante=ante,
+            rng=self.rng,
+            dealer=self.dealer,
+            dealer_id=dealer_id,
+            dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
+            prepare_participant=self._prepare_dragon_gate_participant,
+            refresh_participants=self._refresh_dragon_gate_participants,
+        )
+        embed = build_dragon_gate_lobby_embed(
+            owner=owner, participants=view.participants, ante=ante
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
         await track_game_message(message=message)
