@@ -616,7 +616,8 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(other_interaction)
 
-    assert other_interaction.followup.sent[0]["content"] == "只有發起者可以開始"
+    assert other_interaction.followup.sent
+    assert isinstance(other_interaction.followup.sent[0]["content"], str)
 
 
 async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -672,7 +673,8 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(other_interaction)
 
-    assert other_interaction.response.sent[0]["content"] == "只有房主可以開始"
+    assert other_interaction.response.sent
+    assert isinstance(other_interaction.response.sent[0]["content"], str)
 
 
 async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:

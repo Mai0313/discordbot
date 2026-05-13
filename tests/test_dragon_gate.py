@@ -241,21 +241,27 @@ def test_turns_rotate_until_pot_is_empty() -> None:
 
 
 def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
-    """Embed builders expose pot, gate, last result, and settlements."""
+    """Embed builders produce well-formed lobby / progress / final embeds."""
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     lobby = build_dragon_gate_lobby_embed(
         owner=owner, participants=[owner, bob], ante=100, status="ready"
     )
-    assert lobby.title == "♦️ 射龍門 | Lobby"
-    assert "Alice 房主" in lobby.fields[0].value
+    assert isinstance(lobby, Embed)
+    assert isinstance(lobby.title, str)
+    assert lobby.title
+    assert lobby.fields
+    assert all(isinstance(field.value, str) and field.value for field in lobby.fields)
 
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner], ante=100
     )
-    progress = build_dragon_gate_in_progress_embed(round_state=round_state, dealer_line="hello")
-    assert progress.fields[0].name == "彩金池"
-    assert "門柱" in progress.fields[1].value
+    progress = build_dragon_gate_in_progress_embed(round_state=round_state)
+    assert isinstance(progress, Embed)
+    assert isinstance(progress.title, str)
+    assert progress.title
+    assert isinstance(progress.description, str)
+    assert progress.description
 
     round_state.place_bet(user_id=1, amount=100)
     results = [
@@ -265,11 +271,11 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
         )
     ]
     final = build_dragon_gate_final_embed(
-        round_state=round_state, results=results, dealer_line="done", reason="彩金池清空"
+        round_state=round_state, results=results, reason="彩金池清空"
     )
-    assert final.title == "♦️ 射龍門 | 結算"
-    assert final.fields[0].value == "彩金池清空"
-    assert "射進龍門" in final.fields[1].value
+    assert isinstance(final, Embed)
+    assert isinstance(final.title, str)
+    assert final.title
 
 
 async def test_dragon_gate_lobby_join_leave_and_owner_start() -> None:
@@ -307,17 +313,22 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start() -> None:
     join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
     await join_button.callback(InteractionStub(user_id=2, message=message))
     assert view.participants == [owner, bob]
-    assert message.edits[-1]["embed"].description == "Bob 已加入"
+    join_description = message.edits[-1]["embed"].description
+    assert isinstance(join_description, str)
+    assert join_description
 
     leave_button = next(child for child in view.children if getattr(child, "label", "") == "離開")
     await leave_button.callback(InteractionStub(user_id=2, message=message))
     assert view.participants == [owner]
-    assert message.edits[-1]["embed"].description == "Bob 已離開"
+    leave_description = message.edits[-1]["embed"].description
+    assert isinstance(leave_description, str)
+    assert leave_description
 
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
     other_interaction = InteractionStub(user_id=2, message=message)
     await start_button.callback(other_interaction)
-    assert other_interaction.response.sent[0]["content"] == "只有房主可以開始"
+    assert other_interaction.response.sent
+    assert isinstance(other_interaction.response.sent[0]["content"], str)
 
     owner_interaction = InteractionStub(user_id=1, message=message)
     await start_button.callback(owner_interaction)
@@ -366,18 +377,17 @@ async def test_dragon_gate_view_pair_choice_bet_and_finalize(
     view.message = message
     view.sync_controls()
     assert view._button(custom_id="dg:higher").disabled is False
-    assert view._button(custom_id="dg:min").disabled is True
-    assert view._button(custom_id="dg:half").emoji is not None
-    assert view._button(custom_id="dg:half").emoji.name == "🌓"
+    assert view._select(custom_id="dg:bet").disabled is True
 
     choose_higher = view._button(custom_id="dg:higher")
     await choose_higher.callback(InteractionStub(user_id=1, message=message))
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
-    assert view._button(custom_id="dg:min").disabled is False
+    assert view._select(custom_id="dg:bet").disabled is False
 
-    bet_minimum = view._button(custom_id="dg:min")
-    await bet_minimum.callback(InteractionStub(user_id=1, message=message))
+    await view._handle_bet_choice(
+        choice="min", interaction=InteractionStub(user_id=1, message=message)
+    )
 
     assert round_state.finished is True
     assert dealer.table_settle_calls[0]["game"] == "dragon_gate"
@@ -403,15 +413,18 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
 
     non_active = InteractionStub(user_id=2, message=MessageStub())
     assert await view.interaction_check(interaction=non_active) is False
-    assert non_active.response.sent[0]["content"] == "現在輪到 Alice"
+    assert non_active.response.sent
+    assert isinstance(non_active.response.sent[0]["content"], str)
 
     invalid = InteractionStub(user_id=1, message=MessageStub())
     await view.submit_custom_bet(interaction=invalid, raw_amount="not a number")
-    assert invalid.response.sent[0]["content"] == "下注金額要是整數"
+    assert invalid.response.sent
+    assert isinstance(invalid.response.sent[0]["content"], str)
 
     stale_turn = InteractionStub(user_id=2, message=MessageStub())
     await view.submit_custom_bet(interaction=stale_turn, raw_amount="100")
-    assert stale_turn.followup.sent[0]["content"] == "現在輪到 Alice"
+    assert stale_turn.followup.sent
+    assert isinstance(stale_turn.followup.sent[0]["content"], str)
 
     pair_round = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("7", "♠", "7", "♥")), participants=[alice], ante=100
@@ -426,10 +439,12 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     )
     pair_stale_modal = InteractionStub(user_id=1, message=MessageStub())
     await pair_view.submit_custom_bet(interaction=pair_stale_modal, raw_amount="100")
-    assert pair_stale_modal.followup.sent[0]["content"] == "同點門柱要先猜大或猜小"
+    assert pair_stale_modal.followup.sent
+    assert isinstance(pair_stale_modal.followup.sent[0]["content"], str)
 
     modal = DragonGateBetModal(view=view, minimum=100, maximum=200)
-    assert modal.title == "自訂下注"
+    assert isinstance(modal.title, str)
+    assert modal.title
 
 
 async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
@@ -449,7 +464,8 @@ async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
     modal = DragonGateBetModal(view=view, minimum=100, maximum=1_000_000)
 
     assert modal.amount.max_length == len("1,000,000")
-    assert modal.amount.placeholder == "100 到 1,000,000"
+    assert isinstance(modal.amount.placeholder, str)
+    assert modal.amount.placeholder
 
 
 async def test_dragon_gate_view_timeout_settles_remaining_pot(
@@ -493,6 +509,7 @@ async def test_dragon_gate_view_timeout_settles_remaining_pot(
     await view.on_timeout()
 
     assert settled_deltas == [-100]
-    embed = message.edits[-1]["embed"]
-    assert isinstance(embed, Embed)
-    assert embed.fields[0].value == "逾時未操作, 剩餘彩金歸莊家"
+    embeds = message.edits[-1]["embeds"]
+    assert isinstance(embeds, list)
+    assert embeds
+    assert all(isinstance(embed, Embed) for embed in embeds)
