@@ -19,7 +19,7 @@
 
 </div>
 
-A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a 虛擬歡樂豆 economy with daily check-in, an optional VIP perk, daily-resetting loans, casino mini-games, and a MapleStory game database. Supports multiple languages.
+A feature-rich Discord bot with AI-powered conversations, image and video generation, content parsing, multi-platform video downloading, a Points economy with daily check-in, an optional VIP perk, daily-resetting loans, casino mini-games, and a MapleStory game database. Supports multiple languages.
 
 ## Features
 
@@ -35,7 +35,7 @@ Mention the bot (`@bot`) or send a direct message to start a conversation. The A
 - **Web search & URL reading** — the bot automatically uses model-specific tools (Gemini `googleSearch` + `urlContext`, Claude `web_search` + `web_fetch`, or OpenAI `web_search`) for up-to-date context
 - **User tagging** — ask the bot to notify or address other participants from the recent conversation (e.g. "let @alice know I'll be late") — it can mention anyone who appeared in the recent chat history
 - **Progress reactions** — emoji reactions on your message show real-time processing status (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 if the model used web search, or ❌ on error)
-- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally), and how much 虛擬歡樂豆 the user just earned this turn
+- **Reply footer** — each AI response ends with a Discord-quoted line showing the model name, input/output token counts, estimated USD cost (computed from the upstream LiteLLM price table, fetched on demand and cached locally), and how much Points the user just earned this turn
 - **Auto-unmute** — if a moderator times the bot out, it lifts its own timeout, identifies the moderator from the audit log, and posts a single AI reply in the most recently active channel
 
 ### Threads Parsing
@@ -51,35 +51,35 @@ Use `/download_video` to download videos from multiple platforms:
 - Automatic low-quality fallback if the file exceeds Discord's 25 MB limit
 - Facebook share links (`facebook.com/share/r/...`) are automatically expanded
 
-### 虛擬歡樂豆 & Casino Game
+### Points & Casino Game
 
-The bot keeps a **persistent, cross-server 虛擬歡樂豆 balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
+The bot keeps a **persistent, cross-server Points balance** for every Discord account in a local SQLite file (`data/economy.db`). The same balance follows the user into any guild the bot is in.
 
-**Earning 虛擬歡樂豆:** every non-bot user message awards 5,000 虛擬歡樂豆. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. `/checkin` claims a daily 100,000 虛擬歡樂豆 with a 7-day streak bonus (linear: day 1 = 1×, day 7 = 4×). Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
+**Earning Points:** every non-bot user message awards 5,000 Points. Streaming AI replies add a token-based bonus equal to `total_tokens` (input + output), shown in the reply footer. `/checkin` claims a daily 100,000 Points with a 7-day streak bonus (linear: day 1 = 1×, day 7 = 4×). Threads parsing and `/download_video` do not add extra action rewards beyond the base message reward.
 
-**Spending 虛擬歡樂豆:** casino games open a lobby first. The owner can start alone or wait for other players to join; only the owner can start the table. Blackjack bets are validated when a player joins and refreshed when the table starts, then the signed result is applied only when the table resolves. If the Blackjack owner enters more than their current balance, the lobby table stake is clamped to the owner's actual all-in amount, so later players default to matching that stake instead of the original oversized request; only a zero or negative balance rejects the player. 射龍門 uses an ante instead: every joined player must be able to pay the ante, the table tracks a shared pot, and rotating player turns continue until the pot is cleared or the table times out. An unfinished in-memory table is discarded if the bot restarts, but a finished loss can still push the player's balance below zero. The dealer is an AI that taunts the table and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show each player's round delta and post-settlement balance; `/house` carries the dealer's ledger balance.
+**Spending Points:** casino games open a lobby first. The owner can start alone or wait for other players to join; only the owner can start the table. Blackjack bets are validated when a player joins and refreshed when the table starts, then the signed result is applied only when the table resolves. If the Blackjack owner enters more than their current balance, the lobby table stake is clamped to the owner's actual all-in amount, so later players default to matching that stake instead of the original oversized request; only a zero or negative balance rejects the player. 射龍門 runs over a **global jackpot pool shared across every table** (one row in `jackpot_pool`, seeded with 100,000 on the house at first start). The ante is fixed at 5,000 (paid into the pool on table start), the minimum bet is 10,000, the maximum bet is the entire pool, and each bet settles into the player row and the pool the instant it lands. Any seated player can leave mid-table; if their running delta is positive at leave / timeout, the surplus is refunded into the pool ("逆贏不拿"). The table ends when the pool is exhausted, every player has left, or no one interacts for 180 seconds. The dealer is an AI that taunts the table and reacts to the result with one short line. The dealer's display name in the embed (and in message history seen by `gen_reply`) is the bot's own Discord display name, so it shows up as a familiar identity rather than a generic "dealer" label. Final game embeds show each player's round delta and post-settlement balance; `/house` carries the Blackjack dealer's ledger balance (Dragon Gate's counterparty is the jackpot pool, not the house).
 
-**VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 虛擬歡樂豆. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
+**VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 Points. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
 
 Game-related response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, and `/repay` lookup embeds after they are sent. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
-| Slash command         | Game                                                                                                                                                                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/blackjack <bet>`    | Multiplayer-ready 21 lobby with Join / Leave / Start buttons, then per-player Hit / Stand turns. Natural Blackjack pays 1.5×; the dealer uses only the visible dealer card for hints.                                                   |
-| `/dragon_gate <ante>` | Multiplayer 射龍門 lobby with a shared pot. Everyone contributes the ante, the owner starts, players rotate through gate bets, in-between wins from the pot, outside loses 1×, pillar hits lose 2×, and same-point pillar hits lose 3×. |
+| Slash command      | Game                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/blackjack <bet>` | Multiplayer-ready 21 lobby with Join / Leave / Start buttons, then per-player Hit / Stand turns. Natural Blackjack pays 1.5×; the dealer uses only the visible dealer card for hints.                                                                                                                                                                                                        |
+| `/dragon_gate`     | Multiplayer 射龍門 lobby over the **global jackpot pool** (cross-table cumulative). Fixed 5,000 ante into the pool, min bet 10,000, max bet = current pool, every bet settles instantly, per-player Leave button with 逆贏不拿 refund, 180s idle timeout. Gate-win pays 1× from the pool, outside loses 1× into the pool, pillar hit loses 2× into the pool, same-point pillar hit loses 3×. |
 
 **Blackjack early settlement:** `Blackjack` means the first two cards are an ace plus a 10-value card. A player natural Blackjack skips that player's action and pays 1.5× at table settlement; a dealer natural Blackjack settles the table immediately unless a player also has Blackjack, in which case that player's hand pushes. A regular 21 reached with more cards is not a natural Blackjack and does not skip Hit / Stand.
 
-**Managing 虛擬歡樂豆:**
+**Managing Points:**
 
 - `/balance` — show your current balance, loan principal (if any), and VIP status.
 - `/checkin` — claim today's check-in reward; replies are ephemeral. Streak resets at 00:00 Asia/Taipei and cycles back to day 1 after seven consecutive days or any missed day.
-- `/vip` — buy permanent VIP for 10,000,000 虛擬歡樂豆.
+- `/vip` — buy permanent VIP for 10,000,000 Points.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
 - `/loss_leaderboard` — global Top 10 biggest casino net losers since 00:00 Asia/Taipei today.
 - `/borrow <amount>` — borrow against your Discord account age. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
 - `/repay <amount>` — repay outstanding principal from your current balance.
-- `/give <member> <amount>` — transfer 虛擬歡樂豆 to another member (no self-transfer, no bots).
+- `/give <member> <amount>` — transfer Points to another member (no self-transfer, no bots).
 - `/house` — show the dealer's accumulated win/loss across casino games. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
 
 After borrowing, 50% of each income event (message reward, chat reward, casino payout) automatically repays principal before the rest lands in the wallet. `/give` recipients are not auto-repaid.
@@ -102,32 +102,32 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 
 ## Commands
 
-| Command                           | Description                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------- |
-| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)               |
-| _Threads link_                    | Automatically expands Threads.net posts with media                                    |
-| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                 |
-| `/balance`                        | Show your current 虛擬歡樂豆 balance, loan, and VIP status (cross-server)             |
-| `/checkin`                        | Claim today's check-in reward (ephemeral; 7-day streak bonus, resets at Taipei 00:00) |
-| `/vip`                            | Buy permanent VIP (1.5× blackjack payout, 2× check-in, 2× loan cap)                   |
-| `/leaderboard`                    | Global Top 10 虛擬歡樂豆 holders                                                      |
-| `/loss_leaderboard`               | Today's Top 10 biggest casino losers (resets at Taipei 00:00)                         |
-| `/borrow <amount>`                | Borrow 虛擬歡樂豆 against your Discord account age (resets at Taipei 00:00)           |
-| `/repay <amount>`                 | Repay outstanding principal from your balance                                         |
-| `/give <member> <amount>`         | Transfer 虛擬歡樂豆 to another member                                                 |
-| `/blackjack <bet>`                | Open a 21 lobby; players join before the owner starts, then take Hit / Stand turns    |
-| `/dragon_gate <ante>`             | Open a 射龍門 lobby with ante, shared pot, and rotating gate bets                     |
-| `/house`                          | Show the dealer's accumulated win/loss across casino games                            |
-| `/maple_monster <name>`           | Search MapleStory monsters and drops                                                  |
-| `/maple_equip <name>`             | Search MapleStory equipment                                                           |
-| `/maple_scroll <name>`            | Search MapleStory scrolls                                                             |
-| `/maple_npc <name>`               | Search MapleStory NPCs                                                                |
-| `/maple_quest <name>`             | Search MapleStory quests                                                              |
-| `/maple_map <name>`               | Search MapleStory maps                                                                |
-| `/maple_item <name>`              | Search MapleStory item sources                                                        |
-| `/maple_stats`                    | View MapleStory database statistics                                                   |
-| `/help`                           | Show bot usage guide                                                                  |
-| `/ping`                           | Check bot latency                                                                     |
+| Command                           | Description                                                                                 |
+| --------------------------------- | ------------------------------------------------------------------------------------------- |
+| `@bot <message>`                  | Chat with AI (text, media/files, generation, summarization, web search)                     |
+| _Threads link_                    | Automatically expands Threads.net posts with media                                          |
+| `/download_video <url> [quality]` | Download video from YouTube, TikTok, Instagram, X, Facebook, Bilibili                       |
+| `/balance`                        | Show your current Points balance, loan, and VIP status (cross-server)                       |
+| `/checkin`                        | Claim today's check-in reward (ephemeral; 7-day streak bonus, resets at Taipei 00:00)       |
+| `/vip`                            | Buy permanent VIP (1.5× blackjack payout, 2× check-in, 2× loan cap)                         |
+| `/leaderboard`                    | Global Top 10 Points holders                                                                |
+| `/loss_leaderboard`               | Today's Top 10 biggest casino losers (resets at Taipei 00:00)                               |
+| `/borrow <amount>`                | Borrow Points against your Discord account age (resets at Taipei 00:00)                     |
+| `/repay <amount>`                 | Repay outstanding principal from your balance                                               |
+| `/give <member> <amount>`         | Transfer Points to another member                                                           |
+| `/blackjack <bet>`                | Open a 21 lobby; players join before the owner starts, then take Hit / Stand turns          |
+| `/dragon_gate`                    | Open a 射龍門 lobby over the global jackpot pool (fixed 5k ante, min bet 10k, leave button) |
+| `/house`                          | Show the dealer's accumulated win/loss across casino games                                  |
+| `/maple_monster <name>`           | Search MapleStory monsters and drops                                                        |
+| `/maple_equip <name>`             | Search MapleStory equipment                                                                 |
+| `/maple_scroll <name>`            | Search MapleStory scrolls                                                                   |
+| `/maple_npc <name>`               | Search MapleStory NPCs                                                                      |
+| `/maple_quest <name>`             | Search MapleStory quests                                                                    |
+| `/maple_map <name>`               | Search MapleStory maps                                                                      |
+| `/maple_item <name>`              | Search MapleStory item sources                                                              |
+| `/maple_stats`                    | View MapleStory database statistics                                                         |
+| `/help`                           | Show bot usage guide                                                                        |
+| `/ping`                           | Check bot latency                                                                           |
 
 ## Self-Hosting
 
@@ -210,7 +210,7 @@ All slash commands register globally on first start (no per-guild pinning). Disc
 This bot complies with Discord's Terms of Service and Developer Policy.
 
 - **Message Logging**: Messages in channels where the bot is present are logged locally to SQLite (`data/messages.db`). Data stays on your server and is never shared externally.
-- **虛擬歡樂豆 Database**: Per-user 虛擬歡樂豆 balances live in a separate local SQLite file (`data/economy.db`). The Discord user ID, the most recently seen username, avatar URL, and balance counters are stored. Balances are shared across every server the bot runs in.
+- **Points Database**: Per-user Points balances live in a separate local SQLite file (`data/economy.db`). The Discord user ID, the most recently seen username, avatar URL, and balance counters are stored. Balances are shared across every server the bot runs in.
 - **Game Cleanup Database**: Pending game response cleanup stores only Discord channel IDs and message IDs in `data/game_cleanup.db` so stale game embeds can be deleted after a bot restart.
 - **API Calls**: Text, images, supported file attachments, embedded media, and sender identity (display name, username, and Discord user ID of participants in the active chat context) are sent to the configured LLM API only when the bot is responding, such as when it is mentioned in a guild or messaged in DM. User IDs are included so the bot can tag other participants when asked. No data is shared with other third parties.
 - **Permissions**: The bot requires Message Content intent for mention-based chat and optional local logging. Slash commands and embed/attachment permissions are used for interactive features.
