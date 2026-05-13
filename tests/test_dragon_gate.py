@@ -403,8 +403,47 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet() -> N
     await view.submit_custom_bet(interaction=invalid, raw_amount="not a number")
     assert invalid.response.sent[0]["content"] == "下注金額要是整數"
 
+    stale_turn = InteractionStub(user_id=2, message=MessageStub())
+    await view.submit_custom_bet(interaction=stale_turn, raw_amount="100")
+    assert stale_turn.followup.sent[0]["content"] == "現在輪到 Alice"
+
+    pair_round = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("7", "♠", "7", "♥")), participants=[alice], ante=100
+    )
+    pair_view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=pair_round,
+        owner=alice,
+        dealer_id=99,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+    )
+    pair_stale_modal = InteractionStub(user_id=1, message=MessageStub())
+    await pair_view.submit_custom_bet(interaction=pair_stale_modal, raw_amount="100")
+    assert pair_stale_modal.followup.sent[0]["content"] == "同點門柱要先猜大或猜小"
+
     modal = DragonGateBetModal(view=view, minimum=100, maximum=200)
     assert modal.title == "自訂下注"
+
+
+async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
+    """Custom bet input length matches the comma-stripping parser."""
+    owner = _participant(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner], ante=100
+    )
+    view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=round_state,
+        owner=owner,
+        dealer_id=99,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+    )
+    modal = DragonGateBetModal(view=view, minimum=100, maximum=1_000_000)
+
+    assert modal.amount.max_length == len("1,000,000")
+    assert modal.amount.placeholder == "100 到 1,000,000"
 
 
 async def test_dragon_gate_view_timeout_settles_remaining_pot(

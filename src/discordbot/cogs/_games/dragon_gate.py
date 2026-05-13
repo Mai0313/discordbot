@@ -21,6 +21,30 @@ RANKS: tuple[str, ...] = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J"
 SUITS: tuple[str, ...] = ("♠", "♥", "♦", "♣")
 
 
+class DragonGateError(ValueError):
+    """Base error for invalid 射龍門 rule operations."""
+
+
+class DragonGateTableFinishedError(DragonGateError):
+    """Raised when a caller tries to act after the table has finished."""
+
+
+class DragonGateTurnError(DragonGateError):
+    """Raised when a caller tries to act outside their active turn."""
+
+
+class DragonGatePairChoiceRequiredError(DragonGateError):
+    """Raised when a same-point gate needs high / low before betting."""
+
+
+class DragonGatePairChoiceUnavailableError(DragonGateError):
+    """Raised when high / low is selected for a non-pair gate."""
+
+
+class DragonGateBetRangeError(DragonGateError):
+    """Raised when a bet is outside the current legal range."""
+
+
 def draw_card(*, rng: Random) -> Card:
     """Draws one card from a notional infinite shoe."""
     return Card(rank=rng.choice(seq=RANKS), suit=rng.choice(seq=SUITS))
@@ -131,7 +155,7 @@ class DragonGateRound(BaseModel):
         """Stores the active player's high/low choice for a same-point gate."""
         active_turn = self._require_active_turn(user_id=user_id)
         if not active_turn.is_pair:
-            raise ValueError("This turn is not a pair")
+            raise DragonGatePairChoiceUnavailableError("This turn is not a pair")
         self.active_turn = active_turn.model_copy(update={"direction": direction})
 
     def needs_pair_choice(self) -> bool:
@@ -153,17 +177,17 @@ class DragonGateRound(BaseModel):
             The resolved turn result.
 
         Raises:
-            ValueError: The table is finished, it is not this user's turn, the
-                pair direction is missing, or the bet is outside the legal range.
+            DragonGateError: The table is finished, it is not this user's turn,
+                the pair direction is missing, or the bet is outside the legal range.
         """
         active_turn = self._require_active_turn(user_id=user_id)
         if self.needs_pair_choice():
-            raise ValueError("Pair direction is required")
+            raise DragonGatePairChoiceRequiredError("Pair direction is required")
 
         minimum = self.current_min_bet()
         maximum = self.current_max_bet()
         if amount < minimum or amount > maximum:
-            raise ValueError("Bet outside legal range")
+            raise DragonGateBetRangeError("Bet outside legal range")
 
         third_card = draw_card(rng=self.rng)
         outcome, delta = self._resolve_turn(turn=active_turn, third_card=third_card, amount=amount)
@@ -205,9 +229,9 @@ class DragonGateRound(BaseModel):
 
     def _require_active_turn(self, *, user_id: int) -> DragonGateTurn:
         if self.finished or self.active_turn is None:
-            raise ValueError("Table is finished")
+            raise DragonGateTableFinishedError("Table is finished")
         if self.active_turn.participant.user_id != user_id:
-            raise ValueError("Not this player's turn")
+            raise DragonGateTurnError("Not this player's turn")
         return self.active_turn
 
     def _resolve_turn(
@@ -236,10 +260,16 @@ class DragonGateRound(BaseModel):
 
 
 __all__ = [
+    "DragonGateBetRangeError",
     "DragonGateDirection",
+    "DragonGateError",
     "DragonGateOutcome",
+    "DragonGatePairChoiceRequiredError",
+    "DragonGatePairChoiceUnavailableError",
     "DragonGateRound",
+    "DragonGateTableFinishedError",
     "DragonGateTurn",
+    "DragonGateTurnError",
     "DragonGateTurnResult",
     "card_value",
     "draw_card",

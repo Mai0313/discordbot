@@ -12,10 +12,16 @@ from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.settlement import settle_dragon_gate_player
 from discordbot.cogs._games.dragon_gate import (
+    DragonGateError,
     DragonGateRound,
     DragonGateOutcome,
     DragonGateDirection,
+    DragonGateTurnError,
     DragonGateTurnResult,
+    DragonGateBetRangeError,
+    DragonGateTableFinishedError,
+    DragonGatePairChoiceRequiredError,
+    DragonGatePairChoiceUnavailableError,
     render_cards,
 )
 from discordbot.cogs._games.presentation import (
@@ -532,7 +538,15 @@ class DragonGateView(ui.View):
                 self.round_state.choose_pair_direction(
                     user_id=interaction.user.id, direction=direction
                 )
-            except ValueError:
+            except DragonGateTableFinishedError:
+                await self._send_notice(interaction=interaction, content="這桌已經不能操作了")
+                return
+            except DragonGateTurnError:
+                await self._send_notice(
+                    interaction=interaction, content=self._current_turn_notice()
+                )
+                return
+            except DragonGatePairChoiceUnavailableError:
                 await self._send_notice(interaction=interaction, content="這手不需要猜大小")
                 return
             self.sync_controls()
@@ -560,15 +574,8 @@ class DragonGateView(ui.View):
                 return
             try:
                 self.round_state.place_bet(user_id=interaction.user.id, amount=amount)
-            except ValueError:
-                await self._send_notice(
-                    interaction=interaction,
-                    content=(
-                        "下注金額需介於 "
-                        f"{currency_text(amount=self.round_state.current_min_bet())} 到 "
-                        f"{currency_text(amount=self.round_state.current_max_bet())}"
-                    ),
-                )
+            except DragonGateError as error:
+                await self._send_bet_error_notice(interaction=interaction, error=error)
                 return
             if self.round_state.finished:
                 await self._finalize_locked(message=message, reason="彩金池清空")
@@ -622,6 +629,31 @@ class DragonGateView(ui.View):
                 return child
         raise RuntimeError(f"Missing button: {custom_id}")
 
+    def _current_turn_notice(self) -> str:
+        active_turn = self.round_state.active_turn
+        if active_turn is None:
+            return "這桌已經不能操作了"
+        return f"現在輪到 {active_turn.participant.display_name}"
+
+    async def _send_bet_error_notice(
+        self, *, interaction: Interaction, error: DragonGateError
+    ) -> None:
+        if isinstance(error, DragonGatePairChoiceRequiredError):
+            content = "同點門柱要先猜大或猜小"
+        elif isinstance(error, DragonGateTableFinishedError):
+            content = "這桌已經不能操作了"
+        elif isinstance(error, DragonGateTurnError):
+            content = self._current_turn_notice()
+        elif isinstance(error, DragonGateBetRangeError):
+            content = (
+                "下注金額需介於 "
+                f"{currency_text(amount=self.round_state.current_min_bet())} 到 "
+                f"{currency_text(amount=self.round_state.current_max_bet())}"
+            )
+        else:
+            content = "這桌已經不能操作了"
+        await self._send_notice(interaction=interaction, content=content)
+
     async def _send_notice(self, *, interaction: Interaction, content: str) -> None:
         with contextlib.suppress(Exception):
             await interaction.followup.send(content=content, ephemeral=True)
@@ -640,9 +672,9 @@ class DragonGateBetModal(ui.Modal):
         self.view = view
         self.amount = ui.TextInput(
             label="下注金額",
-            placeholder=f"{minimum} 到 {maximum}",
+            placeholder=f"{minimum:,} 到 {maximum:,}",
             min_length=1,
-            max_length=max(len(str(maximum)), 1),
+            max_length=max(len(f"{maximum:,}"), 1),
             required=True,
         )
         self.add_item(item=self.amount)
