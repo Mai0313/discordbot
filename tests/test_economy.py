@@ -192,6 +192,14 @@ async def test_adjust_balance_clamps_at_zero() -> None:
     assert result == database.BalanceAdjustmentResult(new_balance=0, applied_delta=-10)
 
 
+async def test_adjust_balance_negative_missing_user_does_not_create_row() -> None:
+    """Clamped negative adjustments to absent users stay no-op reads."""
+    result = await database.adjust_balance(user_id=42, name="alice", delta=-1_000)
+
+    assert result == database.BalanceAdjustmentResult(new_balance=0, applied_delta=0)
+    assert await database.get_account(user_id=42) is None
+
+
 async def test_adjust_balance_allows_negative_when_requested() -> None:
     """Manual tooling can explicitly allow a negative resulting balance."""
     await _add_balance(user_id=42, name="alice", amount=10)

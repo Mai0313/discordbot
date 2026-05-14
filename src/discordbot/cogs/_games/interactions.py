@@ -6,9 +6,7 @@ import logfire
 from nextcord import Interaction, ui
 
 
-async def send_ephemeral_notice(
-    interaction: Interaction, content: str, log_message: str
-) -> None:
+async def send_ephemeral_notice(interaction: Interaction, content: str, log_message: str) -> None:
     """Sends an ephemeral interaction notice with response/followup fallback."""
     try:
         if interaction.response.is_done():

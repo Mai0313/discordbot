@@ -119,33 +119,34 @@ async def modify_balance(
     before = account[1] if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
-    after = before + delta if allow_negative else max(before + delta, 0)
-    applied_delta = after - before
+    projected_after = before + delta if allow_negative else max(before + delta, 0)
+    projected_applied_delta = projected_after - before
 
-    if dry_run or applied_delta == 0:
+    if dry_run or delta == 0:
         return BalanceChange(
             user_id=user_id,
             name=effective_name,
             before=before,
             requested_delta=delta,
-            applied_delta=applied_delta,
-            after=after,
-            created=created and not dry_run and applied_delta != 0,
+            applied_delta=projected_applied_delta,
+            after=projected_after,
+            created=False,
             dry_run=dry_run,
         )
 
     adjustment = await database.adjust_balance(
-        user_id=user_id, name=effective_name, delta=applied_delta, allow_negative=allow_negative
+        user_id=user_id, name=effective_name, delta=delta, allow_negative=allow_negative
     )
+    actual_before = adjustment.new_balance - adjustment.applied_delta
 
     return BalanceChange(
         user_id=user_id,
         name=effective_name,
-        before=before,
+        before=actual_before,
         requested_delta=delta,
-        applied_delta=applied_delta,
+        applied_delta=adjustment.applied_delta,
         after=adjustment.new_balance,
-        created=created,
+        created=created and actual_before == 0 and adjustment.applied_delta != 0,
         dry_run=False,
     )
 

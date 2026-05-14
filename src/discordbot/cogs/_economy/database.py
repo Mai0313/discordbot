@@ -785,16 +785,20 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     kind: TransactionKind,
     now: datetime,
 ) -> tuple[int, int]:
-    """Applies a clamped signed delta and logs the resulting audit row.
+    """Applies a clamped signed delta and logs any resulting audit row.
 
     To log the *applied* delta rather than the requested one, this helper
     reads the pre-update balance first and diffs against the post-update value
-    returned by the UPSERT.
+    returned by the UPSERT. A negative delta against a missing row is a no-op
+    so manual clamp operations do not create zero-balance accounts.
     """
     pre_result = await session.execute(
         statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
     )
-    pre_balance = pre_result.scalar_one_or_none() or 0
+    pre_balance = pre_result.scalar_one_or_none()
+    if pre_balance is None and delta < 0:
+        return 0, 0
+    pre_balance = pre_balance or 0
     stmt = _build_clamped_delta_upsert(
         user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
     )
