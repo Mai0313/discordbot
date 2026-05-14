@@ -38,7 +38,11 @@ from discordbot.cogs._games.dragon_gate import (
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
 )
-from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
+from discordbot.cogs._games.interactions import (
+    send_ephemeral_notice,
+    disable_view_components,
+    edit_message_with_retry,
+)
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -383,7 +387,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
         view.message = message
         view.sync_controls()
-        await message.edit(embeds=view.in_progress_embeds(), view=view)
+        await edit_message_with_retry(message=message, embeds=view.in_progress_embeds(), view=view)
 
 
 class DragonGateView(ui.View):

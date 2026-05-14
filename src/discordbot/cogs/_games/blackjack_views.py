@@ -18,7 +18,7 @@ from discordbot.cogs._games.blackjack import (
     render_hand,
 )
 from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
-from discordbot.cogs._games.interactions import disable_view_components
+from discordbot.cogs._games.interactions import disable_view_components, edit_message_with_retry
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -312,7 +312,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
         if round_state.finished:
             await view.finalize(message=message)
             return
-        await message.edit(
+        await edit_message_with_retry(
+            message=message,
             embeds=[
                 build_dealer_talk_embed(
                     dealer_line=dealer_line,
