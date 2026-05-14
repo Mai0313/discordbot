@@ -643,24 +643,14 @@ async def test_blackjack_view_locks_actions_while_finalizing(
 
 
 async def test_add_balance_concurrent_credits_accumulate() -> None:
-    """Concurrent credits on the same user must not lose updates.
-
-    The old read-modify-write path would race: two coroutines read 100,
-    both compute 110, last commit wins, the first +10 silently vanishes.
-    UPSERT serializes the writes inside SQLite so both increments land.
-    """
+    """Verifies that concurrent credits on the same user do not lose updates."""
     await _add_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[_add_balance(user_id=42, name="alice", amount=10) for _ in range(20)])
     assert await database.get_balance(user_id=42) == 300
 
 
 async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
-    """Two concurrent first-sight credits on the same user must not raise.
-
-    The old `session.get()`-then-`session.add()` path would see both
-    coroutines find ``None``, both INSERT, and one would raise
-    `IntegrityError`. UPSERT collapses the race into a deterministic merge.
-    """
+    """Verifies that concurrent first-sight credits merge instead of racing."""
     results = await asyncio.gather(*[
         _add_balance(user_id=42, name="alice", amount=10) for _ in range(8)
     ])
@@ -686,12 +676,7 @@ async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
 
 
 async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> None:
-    """The dealer's hot row mustn't lose updates under concurrent settlements.
-
-    Every player wager mirrors into the dealer's ledger row, so this is the
-    single hottest row in the schema. The old read-modify-write path could
-    silently drop one of two simultaneous house settlements.
-    """
+    """Verifies that concurrent dealer ledger settlements accumulate."""
     await asyncio.gather(*[
         database.apply_round_settlement(
             player_id=user_id,

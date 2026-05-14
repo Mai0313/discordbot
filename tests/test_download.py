@@ -1,3 +1,5 @@
+"""Tests for the yt-dlp downloader facade."""
+
 from pathlib import Path
 
 import pytest

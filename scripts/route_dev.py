@@ -1,3 +1,5 @@
+"""Local structured-output smoke test for AI route decisions."""
+
 import time
 from typing import Literal
 

@@ -1,3 +1,5 @@
+"""Local OpenAI Agents smoke test for the Discord reply prompt."""
+
 from agents import Agent, Runner, set_tracing_disabled
 from rich.console import Console
 from agents.result import RunResult

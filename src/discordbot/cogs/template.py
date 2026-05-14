@@ -1,3 +1,5 @@
+"""Small utility cog for ping and simple message-trigger reactions."""
+
 import nextcord
 from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands

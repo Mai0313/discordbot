@@ -1,3 +1,5 @@
+"""LLM gateway settings loaded from environment variables."""
+
 import dotenv
 from pydantic import Field, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings

@@ -1,3 +1,5 @@
+"""Cog that clears self-timeouts and posts an AI-generated moderator reply."""
+
 from typing import cast
 from datetime import UTC, datetime
 from functools import cached_property

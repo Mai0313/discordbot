@@ -1,3 +1,5 @@
+"""Discord bot entry point and runtime event handlers."""
+
 import os
 import logging
 from pathlib import Path

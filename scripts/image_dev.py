@@ -1,3 +1,5 @@
+"""Local image generation and edit smoke test for the bot image models."""
+
 import time
 import base64
 from pathlib import Path

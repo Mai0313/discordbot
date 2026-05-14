@@ -1,3 +1,5 @@
+"""Slash command cog for downloading videos through yt-dlp."""
+
 import contextlib
 
 import logfire

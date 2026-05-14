@@ -1,3 +1,5 @@
+"""Local smoke test for LiteLLM fallback behavior."""
+
 from openai import OpenAI
 from rich.console import Console
 

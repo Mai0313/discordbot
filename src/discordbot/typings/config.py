@@ -1,3 +1,5 @@
+"""Discord runtime settings loaded from environment variables."""
+
 import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings

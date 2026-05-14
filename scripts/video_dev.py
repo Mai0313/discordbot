@@ -1,3 +1,5 @@
+"""Local video generation smoke test for the bot video model."""
+
 import time
 from pathlib import Path
 

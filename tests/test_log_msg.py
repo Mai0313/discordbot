@@ -65,13 +65,7 @@ def test_write_row_appends_to_existing_table(isolated_db: Engine) -> None:
 
 
 def test_write_row_upserts_on_same_discord_message_id(isolated_db: Engine) -> None:
-    """Two writes sharing a discord_message_id collapse into one updated row.
-
-    Mirrors the streaming-edit flow where bot replies edit themselves multiple
-    times; messages.db should converge to the final on-Discord state, not
-    accumulate the intermediate fragments. created_at stays pinned to the
-    original send-time even after the content update.
-    """
+    """Verifies that duplicate discord_message_id writes update one row."""
     log_msg._write_row_sync(row=_SAMPLE_ROW)
     edited_row = {
         **_SAMPLE_ROW,
@@ -125,11 +119,7 @@ def test_write_row_stores_different_sources_in_one_table(isolated_db: Engine) ->
 
 
 async def test_write_row_concurrent_inserts_all_land(isolated_db: Engine) -> None:
-    """Twenty concurrent writes via `asyncio.to_thread` all land in the table.
-
-    The file-level write lock plus `busy_timeout` serializes the threads; the
-    test fails fast if any insert is silently dropped.
-    """
+    """Verifies that concurrent threaded writes all land in the table."""
     rows = [
         {**_SAMPLE_ROW, "discord_message_id": f"{2000 + i}", "content": f"msg-{i}"}
         for i in range(20)

@@ -1,3 +1,5 @@
+"""yt-dlp wrapper utilities used by the video download command."""
+
 import types
 from typing import Any
 from pathlib import Path

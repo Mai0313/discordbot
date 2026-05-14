@@ -1,3 +1,5 @@
+"""Tests for Threads URL parsing and media extraction."""
+
 from pathlib import Path
 
 import pytest

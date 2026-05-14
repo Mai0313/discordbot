@@ -1,3 +1,5 @@
+"""Cog that expands Threads post URLs into Discord embeds and media files."""
+
 import re
 from pathlib import Path
 import contextlib

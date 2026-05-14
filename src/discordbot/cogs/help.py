@@ -1,3 +1,5 @@
+"""Localized help command content and embed builders."""
+
 import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands

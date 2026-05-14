@@ -8,6 +8,8 @@
 #     "rich",
 # ]
 # ///
+"""Generate and execute Markdown documentation from source files."""
+
 import ast
 import shutil
 from typing import Literal

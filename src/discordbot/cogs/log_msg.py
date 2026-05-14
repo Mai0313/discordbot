@@ -1,3 +1,5 @@
+"""Message logging cog backed by the local SQLite message store."""
+
 import re
 from typing import Any, Final
 import asyncio

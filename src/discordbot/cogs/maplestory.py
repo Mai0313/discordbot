@@ -1,3 +1,5 @@
+"""Slash commands for querying local MapleStory Artale data."""
+
 from pathlib import Path
 
 import nextcord

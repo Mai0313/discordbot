@@ -1,3 +1,5 @@
+"""Local comparison script for Chat Completions and Responses streaming."""
+
 import time
 
 from openai import OpenAI, AzureOpenAI

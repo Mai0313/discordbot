@@ -1,3 +1,5 @@
+"""Cog that routes Discord messages through the AI reply pipeline."""
+
 from io import BytesIO
 import re
 import base64
