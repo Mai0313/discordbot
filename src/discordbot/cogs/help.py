@@ -74,11 +74,13 @@ _HELP_CONTENT = {
             "`/dragon_gate` opens an In-Between table over a **global jackpot pool** "
             "shared across every table. The ante is fixed at 5,000 (into the pool), the "
             "minimum bet is 10,000, the maximum bet is the entire pool, and every bet "
-            "settles into the player row and the pool the instant it lands. Players can "
+            "settles into the player row and the pool the instant it lands. Adjacent "
+            "non-pair pillars are redealt without a bet. Players can "
             "leave mid-table via the Leave button; if their running delta is positive at "
             "leave / timeout, that surplus is refunded into the pool (逆贏不拿). The "
-            "table only ends when the pool is exhausted, all players have left, or no "
-            "one has interacted for 180 seconds.\n"
+            "table ends when someone wins the whole pool, all players have left, or no "
+            "one has interacted for 180 seconds. Whole-pool wins auto-reseed the jackpot "
+            "to 100,000 without affecting `/house`.\n"
             "Final game messages are cleaned up after 3 minutes."
         ),
         "ping": "**Ping** — `/ping`\nCheck the bot's response latency.",
@@ -146,9 +148,11 @@ _HELP_CONTENT = {
             "`/dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
             "入場費固定 5,000 點(進彩金池), 最低下注 10,000, 上限就是當下彩金池\n"
             "每次下注後玩家餘額與彩金池同步即時結算, 不再等桌結束\n"
+            "相鄰且不同點的門柱沒有龍門, 會直接重發, 不會下注\n"
             "玩家可隨時按「離桌」中途退出, 不影響其他玩家繼續玩\n"
             "離桌或 180 秒無互動超時時, 若該玩家當下淨贏 > 0, 該部分會逆向退回彩金池(逆贏不拿)"
-            "整桌結束的條件是彩金池被刷光, 所有玩家都離桌, 或 180 秒無人互動\n"
+            "整桌結束的條件是彩金池被全池贏走, 所有玩家都離桌, 或 180 秒無人互動\n"
+            "全池被贏走時系統會自動補回 100,000, 不算在 `/house`\n"
             "final game message 會在 3 分鐘後清掉"
         ),
         "ping": "**延遲測試** — `/ping`\n檢查機器人的回應延遲",
@@ -217,9 +221,11 @@ _HELP_CONTENT = {
             "`/dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
             "In-Between table を開きます。anteは固定 5,000 (pool へ)、最低 bet は 10,000、"
             "上限は pool の全額、各 bet は player 残高と pool に即時反映されます。\n"
+            "隣り合う non-pair の柱は gate なしとして bet せず引き直します。"
             "「離桌」ボタンで途中退場可能で他のプレイヤーは継続。退場 / 180 秒の無操作で "
             "running delta が正なら、その分は pool へ返戻されます (逆贏不拿)。"
-            "table は pool 枯渇 / 全員退場 / 180 秒の無操作で終了します。\n"
+            "table は pool 全額勝利 / 全員退場 / 180 秒の無操作で終了します。"
+            "pool 全額勝利時は system が jackpot を 100,000 へ自動補充し、`/house` には影響しません。\n"
             "final game message は3分後に削除されます。"
         ),
         "ping": "**Ping** — `/ping`\nボットの応答遅延を確認します。",

@@ -18,6 +18,7 @@ from discordbot.cogs._games.dragon_gate import (
     DragonGateRound,
     DragonGateParticipantUnknownError,
     card_value,
+    has_open_gate,
 )
 from discordbot.cogs._games.dragon_gate_views import (
     DragonGateView,
@@ -149,10 +150,16 @@ class JackpotState:
     without spinning up a real database.
     """
 
-    def __init__(self, initial_jackpot: int = 100_000, initial_balance: int = 100_000) -> None:
+    def __init__(
+        self,
+        initial_jackpot: int = 100_000,
+        initial_balance: int = 100_000,
+        replenish_seed: int = 100_000,
+    ) -> None:
         self.jackpot = initial_jackpot
         self.balances: dict[int, int] = {}
         self._initial_balance = initial_balance
+        self._replenish_seed = replenish_seed
         self.calls: list[dict[str, object]] = []
 
     async def settle(
@@ -168,6 +175,8 @@ class JackpotState:
         self.balances.setdefault(player_id, self._initial_balance)
         self.balances[player_id] += player_delta
         self.jackpot -= player_delta
+        if self._replenish_seed > 0 and self.jackpot <= 0:
+            self.jackpot = self._replenish_seed
         self.calls.append({
             "player_id": player_id,
             "player_account_name": player_account_name,
@@ -212,6 +221,25 @@ def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
     assert card_value(card=Card(rank="J", suit="♠")) == 11
     assert card_value(card=Card(rank="Q", suit="♠")) == 12
     assert card_value(card=Card(rank="K", suit="♠")) == 13
+
+
+def test_adjacent_non_pair_pillars_are_redealt_without_counting_turn() -> None:
+    """Adjacent non-pair pillars have no gate and are skipped before betting."""
+    assert has_open_gate(pillars=[Card(rank="4", suit="♠"), Card(rank="3", suit="♥")]) is False
+    assert has_open_gate(pillars=[Card(rank="7", suit="♠"), Card(rank="7", suit="♥")]) is True
+
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("4", "♠", "3", "♥", "5", "♣", "9", "♦", "7", "♠")),
+        participants=[_participant(user_id=1, display_name="Alice")],
+    )
+
+    assert round_state.turn_number == 1
+    assert round_state.active_turn is not None
+    assert [card.rank for card in round_state.active_turn.pillars] == ["5", "9"]
+
+    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+    assert result.outcome == "gate_win"
+    assert result.delta == 10_000
 
 
 def test_gate_win_returns_positive_delta() -> None:
@@ -491,10 +519,10 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     assert view._jackpot_snapshot == state.jackpot
 
 
-async def test_dragon_gate_view_pool_emptied_finalises_without_clawback(
+async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_clawback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Draining the pool finalises the table and skips the 逆贏不拿 refund."""
+    """Draining the pool replenishes it and skips the 逆贏不拿 refund."""
     owner = _participant(user_id=1, display_name="Alice")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
@@ -520,11 +548,16 @@ async def test_dragon_gate_view_pool_emptied_finalises_without_clawback(
         choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
     )
 
-    # gate_win for the full pot → pool drained, table finalised, no refund follow-up
-    assert state.jackpot == 0
+    # gate_win for the full pot → pool replenished, table finalised, no refund follow-up
+    assert state.jackpot == 100_000
     assert len(state.calls) == 1
     assert state.calls[0]["player_delta"] == 10_000
     assert view._settled is True
+    embeds = message.edits[-1]["embeds"]
+    assert isinstance(embeds, list)
+    assert isinstance(embeds[1], Embed)
+    assert isinstance(embeds[1].description, str)
+    assert "系統已自動補池" in embeds[1].description
 
 
 async def test_dragon_gate_view_leave_refunds_running_winnings(

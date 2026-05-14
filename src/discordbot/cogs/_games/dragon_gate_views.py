@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 import asyncio
 import contextlib
 
@@ -404,8 +404,13 @@ class DragonGateView(ui.View):
         """Restricts bet/direction to the active player; leave is open to all seated."""
         if self._settled or interaction.user is None:
             return False
-        data = interaction.data or {}
-        custom_id = data.get("custom_id", "") if isinstance(data, dict) else ""
+        data = (
+            cast("dict[str, object]", interaction.data)
+            if isinstance(interaction.data, dict)
+            else {}
+        )
+        custom_id_value = data.get("custom_id", "")
+        custom_id = custom_id_value if isinstance(custom_id_value, str) else ""
         user_id = interaction.user.id
         if custom_id == "dg:leave":
             if self.round_state.is_active(user_id=user_id):
@@ -587,6 +592,7 @@ class DragonGateView(ui.View):
         async with self._round_lock:
             if self._settled:
                 return
+            jackpot_before = self._jackpot_snapshot
             participant = self._participant_for(user_id=interaction.user.id)
             try:
                 turn_result = self.round_state.place_bet(
@@ -605,8 +611,12 @@ class DragonGateView(ui.View):
             )
             self._jackpot_snapshot = jackpot_after
             self._final_balances[interaction.user.id] = player_balance
-            if jackpot_after <= 0:
-                await self._finalize_locked(message=message, reason="彩金池清空")
+            pool_was_cleared = jackpot_after <= 0 or (
+                turn_result.delta > 0 and turn_result.delta >= jackpot_before
+            )
+            if pool_was_cleared:
+                reason = "彩金池清空" if jackpot_after <= 0 else "彩金池清空，系統已自動補池"
+                await self._finalize_locked(message=message, reason=reason)
                 return
             self.sync_controls()
             await message.edit(embeds=self.in_progress_embeds(), view=self)
@@ -806,7 +816,7 @@ class DragonGateBetModal(ui.Modal):
     def __init__(self, view: DragonGateView, minimum: int, maximum: int) -> None:
         super().__init__(title="自訂下注")
         self.view = view
-        self.amount = ui.TextInput(
+        self.amount: ui.TextInput = ui.TextInput(
             label="下注金額",
             placeholder=f"{minimum:,} 到 {maximum:,}",
             min_length=1,

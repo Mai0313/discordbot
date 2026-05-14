@@ -80,6 +80,12 @@ def render_cards(cards: list[Card]) -> str:
     return " ".join(str(card) for card in cards)
 
 
+def has_open_gate(pillars: list[Card]) -> bool:
+    """Returns whether the pillars produce a playable gate."""
+    values = sorted(card_value(card=card) for card in pillars)
+    return values[0] == values[1] or values[1] - values[0] > 1
+
+
 class DragonGateTurn(BaseModel):
     """Mutable state for one active player's 射龍門 attempt."""
 
@@ -296,13 +302,18 @@ class DragonGateRound(BaseModel):
         self.active_turn = None
 
     def _deal_next_turn(self) -> None:
-        self.turn_number += 1
         participant = self.participants[self.current_player_index]
+        pillars = self._draw_open_gate_pillars()
+        self.turn_number += 1
         self.active_turn = DragonGateTurn(
-            turn_number=self.turn_number,
-            participant=participant,
-            pillars=[draw_card(rng=self.rng), draw_card(rng=self.rng)],
+            turn_number=self.turn_number, participant=participant, pillars=pillars
         )
+
+    def _draw_open_gate_pillars(self) -> list[Card]:
+        while True:
+            pillars = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
+            if has_open_gate(pillars=pillars):
+                return pillars
 
     def _require_active_turn(self, user_id: int) -> DragonGateTurn:
         if self.finished or self.active_turn is None:
@@ -354,5 +365,6 @@ __all__ = [
     "DragonGateTurnResult",
     "card_value",
     "draw_card",
+    "has_open_gate",
     "render_cards",
 ]

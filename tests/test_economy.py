@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy import text, select
+from sqlalchemy import text, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._games import blackjack_views as views
@@ -1033,6 +1033,26 @@ async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 80_000
 
 
+async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
+    """A seeded jackpot restores itself after a player wins the whole pool."""
+    player_balance, jackpot_after = await database.apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=100_000, game_id="dragon_gate"
+    )
+
+    assert player_balance == 100_000
+    assert jackpot_after == 100_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=select(
+                database.JackpotPool.seeded_amount, database.JackpotPool.total_claimed
+            ).where(database.JackpotPool.game_id == "dragon_gate")
+        )
+        seeded_amount, total_claimed = result.one()
+    assert seeded_amount == 200_000
+    assert total_claimed == 100_000
+
+
 async def test_apply_jackpot_settlement_debits_player_and_grows_pool() -> None:
     """Player losses flow into the jackpot without clamping the player at zero."""
     await database.add_balance(user_id=1, name="alice", amount=15_000)
@@ -1064,6 +1084,20 @@ async def test_apply_jackpot_settlement_skips_vip_blackjack_bonus() -> None:
 async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
     """Unseeded game ids surface as 0 instead of raising."""
     assert await database.get_jackpot_pool(game_id="never_registered") == 0
+
+
+async def test_get_jackpot_pool_replenishes_legacy_drained_seed_pool() -> None:
+    """Reading a seeded jackpot repairs an older zero-balance row."""
+    await database._ensure_schema()
+    async with database.open_session() as session:
+        await session.execute(
+            statement=update(database.JackpotPool)
+            .where(database.JackpotPool.game_id == "dragon_gate")
+            .values(pool_balance=0)
+        )
+        await session.commit()
+
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
 
 
 async def test_ensure_schema_seeds_dragon_gate_jackpot_once(

@@ -41,7 +41,7 @@ rewards, the borrow cap, and the player's winning payout from games. The
 flag is permanent once set.
 """
 
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 from datetime import UTC, datetime, timezone, timedelta
 
 from sqlalchemy import (
@@ -77,6 +77,9 @@ from discordbot.typings.economy import (
     TransactionKind,
     VipPurchaseResult,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
 # place_bet / repay / _credit_with_repayment_in_session keep a small retry
 # budget for SELECT-then-conditional-UPDATE loops. With WAL + busy_timeout,
@@ -245,7 +248,7 @@ class JackpotPool(Base):
             (positive deltas from player losses + ante).
         total_claimed: Lifetime gross amount paid out from the pool
             (absolute value of negative deltas from player wins).
-        seeded_amount: One-time on-the-house seed; bookkeeping only,
+        seeded_amount: Lifetime on-the-house seed total; bookkeeping only,
             never decremented.
         updated_at: Taiwan-local timestamp of the last write.
     """
@@ -262,10 +265,18 @@ class JackpotPool(Base):
     )
 
 
-# Initial on-the-house seeds for each registered jackpot pool. The seed is
+# On-the-house seed amount for each registered jackpot pool. The seed is
 # bookkeeping only — the bot's user_account row is never decremented to fund
-# it, so /house P&L stays unaffected by the donation.
+# it, so /house P&L stays unaffected by the donation. Seeded pools are also
+# topped back up to this amount whenever they are drained.
 _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
+
+
+def _jackpot_seed_amount(game_id: str) -> int:
+    for seed_game_id, seed_amount in _JACKPOT_SEEDS:
+        if seed_game_id == game_id:
+            return seed_amount
+    return 0
 
 
 # Track which engine the schema has already been bootstrapped on. Storing
@@ -1163,9 +1174,10 @@ async def get_jackpot_pool(game_id: str) -> int:
     """Returns the current ``pool_balance`` for a game's shared jackpot.
 
     Reading the seeded row is the canonical way to surface the current
-    pool to a view (lobby start, every active-table refresh). Returns ``0``
-    when the row hasn't been seeded yet so a freshly-introduced game can
-    short-circuit cleanly.
+    pool to a view (lobby start, every active-table refresh). Seeded pools
+    are replenished before returning if an older process left them drained.
+    Returns ``0`` when the row hasn't been seeded yet so a freshly-introduced
+    game can short-circuit cleanly.
 
     Args:
         game_id: Game identifier (e.g. ``"dragon_gate"``).
@@ -1178,7 +1190,37 @@ async def get_jackpot_pool(game_id: str) -> int:
         result = await session.execute(
             statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
         )
-        return result.scalar_one_or_none() or 0
+        pool_balance = result.scalar_one_or_none()
+        if pool_balance is None:
+            return 0
+        replenished_balance = await _replenish_jackpot_if_depleted_in_session(
+            session=session, game_id=game_id, balance=pool_balance, now=_database_now()
+        )
+        if replenished_balance != pool_balance:
+            await session.commit()
+        return replenished_balance
+
+
+async def _replenish_jackpot_if_depleted_in_session(
+    session: AsyncSession, game_id: str, balance: int, now: datetime
+) -> int:
+    seed_amount = _jackpot_seed_amount(game_id=game_id)
+    if seed_amount <= 0 or balance > 0:
+        return balance
+    replenishment = seed_amount - min(balance, 0)
+    stmt = (
+        update(JackpotPool)
+        .where(JackpotPool.game_id == game_id)
+        .where(JackpotPool.pool_balance <= 0)
+        .values(
+            pool_balance=seed_amount,
+            seeded_amount=JackpotPool.seeded_amount + replenishment,
+            updated_at=now,
+        )
+        .returning(JackpotPool.pool_balance)
+    )
+    result = await session.execute(statement=stmt)
+    return result.scalar_one_or_none() or balance
 
 
 async def _apply_jackpot_delta_in_session(
@@ -1189,9 +1231,8 @@ async def _apply_jackpot_delta_in_session(
     Positive deltas accumulate ``total_contributed`` (player losses /
     antes flowing into the pool); negative deltas accumulate
     ``total_claimed`` with the absolute value (winning payouts flowing
-    out). The pool is allowed to dip below zero in edge cases (e.g. a
-    win larger than the remaining balance), mirroring the dealer ledger's
-    no-clamp behaviour.
+    out). Seeded pools are topped back up automatically after a drain, so
+    the returned balance is always ready for the next table.
 
     Args:
         session: Active SQLAlchemy session bound to ``_engine``.
@@ -1200,7 +1241,7 @@ async def _apply_jackpot_delta_in_session(
         now: ``_database_now()`` value pinned for this transaction.
 
     Returns:
-        The pool balance after the write.
+        The pool balance after the write and any automatic replenishment.
     """
     contributed_add = max(delta, 0)
     claimed_add = max(-delta, 0)
@@ -1226,7 +1267,10 @@ async def _apply_jackpot_delta_in_session(
         .returning(JackpotPool.pool_balance)
     )
     result = await session.execute(statement=stmt)
-    return result.scalar_one()
+    pool_balance = result.scalar_one()
+    return await _replenish_jackpot_if_depleted_in_session(
+        session=session, game_id=game_id, balance=pool_balance, now=now
+    )
 
 
 async def apply_jackpot_settlement(
@@ -1242,9 +1286,10 @@ async def apply_jackpot_settlement(
     into the shared jackpot pool rather than the dealer ledger. Positive
     player deltas (wins) credit the player via the 50% auto-repayment
     path and drain the pool by the same amount; negative deltas (losses)
-    debit the player without a zero clamp and feed the pool. Both writes
-    share one SQLite transaction so a crash between them cannot leave the
-    pool drifting from the player result.
+    debit the player without a zero clamp and feed the pool. If a seeded
+    pool is drained, the same transaction restores its on-the-house seed.
+    These writes share one SQLite transaction so a crash between them cannot
+    leave the pool drifting from the player result.
 
     Args:
         player_id: Discord user ID for the player.
@@ -1292,7 +1337,13 @@ async def apply_jackpot_settlement(
             pool_result = await session.execute(
                 statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
             )
-            jackpot_balance = pool_result.scalar_one_or_none() or 0
+            pool_balance = pool_result.scalar_one_or_none()
+            if pool_balance is None:
+                jackpot_balance = 0
+            else:
+                jackpot_balance = await _replenish_jackpot_if_depleted_in_session(
+                    session=session, game_id=game_id, balance=pool_balance, now=now
+                )
         else:
             jackpot_balance = await _apply_jackpot_delta_in_session(
                 session=session, game_id=game_id, delta=-player_delta, now=now
@@ -1599,6 +1650,7 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
     if avatar_url:
         update_values["avatar_url"] = avatar_url
 
+    last_checkin_gate: ColumnElement[bool]
     if last_checkin_at is None:
         last_checkin_gate = UserAccount.last_checkin_at.is_(None)
     else:
@@ -1689,7 +1741,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
                     avatar_url=avatar_url,
                     now=now,
                     new_streak=new_streak,
-                    row=row,
+                    row=cast("tuple[int, datetime | None, int, bool, str]", row),
                 )
 
             if outcome is None:
