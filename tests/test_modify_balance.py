@@ -22,6 +22,12 @@ async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncI
     await engine.dispose()
 
 
+async def _add_balance(user_id: int, name: str, amount: int) -> int:
+    """Seeds a balance through the manual adjustment API."""
+    result = await database.adjust_balance(user_id=user_id, name=name, delta=amount)
+    return result.new_balance
+
+
 def test_parse_args_accepts_all_target() -> None:
     """The CLI accepts `all` instead of a numeric Discord user ID."""
     args = modify_balance_script._parse_args(argv=["all", "50000"])
@@ -32,8 +38,8 @@ def test_parse_args_accepts_all_target() -> None:
 
 async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     """Bulk adjustment updates only accounts already present in the DB."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    await database.add_balance(user_id=2, name="bob", amount=200)
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=200)
 
     result = await modify_balance_script.modify_all_balances(delta=50_000)
 

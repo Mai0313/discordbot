@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy import text, select, update
+from sqlalchemy import func, text, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._games import blackjack_views as views
@@ -123,46 +123,99 @@ async def _stored_avatar_url(user_id: int) -> str:
         return result.scalar_one()
 
 
-async def test_add_balance_creates_user() -> None:
-    """First write upserts the row and returns the new balance."""
-    new = await database.add_balance(user_id=42, name="alice", amount=100)
-    assert new == 100
+async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
+    """Seeds a positive balance without writing audit rows."""
+    await database._ensure_schema()
+    if amount <= 0:
+        return await database.get_balance(user_id=user_id)
+    now = database._database_now()
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=database._build_credit_upsert(
+                user_id=user_id, name=name, amount=amount, avatar_url=avatar_url, now=now
+            )
+        )
+        await session.commit()
+        return result.scalar_one()
+
+
+async def test_adjust_balance_creates_user() -> None:
+    """First manual adjustment upserts the row and returns the new balance."""
+    result = await database.adjust_balance(user_id=42, name="alice", delta=100)
+    assert result == database.BalanceAdjustmentResult(new_balance=100, applied_delta=100)
     assert await database.get_balance(user_id=42) == 100
 
 
-async def test_add_balance_accumulates() -> None:
-    """Repeated adds increment the running balance."""
-    await database.add_balance(user_id=42, name="alice", amount=100)
-    new = await database.add_balance(user_id=42, name="alice", amount=50)
-    assert new == 150
+async def test_adjust_balance_accumulates() -> None:
+    """Repeated manual adjustments increment the running balance."""
+    await database.adjust_balance(user_id=42, name="alice", delta=100)
+    result = await database.adjust_balance(user_id=42, name="alice", delta=50)
+    assert result == database.BalanceAdjustmentResult(new_balance=150, applied_delta=50)
 
 
-async def test_add_balance_zero_is_noop() -> None:
-    """Zero or negative amounts must not change the balance."""
-    await database.add_balance(user_id=42, name="alice", amount=100)
-    assert await database.add_balance(user_id=42, name="alice", amount=0) == 100
-    assert await database.add_balance(user_id=42, name="alice", amount=-5) == 100
+async def test_adjust_balance_zero_is_noop() -> None:
+    """Zero deltas do not change the balance or write an audit row."""
+    await _add_balance(user_id=42, name="alice", amount=100)
+    result = await database.adjust_balance(user_id=42, name="alice", delta=0)
+    assert result == database.BalanceAdjustmentResult(new_balance=100, applied_delta=0)
+    async with database.open_session() as session:
+        count = await session.scalar(
+            statement=select(func.count()).where(
+                database.PointTransaction.user_id == 42,
+                database.PointTransaction.kind == database.TransactionKind.MANUAL_ADJUSTMENT.value,
+            )
+        )
+    assert count == 0
 
 
-async def test_add_balance_refreshes_name() -> None:
+async def test_adjust_balance_logs_manual_adjustment() -> None:
+    """Manual adjustments write explicit MANUAL_ADJUSTMENT audit rows."""
+    result = await database.adjust_balance(user_id=42, name="alice", delta=100)
+    assert result == database.BalanceAdjustmentResult(new_balance=100, applied_delta=100)
+    async with database.open_session() as session:
+        rows = (
+            await session.execute(
+                statement=select(
+                    database.PointTransaction.kind,
+                    database.PointTransaction.delta,
+                    database.PointTransaction.balance_after,
+                ).where(database.PointTransaction.user_id == 42)
+            )
+        ).all()
+    assert rows == [(database.TransactionKind.MANUAL_ADJUSTMENT.value, 100, 100)]
+
+
+async def test_adjust_balance_clamps_at_zero() -> None:
+    """Negative manual adjustment clamps at zero by default."""
+    await _add_balance(user_id=42, name="alice", amount=10)
+    result = await database.adjust_balance(user_id=42, name="alice", delta=-1_000)
+    assert result == database.BalanceAdjustmentResult(new_balance=0, applied_delta=-10)
+
+
+async def test_adjust_balance_allows_negative_when_requested() -> None:
+    """Manual tooling can explicitly allow a negative resulting balance."""
+    await _add_balance(user_id=42, name="alice", amount=10)
+    result = await database.adjust_balance(
+        user_id=42, name="alice", delta=-500, allow_negative=True
+    )
+    assert result == database.BalanceAdjustmentResult(new_balance=-490, applied_delta=-500)
+
+
+async def test_adjust_balance_refreshes_name() -> None:
     """Subsequent writes refresh the cached display name."""
-    await database.add_balance(user_id=42, name="alice", amount=10)
-    await database.add_balance(user_id=42, name="alice_renamed", amount=10)
+    await _add_balance(user_id=42, name="alice", amount=10)
+    await _add_balance(user_id=42, name="alice_renamed", amount=10)
     rows = await database.top_n(limit=1)
     assert rows[0][1] == "alice_renamed"
     assert rows[0][3] == ""
 
 
-async def test_add_balance_stores_and_refreshes_avatar_url() -> None:
+async def test_adjust_balance_stores_and_refreshes_avatar_url() -> None:
     """Subsequent writes refresh the cached avatar URL."""
-    await database.add_balance(
-        user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/a.png"
-    )
+    await _add_balance(user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/a.png")
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/a.png"
 
-    await database.add_balance(
-        user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/b.png"
-    )
+    await _add_balance(user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/b.png")
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/b.png"
 
 
@@ -232,7 +285,7 @@ async def test_existing_economy_db_gets_schema_migrations(
         )
     monkeypatch.setattr(target=database, name="_engine", value=engine)
 
-    await database.add_balance(
+    await _add_balance(
         user_id=42, name="alice", amount=5, avatar_url="https://cdn.example/avatar.png"
     )
 
@@ -246,64 +299,9 @@ async def test_existing_economy_db_gets_schema_migrations(
 
     # A brand-new user must be insertable after the migration even when the
     # legacy schema had NOT NULL columns without DEFAULT.
-    await database.add_balance(user_id=43, name="bob", amount=7)
+    await _add_balance(user_id=43, name="bob", amount=7)
     assert await database.get_balance(user_id=43) == 7
     await engine.dispose()
-
-
-async def test_place_bet_withdraws_requested_amount() -> None:
-    """A valid wager is deducted before the game starts."""
-    await database.add_balance(user_id=42, name="alice", amount=100)
-    placed = await database.place_bet(user_id=42, name="alice", requested_bet=40)
-    assert placed == database.PlacedBet(amount=40, balance_after=60, is_allin=False)
-    assert await database.get_balance(user_id=42) == 60
-
-
-async def test_place_bet_clamps_to_available_balance() -> None:
-    """Over-betting turns into an all-in for the remaining balance."""
-    await database.add_balance(user_id=42, name="alice", amount=25)
-    placed = await database.place_bet(user_id=42, name="alice", requested_bet=100)
-    assert placed == database.PlacedBet(amount=25, balance_after=0, is_allin=True)
-
-
-async def test_place_bet_rejects_empty_or_invalid_wager() -> None:
-    """Users with no points, or invalid wager amounts, cannot start a bet."""
-    assert await database.place_bet(user_id=404, name="nobody", requested_bet=10) is None
-    await database.add_balance(user_id=42, name="alice", amount=10)
-    assert await database.place_bet(user_id=42, name="alice", requested_bet=0) is None
-    assert await database.get_balance(user_id=42) == 10
-
-
-async def test_place_bet_prevents_concurrent_double_spend() -> None:
-    """Two simultaneous all-ins must not spend the same balance twice."""
-    await database.add_balance(user_id=42, name="alice", amount=100)
-    results = await asyncio.gather(
-        database.place_bet(user_id=42, name="alice", requested_bet=100),
-        database.place_bet(user_id=42, name="alice", requested_bet=100),
-    )
-    placed = [result for result in results if result is not None]
-    rejected = [result for result in results if result is None]
-    assert placed == [database.PlacedBet(amount=100, balance_after=0, is_allin=False)]
-    assert rejected == [None]
-    assert await database.get_balance(user_id=42) == 0
-    account = await database.get_account(user_id=42)
-    assert account is not None
-    _, _, _, total_spent = account
-    assert total_spent == 100
-
-
-async def test_settle_game_clamps_at_zero() -> None:
-    """A loss larger than the balance must clamp the balance at zero."""
-    await database.add_balance(user_id=42, name="alice", amount=10)
-    new = await database.settle_game(user_id=42, name="alice", delta=-1000)
-    assert new == 0
-
-
-async def test_settle_game_positive_pays_out() -> None:
-    """Positive delta credits the account and increments total_earned."""
-    await database.add_balance(user_id=42, name="alice", amount=10)
-    new = await database.settle_game(user_id=42, name="alice", delta=50)
-    assert new == 60
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
@@ -313,7 +311,7 @@ async def test_get_balance_unknown_user_returns_zero() -> None:
 
 async def test_transfer_moves_currency_between_users() -> None:
     """Successful transfer debits sender and credits receiver atomically."""
-    await database.add_balance(user_id=1, name="alice", amount=200)
+    await _add_balance(user_id=1, name="alice", amount=200)
     result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=80
     )
@@ -324,7 +322,7 @@ async def test_transfer_moves_currency_between_users() -> None:
 
 async def test_transfer_rejects_self() -> None:
     """Transfers to oneself must be rejected."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=1, receiver_name="alice", amount=10
     )
@@ -334,7 +332,7 @@ async def test_transfer_rejects_self() -> None:
 
 async def test_transfer_rejects_insufficient_balance() -> None:
     """Transfers exceeding the sender's balance must be rejected."""
-    await database.add_balance(user_id=1, name="alice", amount=10)
+    await _add_balance(user_id=1, name="alice", amount=10)
     result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=100
     )
@@ -345,7 +343,7 @@ async def test_transfer_rejects_insufficient_balance() -> None:
 
 async def test_transfer_prevents_concurrent_double_spend() -> None:
     """Concurrent transfers from one sender cannot reuse the same points."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     results = await asyncio.gather(
         database.transfer(
             sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=80
@@ -362,8 +360,8 @@ async def test_transfer_prevents_concurrent_double_spend() -> None:
 
 async def test_transfer_concurrent_credits_accumulate() -> None:
     """Concurrent transfers into one receiver must not lose either credit."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    await database.add_balance(user_id=2, name="bob", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=100)
     results = await asyncio.gather(
         database.transfer(
             sender_id=1, sender_name="alice", receiver_id=3, receiver_name="carol", amount=80
@@ -381,7 +379,7 @@ async def test_transfer_concurrent_credits_accumulate() -> None:
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1, -1000])
 async def test_transfer_rejects_non_positive(amount: int) -> None:
     """Transfers with non-positive amounts must be rejected."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     result = await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=amount
     )
@@ -390,33 +388,54 @@ async def test_transfer_rejects_non_positive(amount: int) -> None:
 
 async def test_top_n_orders_by_balance_descending() -> None:
     """Leaderboard returns the top accounts ordered by balance."""
-    await database.add_balance(user_id=1, name="alice", amount=100, avatar_url="https://cdn/a.png")
-    await database.add_balance(user_id=2, name="bob", amount=300, avatar_url="https://cdn/b.png")
-    await database.add_balance(user_id=3, name="carol", amount=50)
+    await _add_balance(user_id=1, name="alice", amount=100, avatar_url="https://cdn/a.png")
+    await _add_balance(user_id=2, name="bob", amount=300, avatar_url="https://cdn/b.png")
+    await _add_balance(user_id=3, name="carol", amount=50)
     rows = await database.top_n(limit=2)
     assert rows == [(2, "bob", 300, "https://cdn/b.png"), (1, "alice", 100, "https://cdn/a.png")]
 
 
 async def test_top_n_excludes_specified_users() -> None:
     """Excluded user IDs (e.g. the bot's house ledger) must not appear in the result."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    await database.add_balance(user_id=2, name="bob", amount=300)
-    await database.add_balance(user_id=99, name="house", amount=999)
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=300)
+    await _add_balance(user_id=99, name="house", amount=999)
     rows = await database.top_n(limit=10, exclude_user_ids=(99,))
     assert all(row[0] != 99 for row in rows)
     assert rows[0][:3] == (2, "bob", 300)
 
 
-async def test_house_settle_allows_negative_balance() -> None:
+async def test_apply_round_settlement_allows_negative_house_balance() -> None:
     """House ledger keeps a true running net even when the dealer is down."""
-    await database.house_settle(user_id=99, name="house", delta=-500)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-500,
+    )
     assert await database.get_balance(user_id=99) == -500
 
 
-async def test_house_settle_accumulates_gross_flows() -> None:
+async def test_apply_round_settlement_house_accumulates_gross_flows() -> None:
     """Wins and losses both accumulate gross totals, not just the net balance."""
-    await database.house_settle(user_id=99, name="house", delta=200)
-    await database.house_settle(user_id=99, name="house", delta=-300)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-200,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=200,
+    )
+    await database.apply_round_settlement(
+        player_id=2,
+        player_account_name="bob",
+        player_delta=300,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-300,
+    )
     account = await database.get_account(user_id=99)
     assert account is not None
     name, balance, total_earned, total_spent = account
@@ -428,7 +447,7 @@ async def test_house_settle_accumulates_gross_flows() -> None:
 
 async def test_settle_wager_updates_player_and_house() -> None:
     """Shared wager settlement applies net delta and mirrors house P&L."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     settlement = await settle_wager(
         player_id=1,
@@ -450,7 +469,7 @@ async def test_get_account_returns_none_for_unseen_user() -> None:
 
 async def test_settle_blackjack_round_updates_player_and_house() -> None:
     """Shared Blackjack settlement applies net delta and mirrors house P&L."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
@@ -479,7 +498,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     monkeypatch.setattr(
         target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
     )
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
@@ -519,7 +538,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     monkeypatch.setattr(
         target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
     )
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     hand = BlackjackHand(rng=SystemRandom(), bet=50)
     hand.player = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
@@ -614,10 +633,8 @@ async def test_add_balance_concurrent_credits_accumulate() -> None:
     both compute 110, last commit wins, the first +10 silently vanishes.
     UPSERT serializes the writes inside SQLite so both increments land.
     """
-    await database.add_balance(user_id=42, name="alice", amount=100)
-    await asyncio.gather(*[
-        database.add_balance(user_id=42, name="alice", amount=10) for _ in range(20)
-    ])
+    await _add_balance(user_id=42, name="alice", amount=100)
+    await asyncio.gather(*[_add_balance(user_id=42, name="alice", amount=10) for _ in range(20)])
     assert await database.get_balance(user_id=42) == 300
 
 
@@ -629,22 +646,30 @@ async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
     `IntegrityError`. UPSERT collapses the race into a deterministic merge.
     """
     results = await asyncio.gather(*[
-        database.add_balance(user_id=42, name="alice", amount=10) for _ in range(8)
+        _add_balance(user_id=42, name="alice", amount=10) for _ in range(8)
     ])
     assert all(isinstance(value, int) for value in results)
     assert await database.get_balance(user_id=42) == 80
 
 
-async def test_settle_game_concurrent_credits_accumulate() -> None:
+async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
     """Concurrent positive settlements on the same user must not lose updates."""
-    await database.add_balance(user_id=42, name="alice", amount=100)
+    await _add_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[
-        database.settle_game(user_id=42, name="alice", delta=10) for _ in range(10)
+        database.apply_round_settlement(
+            player_id=42,
+            player_account_name="alice",
+            player_delta=10,
+            dealer_id=99,
+            dealer_name="house",
+            dealer_delta=-10,
+        )
+        for _ in range(10)
     ])
     assert await database.get_balance(user_id=42) == 200
 
 
-async def test_house_settle_concurrent_updates_accumulate() -> None:
+async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> None:
     """The dealer's hot row mustn't lose updates under concurrent settlements.
 
     Every player wager mirrors into the dealer's ledger row, so this is the
@@ -652,7 +677,15 @@ async def test_house_settle_concurrent_updates_accumulate() -> None:
     silently drop one of two simultaneous house settlements.
     """
     await asyncio.gather(*[
-        database.house_settle(user_id=99, name="house", delta=10) for _ in range(10)
+        database.apply_round_settlement(
+            player_id=user_id,
+            player_account_name=f"player{user_id}",
+            player_delta=-10,
+            dealer_id=99,
+            dealer_name="house",
+            dealer_delta=10,
+        )
+        for user_id in range(10)
     ])
     account = await database.get_account(user_id=99)
     assert account is not None
@@ -664,7 +697,7 @@ async def test_house_settle_concurrent_updates_accumulate() -> None:
 
 async def test_apply_round_settlement_is_atomic() -> None:
     """Player delta and house mirror share one transaction and one return."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     player_balance, house_balance = await database.apply_round_settlement(
         player_id=1,
@@ -682,7 +715,7 @@ async def test_apply_round_settlement_is_atomic() -> None:
 
 async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
     """A loss debits the player and credits the house."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
 
     player_balance, house_balance = await database.apply_round_settlement(
         player_id=1,
@@ -703,7 +736,7 @@ async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
 
 async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
     """Deferred settlement still collects a loss after the balance was spent elsewhere."""
-    await database.add_balance(user_id=1, name="alice", amount=25)
+    await _add_balance(user_id=1, name="alice", amount=25)
 
     player_balance, house_balance = await database.apply_round_settlement(
         player_id=1,
@@ -800,7 +833,7 @@ async def test_checkin_missed_day_resets_streak_to_one() -> None:
 
 async def test_checkin_vip_gets_double_base() -> None:
     """A VIP account starts at 2x base before the streak multiplier."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
     result = await database.checkin(user_id=1, name="alice")
@@ -846,7 +879,7 @@ async def test_checkin_logs_audit_row() -> None:
 
 async def test_buy_vip_sets_flag_and_debits_balance() -> None:
     """A successful purchase costs ``VIP_PURCHASE_COST`` and flips ``is_vip``."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 100)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 100)
     result = await database.buy_vip(user_id=1, name="alice")
     assert result is not None
     assert result.new_balance == 100
@@ -856,7 +889,7 @@ async def test_buy_vip_sets_flag_and_debits_balance() -> None:
 
 async def test_buy_vip_rejects_insufficient_balance() -> None:
     """Users without enough points cannot purchase VIP."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     result = await database.buy_vip(user_id=1, name="alice")
     assert result is None
     assert await database.get_vip(user_id=1) is False
@@ -864,7 +897,7 @@ async def test_buy_vip_rejects_insufficient_balance() -> None:
 
 async def test_buy_vip_rejects_existing_vip() -> None:
     """A second purchase by an existing VIP returns None and does not re-debit."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST * 2)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST * 2)
     first = await database.buy_vip(user_id=1, name="alice")
     assert first is not None
     second = await database.buy_vip(user_id=1, name="alice")
@@ -879,7 +912,7 @@ async def test_buy_vip_rejects_unseen_user() -> None:
 
 async def test_buy_vip_logs_audit_row() -> None:
     """A successful purchase records one VIP_PURCHASE audit row."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
     await database.buy_vip(user_id=1, name="alice")
     async with database.open_session() as session:
         rows = (
@@ -902,8 +935,8 @@ async def test_get_vip_unknown_user_returns_false() -> None:
 
 async def test_top_losers_only_lists_net_negative_players() -> None:
     """A player with a positive casino net does not appear on the loss board."""
-    await database.add_balance(user_id=1, name="alice", amount=1_000)
-    await database.add_balance(user_id=2, name="bob", amount=1_000)
+    await _add_balance(user_id=1, name="alice", amount=1_000)
+    await _add_balance(user_id=2, name="bob", amount=1_000)
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -927,7 +960,7 @@ async def test_top_losers_only_lists_net_negative_players() -> None:
 async def test_top_losers_orders_by_loss_magnitude() -> None:
     """The leaderboard sorts from biggest loss to smallest."""
     for user_id, name, loss in [(1, "alice", 100), (2, "bob", 500), (3, "carol", 250)]:
-        await database.add_balance(user_id=user_id, name=name, amount=loss)
+        await _add_balance(user_id=user_id, name=name, amount=loss)
         await database.apply_round_settlement(
             player_id=user_id,
             player_account_name=name,
@@ -942,7 +975,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
 
 async def test_top_losers_excludes_specified_users() -> None:
     """``exclude_user_ids`` filters the house ledger out of the report."""
-    await database.add_balance(user_id=1, name="alice", amount=500)
+    await _add_balance(user_id=1, name="alice", amount=500)
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -957,7 +990,7 @@ async def test_top_losers_excludes_specified_users() -> None:
 
 async def test_top_losers_ignores_events_before_today() -> None:
     """Audit rows older than today's Taipei midnight do not count."""
-    await database.add_balance(user_id=1, name="alice", amount=500)
+    await _add_balance(user_id=1, name="alice", amount=500)
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -977,7 +1010,13 @@ async def test_top_losers_ignores_events_before_today() -> None:
 
 async def test_top_losers_empty_when_no_casino_activity() -> None:
     """Without any CASINO_BET / CASINO_PAYOUT rows the leaderboard is empty."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
+    assert await database.top_losers(limit=10, exclude_user_ids=(99,)) == []
+
+
+async def test_top_losers_ignores_manual_adjustments() -> None:
+    """Manual admin debits do not count as casino losses."""
+    await database.adjust_balance(user_id=1, name="alice", delta=-100, allow_negative=True)
     assert await database.top_losers(limit=10, exclude_user_ids=(99,)) == []
 
 
@@ -986,7 +1025,7 @@ async def test_top_losers_empty_when_no_casino_activity() -> None:
 
 async def test_settle_wager_applies_vip_bonus_on_win() -> None:
     """A VIP player wins 1.5x of the base delta; house mirrors the boosted amount."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
     settlement = await settle_wager(
@@ -1003,7 +1042,7 @@ async def test_settle_wager_applies_vip_bonus_on_win() -> None:
 
 async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     """The VIP perk does not soften losses."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 1_000)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 1_000)
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
     settlement = await settle_wager(
@@ -1020,7 +1059,7 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
 
 async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None:
     """Player wins pull points out of the jackpot row in one atomic step."""
-    await database.add_balance(user_id=1, name="alice", amount=10_000)
+    await _add_balance(user_id=1, name="alice", amount=10_000)
     # _ensure_schema already seeded the dragon_gate pool at 100_000.
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
 
@@ -1055,7 +1094,7 @@ async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
 
 async def test_apply_jackpot_settlement_debits_player_and_grows_pool() -> None:
     """Player losses flow into the jackpot without clamping the player at zero."""
-    await database.add_balance(user_id=1, name="alice", amount=15_000)
+    await _add_balance(user_id=1, name="alice", amount=15_000)
 
     player_balance, jackpot_after = await database.apply_jackpot_settlement(
         player_id=1, player_account_name="alice", player_delta=-25_000, game_id="dragon_gate"
@@ -1065,9 +1104,73 @@ async def test_apply_jackpot_settlement_debits_player_and_grows_pool() -> None:
     assert jackpot_after == 125_000
 
 
+async def test_apply_jackpot_settlement_batch_charges_multiple_players_atomically() -> None:
+    """Batch jackpot settlements share one transaction and one final snapshot."""
+    await _add_balance(user_id=1, name="alice", amount=10_000)
+    await _add_balance(user_id=2, name="bob", amount=10_000)
+
+    result = await database.apply_jackpot_settlement_batch(
+        game_id="dragon_gate",
+        settlements=(
+            database.JackpotSettlementRequest(
+                player_id=1, player_account_name="alice", player_delta=-5_000
+            ),
+            database.JackpotSettlementRequest(
+                player_id=2, player_account_name="bob", player_delta=-7_000
+            ),
+        ),
+    )
+
+    assert result.player_balances == {1: 5_000, 2: 3_000}
+    assert result.jackpot_balance == 112_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 112_000
+
+
+async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed batch ante settlement cannot partially charge players."""
+    await _add_balance(user_id=1, name="alice", amount=10_000)
+    await _add_balance(user_id=2, name="bob", amount=10_000)
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+
+    calls = 0
+    original_apply = database._apply_jackpot_delta_in_session
+
+    async def flaky_apply_jackpot_delta_in_session(**kwargs: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("forced batch failure")
+        return await original_apply(**kwargs)
+
+    monkeypatch.setattr(
+        target=database,
+        name="_apply_jackpot_delta_in_session",
+        value=flaky_apply_jackpot_delta_in_session,
+    )
+
+    with pytest.raises(expected_exception=RuntimeError, match="forced batch failure"):
+        await database.apply_jackpot_settlement_batch(
+            game_id="dragon_gate",
+            settlements=(
+                database.JackpotSettlementRequest(
+                    player_id=1, player_account_name="alice", player_delta=-5_000
+                ),
+                database.JackpotSettlementRequest(
+                    player_id=2, player_account_name="bob", player_delta=-7_000
+                ),
+            ),
+        )
+
+    assert await database.get_balance(user_id=1) == 10_000
+    assert await database.get_balance(user_id=2) == 10_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+
+
 async def test_apply_jackpot_settlement_skips_vip_blackjack_bonus() -> None:
     """射龍門 winnings stay at face value even for VIP accounts."""
-    await database.add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST)
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
 

@@ -99,11 +99,9 @@ async def modify_balance(
 ) -> BalanceChange:
     """Applies a manual economy balance adjustment via the database API.
 
-    Routes the change through the same helpers the bot itself uses: positive
-    deltas go through ``add_balance`` and negative deltas go through
-    ``settle_game`` (which clamps at zero) or ``house_settle`` (which allows
-    negative balances). Dry runs read the current state and compute the
-    expected applied delta without writing.
+    Routes the change through ``adjust_balance`` so admin edits are logged as
+    manual adjustments instead of casino activity. Dry runs read the current
+    state and compute the expected applied delta without writing.
 
     Args:
         user_id: Discord user ID whose account should be adjusted.
@@ -136,20 +134,9 @@ async def modify_balance(
             dry_run=dry_run,
         )
 
-    if applied_delta > 0:
-        new_balance = await database.add_balance(
-            user_id=user_id, name=effective_name, amount=applied_delta
-        )
-    elif allow_negative:
-        # house_settle is the only public helper that allows the resulting
-        # balance to go below zero; the admin CLI is its only non-dealer caller.
-        new_balance = await database.house_settle(
-            user_id=user_id, name=effective_name, delta=applied_delta
-        )
-    else:
-        new_balance = await database.settle_game(
-            user_id=user_id, name=effective_name, delta=applied_delta
-        )
+    adjustment = await database.adjust_balance(
+        user_id=user_id, name=effective_name, delta=applied_delta, allow_negative=allow_negative
+    )
 
     return BalanceChange(
         user_id=user_id,
@@ -157,7 +144,7 @@ async def modify_balance(
         before=before,
         requested_delta=delta,
         applied_delta=applied_delta,
-        after=new_balance,
+        after=adjustment.new_balance,
         created=created,
         dry_run=False,
     )
