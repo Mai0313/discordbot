@@ -22,6 +22,7 @@ class _DealerStub:
     """Minimal dealer stub for BlackjackView settlement tests."""
 
     def __init__(self) -> None:
+        """Initializes call counters for dealer interactions."""
         self.settle_calls = 0
         self.hint_calls = 0
 
@@ -42,6 +43,7 @@ class _MessageStub:
     """Minimal message stub that records edit calls."""
 
     def __init__(self) -> None:
+        """Initializes the message edit counter."""
         self.edit_calls = 0
 
     async def edit(self, **_kwargs: object) -> None:
@@ -53,6 +55,7 @@ class _ResponseStub:
     """Minimal interaction response stub for button callback tests."""
 
     def __init__(self) -> None:
+        """Initializes the deferred flag."""
         self.deferred = False
 
     async def defer(self) -> None:
@@ -64,6 +67,7 @@ class _InteractionStub:
     """Minimal button interaction stub."""
 
     def __init__(self, message: _MessageStub) -> None:
+        """Initializes an interaction with a message and response stub."""
         self.message = message
         self.response = _ResponseStub()
 
@@ -501,6 +505,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     cleanup_messages: list[object] = []
 
     def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
@@ -541,6 +546,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     cleanup_messages: list[object] = []
 
     def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
@@ -584,9 +590,11 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     continue_settlement = asyncio.Event()
 
     def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
     async def delayed_settle_blackjack_round(**_kwargs: object) -> BlackjackSettlement:
+        """Blocks settlement until the test releases the finalization lock."""
         settlement_started.set()
         await continue_settlement.wait()
         return BlackjackSettlement(
@@ -1146,6 +1154,7 @@ async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
     original_apply = database._apply_jackpot_delta_in_session
 
     async def flaky_apply_jackpot_delta_in_session(**kwargs: object) -> int:
+        """Fails on the second jackpot write to test batch rollback."""
         nonlocal calls
         calls += 1
         if calls == 2:

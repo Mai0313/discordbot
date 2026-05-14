@@ -302,6 +302,7 @@ class DragonGateRound(BaseModel):
         self.active_turn = None
 
     def _deal_next_turn(self) -> None:
+        """Deals a new playable gate for the current participant."""
         participant = self.participants[self.current_player_index]
         pillars = self._draw_open_gate_pillars()
         self.turn_number += 1
@@ -310,12 +311,14 @@ class DragonGateRound(BaseModel):
         )
 
     def _draw_open_gate_pillars(self) -> list[Card]:
+        """Draws pillar cards until the pair or gap creates a legal gate."""
         while True:
             pillars = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
             if has_open_gate(pillars=pillars):
                 return pillars
 
     def _require_active_turn(self, user_id: int) -> DragonGateTurn:
+        """Returns the active turn or raises the matching rule error."""
         if self.finished or self.active_turn is None:
             raise DragonGateTableFinishedError("Table is finished")
         if self.active_turn.participant.user_id != user_id:
@@ -325,6 +328,7 @@ class DragonGateRound(BaseModel):
     def _resolve_turn(
         self, turn: DragonGateTurn, third_card: Card, amount: int
     ) -> tuple[DragonGateOutcome, int]:
+        """Resolves a non-pair or pair gate into outcome and player delta."""
         third_value = card_value(card=third_card)
         if turn.is_pair:
             return self._resolve_pair_turn(turn=turn, third_value=third_value, amount=amount)
@@ -337,6 +341,7 @@ class DragonGateRound(BaseModel):
     def _resolve_pair_turn(
         self, turn: DragonGateTurn, third_value: int, amount: int
     ) -> tuple[DragonGateOutcome, int]:
+        """Resolves a same-point gate using the selected high or low direction."""
         pillar_value = turn.lower_value
         if third_value == pillar_value:
             return "pair_pillar_hit", -amount * 3

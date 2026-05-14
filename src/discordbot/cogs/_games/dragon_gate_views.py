@@ -65,6 +65,7 @@ DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
+    """Formats visible lobby participants and hidden overflow count."""
     lines: list[str] = []
     visible = participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]
     for index, participant in enumerate(visible, start=1):
@@ -76,6 +77,7 @@ def _participant_lines(participants: list[GameParticipant]) -> str:
 
 
 def _direction_label(direction: DragonGateDirection | None) -> str:
+    """Returns the display label for a pair-gate direction choice."""
     if direction == "higher":
         return "⬆️ 猜大"
     if direction == "lower":
@@ -84,6 +86,7 @@ def _direction_label(direction: DragonGateDirection | None) -> str:
 
 
 def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
+    """Returns the display label and embed color for a turn outcome."""
     values: dict[DragonGateOutcome, tuple[str, int]] = {
         "gate_win": ("✅ 射進龍門", WIN_COLOR),
         "outside_lose": ("❌ 射偏", LOSE_COLOR),
@@ -96,6 +99,7 @@ def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
 
 
 def _result_line(result: DragonGateTurnResult) -> str:
+    """Formats the latest resolved turn for the main embed."""
     outcome_label, _color = _outcome_presentation(outcome=result.outcome)
     direction = f" · {_direction_label(direction=result.direction)}" if result.direction else ""
     pillars = " ".join(str(card) for card in result.pillars)
@@ -107,6 +111,7 @@ def _result_line(result: DragonGateTurnResult) -> str:
 
 
 def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
+    """Builds monospace history lines for completed turns."""
     lines: list[str] = []
     for result in history:
         outcome_label, _color = _outcome_presentation(outcome=result.outcome)
@@ -119,6 +124,7 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
 
 
 def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
+    """Builds monospace scoreboard lines from current table deltas."""
     lines: list[str] = []
     for participant in round_state.participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
         delta = round_state.player_delta(user_id=participant.user_id)
@@ -138,6 +144,7 @@ def _last_result_line(result: DragonGateTurnResult) -> str:
 
 
 def _gate_description_block(turn: DragonGateTurn) -> str:
+    """Formats the active gate and pair-choice hint for the main embed."""
     left_card, right_card = turn.pillars
     cards = f"# {left_card} ------- {right_card}"
     if turn.is_pair:
@@ -149,6 +156,7 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
 
 
 def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
+    """Formats compact table settlement details for dealer banter."""
     lines: list[str] = []
     for result in results:
         delta = currency_text(amount=result.delta, signed=True)
@@ -157,6 +165,7 @@ def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
 
 
 def _table_color(results: list[DragonGatePlayerResult]) -> int:
+    """Returns the final embed color from the table's net result."""
     total_delta = sum(result.delta for result in results)
     if total_delta > 0:
         return WIN_COLOR
@@ -166,6 +175,7 @@ def _table_color(results: list[DragonGatePlayerResult]) -> int:
 
 
 def _settlement_result_heading(delta: int) -> str:
+    """Formats one player's final net delta as an embed heading."""
     if delta > 0:
         return f"## {WIN_RESULT_EMOJI} `{delta:+,}`"
     if delta < 0:
@@ -174,6 +184,7 @@ def _settlement_result_heading(delta: int) -> str:
 
 
 def _final_title(results: list[DragonGatePlayerResult]) -> str:
+    """Builds the final 射龍門 title for single or multiplayer results."""
     if len(results) == 1:
         delta = results[0].delta
         if delta > 0:
@@ -323,6 +334,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
     ) -> None:
+        """Initializes a 射龍門 lobby with the current jackpot snapshot."""
         super().__init__(
             owner=owner,
             rng=rng,
@@ -336,6 +348,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+        """Builds the 射龍門 lobby embed from participants and jackpot state."""
         return build_dragon_gate_lobby_embed(
             owner=self.owner,
             participants=self.participants,
@@ -346,6 +359,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]
     ) -> None:
+        """Starts the active table after all lobby antes have been charged."""
         round_state = DragonGateRound.from_participants(
             rng=self.rng, participants=self.participants
         )
@@ -386,6 +400,7 @@ class DragonGateView(ui.View):
         final_balances: dict[int, int],
         dealer_avatar_url: str = "",
     ) -> None:
+        """Initializes the active 射龍門 table view."""
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
         self.dealer = dealer
         self.round_state = round_state
@@ -475,6 +490,7 @@ class DragonGateView(ui.View):
         await self._handle_leave(interaction=interaction)
 
     async def _handle_bet_choice(self, choice: str, interaction: Interaction) -> None:
+        """Routes a select-menu choice to a fixed bet or custom modal."""
         if choice == "custom":
             if self.round_state.needs_pair_choice():
                 await interaction.response.send_message(
@@ -554,6 +570,7 @@ class DragonGateView(ui.View):
     async def _choose_direction(
         self, interaction: Interaction, direction: DragonGateDirection
     ) -> None:
+        """Stores a high or low choice for the active pair gate."""
         await interaction.response.defer()
         if interaction.user is None or interaction.message is None:
             return
@@ -579,12 +596,14 @@ class DragonGateView(ui.View):
             await interaction.message.edit(embeds=self.in_progress_embeds(), view=self)
 
     async def _place_select_bet(self, interaction: Interaction, amount: int) -> None:
+        """Defers a select interaction and places the chosen fixed bet."""
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     async def _place_bet_locked_by_interaction(
         self, interaction: Interaction, amount: int
     ) -> None:
+        """Resolves a bet, settles it against the jackpot, and refreshes the table."""
         if interaction.user is None:
             return
         message = interaction.message or self.message
@@ -623,6 +642,7 @@ class DragonGateView(ui.View):
             await message.edit(embeds=self.in_progress_embeds(), view=self)
 
     async def _handle_leave(self, interaction: Interaction) -> None:
+        """Withdraws a seated player and refunds positive table delta to the jackpot."""
         if interaction.user is None:
             return
         await interaction.response.defer()
@@ -656,6 +676,7 @@ class DragonGateView(ui.View):
             await message.edit(embeds=self.in_progress_embeds(), view=self)
 
     def in_progress_embeds(self) -> list[Embed]:
+        """Builds the current dealer, table, and optional history embeds."""
         embeds: list[Embed] = [
             build_dealer_talk_embed(
                 dealer_line=self._dealer_line,
@@ -674,6 +695,7 @@ class DragonGateView(ui.View):
         return embeds
 
     async def _refund_remaining_winners_locked(self) -> None:
+        """Returns positive in-flight deltas to the jackpot before table cleanup."""
         for participant in self.round_state.active_participants():
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:
@@ -690,6 +712,7 @@ class DragonGateView(ui.View):
             self._refunded_to_pool[participant.user_id] = delta
 
     async def _finalize_locked(self, message: Message, reason: str) -> None:
+        """Builds final results, disables controls, and schedules cleanup."""
         if self._settled:
             return
         self._settled = True
@@ -743,24 +766,28 @@ class DragonGateView(ui.View):
         schedule_game_message_delete(message=message)
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
+        """Returns the participant matching a Discord user ID."""
         for participant in self.round_state.participants:
             if participant.user_id == user_id:
                 return participant
         return None
 
     def _button(self, custom_id: str) -> ui.Button:
+        """Returns a button component by custom ID."""
         for child in self.children:
             if isinstance(child, ui.Button) and child.custom_id == custom_id:
                 return child
         raise RuntimeError(f"Missing button: {custom_id}")
 
     def _select(self, custom_id: str) -> ui.StringSelect:
+        """Returns a string select component by custom ID."""
         for child in self.children:
             if isinstance(child, ui.StringSelect) and child.custom_id == custom_id:
                 return child
         raise RuntimeError(f"Missing select: {custom_id}")
 
     def _current_turn_notice(self) -> str:
+        """Returns the ephemeral notice for users acting out of turn."""
         active_turn = self.round_state.active_turn
         if active_turn is None:
             return "這桌已經不能操作了"
@@ -769,6 +796,7 @@ class DragonGateView(ui.View):
     async def _send_bet_error_notice(
         self, interaction: Interaction, error: DragonGateError
     ) -> None:
+        """Maps Dragon Gate rule errors to user-facing ephemeral notices."""
         if isinstance(error, DragonGatePairChoiceRequiredError):
             content = "同點門柱要先猜大或猜小"
         elif isinstance(error, DragonGateTableFinishedError):
@@ -788,6 +816,7 @@ class DragonGateView(ui.View):
         await self._send_notice(interaction=interaction, content=content)
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
+        """Sends a private action notice to the interacting user."""
         await send_ephemeral_notice(
             interaction=interaction,
             content=content,
@@ -804,6 +833,7 @@ class DragonGateView(ui.View):
         )
 
     def _disable_controls(self) -> None:
+        """Disables every active-table button and select control."""
         disable_view_components(
             children=self.children, component_types=(ui.Button, ui.StringSelect)
         )
@@ -813,6 +843,7 @@ class DragonGateBetModal(ui.Modal):
     """Modal for entering an exact 射龍門 bet amount."""
 
     def __init__(self, view: DragonGateView, minimum: int, maximum: int) -> None:
+        """Initializes the modal with a range-aware amount input."""
         super().__init__(title="自訂下注")
         self.view = view
         self.amount: ui.TextInput = ui.TextInput(

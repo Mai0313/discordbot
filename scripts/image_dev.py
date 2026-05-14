@@ -20,6 +20,7 @@ FAST_MODEL = ModelSettings(name="gemini-flash-latest", effort="none")
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
+    """Runs the dev image generation or edit flow and writes the PNG result."""
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     start = time.time()

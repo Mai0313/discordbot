@@ -63,6 +63,7 @@ def test_is_bust_above_21() -> None:
 
 
 def _hand_with(player: list[Card], dealer: list[Card], bet: int = 100) -> BlackjackHand:
+    """Builds a finished hand for settlement assertions."""
     hand = BlackjackHand(rng=Random(x=0), bet=bet)
     hand.player = player
     hand.dealer = dealer
@@ -71,6 +72,7 @@ def _hand_with(player: list[Card], dealer: list[Card], bet: int = 100) -> Blackj
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
+    """Builds a prepared Blackjack participant for round tests."""
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),

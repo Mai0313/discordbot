@@ -69,6 +69,7 @@ class BaseGameLobbyView(ui.View):
         refresh_participants: RefreshParticipants,
         timeout: int,
     ) -> None:
+        """Initializes shared lobby state and registers the owner."""
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
@@ -170,12 +171,14 @@ class BaseGameLobbyView(ui.View):
         await self._start_game(message=interaction.message)
 
     async def _refresh_message(self, message: Message | None, status: str) -> None:
+        """Edits the lobby message with the latest participant state."""
         if message is None:
             return
         self.message = message
         await message.edit(embed=self._build_lobby_embed(status=status), view=self)
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
+        """Sends a private lobby notice to the interacting user."""
         await send_ephemeral_notice(
             interaction=interaction, content=content, log_message="Failed to send lobby notice"
         )
@@ -190,12 +193,15 @@ class BaseGameLobbyView(ui.View):
         )
 
     def _disable_buttons(self) -> None:
+        """Disables all button components on the lobby view."""
         disable_view_components(children=self.children, component_types=(ui.Button,))
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+        """Builds the lobby embed for a concrete game type."""
         raise NotImplementedError
 
     async def _start_game(self, message: Message | None) -> None:
+        """Starts a concrete game from the current lobby participants."""
         raise NotImplementedError
 
 
@@ -223,6 +229,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         initial_jackpot: int,
         timeout: int,
     ) -> None:
+        """Initializes jackpot lobby state with the live pool snapshot."""
         super().__init__(
             owner=owner,
             rng=rng,
@@ -236,6 +243,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self._jackpot_snapshot = initial_jackpot
 
     async def _start_game(self, message: Message | None) -> None:
+        """Charges antes before delegating to the jackpot game start hook."""
         if message is None:
             return
         final_balances = await self._settle_pregame_antes()
@@ -266,4 +274,5 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]
     ) -> None:
+        """Starts a jackpot-backed game after ante settlement succeeds."""
         raise NotImplementedError

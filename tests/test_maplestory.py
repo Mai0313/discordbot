@@ -1,3 +1,5 @@
+"""Tests for MapleStory Artale data models, embeds, views, and commands."""
+
 from __future__ import annotations
 
 import json
@@ -53,6 +55,8 @@ type JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str,
 
 
 class InteractionPayload(TypedDict, total=False):
+    """Payload captured from fake nextcord interaction sends."""
+
     content: str
     embed: Embed
     view: MapleDropSearchView | None
@@ -61,19 +65,27 @@ class InteractionPayload(TypedDict, total=False):
 
 
 class _FakeResponse:
+    """Minimal interaction response stub that records deferral and messages."""
+
     def __init__(self) -> None:
+        """Initializes response state records."""
         self.deferred = False
         self.messages: list[InteractionPayload] = []
 
     async def defer(self) -> None:
+        """Records that the interaction response was deferred."""
         self.deferred = True
 
     async def send_message(self, **kwargs: Unpack[InteractionPayload]) -> None:
+        """Records a response message payload."""
         self.messages.append(kwargs)
 
 
 class _FakeFollowup:
+    """Minimal followup stub that records sends and message edits."""
+
     def __init__(self) -> None:
+        """Initializes followup send and edit records."""
         self.sent: list[InteractionPayload] = []
         self.edited: list[InteractionPayload] = []
 
@@ -84,6 +96,7 @@ class _FakeFollowup:
         view: MapleDropSearchView | None = None,
         ephemeral: bool | None = None,
     ) -> None:
+        """Records a followup send payload."""
         payload = InteractionPayload()
         if content is not None:
             payload["content"] = content
@@ -96,22 +109,28 @@ class _FakeFollowup:
         self.sent.append(payload)
 
     async def edit_message(self, **kwargs: Unpack[InteractionPayload]) -> None:
+        """Records a followup message edit payload."""
         self.edited.append(kwargs)
 
 
 class _FakeInteraction:
+    """Minimal interaction stub for MapleStory command and view tests."""
+
     def __init__(self, message_id: int = 777) -> None:
+        """Initializes response, followup, and message identity fields."""
         self.response = _FakeResponse()
         self.followup = _FakeFollowup()
         self.message = SimpleNamespace(id=message_id)
 
 
 def _write_json(path: Path, payload: JsonValue) -> None:
+    """Writes a JSON fixture file."""
     path.write_text(data=json.dumps(obj=payload, ensure_ascii=False), encoding="utf-8")
 
 
 @pytest.fixture
 def maple_data_dir(tmp_path: Path) -> Path:
+    """Creates a complete MapleStory data directory for integration-style tests."""
     data_dir = tmp_path / "maplestory"
     data_dir.mkdir()
 
@@ -300,10 +319,12 @@ def maple_data_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def service(maple_data_dir: Path) -> MapleStoryService:
+    """Returns a service loaded from the generated fixture data."""
     return MapleStoryService.from_directory(data_dir=maple_data_dir)
 
 
 def test_maplestory_models_accept_aliases_and_helpers() -> None:
+    """Verifies model aliases and computed helper properties."""
     drops = MonsterDrops(
         equipmentItems=[DropItem(name="Sword")],
         useableItems=[DropItem(name="Potion")],
@@ -361,6 +382,7 @@ def test_maplestory_models_accept_aliases_and_helpers() -> None:
 
 
 def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService) -> None:
+    """Verifies service loading, search helpers, translations, and stats caching."""
     assert service.has_data()
     assert service.translate(category="monsters", name="Slime") == "綠水靈"
     assert service.translate(category="missing", name="Slime") == "Slime"
@@ -392,6 +414,7 @@ def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService
 
 
 def test_maplestory_load_helpers_handle_missing_and_invalid_files(tmp_path: Path) -> None:
+    """Verifies that malformed or missing data files degrade to empty data."""
     assert _load_json(path=tmp_path / "missing.json", model=Monster) == []
     bad_json = tmp_path / "bad.json"
     bad_json.write_text(data="{bad", encoding="utf-8")
@@ -400,6 +423,7 @@ def test_maplestory_load_helpers_handle_missing_and_invalid_files(tmp_path: Path
 
 
 def test_maplestory_embeds_include_expected_sections(service: MapleStoryService) -> None:
+    """Verifies that every MapleStory embed exposes its expected sections."""
     monster = service.get_monster(name="Slime")
     equip = service.get_equipment(name="Wooden Sword")
     scroll = service.search_scrolls_by_name(query="Gloves")[0]
@@ -443,6 +467,7 @@ def test_maplestory_embeds_include_expected_sections(service: MapleStoryService)
 
 
 async def test_maplestory_view_resolvers_and_selection(service: MapleStoryService) -> None:
+    """Verifies resolver dispatch and select option truncation."""
     for search_type, name in [
         ("monster", "Slime"),
         ("item", "Wooden Sword"),
@@ -466,6 +491,7 @@ async def test_maplestory_view_resolvers_and_selection(service: MapleStoryServic
 async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
     service: MapleStoryService,
 ) -> None:
+    """Verifies that the dropdown handles loading and valid selections."""
     view = MapleDropSearchView(service=service, search_type="monster", query="slime")
     interaction = _FakeInteraction()
     view.select_result._selected_values = ["loading"]
@@ -483,6 +509,7 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
 
 @pytest.fixture
 def maple_cog(maple_data_dir: Path) -> MapleStoryCogs:
+    """Returns a MapleStory cog backed by the generated fixture data."""
     return MapleStoryCogs(bot=SimpleNamespace(), data_dir=maple_data_dir)
 
 
@@ -501,6 +528,7 @@ def maple_cog(maple_data_dir: Path) -> MapleStoryCogs:
 async def test_maplestory_commands_send_single_result_embed(
     maple_cog: MapleStoryCogs, command_name: str, query: str, expected_title: str
 ) -> None:
+    """Verifies each single-result command sends the matching embed."""
     interaction = _FakeInteraction()
     command = getattr(MapleStoryCogs, command_name)
     await command.callback(maple_cog, interaction, name=query)
@@ -511,6 +539,7 @@ async def test_maplestory_commands_send_single_result_embed(
 
 
 async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryCogs) -> None:
+    """Verifies ambiguous monster search returns a selection view."""
     interaction = _FakeInteraction()
     await MapleStoryCogs.maple_monster.callback(maple_cog, interaction, name="Slime")
     payload = interaction.followup.sent[0]
@@ -520,6 +549,7 @@ async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryC
 
 
 async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStoryCogs) -> None:
+    """Verifies not-found and stats command responses."""
     missing_interaction = _FakeInteraction()
     await MapleStoryCogs.maple_equip.callback(maple_cog, missing_interaction, name="missing")
     missing_embed = missing_interaction.followup.sent[0]["embed"]
@@ -534,6 +564,7 @@ async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStor
 
 
 async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -> None:
+    """Verifies commands send the generic error embed when data is unavailable."""
     cog = MapleStoryCogs(bot=SimpleNamespace(), data_dir=tmp_path / "empty")
     interaction = _FakeInteraction()
     await MapleStoryCogs.maple_stats.callback(cog, interaction)
@@ -543,6 +574,7 @@ async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -
 
 
 def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies setup registers the MapleStory cog synchronously."""
     added: list[MapleStoryCogs] = []
     monkeypatch.setattr(
         "discordbot.cogs.maplestory.MapleStoryService.from_directory",

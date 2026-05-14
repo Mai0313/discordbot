@@ -23,7 +23,7 @@ _ERROR_COLOR = 0xFF0000
 
 
 class MapleStoryCogs(commands.Cog):
-    """楓之谷 Artale 資料查詢"""
+    """Slash commands for querying MapleStory Artale data."""
 
     def __init__(self, bot: commands.Bot, data_dir: Path = DEFAULT_DATA_DIR):
         """Initializes the MapleStoryCogs instance.

@@ -279,12 +279,14 @@ class BlackjackRound(BaseModel):
         )
 
     def _require_active_player(self, user_id: int) -> BlackjackPlayerHand:
+        """Returns the active player or raises when another user acts."""
         player = self.active_player()
         if player is None or player.participant.user_id != user_id:
             raise ValueError("Not this player's turn")
         return player
 
     def _advance_or_finish(self) -> None:
+        """Skips completed player hands and settles the table when none remain."""
         while self.current_player_index < len(self.players):
             if not self.players[self.current_player_index].finished:
                 return
@@ -292,6 +294,7 @@ class BlackjackRound(BaseModel):
         self._finish_after_players_done()
 
     def _finish_after_players_done(self) -> None:
+        """Finishes the round after all player actions have resolved."""
         if self.finished:
             return
         if self._needs_dealer_play():
@@ -299,11 +302,13 @@ class BlackjackRound(BaseModel):
         self.finished = True
 
     def _needs_dealer_play(self) -> bool:
+        """Returns whether the dealer must draw before settlement."""
         if is_blackjack(cards=self.dealer):
             return False
         return any(not player.is_blackjack() and not player.is_bust() for player in self.players)
 
     def _play_dealer(self) -> None:
+        """Draws dealer cards until the standing threshold is reached."""
         while hand_value(cards=self.dealer) < 17:
             self.dealer.append(draw_card(rng=self.rng))
         self.dealer_played = True

@@ -1,3 +1,5 @@
+"""Tests for AI reply routing, attachment handling, streaming, and regeneration."""
+
 from __future__ import annotations
 
 from io import BytesIO
@@ -21,22 +23,33 @@ if TYPE_CHECKING:
 
 
 class FakeGuild:
+    """Minimal guild stub with a stable ID."""
+
     def __init__(self, guild_id: int = 1) -> None:
+        """Initializes the fake guild ID."""
         self.id = guild_id
 
 
 class FakeReference:
+    """Minimal message reference stub."""
+
     def __init__(self, resolved: FakeMessage) -> None:
+        """Initializes the resolved referenced message."""
         self.resolved = resolved
 
 
 class FakeReaction:
+    """Minimal reaction stub used by regenerate cleanup."""
+
     def __init__(self, me: bool, emoji: str) -> None:
+        """Initializes ownership and emoji fields."""
         self.me = me
         self.emoji = emoji
 
 
 class ReplyPayload(TypedDict, total=False):
+    """Payload captured from fake message replies."""
+
     content: str | None
     view: View
     file: File
@@ -44,6 +57,8 @@ class ReplyPayload(TypedDict, total=False):
 
 
 class InteractionReplyPayload(TypedDict, total=False):
+    """Payload captured from fake interaction responses."""
+
     content: str
     ephemeral: bool
 
@@ -100,6 +115,7 @@ class FakeMessage:
     async def _history(
         self, limit: int, before: FakeMessage, oldest_first: bool
     ) -> AsyncIterator[FakeMessage]:
+        """Yields no history by default."""
         if False:
             yield self
 
@@ -120,16 +136,21 @@ class FakeMessage:
         return reply
 
     async def add_reaction(self, emoji: str) -> None:
+        """Records a reaction added to the fake message."""
         self.added_reactions.append(emoji)
 
     async def remove_reaction(self, emoji: str, member: FakeAuthor) -> None:
+        """Records a reaction removal from the fake message."""
         self.removed_reactions.append((emoji, member))
 
     def is_system(self) -> bool:
+        """Returns whether the fake message carries system content."""
         return bool(self.system_content)
 
 
 class FakeAttachment:
+    """Minimal Discord attachment or sticker stub."""
+
     def __init__(
         self,
         filename: str = "file.txt",
@@ -137,17 +158,22 @@ class FakeAttachment:
         payload: bytes = b"hello",
         url: str = "https://example.test/file.txt",
     ) -> None:
+        """Initializes attachment metadata and payload bytes."""
         self.filename = filename
         self.content_type = content_type
         self._payload = payload
         self.url = url
 
     async def read(self) -> bytes:
+        """Returns the configured attachment bytes."""
         return self._payload
 
 
 class FakeResponses:
+    """Fake Responses API resource for routing and caption calls."""
+
     def __init__(self) -> None:
+        """Initializes recorded calls and default outputs."""
         self.create_streams: list[bool] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
@@ -165,6 +191,7 @@ class FakeResponses:
         stream: bool = False,
         tools: list[dict[str, str | dict[str, str]]] | None = None,
     ) -> SimpleNamespace:
+        """Records streaming mode and returns configured output text."""
         self.create_streams.append(stream)
         return SimpleNamespace(output_text=self.output_text)
 
@@ -179,12 +206,16 @@ class FakeResponses:
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
     ) -> SimpleNamespace:
+        """Records the route model and returns configured parsed output."""
         self.parse_models.append(model)
         return SimpleNamespace(output_parsed=self.output_parsed)
 
 
 class FakeImages:
+    """Fake Images API resource for generation and edit calls."""
+
     def __init__(self) -> None:
+        """Initializes image API call counters."""
         self.generate_calls = 0
         self.edit_calls = 0
 
@@ -198,6 +229,7 @@ class FakeImages:
         size: str,
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
+        """Records an image generation call and returns a tiny PNG."""
         self.generate_calls += 1
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
@@ -212,37 +244,48 @@ class FakeImages:
         size: str,
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
+        """Records an image edit call and returns a tiny PNG."""
         self.edit_calls += 1
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
 
 class FakeVideos:
+    """Fake Videos API resource that completes after one poll."""
+
     def __init__(self) -> None:
+        """Initializes video retrieve call count."""
         self.retrieve_calls = 0
 
     async def create(
         self, model: str, prompt: str, extra_headers: dict[str, str]
     ) -> SimpleNamespace:
+        """Returns an in-progress fake video job."""
         return SimpleNamespace(id="video-1", status="processing")
 
     async def retrieve(self, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
+        """Records a poll and returns the completed fake video job."""
         self.retrieve_calls += 1
         return SimpleNamespace(id="video-1", status="completed")
 
     async def download_content(
         self, video_id: str, extra_headers: dict[str, str]
     ) -> SimpleNamespace:
+        """Returns fake MP4 bytes."""
         return SimpleNamespace(content=b"mp4")
 
 
 class FakeClient:
+    """Fake OpenAI client with responses, images, and videos resources."""
+
     def __init__(self) -> None:
+        """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
         self.videos = FakeVideos()
 
 
 def _png_b64() -> str:
+    """Returns a base64-encoded one-pixel PNG."""
     image = Image.new(mode="RGB", size=(1, 1), color=(255, 0, 0))
     buffer = BytesIO()
     image.save(fp=buffer, format="PNG")
@@ -250,6 +293,7 @@ def _png_b64() -> str:
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
+    """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.__dict__["client"] = FakeClient()
@@ -257,6 +301,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 
 async def _stream_events() -> AsyncIterator[SimpleNamespace]:
+    """Yields a minimal streaming completion with token usage."""
     yield SimpleNamespace(type="response.output_text.delta", delta="hello from stream")
     yield SimpleNamespace(
         type="response.completed",
@@ -273,12 +318,14 @@ async def test_handle_streaming_allows_missing_output_token_details(
     """Regression: LiteLLM may return usage with output_tokens_details=null."""
 
     def fake_calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
+        """Verifies token counts passed to cost calculation."""
         assert model_name == "gemini-pro-latest"
         assert input_tokens == 12
         assert output_tokens == 34
         return 0.0
 
     async def fake_award(user_id: int, name: str, avatar_url: str, amount: int) -> None:
+        """Skips database writes for chat reward accounting."""
         # Stub the DB-touching coroutine so the test doesn't write to data/economy.db.
         pass
 
@@ -298,6 +345,7 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
 
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:
+    """Verifies nested provider errors are preferred over wrapper text."""
     raw = """wrapper b'{"error": {"message": "quota exceeded"}}'"""
     assert extract_friendly_error(exc=RuntimeError(raw)) == "quota exceeded"
     assert extract_friendly_error(exc=RuntimeError("plain failure")) == "plain failure"
@@ -305,19 +353,26 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
 
 
 async def test_regenerate_view_restricts_user_and_dispatches_original_message() -> None:
+    """Verifies regeneration is limited to the original author and re-dispatches."""
     called: list[FakeMessage] = []
 
     async def fake_on_message(message: FakeMessage) -> None:
+        """Records the message sent back through on_message."""
         called.append(message)
 
     async def fake_send_message(**kwargs: Unpack[InteractionReplyPayload]) -> None:
+        """Records denied interaction responses."""
         denied.append(kwargs)
 
     class _ReplyMessage:
+        """Minimal reply message stub that records deletion."""
+
         def __init__(self) -> None:
+            """Initializes the deletion flag."""
             self.deleted = False
 
         async def delete(self) -> None:
+            """Records reply deletion."""
             self.deleted = True
 
     denied: list[InteractionReplyPayload] = []
@@ -346,12 +401,13 @@ async def test_regenerate_view_restricts_user_and_dispatches_original_message() 
 
 
 async def _async_none() -> None:
-    return None
+    """Async no-op callback used by fake interactions."""
 
 
 async def test_gen_reply_message_content_and_attachment_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verifies prompt cleanup, embed extraction, and attachment conversion."""
     cog = _cog()
     embed = Embed(title="Title", description="Body")
     embed.set_author(name="Author")
@@ -423,6 +479,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
 async def test_gen_reply_processes_history_reference_and_current_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verifies message processing for history, references, and current prompts."""
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"text", "image"}
@@ -443,6 +500,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     async def fake_history(
         limit: int, before: FakeMessage, oldest_first: bool
     ) -> AsyncIterator[FakeMessage]:
+        """Yields two messages for history assembly."""
         yield user_msg
         yield bot_msg
 
@@ -466,13 +524,14 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
 
 
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert await cog._route_message(message=message) == "SUMMARY"
     assert cog.client.responses.parse_models[0] == cog.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
-        return None
+        """Skips video polling delay."""
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     await cog._handle_video_generation(message=message, user_prompt="video")
@@ -486,6 +545,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     async def fake_streaming(
         responses: SimpleNamespace, message: FakeMessage, view: View | None = None
     ) -> str:
+        """Records the message passed to streaming."""
         streamed.append(message)
         return "done"
 
@@ -510,23 +570,28 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
 async def test_gen_reply_on_message_dispatches_routes(
     monkeypatch: pytest.MonkeyPatch, route: str, expected_call: str
 ) -> None:
+    """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
     calls: list[str] = []
 
     async def fake_route(message: FakeMessage) -> str:
+        """Returns the parametrized route."""
         return route
 
     async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> None:
+        """Records reaction state transitions."""
         calls.append(f"reaction:{emoji}")
 
     async def fake_image_handler(
         message: FakeMessage, user_prompt: str, view: View | None = None
     ) -> None:
+        """Records image handler dispatch."""
         calls.append("_handle_image_reply")
 
     async def fake_video_handler(
         message: FakeMessage, user_prompt: str, view: View | None = None
     ) -> None:
+        """Records video handler dispatch."""
         calls.append("_handle_video_generation")
 
     async def fake_message_handler(
@@ -536,6 +601,7 @@ async def test_gen_reply_on_message_dispatches_routes(
         history_limit: int,
         view: View | None = None,
     ) -> None:
+        """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
@@ -553,6 +619,7 @@ async def test_gen_reply_on_message_dispatches_routes(
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verifies bot messages, unmentioned guild messages, empty prompts, and errors."""
     cog = _cog()
     bot_authored = FakeMessage(content="<@999> hi", author=FakeAuthor(bot=True))
     await cog.on_message(message=bot_authored)
@@ -568,6 +635,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert dm_empty.replies[0].content == "?"
 
     async def boom(message: FakeMessage) -> str:
+        """Raises to exercise error handling."""
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cog, "_route_message", boom)
@@ -577,6 +645,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 
 
 def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies model properties and provider-specific tool dispatch."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))

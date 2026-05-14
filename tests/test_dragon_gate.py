@@ -42,6 +42,7 @@ class MessageStub:
     """Minimal Discord message stub that records edits."""
 
     def __init__(self) -> None:
+        """Initializes the recorded edit payloads."""
         self.edits: list[dict[str, object]] = []
 
     async def edit(self, **kwargs: object) -> None:
@@ -53,6 +54,7 @@ class ResponseStub:
     """Minimal interaction response stub."""
 
     def __init__(self) -> None:
+        """Initializes interaction response state records."""
         self.deferred = False
         self.sent: list[dict[str, object]] = []
         self.modals: list[object] = []
@@ -78,6 +80,7 @@ class FollowupStub:
     """Minimal interaction followup stub."""
 
     def __init__(self) -> None:
+        """Initializes recorded followup sends."""
         self.sent: list[dict[str, object]] = []
 
     async def send(self, **kwargs: object) -> MessageStub:
@@ -92,6 +95,7 @@ class InteractionStub:
     def __init__(
         self, user_id: int = 1, message: MessageStub | None = None, custom_id: str = ""
     ) -> None:
+        """Initializes a callback interaction with user and component data."""
         self.user = SimpleNamespace(
             id=user_id,
             name=f"user{user_id}",
@@ -108,6 +112,7 @@ class DealerStub:
     """Deterministic dealer stub for 射龍門 view tests."""
 
     def __init__(self) -> None:
+        """Initializes dealer call records."""
         self.table_settle_calls: list[dict[str, object]] = []
         self.taunt_calls: list[dict[str, object]] = []
 
@@ -129,6 +134,7 @@ class RiggedRandom(Random):
     """Random subclass that returns a fixed rank/suit sequence (padded with filler)."""
 
     def __init__(self, choices: Sequence[str]) -> None:
+        """Initializes the deterministic choice stream with safe filler values."""
         super().__init__(x=0)
         # Pad with safe filler so the rules engine can keep dealing extra turns
         # after the asserted hand finishes; the view layer is responsible for
@@ -157,6 +163,7 @@ class JackpotState:
         initial_balance: int = 100_000,
         replenish_seed: int = 100_000,
     ) -> None:
+        """Initializes simulated player balances and jackpot state."""
         self.jackpot = initial_jackpot
         self.balances: dict[int, int] = {}
         self._initial_balance = initial_balance
@@ -207,6 +214,7 @@ class JackpotState:
 
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
+    """Builds a prepared 射龍門 participant for view tests."""
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),
@@ -218,6 +226,7 @@ def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> G
 
 
 def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
+    """Patches jackpot database calls to use an in-memory state model."""
     monkeypatch.setattr(
         target=dragon_gate_views, name="apply_jackpot_settlement", value=state.settle
     )
@@ -226,6 +235,7 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     )
 
     async def fake_get_balance(user_id: int) -> int:
+        """Returns the simulated final balance for a player."""
         return state.balances.get(user_id, 0)
 
     monkeypatch.setattr(target=dragon_gate_views, name="get_balance", value=fake_get_balance)
@@ -445,12 +455,14 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
     async def prepare_participant(interaction: InteractionStub) -> GameParticipant | None:
+        """Returns Bob when the join interaction is accepted."""
         assert interaction.user.id == 2
         return bob
 
     async def refresh_participants(
         participants: list[GameParticipant],
     ) -> tuple[list[GameParticipant], list[str]]:
+        """Leaves all participants seated for lobby start."""
         return participants, []
 
     view = DragonGateLobbyView(

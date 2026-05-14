@@ -1,3 +1,5 @@
+"""Smoke tests for cogs, setup hooks, and high-level Discord command branches."""
+
 from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
 
 
 class DiscordPayload(TypedDict, total=False):
+    """Payload captured from fake Discord message and followup sends."""
+
     content: str | None
     embed: Embed
     embeds: list[Embed]
@@ -46,42 +50,59 @@ class DiscordPayload(TypedDict, total=False):
 
 
 class OriginalEditPayload(TypedDict, total=False):
+    """Payload captured from fake original interaction edits."""
+
     content: str
 
 
 class SelfTimeoutCall(TypedDict):
+    """Recorded auto-unmute timeout handling call."""
+
     member: SimpleNamespace
     until: datetime
 
 
 class FakeResponse:
+    """Minimal interaction response stub that records sends and deferral."""
+
     def __init__(self) -> None:
+        """Initializes response state records."""
         self.deferred = False
         self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
 
     async def defer(self, ephemeral: bool = False) -> None:
+        """Records that the interaction response was deferred."""
         self.deferred = True
         self.deferred_ephemeral = ephemeral
 
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
+        """Records an interaction response message."""
         self.sent.append(kwargs)
 
     def is_done(self) -> bool:
+        """Returns whether the fake response has already been used."""
         return self.deferred or bool(self.sent)
 
 
 class FakeFollowup:
+    """Minimal interaction followup stub."""
+
     def __init__(self) -> None:
+        """Initializes recorded followup sends."""
         self.sent: list[DiscordPayload] = []
 
     async def send(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
+        """Records the followup payload and returns a fake message."""
         self.sent.append(kwargs)
         return FakeDiscordMessage()
 
 
 class FakeInteraction:
+    """Minimal interaction stub shared by cog command tests."""
+
     def __init__(self, user: FakeUser | None = None) -> None:
+        """Initializes user, response, followup, and edit records."""
         self.user = user or FakeUser()
         self.message: FakeDiscordMessage | None = None
         self.response = FakeResponse()
@@ -89,13 +110,17 @@ class FakeInteraction:
         self.edits: list[OriginalEditPayload] = []
 
     async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
+        """Records an edit to the deferred original response."""
         self.edits.append(kwargs)
 
 
 class FakeUser:
+    """Minimal Discord user/member stub."""
+
     def __init__(
         self, user_id: int = 1, name: str = "alice", display_name: str = "Alice", bot: bool = False
     ) -> None:
+        """Initializes identity, avatar, bot flag, and account age fields."""
         self.id = user_id
         self.name = name
         self.display_name = display_name
@@ -109,7 +134,10 @@ class FakeUser:
 
 
 class FakeDiscordMessage:
+    """Minimal Discord message stub that records mutations."""
+
     def __init__(self) -> None:
+        """Initializes message mutation records."""
         self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []
         self.removed: list[tuple[str, FakeUser]] = []
@@ -118,36 +146,50 @@ class FakeDiscordMessage:
         self.suppressed = False
 
     async def edit(self, **kwargs: Unpack[DiscordPayload]) -> None:
+        """Records an edit payload and suppress flag."""
         if "suppress" in kwargs:
             self.suppressed = bool(kwargs["suppress"])
         self.edits.append(kwargs)
 
     async def add_reaction(self, emoji: str) -> None:
+        """Records an added reaction."""
         self.reactions.append(emoji)
 
     async def remove_reaction(self, emoji: str, member: FakeUser) -> None:
+        """Records a removed reaction."""
         self.removed.append((emoji, member))
 
     async def reply(self, **kwargs: Unpack[DiscordPayload]) -> None:
+        """Records a message reply payload."""
         self.replies.append(kwargs)
 
     async def delete(self) -> None:
+        """Records message deletion."""
         self.deleted = True
 
 
 class HangingResponses:
+    """Fake Responses API resource that sleeps longer than dealer timeout."""
+
     async def create(self, **_kwargs: object) -> SimpleNamespace:
+        """Sleeps before returning a late response."""
         await asyncio.sleep(delay=10)
         return SimpleNamespace(output_text="late")
 
 
 class HangingClient:
+    """Fake OpenAI client containing the hanging Responses resource."""
+
     def __init__(self) -> None:
+        """Initializes the hanging responses resource."""
         self.responses = HangingResponses()
 
 
 class DownloadResultStub:
+    """Context manager stub for a downloaded video file."""
+
     def __init__(self, filename: Path) -> None:
+        """Stores the fake downloaded filename."""
         self.filename = filename
 
     def __enter__(self) -> Self:
@@ -165,18 +207,25 @@ class DownloadResultStub:
 
 
 class DownloaderStub:
+    """Fake downloader that returns queued download results."""
+
     def __init__(self, results: list[DownloadResultStub]) -> None:
+        """Initializes queued results and recorded calls."""
         self.results = results
         self.calls: list[dict[str, str | bool]] = []
 
     def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
+        """Records the download request and returns the next queued result."""
         kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
 
 
 class ParseResultStub:
+    """Context manager stub for Threads parse results."""
+
     def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
+        """Stores parsed results or the error to raise on entry."""
         self.results = results
 
     def __enter__(self) -> list[ThreadsOutput]:
@@ -196,23 +245,34 @@ class ParseResultStub:
 
 
 class ThreadsDownloaderStub:
+    """Fake Threads downloader returning a configured parse context manager."""
+
     def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
+        """Stores parsed results or parse failure."""
         self.results = results
 
     def parse(self, url: str) -> ParseResultStub:
+        """Returns a fake parse context manager."""
         return ParseResultStub(results=self.results)
 
 
 class FakeSendChannel:
+    """Minimal messageable channel stub."""
+
     def __init__(self, sent: list[str]) -> None:
+        """Stores the shared sent-message list."""
         self.sent = sent
 
     async def send(self, content: str) -> None:
+        """Records sent content."""
         self.sent.append(content)
 
 
 class FakeAuditEntry:
+    """Minimal audit log entry for timeout lookup tests."""
+
     def __init__(self, target_id: int, user: FakeUser, reason: str) -> None:
+        """Initializes target, changed field, moderator, and reason."""
         self.target = SimpleNamespace(id=target_id)
         self.changes = SimpleNamespace(after=SimpleNamespace(communication_disabled_until=True))
         self.user = user
@@ -220,7 +280,10 @@ class FakeAuditEntry:
 
 
 class FakeGeneratedResponse:
+    """Fake non-streaming Responses API result."""
+
     def __init__(self, output_text: str) -> None:
+        """Stores generated output text."""
         self.output_text = output_text
 
 
@@ -230,6 +293,7 @@ def _thread_output(
     video_paths: list[Path] | None = None,
     video_urls: list[str] | None = None,
 ) -> ThreadsOutput:
+    """Builds a parsed Threads output fixture."""
     return ThreadsOutput(
         text=text,
         url="https://www.threads.net/@alice/post/abc",
@@ -248,6 +312,7 @@ def _thread_output(
 
 
 async def test_template_on_message_and_ping() -> None:
+    """Verifies template debug reaction and ping command response."""
     cog = TemplateCogs(bot=SimpleNamespace(latency=0.123))
     message = FakeDiscordMessage()
     message.author = FakeUser(bot=False)
@@ -271,6 +336,7 @@ async def test_template_on_message_and_ping() -> None:
 async def test_video_deliver_and_download_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verifies video delivery, retry, oversize, and download error branches."""
     cog = VideoCogs(bot=SimpleNamespace())
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
@@ -319,11 +385,15 @@ async def test_video_deliver_and_download_branches(
 
 
 class _RaiseDownloader:
+    """Downloader stub that always fails."""
+
     def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
+        """Raises a deterministic download failure."""
         raise RuntimeError("download failed")
 
 
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
+    """Verifies Threads embed building and on_message success/warning/error paths."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=bot)
     video_file = tmp_path / "clip.mp4"
@@ -376,6 +446,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
 async def test_auto_unmute_tracks_audit_and_generates_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verifies auto-unmute audit lookup, reply generation, and member update handling."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     sent: list[str] = []
@@ -429,6 +500,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     handled: list[SelfTimeoutCall] = []
 
     async def record_self_timeout(member: SimpleNamespace, until: datetime) -> None:
+        """Records the self-timeout callback arguments."""
         handled.append({"member": member, "until": until})
 
     monkeypatch.setattr(cog, "_handle_self_timeout", record_self_timeout)
@@ -437,6 +509,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
 
 
 async def _audit_entries(bot_user: FakeUser) -> AsyncIterator[FakeAuditEntry]:
+    """Yields unrelated and matching audit entries for lookup filtering."""
     yield FakeAuditEntry(target_id=111, user=FakeUser(name="wrong"), reason="wrong")
     yield FakeAuditEntry(target_id=bot_user.id, user=FakeUser(name="moderator"), reason="testing")
 
@@ -450,21 +523,25 @@ async def _create_auto_unmute_response(  # noqa: PLR0913 -- mirrors Responses AP
     extra_headers: dict[str, str],
     extra_body: dict[str, bool],
 ) -> FakeGeneratedResponse:
+    """Returns a deterministic auto-unmute response."""
     return FakeGeneratedResponse(output_text="not today")
 
 
 async def _append_async[T](container: list[T], item: T) -> None:
+    """Appends an item through an awaitable callback."""
     container.append(item)
 
 
 async def _async_none() -> None:
-    return None
+    """Async no-op used by fake callbacks."""
 
 
 async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies economy slash commands call the database facade and send embeds."""
     scheduled: list[FakeDiscordMessage] = []
 
     def record_scheduled(message: FakeDiscordMessage) -> None:
+        """Records game cleanup scheduling from economy commands."""
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
@@ -502,30 +579,35 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
 
 
 async def fake_get_balance(user_id: int) -> int:
+    """Returns a stable fake balance."""
     return 150
 
 
 async def fake_get_loan_view(user_id: int) -> None:
-    return None
+    """Returns no active loan state."""
 
 
 async def fake_get_vip(user_id: int) -> bool:
+    """Returns non-VIP status."""
     return False
 
 
 async def fake_top_n(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
+    """Returns one fake leaderboard row."""
     return [(1, "alice", 150, "https://cdn.example/alice.png")]
 
 
 async def fake_top_losers(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[tuple[int, str, int, str]]:
+    """Returns one fake loss leaderboard row."""
     return [(1, "alice", 500, "https://cdn.example/alice.png")]
 
 
 async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
+    """Returns a fake house ledger account."""
     return ("Bot", -50, 100, 150)
 
 
@@ -538,30 +620,37 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     receiver_avatar_url: str,
     amount: int,
 ) -> database.TransferResult:
+    """Returns a successful fake transfer result."""
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
 
 async def fake_checkin(user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
+    """Returns a successful fake daily check-in result."""
     return database.CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
 
 
 async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> database.VipPurchaseResult:
+    """Returns a successful fake VIP purchase result."""
     return database.VipPurchaseResult(new_balance=500_000, cost=database.VIP_PURCHASE_COST)
 
 
 def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
+    """Ignores cleanup scheduling in command smoke tests."""
     return
 
 
 async def fake_game_balance(user_id: int) -> int:
+    """Returns a small fake game balance."""
     return 100
 
 
 async def _wealthy_game_balance(user_id: int) -> int:
+    """Returns a fake balance large enough for Dragon Gate ante."""
     return 1_000_000
 
 
 async def fake_dragon_gate_jackpot() -> int:
+    """Returns a stable fake Dragon Gate jackpot."""
     return 100_000
 
 
@@ -572,13 +661,17 @@ async def fake_apply_jackpot_settlement(
     game_id: str,
     player_avatar_url: str = "",
 ) -> tuple[int, int]:
+    """Applies a fake single-player jackpot settlement."""
     return (100_000 + player_delta, 100_000 - player_delta)
 
 
 class FakeDealer:
+    """Fake casino dealer that returns deterministic banter."""
+
     async def taunt_bet(
         self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: str
     ) -> str:
+        """Returns deterministic opening banter."""
         return "taunt"
 
     async def settle(  # noqa: PLR0913 -- mirrors DealerAI.settle signature
@@ -592,10 +685,12 @@ class FakeDealer:
         game: str,
         detail: str,
     ) -> str:
+        """Returns deterministic settlement banter."""
         return "settled"
 
 
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
@@ -618,6 +713,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
 
 
 async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies only the Blackjack lobby owner can press Start."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
@@ -641,10 +737,12 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
 
 
 async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies owner all-in clamps the shared Blackjack lobby bet."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
+        """Returns distinct balances for owner and joining player."""
         return {1: 300, 2: 50_000_000}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
@@ -675,6 +773,7 @@ async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyP
 
 
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies only the Dragon Gate lobby owner can press Start."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
@@ -699,6 +798,7 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
 
 
 async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies DealerAI returns fallback banter when the LLM call times out."""
     monkeypatch.setattr(dealer_module, "DEALER_AI_TIMEOUT_SECONDS", 0.01)
     dealer = DealerAI(
         client=cast("AsyncOpenAI", HangingClient()),
@@ -713,12 +813,14 @@ async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) 
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies startup cleanup runs once per GamesCogs instance."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     calls: list[SimpleNamespace] = []
 
     async def record_cleanup(bot: SimpleNamespace) -> None:
+        """Records the bot passed to startup cleanup."""
         calls.append(bot)
 
     monkeypatch.setattr(games, "delete_tracked_game_messages", record_cleanup)
@@ -731,6 +833,7 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies every cog setup function registers the expected cog type."""
     added: list[
         tuple[
             VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
@@ -742,6 +845,7 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
         cog: VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
         override: bool | None = None,
     ) -> None:
+        """Records the cog instance and override flag passed to add_cog."""
         added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
@@ -760,9 +864,11 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
+    """Verifies synchronous cog loading discovers the expected cog modules."""
     loaded: list[tuple[list[str], bool]] = []
 
     def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
+        """Records modules passed to load_extensions."""
         loaded.append((modules, stop_at_error))
 
     bot = SimpleNamespace(load_extensions=record_load_extensions)
@@ -772,13 +878,16 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
 
 
 async def test_cli_message_and_command_error_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies base message rewards and common command error embeds."""
     processed: list[SimpleNamespace] = []
     rewards: list[dict[str, object]] = []
 
     async def record_processed(message: SimpleNamespace) -> None:
+        """Records messages passed to process_commands."""
         processed.append(message)
 
     async def record_reward(**kwargs: object) -> database.CreditResult:
+        """Records base reward arguments and returns a fake credit result."""
         rewards.append(kwargs)
         return database.CreditResult(
             new_balance=5_000, credited_amount=5_000, principal_repaid=0, remaining_debt=0
@@ -802,6 +911,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     sent: list[DiscordPayload] = []
 
     async def record_context_send(**kwargs: Unpack[DiscordPayload]) -> None:
+        """Records command error responses sent through the context."""
         sent.append(kwargs)
 
     context = SimpleNamespace(

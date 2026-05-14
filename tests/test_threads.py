@@ -10,6 +10,7 @@ def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownlo
     """Provides a ThreadsDownloader that fakes media downloads."""
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
+        """Writes fake media bytes and returns the expected output path."""
         assert url, "download url should not be empty"
         filepath = Path(self.output_folder) / filename
         filepath.write_bytes(data=b"fake media")

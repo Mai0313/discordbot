@@ -139,6 +139,8 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
 
 
 class Base(DeclarativeBase):
+    """Base class for economy ORM models."""
+
     pass
 
 
@@ -277,6 +279,7 @@ _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
 
 
 def _jackpot_seed_amount(game_id: str) -> int:
+    """Returns the configured seed amount for a jackpot game."""
     for seed_game_id, seed_amount in _JACKPOT_SEEDS:
         if seed_game_id == game_id:
             return seed_amount
@@ -1086,6 +1089,7 @@ async def get_jackpot_pool(game_id: str) -> int:
 async def _replenish_jackpot_if_depleted_in_session(
     session: AsyncSession, game_id: str, balance: int, now: datetime
 ) -> int:
+    """Tops a seeded jackpot back up when the stored balance is drained."""
     seed_amount = _jackpot_seed_amount(game_id=game_id)
     if seed_amount <= 0 or balance > 0:
         return balance
@@ -1268,6 +1272,7 @@ async def apply_jackpot_settlement_batch(
 async def _read_borrow_state_in_session(
     session: AsyncSession, user_id: int
 ) -> _BorrowState | None:
+    """Reads the balance and loan fields needed by the borrow retry loop."""
     result = await session.execute(
         statement=select(
             UserAccount.balance,
@@ -1558,8 +1563,9 @@ def _next_checkin_streak(
     yesterday_midnight: datetime,
     tomorrow_midnight: datetime,
 ) -> int | None:
-    """Returns the streak counter for the next check-in, or ``None`` when
-    the user has already checked in today.
+    """Returns the streak counter for the next check-in.
+
+    Returns ``None`` when the user has already checked in today.
 
     Args:
         last_checkin_at: Stored ``last_checkin_at`` (Taipei-naive) or ``None``.
@@ -1710,7 +1716,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
     same transaction so a freshly-bought VIP immediately applies on the
     next check-in.
 
-    Concurrency: a SELECT-then-conditional-UPDATE pattern (gated on the
+    The SELECT-then-conditional-UPDATE pattern (gated on the
     observed ``last_checkin_at`` value) prevents two parallel coroutines
     from double-crediting. First-sight INSERTs use ``ON CONFLICT DO
     NOTHING`` to defer to whichever writer landed first; the loser falls
@@ -2093,7 +2099,7 @@ async def top_losers(
 ) -> list[tuple[int, str, int, str]]:
     """Returns the biggest net casino losers since today's Taipei midnight.
 
-    "Loss" sums every ``CASINO_BET`` and ``CASINO_PAYOUT`` delta written to
+    Loss sums every ``CASINO_BET`` and ``CASINO_PAYOUT`` delta written to
     the audit log within the current Asia/Taipei day. A user with a net-
     negative casino position is on the leaderboard; net-positive users are
     filtered out. The reported loss is the absolute value of the net so the

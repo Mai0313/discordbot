@@ -26,6 +26,7 @@ class _DeletableMessageStub:
     """Minimal message stub that records deletion."""
 
     def __init__(self, message_id: int = 123, channel_id: int = 456) -> None:
+        """Initializes message and channel IDs for cleanup tracking."""
         self.id = message_id
         self.channel = _ChannelStub(channel_id=channel_id)
         self.delete_calls = 0
@@ -39,6 +40,7 @@ class _AlreadyDeletedMessageStub:
     """Message stub that behaves like Discord already removed it."""
 
     def __init__(self) -> None:
+        """Initializes a message identity that will fail deletion."""
         self.id = 789
         self.channel = _ChannelStub(channel_id=456)
 
@@ -51,6 +53,7 @@ class _ChannelStub:
     """Minimal channel shape for persistent cleanup identity."""
 
     def __init__(self, channel_id: int) -> None:
+        """Stores the Discord channel ID."""
         self.id = channel_id
 
 
@@ -58,6 +61,7 @@ class _FetchedMessageStub:
     """Fetched message returned by a fake channel for startup cleanup."""
 
     def __init__(self, channel_id: int, message_id: int, deleted: list[tuple[int, int]]) -> None:
+        """Initializes a fetched message with shared deletion recording."""
         self.channel_id = channel_id
         self.message_id = message_id
         self.deleted = deleted
@@ -71,6 +75,7 @@ class _FetchMessageChannelStub:
     """Minimal message channel returned by the fake bot."""
 
     def __init__(self, channel_id: int, deleted: list[tuple[int, int]]) -> None:
+        """Stores channel identity and the shared deletion recorder."""
         self.channel_id = channel_id
         self.deleted = deleted
 
@@ -85,6 +90,7 @@ class _BotStub:
     """Minimal bot shape for startup cleanup."""
 
     def __init__(self, cached_channel: object | None = None) -> None:
+        """Initializes cached-channel behavior and cleanup call records."""
         self.deleted: list[tuple[int, int]] = []
         self.cached_channel = cached_channel
         self.fetch_calls: list[int] = []
@@ -115,6 +121,7 @@ class _FollowupStub:
     """Minimal followup stub that records send arguments."""
 
     def __init__(self) -> None:
+        """Initializes followup send records."""
         self.message = object()
         self.sent_wait: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
@@ -130,6 +137,7 @@ class _InteractionStub:
     """Minimal interaction shape for expiring economy followups."""
 
     def __init__(self) -> None:
+        """Initializes the followup stub used by the helper under test."""
         self.followup = _FollowupStub()
 
 
@@ -218,6 +226,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     scheduled_messages: list[object] = []
 
     def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the message scheduled for later deletion."""
         scheduled_messages.append(message)
 
     monkeypatch.setattr(
@@ -251,6 +260,7 @@ async def test_schedule_game_message_delete_uses_default_ttl(
     scheduled_delay: float | None = None
 
     async def fake_delete_game_message_after(message: object, delay: float) -> None:
+        """Records the delay requested by the scheduler."""
         nonlocal scheduled_delay
         scheduled_delay = delay
 

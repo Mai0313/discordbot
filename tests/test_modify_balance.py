@@ -63,12 +63,14 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
     call: dict[str, object] = {}
 
     async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
+        """Returns a stale pre-adjustment account snapshot."""
         assert user_id == 1
         return ("alice", 100, 100, 0)
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
     ) -> database.BalanceAdjustmentResult:
+        """Records the requested adjustment and returns the true DB result."""
         call.update({
             "user_id": user_id,
             "name": name,
@@ -111,11 +113,13 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
     call: dict[str, object] = {}
 
     async def fake_get_account(user_id: int) -> None:
+        """Returns no account for the requested user."""
         assert user_id == 3
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
     ) -> database.BalanceAdjustmentResult:
+        """Records that the missing-user write still reaches the DB facade."""
         call.update({
             "user_id": user_id,
             "name": name,

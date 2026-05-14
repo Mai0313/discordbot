@@ -57,6 +57,7 @@ def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
 
 
 def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
+    """Formats dealer cards for an in-progress or final table embed."""
     if hide_hole:
         if len(round_state.dealer) >= 2:
             up_card = round_state.dealer[1]
@@ -66,6 +67,7 @@ def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
 
 
 def _player_status_suffix(player: BlackjackPlayerHand) -> str:
+    """Returns the inline status label appended to a player's hand total."""
     if player.is_blackjack():
         return f" {NATURAL_RESULT_EMOJI} BLACKJACK"
     if player.is_bust():
@@ -76,6 +78,7 @@ def _player_status_suffix(player: BlackjackPlayerHand) -> str:
 
 
 def _format_player_block(player: BlackjackPlayerHand) -> str:
+    """Formats one player's hand and wager metadata for the table embed."""
     summary = _hand_summary_line(cards=player.cards, suffix=_player_status_suffix(player=player))
     participant = player.participant
     bet_text = f"下注 `{participant.bet:,}`"
@@ -85,6 +88,7 @@ def _format_player_block(player: BlackjackPlayerHand) -> str:
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
+    """Formats lobby participants in join order."""
     lines: list[str] = []
     for index, participant in enumerate(participants, start=1):
         lines.append(
@@ -145,6 +149,7 @@ def build_in_progress_embed(dealer_name: str, round_state: BlackjackRound) -> Em
 
 
 def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
+    """Formats compact per-player settlement details for dealer banter."""
     lines: list[str] = []
     for result in results:
         outcome_label, _color = blackjack_outcome_presentation(outcome=result.settlement.outcome)
@@ -154,6 +159,7 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
 
 
 def _table_color(results: list[BlackjackPlayerResult]) -> int:
+    """Returns the final embed color from the table's net player result."""
     total_delta = sum(result.settlement.delta for result in results)
     if total_delta > 0:
         return WIN_COLOR
@@ -165,6 +171,7 @@ def _table_color(results: list[BlackjackPlayerResult]) -> int:
 def _final_title(
     results: list[BlackjackPlayerResult], dealer_total: int, round_state: BlackjackRound
 ) -> str:
+    """Builds the final Blackjack title for single or multiplayer results."""
     if len(results) == 1:
         result = results[0]
         player = next(
@@ -250,6 +257,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
     ) -> None:
+        """Initializes a Blackjack lobby with wager and dealer identity."""
         super().__init__(
             owner=owner,
             rng=rng,
@@ -264,6 +272,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self.dealer_id = dealer_id
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+        """Builds the Blackjack lobby embed from current participants."""
         return build_blackjack_lobby_embed(
             owner=self.owner,
             participants=self.participants,
@@ -273,6 +282,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         )
 
     async def _start_game(self, message: Message | None) -> None:
+        """Deals the table and replaces the lobby message with the game view."""
         if message is None:
             return
         round_state = BlackjackRound.from_participants(
@@ -329,6 +339,7 @@ class BlackjackView(ui.View):
         dealer_avatar_url: str = "",
         dealer_line: str = "下好離手, 不要等下哭",
     ) -> None:
+        """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
         self.dealer = dealer
         self.round_state = round_state
@@ -426,6 +437,7 @@ class BlackjackView(ui.View):
         await self.finalize(message=message)
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
+        """Refreshes dealer talk and table embeds while holding the round lock."""
         talk_embed = build_dealer_talk_embed(
             dealer_line=self._dealer_line,
             dealer_name=self.dealer_name,
@@ -437,6 +449,7 @@ class BlackjackView(ui.View):
         await message.edit(embeds=[talk_embed, main_embed], view=self)
 
     async def _finalize_locked(self, message: Message) -> None:
+        """Applies settlements and publishes the final table embeds once."""
         if self._settled:
             return
         self._settled = True
@@ -473,6 +486,7 @@ class BlackjackView(ui.View):
         schedule_game_message_delete(message=message)
 
     async def _settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
+        """Builds single-player or table-level dealer settlement banter."""
         if len(results) == 1:
             result = results[0]
             return await self.dealer.settle(
@@ -495,6 +509,7 @@ class BlackjackView(ui.View):
         )
 
     def _disable_buttons(self) -> None:
+        """Disables Hit and Stand controls after settlement."""
         disable_view_components(children=self.children, component_types=(ui.Button,))
 
 

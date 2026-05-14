@@ -290,6 +290,7 @@ class DocsGenerator(BaseModel):
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def process_with_semaphore(file: Path) -> str:
+            """Processes one file while respecting the configured concurrency limit."""
             async with semaphore:
                 return await self._process_file(file, progress, task)
 
