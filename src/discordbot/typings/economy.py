@@ -33,6 +33,7 @@ class TransactionKind(StrEnum):
         TRANSFER_OUT: Sender side of ``/give``.
         TRANSFER_IN: Receiver side of ``/give``.
         VIP_PURCHASE: Debit for buying the permanent VIP perk.
+        MANUAL_ADJUSTMENT: Admin-side balance adjustment from maintenance tooling.
     """
 
     MESSAGE_REWARD = "message_reward"
@@ -46,6 +47,7 @@ class TransactionKind(StrEnum):
     TRANSFER_OUT = "transfer_out"
     TRANSFER_IN = "transfer_in"
     VIP_PURCHASE = "vip_purchase"
+    MANUAL_ADJUSTMENT = "manual_adjustment"
 
 
 class LoanView(BaseModel):
@@ -119,36 +121,50 @@ class RepayResult(BaseModel):
     remaining_debt: int
 
 
-class PlacedBet(BaseModel):
-    """A successfully withdrawn wager.
+class BalanceAdjustmentResult(BaseModel):
+    """Outcome of a manual balance adjustment.
 
     Attributes:
-        amount: Actual amount withdrawn. This may be lower than the requested amount for all-in.
-        balance_after: Account balance after the bet was withdrawn.
-        is_allin: True when the requested bet was clamped to the available balance.
+        new_balance: User balance after the adjustment.
+        applied_delta: Signed balance delta that was actually applied.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    amount: int
-    balance_after: int
-    is_allin: bool
+    new_balance: int
+    applied_delta: int
 
 
-class PreparedBet(BaseModel):
-    """A wager accepted for a round but not yet deducted.
+class JackpotSettlementRequest(BaseModel):
+    """One player-side settlement against a shared jackpot pool.
 
     Attributes:
-        amount: Effective wager amount. This may be lower than the requested amount for all-in.
-        balance_at_start: Account balance observed when the round started.
-        is_allin: True when the requested bet was clamped to the available balance.
+        player_id: Discord user ID for the player account.
+        player_account_name: Last-seen account name stored on the player row.
+        player_delta: Signed change for the player; the pool receives the inverse.
+        player_avatar_url: Last-seen Discord avatar URL for the player.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    amount: int
-    balance_at_start: int
-    is_allin: bool
+    player_id: int
+    player_account_name: str
+    player_delta: int
+    player_avatar_url: str = ""
+
+
+class JackpotSettlementBatchResult(BaseModel):
+    """Outcome of one or more settlements against a shared jackpot pool.
+
+    Attributes:
+        player_balances: Latest post-settlement balance for each touched player.
+        jackpot_balance: Pool balance after the final settlement and any reseed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    player_balances: dict[int, int]
+    jackpot_balance: int
 
 
 class TransferResult(BaseModel):
@@ -204,12 +220,13 @@ __all__ = [
     "BASE_MESSAGE_REWARD_AMOUNT",
     "CHECKIN_STREAK_CYCLE",
     "VIP_PURCHASE_COST",
+    "BalanceAdjustmentResult",
     "BorrowResult",
     "CheckinResult",
     "CreditResult",
+    "JackpotSettlementBatchResult",
+    "JackpotSettlementRequest",
     "LoanView",
-    "PlacedBet",
-    "PreparedBet",
     "RepayResult",
     "TransactionKind",
     "TransferResult",

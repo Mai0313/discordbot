@@ -51,6 +51,22 @@ async def _list_transactions(user_id: int) -> list[tuple[str, int, int]]:
         return [(row[0], row[1], row[2]) for row in result.all()]
 
 
+async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
+    """Seeds a positive balance without writing audit rows."""
+    await database._ensure_schema()
+    if amount <= 0:
+        return await database.get_balance(user_id=user_id)
+    now = database._database_now()
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=database._build_credit_upsert(
+                user_id=user_id, name=name, amount=amount, avatar_url=avatar_url, now=now
+            )
+        )
+        await session.commit()
+        return result.scalar_one()
+
+
 async def _backdate_loan_opened_at(user_id: int, days_ago: int) -> None:
     """Test helper: simulates time passing by pushing loan_opened_at back."""
     past = datetime.now(tz=database.TAIWAN_TIMEZONE) - timedelta(days=days_ago)
@@ -158,6 +174,19 @@ async def test_borrow_over_limit_rejected() -> None:
     assert view.principal == 800
 
 
+async def test_borrow_concurrent_requests_cannot_exceed_limit() -> None:
+    """Concurrent borrows must not both pass against the same observed principal."""
+    results = await asyncio.gather(
+        database.borrow(user_id=1, name="alice", amount=800, credit_limit_value=1_000),
+        database.borrow(user_id=1, name="alice", amount=800, credit_limit_value=1_000),
+    )
+    assert sum(result is not None for result in results) == 1
+    view = await database.get_loan_view(user_id=1)
+    assert view is not None
+    assert view.principal == 800
+    assert await database.get_balance(user_id=1) == 800
+
+
 async def test_borrow_treats_borrowed_money_as_debt_not_earnings() -> None:
     """Borrowed money goes into balance but does not bump total_earned."""
     await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
@@ -170,7 +199,7 @@ async def test_borrow_treats_borrowed_money_as_debt_not_earnings() -> None:
 
 async def test_borrow_on_existing_account_preserves_total_earned() -> None:
     """Borrowing on top of an existing balance doesn't disturb earnings history."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     result = await database.borrow(user_id=1, name="alice", amount=400, credit_limit_value=1_000)
     assert result is not None
     assert result.new_balance == 500
@@ -216,8 +245,14 @@ async def test_repay_clamps_to_debt_total() -> None:
 async def test_repay_clamps_to_balance_when_balance_smaller() -> None:
     """When balance < debt, repayment caps at balance."""
     await database.borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=600)
-    assert placed is not None
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-600,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=600,
+    )
     result = await database.repay(user_id=1, name="alice", amount=10_000)
     assert result is not None
     assert result.principal_repaid == 400
@@ -227,15 +262,21 @@ async def test_repay_clamps_to_balance_when_balance_smaller() -> None:
 
 async def test_repay_no_debt_returns_none() -> None:
     """No outstanding debt → repayment rejected."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     assert await database.repay(user_id=1, name="alice", amount=50) is None
 
 
 async def test_repay_zero_balance_returns_none() -> None:
     """Zero balance → no funds to repay with, even when debt remains."""
     await database.borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=500)
-    assert placed is not None
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=500,
+    )
     assert await database.repay(user_id=1, name="alice", amount=100) is None
 
 
@@ -298,8 +339,14 @@ async def test_credit_with_repayment_diverts_50_percent_to_principal() -> None:
 async def test_credit_with_repayment_caps_at_principal_total() -> None:
     """Repayment clamps to total debt when 50% exceeds outstanding."""
     await database.borrow(user_id=1, name="alice", amount=50, credit_limit_value=1_000)
-    placed = await database.place_bet(user_id=1, name="alice", requested_bet=50)
-    assert placed is not None
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-50,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=50,
+    )
     result = await database.credit_with_repayment(
         user_id=1, name="alice", amount=1_000, kind=TransactionKind.CHAT_REWARD
     )
@@ -321,7 +368,7 @@ async def test_credit_with_repayment_floors_odd_amount() -> None:
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
     """Zero amount returns current balance without writing or logging."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     result = await database.credit_with_repayment(
         user_id=1, name="alice", amount=0, kind=TransactionKind.CHAT_REWARD
     )
@@ -343,7 +390,7 @@ async def test_credit_with_repayment_first_sight_creates_row() -> None:
 
 async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
     """Concurrent credits on the same user must not lose updates."""
-    await database.add_balance(user_id=1, name="alice", amount=0)
+    await _add_balance(user_id=1, name="alice", amount=0)
     await asyncio.gather(*[
         database.credit_with_repayment(
             user_id=1, name="alice", amount=10, kind=TransactionKind.CHAT_REWARD
@@ -417,7 +464,7 @@ async def test_get_loan_view_unknown_user_returns_none() -> None:
 
 async def test_get_loan_view_account_without_loan_returns_zero_state() -> None:
     """A user with a balance row but no loan returns a fresh-zero snapshot."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     view = await database.get_loan_view(user_id=1)
     assert view is not None
     assert view.principal == 0
@@ -473,7 +520,7 @@ async def test_chat_reward_logs_credited_slice_with_debt_context() -> None:
 
 async def test_transfer_logs_both_sides() -> None:
     """Transfer writes TRANSFER_OUT for sender and TRANSFER_IN for receiver."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40
     )
@@ -483,7 +530,7 @@ async def test_transfer_logs_both_sides() -> None:
 
 async def test_transfer_log_note_captures_counterparty() -> None:
     """Transfer audit rows carry the counterparty identity in ``note``."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     await database.transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40
     )
@@ -498,16 +545,23 @@ async def test_transfer_log_note_captures_counterparty() -> None:
     assert (2, "from alice (1)") in notes
 
 
-async def test_place_bet_logs_casino_bet() -> None:
-    """place_bet writes a CASINO_BET row with negative delta."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    await database.place_bet(user_id=1, name="alice", requested_bet=40)
+async def test_apply_round_settlement_logs_casino_bet() -> None:
+    """A negative player settlement writes a CASINO_BET row."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await database.apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-40,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=40,
+    )
     assert await _list_transactions(user_id=1) == [(TransactionKind.CASINO_BET.value, -40, 0)]
 
 
 async def test_apply_round_settlement_logs_payout_and_house_settle() -> None:
     """Player and dealer sides of a round each produce one audit row."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -522,7 +576,7 @@ async def test_apply_round_settlement_logs_payout_and_house_settle() -> None:
 
 async def test_apply_round_settlement_skips_zero_delta_house_log() -> None:
     """A push (dealer_delta=0) does not produce a house audit row."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=1, name="alice", amount=100)
     await database.apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -534,15 +588,9 @@ async def test_apply_round_settlement_skips_zero_delta_house_log() -> None:
     assert await _list_transactions(user_id=99) == []
 
 
-async def test_add_balance_does_not_log() -> None:
-    """add_balance is a low-level primitive and stays out of the audit log."""
-    await database.add_balance(user_id=1, name="alice", amount=100)
-    assert await _list_transactions(user_id=1) == []
-
-
-async def test_settle_game_logs_applied_delta_not_requested_delta() -> None:
-    """A loss bigger than the balance logs only what was actually clamped."""
-    await database.add_balance(user_id=1, name="alice", amount=10)
-    await database.settle_game(user_id=1, name="alice", delta=-1000)
+async def test_adjust_balance_logs_applied_delta_not_requested_delta() -> None:
+    """A clamped manual adjustment logs only the applied balance delta."""
+    await _add_balance(user_id=1, name="alice", amount=10)
+    await database.adjust_balance(user_id=1, name="alice", delta=-1000)
     rows = await _list_transactions(user_id=1)
-    assert rows == [(TransactionKind.CASINO_PAYOUT.value, -10, 0)]
+    assert rows == [(TransactionKind.MANUAL_ADJUSTMENT.value, -10, 0)]

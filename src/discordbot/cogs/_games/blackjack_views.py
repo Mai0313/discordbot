@@ -18,6 +18,7 @@ from discordbot.cogs._games.blackjack import (
     render_hand,
 )
 from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
+from discordbot.cogs._games.interactions import disable_view_components
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -494,9 +495,7 @@ class BlackjackView(ui.View):
         )
 
     def _disable_buttons(self) -> None:
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
+        disable_view_components(children=self.children, component_types=(ui.Button,))
 
 
 __all__: list[str] = [

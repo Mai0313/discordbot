@@ -99,11 +99,9 @@ async def modify_balance(
 ) -> BalanceChange:
     """Applies a manual economy balance adjustment via the database API.
 
-    Routes the change through the same helpers the bot itself uses: positive
-    deltas go through ``add_balance`` and negative deltas go through
-    ``settle_game`` (which clamps at zero) or ``house_settle`` (which allows
-    negative balances). Dry runs read the current state and compute the
-    expected applied delta without writing.
+    Routes the change through ``adjust_balance`` so admin edits are logged as
+    manual adjustments instead of casino activity. Dry runs read the current
+    state and compute the expected applied delta without writing.
 
     Args:
         user_id: Discord user ID whose account should be adjusted.
@@ -121,44 +119,34 @@ async def modify_balance(
     before = account[1] if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
-    after = before + delta if allow_negative else max(before + delta, 0)
-    applied_delta = after - before
+    projected_after = before + delta if allow_negative else max(before + delta, 0)
+    projected_applied_delta = projected_after - before
 
-    if dry_run or applied_delta == 0:
+    if dry_run or delta == 0:
         return BalanceChange(
             user_id=user_id,
             name=effective_name,
             before=before,
             requested_delta=delta,
-            applied_delta=applied_delta,
-            after=after,
-            created=created and not dry_run and applied_delta != 0,
+            applied_delta=projected_applied_delta,
+            after=projected_after,
+            created=False,
             dry_run=dry_run,
         )
 
-    if applied_delta > 0:
-        new_balance = await database.add_balance(
-            user_id=user_id, name=effective_name, amount=applied_delta
-        )
-    elif allow_negative:
-        # house_settle is the only public helper that allows the resulting
-        # balance to go below zero; the admin CLI is its only non-dealer caller.
-        new_balance = await database.house_settle(
-            user_id=user_id, name=effective_name, delta=applied_delta
-        )
-    else:
-        new_balance = await database.settle_game(
-            user_id=user_id, name=effective_name, delta=applied_delta
-        )
+    adjustment = await database.adjust_balance(
+        user_id=user_id, name=effective_name, delta=delta, allow_negative=allow_negative
+    )
+    actual_before = adjustment.new_balance - adjustment.applied_delta
 
     return BalanceChange(
         user_id=user_id,
         name=effective_name,
-        before=before,
+        before=actual_before,
         requested_delta=delta,
-        applied_delta=applied_delta,
-        after=new_balance,
-        created=created,
+        applied_delta=adjustment.applied_delta,
+        after=adjustment.new_balance,
+        created=created and actual_before == 0 and adjustment.applied_delta != 0,
         dry_run=False,
     )
 

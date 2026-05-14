@@ -12,6 +12,7 @@ from nextcord import Embed
 
 from discordbot.cogs._games import lobby, dragon_gate_views
 from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
+from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -143,7 +144,7 @@ class RiggedRandom(Random):
 
 
 class JackpotState:
-    """In-memory simulator for ``apply_jackpot_settlement`` used in view tests.
+    """In-memory simulator for jackpot settlement helpers used in view tests.
 
     Each ``settle`` call mutates the simulated player balance and jackpot
     snapshot, lets tests assert the running effect of multiple settlements
@@ -185,6 +186,25 @@ class JackpotState:
         })
         return self.balances[player_id], self.jackpot
 
+    async def settle_batch(
+        self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        """Mocks ``apply_jackpot_settlement_batch`` with the same state model."""
+        player_balances: dict[int, int] = {}
+        for settlement in settlements:
+            player_balance, jackpot_balance = await self.settle(
+                player_id=settlement.player_id,
+                player_account_name=settlement.player_account_name,
+                player_delta=settlement.player_delta,
+                game_id=game_id,
+                player_avatar_url=settlement.player_avatar_url,
+            )
+            player_balances[settlement.player_id] = player_balance
+            self.jackpot = jackpot_balance
+        return JackpotSettlementBatchResult(
+            player_balances=player_balances, jackpot_balance=self.jackpot
+        )
+
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
     return GameParticipant(
@@ -201,7 +221,9 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     monkeypatch.setattr(
         target=dragon_gate_views, name="apply_jackpot_settlement", value=state.settle
     )
-    monkeypatch.setattr(target=lobby, name="apply_jackpot_settlement", value=state.settle)
+    monkeypatch.setattr(
+        target=lobby, name="apply_jackpot_settlement_batch", value=state.settle_batch
+    )
 
     async def fake_get_balance(user_id: int) -> int:
         return state.balances.get(user_id, 0)

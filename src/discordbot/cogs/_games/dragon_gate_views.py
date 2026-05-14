@@ -38,6 +38,7 @@ from discordbot.cogs._games.dragon_gate import (
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
 )
+from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -787,13 +788,11 @@ class DragonGateView(ui.View):
         await self._send_notice(interaction=interaction, content=content)
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content=content, ephemeral=True)
-                return
-            await interaction.response.send_message(content=content, ephemeral=True)
-        except Exception:
-            logfire.warn("Failed to send Dragon Gate action notice", _exc_info=True)
+        await send_ephemeral_notice(
+            interaction=interaction,
+            content=content,
+            log_message="Failed to send Dragon Gate action notice",
+        )
 
     async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
         """Logs active-table component failures instead of only printing to stderr."""
@@ -805,9 +804,9 @@ class DragonGateView(ui.View):
         )
 
     def _disable_controls(self) -> None:
-        for child in self.children:
-            if isinstance(child, (ui.Button, ui.StringSelect)):
-                child.disabled = True
+        disable_view_components(
+            children=self.children, component_types=(ui.Button, ui.StringSelect)
+        )
 
 
 class DragonGateBetModal(ui.Modal):
