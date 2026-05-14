@@ -1,7 +1,8 @@
 """Casino-style games (`/blackjack`, `/dragon_gate`) wagering economy points."""
 
 from random import SystemRandom
-from functools import cached_property
+from functools import partial, cached_property
+from collections.abc import Callable
 
 from openai import AsyncOpenAI
 import nextcord
@@ -11,13 +12,8 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.games import GameParticipant, GameParticipantIdentity
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._games.views import (
-    MAX_BLACKJACK_PLAYERS,
-    BlackjackLobbyView,
-    build_blackjack_lobby_embed,
-)
 from discordbot.cogs._games.dealer import DealerAI
-from discordbot.cogs._games.wagers import build_wager_participant
+from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs._games.cleanup import (
     track_game_message,
     delete_tracked_game_messages,
@@ -27,6 +23,11 @@ from discordbot.cogs._economy.database import get_balance
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
+from discordbot.cogs._games.blackjack_views import (
+    MAX_BLACKJACK_PLAYERS,
+    BlackjackLobbyView,
+    build_blackjack_lobby_embed,
+)
 from discordbot.cogs._games.dragon_gate_views import (
     DragonGateLobbyView,
     fetch_dragon_gate_jackpot,
@@ -114,90 +115,45 @@ class GamesCogs(commands.Cog):
         )
 
     async def _participant_from_user(
-        self, user: nextcord.User | nextcord.Member, requested_bet: int
+        self, user: nextcord.User | nextcord.Member, wager: int, mode: WagerMode
     ) -> tuple[GameParticipant | None, int]:
-        """Builds a lobby participant after clamping the requested bet."""
+        """Builds a lobby participant under the requested wager and mode."""
         balance = await get_balance(user_id=user.id)
         return (
             build_wager_participant(
                 identity=self._identity_from_user(user=user),
                 balance=balance,
-                wager=requested_bet,
-                mode="clamp",
+                wager=wager,
+                mode=mode,
             ),
             balance,
         )
 
-    async def _prepare_lobby_participant(
-        self, interaction: Interaction, requested_bet: int
+    async def _prepare_participant(
+        self,
+        interaction: Interaction,
+        wager: int,
+        mode: WagerMode,
+        insufficient_embed_builder: Callable[[int], Embed],
     ) -> GameParticipant | None:
-        """Prepares a user who pressed the lobby Join button."""
+        """Prepares a user who pressed a lobby Join button.
+
+        Sends the supplied insufficient-balance embed (game-specific copy) when
+        the user cannot cover the wager. Returns the participant otherwise.
+        """
         if interaction.user is None:
             return None
         participant, balance = await self._participant_from_user(
-            user=interaction.user, requested_bet=requested_bet
+            user=interaction.user, wager=wager, mode=mode
         )
         if participant is None:
             await interaction.followup.send(
-                embed=self._insufficient_balance_embed(balance=balance), ephemeral=True
+                embed=insufficient_embed_builder(balance), ephemeral=True
             )
         return participant
 
-    async def _dragon_gate_participant_from_user(
-        self, user: nextcord.User | nextcord.Member
-    ) -> tuple[GameParticipant | None, int]:
-        """Builds a 射龍門 lobby participant after checking the fixed ante."""
-        balance = await get_balance(user_id=user.id)
-        return (
-            build_wager_participant(
-                identity=self._identity_from_user(user=user),
-                balance=balance,
-                wager=ANTE,
-                mode="exact",
-            ),
-            balance,
-        )
-
-    async def _prepare_dragon_gate_participant(
-        self, interaction: Interaction
-    ) -> GameParticipant | None:
-        """Prepares a user who pressed the 射龍門 lobby Join button."""
-        if interaction.user is None:
-            return None
-        participant, balance = await self._dragon_gate_participant_from_user(user=interaction.user)
-        if participant is None:
-            await interaction.followup.send(
-                embed=self._dragon_gate_insufficient_balance_embed(balance=balance), ephemeral=True
-            )
-        return participant
-
-    async def _refresh_dragon_gate_participants(
-        self, participants: list[GameParticipant]
-    ) -> tuple[list[GameParticipant], list[str]]:
-        """Re-checks 射龍門 ante balances when the lobby owner starts the table."""
-        refreshed: list[GameParticipant] = []
-        dropped: list[str] = []
-        for participant in participants:
-            balance = await get_balance(user_id=participant.user_id)
-            refreshed_participant = build_wager_participant(
-                identity=GameParticipantIdentity(
-                    user_id=participant.user_id,
-                    account_name=participant.account_name,
-                    display_name=participant.display_name,
-                    avatar_url=participant.avatar_url,
-                ),
-                balance=balance,
-                wager=ANTE,
-                mode="exact",
-            )
-            if refreshed_participant is None:
-                dropped.append(participant.display_name)
-                continue
-            refreshed.append(refreshed_participant)
-        return refreshed, dropped
-
-    async def _refresh_lobby_participants(
-        self, participants: list[GameParticipant], requested_bet: int
+    async def _refresh_participants(
+        self, participants: list[GameParticipant], wager: int, mode: WagerMode
     ) -> tuple[list[GameParticipant], list[str]]:
         """Re-checks balances when the lobby owner starts the table."""
         refreshed: list[GameParticipant] = []
@@ -212,8 +168,8 @@ class GamesCogs(commands.Cog):
                     avatar_url=participant.avatar_url,
                 ),
                 balance=balance,
-                wager=requested_bet,
-                mode="clamp",
+                wager=wager,
+                mode=mode,
             )
             if refreshed_participant is None:
                 dropped.append(participant.display_name)
@@ -222,7 +178,7 @@ class GamesCogs(commands.Cog):
         return refreshed, dropped
 
     def _insufficient_balance_embed(self, balance: int) -> Embed:
-        """Builds the shared insufficient-balance embed for casino games."""
+        """Builds the shared insufficient-balance embed for clamp-mode tables."""
         return Embed(
             title="餘額不足",
             description=(
@@ -281,7 +237,7 @@ class GamesCogs(commands.Cog):
             return
 
         owner, balance = await self._participant_from_user(
-            user=interaction.user, requested_bet=bet
+            user=interaction.user, wager=bet, mode="clamp"
         )
         if owner is None:
             message = await interaction.followup.send(
@@ -300,8 +256,15 @@ class GamesCogs(commands.Cog):
             dealer_id=dealer_id,
             dealer_name=dealer_name,
             dealer_avatar_url=dealer_avatar_url,
-            prepare_participant=self._prepare_lobby_participant,
-            refresh_participants=self._refresh_lobby_participants,
+            prepare_participant=partial(
+                self._prepare_participant,
+                wager=table_bet,
+                mode="clamp",
+                insufficient_embed_builder=self._insufficient_balance_embed,
+            ),
+            refresh_participants=partial(
+                self._refresh_participants, wager=table_bet, mode="clamp"
+            ),
         )
         embed = build_blackjack_lobby_embed(
             owner=owner,
@@ -333,7 +296,9 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        owner, balance = await self._dragon_gate_participant_from_user(user=interaction.user)
+        owner, balance = await self._participant_from_user(
+            user=interaction.user, wager=ANTE, mode="exact"
+        )
         if owner is None:
             message = await interaction.followup.send(
                 embed=self._dragon_gate_insufficient_balance_embed(balance=balance), wait=True
@@ -349,8 +314,13 @@ class GamesCogs(commands.Cog):
             dealer=self.dealer,
             dealer_name=dealer_name,
             dealer_avatar_url=dealer_avatar_url,
-            prepare_participant=self._prepare_dragon_gate_participant,
-            refresh_participants=self._refresh_dragon_gate_participants,
+            prepare_participant=partial(
+                self._prepare_participant,
+                wager=ANTE,
+                mode="exact",
+                insufficient_embed_builder=self._dragon_gate_insufficient_balance_embed,
+            ),
+            refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
             initial_jackpot=initial_jackpot,
         )
         embed = build_dragon_gate_lobby_embed(

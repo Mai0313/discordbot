@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 import pytest
 from nextcord import Embed
 
-from discordbot.cogs._games import dragon_gate_views
+from discordbot.cogs._games import lobby, dragon_gate_views
 from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
@@ -192,6 +192,7 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     monkeypatch.setattr(
         target=dragon_gate_views, name="apply_jackpot_settlement", value=state.settle
     )
+    monkeypatch.setattr(target=lobby, name="apply_jackpot_settlement", value=state.settle)
 
     async def fake_get_balance(user_id: int) -> int:
         return state.balances.get(user_id, 0)
@@ -199,6 +200,9 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     monkeypatch.setattr(target=dragon_gate_views, name="get_balance", value=fake_get_balance)
     monkeypatch.setattr(
         target=dragon_gate_views, name="schedule_game_message_delete", value=lambda message: None
+    )
+    monkeypatch.setattr(
+        target=lobby, name="schedule_game_message_delete", value=lambda message: None
     )
 
 

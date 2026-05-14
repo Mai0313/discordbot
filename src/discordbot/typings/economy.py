@@ -16,9 +16,6 @@ BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 100_000
 VIP_PURCHASE_COST: Final[int] = 10_000_000
 # Daily check-in streak cycles through 1..7 then loops back to 1.
 CHECKIN_STREAK_CYCLE: Final[int] = 7
-# Streak bonus formula: base * (1 + (streak - 1) * 0.5). Day 1 = 1.0x,
-# day 7 = 4.0x of base. VIP doubles base before this multiplier.
-CHECKIN_STREAK_BONUS_STEP: Final[float] = 0.5
 
 
 class TransactionKind(StrEnum):
@@ -205,7 +202,6 @@ class VipPurchaseResult(BaseModel):
 __all__ = [
     "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
-    "CHECKIN_STREAK_BONUS_STEP",
     "CHECKIN_STREAK_CYCLE",
     "VIP_PURCHASE_COST",
     "BorrowResult",

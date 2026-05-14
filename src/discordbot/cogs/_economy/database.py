@@ -66,7 +66,6 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
-    CHECKIN_STREAK_BONUS_STEP,
     BASE_CHECKIN_REWARD_AMOUNT,
     LoanView,
     PlacedBet,
@@ -390,9 +389,9 @@ def credit_limit(user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- acc
 def checkin_reward(streak: int, is_vip: bool) -> int:
     """Returns the gross check-in payout for a streak day.
 
-    The reward formula is ``BASE * (1 + (streak - 1) * CHECKIN_STREAK_BONUS_STEP)``
-    where ``streak`` is the 1..``CHECKIN_STREAK_CYCLE`` day in the cycle.
-    VIP doubles the base before the streak bonus.
+    The reward formula is ``BASE * (1 + (streak - 1) * 0.5)`` where ``streak``
+    is the 1..``CHECKIN_STREAK_CYCLE`` day in the cycle. VIP doubles the base
+    before the streak bonus.
 
     Args:
         streak: Streak counter for this check-in (1..``CHECKIN_STREAK_CYCLE``).
@@ -402,7 +401,7 @@ def checkin_reward(streak: int, is_vip: bool) -> int:
         Integer reward amount.
     """
     base = BASE_CHECKIN_REWARD_AMOUNT * (2 if is_vip else 1)
-    multiplier = 1.0 + (streak - 1) * CHECKIN_STREAK_BONUS_STEP
+    multiplier = 1.0 + (streak - 1) * 0.5
     return int(base * multiplier)
 
 
@@ -801,35 +800,20 @@ async def _settle_game_in_session(  # noqa: PLR0913 -- session helper needs both
     return new_balance
 
 
-async def _casino_debit_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
-    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta + kind
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    avatar_url: str,
+    delta: int,
+    kind: TransactionKind,
+    now: datetime,
 ) -> int:
-    """Applies a casino loss without clamping the player's balance at zero."""
-    stmt = _build_signed_delta_upsert(
-        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
-    )
-    result = await session.execute(statement=stmt)
-    new_balance = result.scalar_one()
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=TransactionKind.CASINO_BET,
-        delta=delta,
-        balance_after=new_balance,
-        note=None,
-        now=now,
-    )
-    return new_balance
+    """Applies a signed delta without clamping and logs the audit row.
 
-
-async def _house_settle_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta
-    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
-) -> int:
-    """Applies a signed delta to the dealer ledger and logs the audit row.
-
-    Unlike ``_settle_game_in_session`` this never clamps; the dealer is
-    allowed to go negative. The applied delta equals the requested delta
-    so no pre-read is required.
+    Used for both player-side casino losses (``CASINO_BET``) and dealer-side
+    mirrors (``HOUSE_SETTLE``); neither clamps at zero, so a player can finish
+    a losing round in the red and the dealer can run cumulative negative P&L.
     """
     stmt = _build_signed_delta_upsert(
         user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
@@ -839,7 +823,7 @@ async def _house_settle_in_session(  # noqa: PLR0913 -- session helper needs led
     await _log_transaction_in_session(
         session=session,
         user_id=user_id,
-        kind=TransactionKind.HOUSE_SETTLE,
+        kind=kind,
         delta=delta,
         balance_after=new_balance,
         note=None,
@@ -1079,12 +1063,13 @@ async def house_settle(user_id: int, name: str, delta: int, avatar_url: str = ""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        new_balance = await _house_settle_in_session(
+        new_balance = await _apply_signed_delta_in_session(
             session=session,
             user_id=user_id,
             name=name,
             avatar_url=avatar_url,
             delta=delta,
+            kind=TransactionKind.HOUSE_SETTLE,
             now=now,
         )
         await session.commit()
@@ -1140,12 +1125,13 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
             )
             player_balance = credit_result.new_balance
         elif player_delta < 0:
-            player_balance = await _casino_debit_in_session(
+            player_balance = await _apply_signed_delta_in_session(
                 session=session,
                 user_id=player_id,
                 name=player_account_name,
                 avatar_url=player_avatar_url,
                 delta=player_delta,
+                kind=TransactionKind.CASINO_BET,
                 now=now,
             )
         else:
@@ -1160,12 +1146,13 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
             )
             dealer_balance = dealer_result.scalar_one_or_none() or 0
         else:
-            dealer_balance = await _house_settle_in_session(
+            dealer_balance = await _apply_signed_delta_in_session(
                 session=session,
                 user_id=dealer_id,
                 name=dealer_name,
                 avatar_url=dealer_avatar_url,
                 delta=dealer_delta,
+                kind=TransactionKind.HOUSE_SETTLE,
                 now=now,
             )
         await session.commit()
@@ -1286,12 +1273,13 @@ async def apply_jackpot_settlement(
             )
             player_balance = credit_result.new_balance
         elif player_delta < 0:
-            player_balance = await _casino_debit_in_session(
+            player_balance = await _apply_signed_delta_in_session(
                 session=session,
                 user_id=player_id,
                 name=player_account_name,
                 avatar_url=player_avatar_url,
                 delta=player_delta,
+                kind=TransactionKind.CASINO_BET,
                 now=now,
             )
         else:

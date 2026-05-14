@@ -10,12 +10,12 @@ import pytest
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs._games import views
+from discordbot.cogs._games import blackjack_views as views
 from discordbot.cogs._economy import database
 from discordbot.typings.games import GameParticipant, BlackjackSettlement
-from discordbot.cogs._games.views import BlackjackView
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
+from discordbot.cogs._games.blackjack_views import BlackjackView
 
 
 class _DealerStub:

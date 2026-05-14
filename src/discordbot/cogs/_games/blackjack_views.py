@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final
 import asyncio
 import contextlib
 
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.typings.games import Card, GameParticipant, BlackjackPlayerResult
+from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
@@ -44,24 +45,6 @@ if TYPE_CHECKING:
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 5
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-
-
-class PrepareParticipant(Protocol):
-    """Callable used by lobby join buttons to validate a participant."""
-
-    async def __call__(
-        self, interaction: Interaction, requested_bet: int
-    ) -> GameParticipant | None:
-        """Returns a prepared participant or sends the interaction error."""
-
-
-class RefreshParticipants(Protocol):
-    """Callable used by lobby start to re-check balances."""
-
-    async def __call__(
-        self, participants: list[GameParticipant], requested_bet: int
-    ) -> tuple[list[GameParticipant], list[str]]:
-        """Returns refreshed participants and display names removed from the table."""
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -249,8 +232,10 @@ def build_final_embed(
     return embed
 
 
-class BlackjackLobbyView(ui.View):
+class BlackjackLobbyView(BaseGameLobbyView):
     """Join / leave / start lobby for a Blackjack game session."""
+
+    max_players = MAX_BLACKJACK_PLAYERS
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
         self,
@@ -264,121 +249,29 @@ class BlackjackLobbyView(ui.View):
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
     ) -> None:
-        super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
-        self.owner = owner
+        super().__init__(
+            owner=owner,
+            rng=rng,
+            dealer=dealer,
+            dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
+            prepare_participant=prepare_participant,
+            refresh_participants=refresh_participants,
+            timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS,
+        )
         self.requested_bet = requested_bet
-        self.rng = rng
-        self.dealer = dealer
         self.dealer_id = dealer_id
-        self.dealer_name = dealer_name
-        self.dealer_avatar_url = dealer_avatar_url
-        self.prepare_participant = prepare_participant
-        self.refresh_participants = refresh_participants
-        self.message: Message | None = None
-        self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
-        self._lock = asyncio.Lock()
-        self._started = False
 
-    @property
-    def participants(self) -> list[GameParticipant]:
-        """Returns participants in join order."""
-        return list(self._participants.values())
-
-    async def on_timeout(self) -> None:
-        """Cleans up a lobby that never started."""
-        if self._started or self.message is None:
-            return
-        self._disable_buttons()
-        self.stop()
-        embed = build_blackjack_lobby_embed(
+    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+        return build_blackjack_lobby_embed(
             owner=self.owner,
             participants=self.participants,
             requested_bet=self.requested_bet,
             max_players=MAX_BLACKJACK_PLAYERS,
-            status="Lobby 已逾時",
+            status=status,
         )
-        with contextlib.suppress(Exception):
-            await self.message.edit(embed=embed, view=self)
-        schedule_game_message_delete(message=self.message)
 
-    @ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
-    async def join(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Adds the interacting user to the lobby."""
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            if interaction.user.id in self._participants:
-                await self._send_notice(interaction=interaction, content="你已經在這桌了")
-                return
-            if len(self._participants) >= MAX_BLACKJACK_PLAYERS:
-                await self._send_notice(interaction=interaction, content="這桌已經滿了")
-                return
-            participant = await self.prepare_participant(
-                interaction=interaction, requested_bet=self.requested_bet
-            )
-            if participant is None:
-                return
-            self._participants[participant.user_id] = participant
-            await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已加入"
-            )
-
-    @ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
-    async def leave(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Removes the interacting user from the lobby."""
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            if interaction.user.id == self.owner.user_id:
-                await self._send_notice(interaction=interaction, content="發起者不能離開 lobby")
-                return
-            participant = self._participants.pop(interaction.user.id, None)
-            if participant is None:
-                await self._send_notice(interaction=interaction, content="你不在這桌")
-                return
-            await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已離開"
-            )
-
-    @ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
-    async def start(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Starts the game if the lobby owner pressed the button."""
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-        if interaction.user.id != self.owner.user_id:
-            await self._send_notice(interaction=interaction, content="只有發起者可以開始")
-            return
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            refreshed, dropped = await self.refresh_participants(
-                participants=self.participants, requested_bet=self.requested_bet
-            )
-            self._participants = {participant.user_id: participant for participant in refreshed}
-            if self.owner.user_id not in self._participants:
-                await self._send_notice(interaction=interaction, content="你的餘額不足, 不能開始")
-                await self._refresh_message(message=interaction.message, status="發起者餘額不足")
-                return
-            self._started = True
-            if dropped:
-                names = "、".join(dropped)
-                await self._send_notice(
-                    interaction=interaction, content=f"餘額不足已移出: {names}"
-                )
-            self.stop()
-            await self._start_blackjack(message=interaction.message)
-
-    async def _start_blackjack(self, message: Message | None) -> None:
+    async def _start_game(self, message: Message | None) -> None:
         if message is None:
             return
         round_state = BlackjackRound.from_participants(
@@ -419,30 +312,6 @@ class BlackjackLobbyView(ui.View):
             ],
             view=view,
         )
-
-    async def _refresh_message(self, message: Message | None, status: str) -> None:
-        if message is None:
-            return
-        self.message = message
-        await message.edit(
-            embed=build_blackjack_lobby_embed(
-                owner=self.owner,
-                participants=self.participants,
-                requested_bet=self.requested_bet,
-                max_players=MAX_BLACKJACK_PLAYERS,
-                status=status,
-            ),
-            view=self,
-        )
-
-    async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        with contextlib.suppress(Exception):
-            await interaction.followup.send(content=content, ephemeral=True)
-
-    def _disable_buttons(self) -> None:
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
 
 
 class BlackjackView(ui.View):
@@ -631,9 +500,12 @@ class BlackjackView(ui.View):
 
 
 __all__: list[str] = [
+    "BLACKJACK_ACTION_TIMEOUT_SECONDS",
     "MAX_BLACKJACK_PLAYERS",
     "BlackjackLobbyView",
     "BlackjackView",
+    "PrepareParticipant",
+    "RefreshParticipants",
     "blackjack_outcome_presentation",
     "build_blackjack_lobby_embed",
     "build_final_embed",

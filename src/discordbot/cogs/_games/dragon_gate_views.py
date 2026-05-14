@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 import asyncio
 import contextlib
 
@@ -11,6 +11,11 @@ import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
+from discordbot.cogs._games.lobby import (
+    PrepareParticipant,
+    RefreshParticipants,
+    BaseJackpotLobbyView,
+)
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
@@ -56,22 +61,6 @@ if TYPE_CHECKING:
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
-
-
-class PrepareDragonGateParticipant(Protocol):
-    """Callable used by 射龍門 lobby join buttons to validate a participant."""
-
-    async def __call__(self, interaction: Interaction) -> GameParticipant | None:
-        """Returns a prepared participant or sends the interaction error."""
-
-
-class RefreshDragonGateParticipants(Protocol):
-    """Callable used by 射龍門 lobby start to re-check balances."""
-
-    async def __call__(
-        self, participants: list[GameParticipant]
-    ) -> tuple[list[GameParticipant], list[str]]:
-        """Returns refreshed participants and display names removed from the table."""
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -316,8 +305,11 @@ def build_dragon_gate_final_embed(
     return embed
 
 
-class DragonGateLobbyView(ui.View):
+class DragonGateLobbyView(BaseJackpotLobbyView):
     """Join / leave / start lobby for a 射龍門 game session."""
+
+    game_id = GAME_ID
+    ante = ANTE
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
         self,
@@ -326,128 +318,33 @@ class DragonGateLobbyView(ui.View):
         dealer: DealerAI,
         dealer_name: str,
         dealer_avatar_url: str,
-        prepare_participant: PrepareDragonGateParticipant,
-        refresh_participants: RefreshDragonGateParticipants,
+        prepare_participant: PrepareParticipant,
+        refresh_participants: RefreshParticipants,
         initial_jackpot: int,
     ) -> None:
-        super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
-        self.owner = owner
-        self.rng = rng
-        self.dealer = dealer
-        self.dealer_name = dealer_name
-        self.dealer_avatar_url = dealer_avatar_url
-        self.prepare_participant = prepare_participant
-        self.refresh_participants = refresh_participants
-        self.message: Message | None = None
-        self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
-        self._lock = asyncio.Lock()
-        self._started = False
-        self._jackpot_snapshot = initial_jackpot
+        super().__init__(
+            owner=owner,
+            rng=rng,
+            dealer=dealer,
+            dealer_name=dealer_name,
+            dealer_avatar_url=dealer_avatar_url,
+            prepare_participant=prepare_participant,
+            refresh_participants=refresh_participants,
+            initial_jackpot=initial_jackpot,
+            timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS,
+        )
 
-    @property
-    def participants(self) -> list[GameParticipant]:
-        """Returns participants in join order."""
-        return list(self._participants.values())
-
-    async def on_timeout(self) -> None:
-        """Cleans up a lobby that never started."""
-        if self._started or self.message is None:
-            return
-        self._disable_buttons()
-        self.stop()
-        embed = build_dragon_gate_lobby_embed(
+    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+        return build_dragon_gate_lobby_embed(
             owner=self.owner,
             participants=self.participants,
             jackpot=self._jackpot_snapshot,
-            status="Lobby 已逾時",
+            status=status,
         )
-        with contextlib.suppress(Exception):
-            await self.message.edit(embed=embed, view=self)
-        schedule_game_message_delete(message=self.message)
 
-    @ui.button(label="加入", emoji="✅", style=ButtonStyle.success, custom_id="dg:lobby:join")
-    async def join(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Adds the interacting user to the lobby."""
-        if interaction.user is None:
-            return
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            if interaction.user.id in self._participants:
-                await self._send_notice(interaction=interaction, content="你已經在這桌了")
-                return
-            await interaction.response.defer()
-            participant = await self.prepare_participant(interaction=interaction)
-            if participant is None:
-                return
-            self._participants[participant.user_id] = participant
-            await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已加入"
-            )
-
-    @ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary, custom_id="dg:lobby:leave")
-    async def leave(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Removes the interacting user from the lobby."""
-        if interaction.user is None:
-            return
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            if interaction.user.id == self.owner.user_id:
-                await self._send_notice(interaction=interaction, content="房主不能離開 lobby")
-                return
-            participant = self._participants.pop(interaction.user.id, None)
-            if participant is None:
-                await self._send_notice(interaction=interaction, content="你不在這桌")
-                return
-            await interaction.response.defer()
-            await self._refresh_message(
-                message=interaction.message, status=f"{participant.display_name} 已離開"
-            )
-
-    @ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary, custom_id="dg:lobby:start")
-    async def start(self, _button: ui.Button, interaction: Interaction) -> None:
-        """Starts the game if the lobby owner pressed the button."""
-        if interaction.user is None:
-            return
-        if interaction.user.id != self.owner.user_id:
-            await self._send_notice(interaction=interaction, content="只有房主可以開始")
-            return
-        await interaction.response.defer()
-        async with self._lock:
-            if self._started:
-                await self._send_notice(interaction=interaction, content="這桌已經開始了")
-                return
-            refreshed, dropped = await self.refresh_participants(participants=self.participants)
-            self._participants = {participant.user_id: participant for participant in refreshed}
-            if self.owner.user_id not in self._participants:
-                await self._send_notice(interaction=interaction, content="你的餘額不足, 不能開始")
-                await self._refresh_message(message=interaction.message, status="房主餘額不足")
-                return
-            self._started = True
-        if dropped:
-            names = ", ".join(dropped)
-            await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
-        self.stop()
-        await self._start_dragon_gate(message=interaction.message)
-
-    async def _start_dragon_gate(self, message: Message | None) -> None:
-        if message is None:
-            return
-        final_balances: dict[int, int] = {}
-        jackpot_after = self._jackpot_snapshot
-        for participant in self.participants:
-            player_balance, jackpot_after = await apply_jackpot_settlement(
-                player_id=participant.user_id,
-                player_account_name=participant.account_name,
-                player_avatar_url=participant.avatar_url,
-                player_delta=-ANTE,
-                game_id=GAME_ID,
-            )
-            final_balances[participant.user_id] = player_balance
-        self._jackpot_snapshot = jackpot_after
+    async def _start_game_after_antes(
+        self, message: Message, final_balances: dict[int, int]
+    ) -> None:
         round_state = DragonGateRound.from_participants(
             rng=self.rng, participants=self.participants
         )
@@ -466,49 +363,12 @@ class DragonGateLobbyView(ui.View):
             dealer_name=self.dealer_name,
             dealer_avatar_url=self.dealer_avatar_url,
             dealer_line=dealer_line,
-            jackpot_snapshot=jackpot_after,
+            jackpot_snapshot=self._jackpot_snapshot,
             final_balances=final_balances,
         )
         view.message = message
         view.sync_controls()
         await message.edit(embeds=view.in_progress_embeds(), view=view)
-
-    async def _refresh_message(self, message: Message | None, status: str) -> None:
-        if message is None:
-            return
-        self.message = message
-        await message.edit(
-            embed=build_dragon_gate_lobby_embed(
-                owner=self.owner,
-                participants=self.participants,
-                jackpot=self._jackpot_snapshot,
-                status=status,
-            ),
-            view=self,
-        )
-
-    async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content=content, ephemeral=True)
-                return
-            await interaction.response.send_message(content=content, ephemeral=True)
-        except Exception:
-            logfire.warn("Failed to send Dragon Gate lobby notice", _exc_info=True)
-
-    async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
-        """Logs lobby component failures instead of only printing to stderr."""
-        logfire.error(
-            "Dragon Gate lobby interaction failed",
-            item_label=getattr(item, "label", None),
-            user_id=getattr(interaction.user, "id", None),
-            _exc_info=(type(error), error, error.__traceback__),
-        )
-
-    def _disable_buttons(self) -> None:
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
 
 
 class DragonGateView(ui.View):

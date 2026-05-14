@@ -20,9 +20,9 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
-from discordbot.cogs._games.views import BlackjackLobbyView
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
 if TYPE_CHECKING:
@@ -636,8 +636,8 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
     await start_button.callback(other_interaction)
 
-    assert other_interaction.followup.sent
-    assert isinstance(other_interaction.followup.sent[0]["content"], str)
+    assert other_interaction.response.sent
+    assert isinstance(other_interaction.response.sent[0]["content"], str)
 
 
 async def test_blackjack_owner_all_in_sets_table_bet(monkeypatch: pytest.MonkeyPatch) -> None:
