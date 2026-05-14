@@ -223,6 +223,8 @@ def build_final_embed(
             delta=result.settlement.delta,
             new_balance=result.settlement.new_balance,
             is_allin=participant.is_allin,
+            base_delta=result.settlement.base_delta,
+            vip_bonus=result.settlement.vip_bonus,
         )
         note = blackjack_early_finish_note(hand=round_state.settlement_hand(player=player))
         note_segment = f"\n{metadata_line(text=note)}" if note else ""

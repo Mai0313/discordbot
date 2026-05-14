@@ -1038,6 +1038,9 @@ async def test_settle_wager_applies_vip_bonus_on_win() -> None:
         delta=100,
     )
     assert settlement.delta == 150
+    assert settlement.base_delta == 100
+    assert settlement.vip_bonus == 50
+    assert settlement.is_vip is True
     assert settlement.house_balance == -150
 
 
@@ -1055,6 +1058,9 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
         delta=-100,
     )
     assert settlement.delta == -100
+    assert settlement.base_delta == -100
+    assert settlement.vip_bonus == 0
+    assert settlement.is_vip is True
     assert settlement.house_balance == 100
 
 

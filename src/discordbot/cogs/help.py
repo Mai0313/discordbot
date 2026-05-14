@@ -66,8 +66,10 @@ _HELP_CONTENT = {
         ),
         "vip": (
             "**VIP** — `/vip`\n"
-            f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 1.5x "
-            "blackjack payouts, 2x check-in points, and 2x borrow cap. The reply is private."
+            f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 2x "
+            "daily check-in rewards, 2x borrow cap, and 1.5x Blackjack winning payouts. "
+            "`/vip`, `/balance`, `/borrow`, and `/checkin` show the base number and the "
+            "VIP-boosted number; Blackjack final results show the VIP bonus when it applies."
         ),
         "games": (
             "**Games**\n"
@@ -141,7 +143,9 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
-            "VIP Blackjack payout 1.5x, 簽到 2x 點數, 貸款額度 2x. 回覆只有自己看得到"
+            "VIP 會讓每日簽到 2x、貸款額度 2x、Blackjack 贏局 payout 1.5x\n"
+            "`/vip`、`/balance`、`/borrow`、`/checkin` 會顯示原本數字與 VIP加成後數字, "
+            "Blackjack final result 也會在套用時顯示 VIP加成"
         ),
         "games": (
             "**小遊戲**\n"
@@ -215,7 +219,9 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入。"
-            "VIP はブラックジャック配当1.5x、チェックイン2x、借入上限2x。返信は private です。"
+            "VIP は check-in 2x、借入上限 2x、Blackjack 勝利 payout 1.5x。"
+            "`/vip`、`/balance`、`/borrow`、`/checkin` は通常値と VIP 後の値を表示し、"
+            "Blackjack final result も適用時に VIP bonus を表示します。"
         ),
         "games": (
             "**ゲーム**\n"

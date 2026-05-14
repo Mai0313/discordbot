@@ -216,20 +216,29 @@ def lobby_participant_line(
     return f"**{index}. {display_name}**{bet_suffix}"
 
 
-def settlement_metadata(delta: int, new_balance: int, is_allin: bool) -> str:
+def settlement_metadata(
+    delta: int, new_balance: int, is_allin: bool, base_delta: int | None = None, vip_bonus: int = 0
+) -> str:
     """Renders the small-text settlement metadata line.
 
     Args:
         delta: Player net point change for the round.
         new_balance: Player balance after settlement.
         is_allin: Whether the wager consumed the full balance.
+        base_delta: Player net point change before the VIP payout bonus.
+        vip_bonus: Extra points added by the VIP payout bonus.
 
     Returns:
         ``-# 本局 +X · 餘額 Y`` style metadata, with an ``· all-in`` suffix
         when the round was all-in.
     """
-    allin = " · all-in" if is_allin else ""
-    return f"-# 本局 `{delta:+,}`{allin} · 餘額 `{new_balance:,}`"
+    segments = [f"本局 `{delta:+,}`"]
+    if vip_bonus > 0 and base_delta is not None:
+        segments.append(f"VIP加成 `{base_delta:+,}` → `{delta:+,}`")
+    if is_allin:
+        segments.append("all-in")
+    segments.append(f"餘額 `{new_balance:,}`")
+    return "-# " + " · ".join(segments)
 
 
 def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:

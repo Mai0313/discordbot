@@ -21,6 +21,8 @@ from discordbot.cogs._economy.database import (
     get_balance,
     credit_limit,
     get_loan_view,
+    checkin_reward,
+    apply_vip_blackjack_bonus,
 )
 from discordbot.cogs._economy.presentation import (
     CURRENCY_NAME,
@@ -39,6 +41,30 @@ _REPAY_COLOR = 0x2ECC71
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
+
+
+def _vip_perk_lines(user: nextcord.User | Member, checkin_streak: int = 1) -> str:
+    """Formats VIP perks with the base number and the boosted number."""
+    base_limit = credit_limit(user=user, is_vip=False)
+    vip_limit = credit_limit(user=user, is_vip=True)
+    base_checkin = checkin_reward(streak=checkin_streak, is_vip=False)
+    vip_checkin = checkin_reward(streak=checkin_streak, is_vip=True)
+    sample_win = 10_000
+    boosted_win = apply_vip_blackjack_bonus(delta=sample_win, is_vip=True)
+    checkin_label = "簽到基礎" if checkin_streak == 1 else f"第 {checkin_streak} 天簽到"
+    return (
+        f"{checkin_label} {amount_code(amount=base_checkin)} → {amount_code(amount=vip_checkin)}\n"
+        f"貸款額度 {amount_code(amount=base_limit)} → {amount_code(amount=vip_limit)}\n"
+        f"Blackjack 贏局例 {amount_code(amount=sample_win, signed=True)} → "
+        f"{amount_code(amount=boosted_win, signed=True)}"
+    )
+
+
+def _vip_credit_limit_line(user: nextcord.User | Member) -> str:
+    """Formats the user's borrow cap before and after the VIP multiplier."""
+    base_limit = credit_limit(user=user, is_vip=False)
+    vip_limit = credit_limit(user=user, is_vip=True)
+    return f"今日額度 {amount_code(amount=base_limit)} → {amount_code(amount=vip_limit)}"
 
 
 def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
@@ -129,6 +155,9 @@ class EconomyCogs(commands.Cog):
                 ),
                 inline=False,
             )
+
+        if is_vip:
+            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
 
         vip_badge = " · 👑 VIP" if is_vip else ""
         embed.set_footer(
@@ -452,6 +481,10 @@ class EconomyCogs(commands.Cog):
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
             embed.add_field(name="目前欠款", value=amount_code(amount=current_debt), inline=False)
+            if is_vip:
+                embed.add_field(
+                    name="👑 VIP加成", value=_vip_credit_limit_line(user=user), inline=False
+                )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
@@ -470,6 +503,10 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
+        if is_vip:
+            embed.add_field(
+                name="👑 VIP加成", value=_vip_credit_limit_line(user=user), inline=False
+            )
         embed.set_footer(
             text=(
                 f"每天 0:00 (Asia/Taipei) 自動清零 | 收入 50% 自動還款 | "
@@ -560,7 +597,9 @@ class EconomyCogs(commands.Cog):
         description=f"Daily {CURRENCY_NAME} check-in with a 7-day streak bonus.",
         name_localizations={Locale.zh_TW: "簽到", Locale.ja: "デイリーチェックイン"},
         description_localizations={
-            Locale.zh_TW: f"每日簽到領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME}, 連續 7 天加成",
+            Locale.zh_TW: (
+                f"每日簽到領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME}, 連續 7 天加成, VIP 2x"
+            ),
             Locale.ja: (f"毎日{BASE_CHECKIN_REWARD_AMOUNT:,}{CURRENCY_NAME}, 7日連続でボーナス。"),
         },
         nsfw=False,
@@ -596,16 +635,29 @@ class EconomyCogs(commands.Cog):
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
         embed.add_field(name="連續簽到", value=f"第 {result.streak} / 7 天", inline=True)
         embed.add_field(name="目前餘額", value=amount_code(amount=result.new_balance), inline=True)
+        if result.is_vip:
+            base_reward = checkin_reward(streak=result.streak, is_vip=False)
+            embed.add_field(
+                name="👑 VIP加成",
+                value=(
+                    f"本日簽到 {amount_code(amount=base_reward)} → "
+                    f"{amount_code(amount=result.amount)}"
+                ),
+                inline=False,
+            )
         embed.set_footer(text=f"連續 7 天為一個 cycle | 每天 0:00 (Asia/Taipei) 重置{vip_badge}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @nextcord.slash_command(
         name="vip",
-        description=f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}.",
+        description=(
+            f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}: "
+            "2x check-in, 2x borrow cap, 1.5x Blackjack wins."
+        ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP",
-            Locale.ja: f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入します。",
+            Locale.zh_TW: "購買永久 VIP：簽到 2x、貸款額度 2x、Blackjack 贏局 1.5x",
+            Locale.ja: "永久 VIP を購入: check-in 2x、借入上限 2x、Blackjack 勝利 1.5x。",
         },
         nsfw=False,
     )
@@ -627,6 +679,7 @@ class EconomyCogs(commands.Cog):
                 color=_VIP_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
@@ -643,21 +696,21 @@ class EconomyCogs(commands.Cog):
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            embed.add_field(name="👑 VIP權益", value=_vip_perk_lines(user=user), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
             title="👑 升級 VIP 成功",
-            description=f"### {currency_text(amount=-result.cost, signed=True)} 扣款",
+            description=(
+                f"### {currency_text(amount=-result.cost, signed=True)} 扣款\n"
+                "簽到、貸款與 Blackjack 贏局加成已生效"
+            ),
             color=_VIP_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
-        embed.add_field(
-            name="VIP 永久權益",
-            value=("- Blackjack payout **1.5x**\n- 每日簽到點數 **2x**\n- 貸款額度 **2x**"),
-            inline=False,
-        )
+        embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
         embed.add_field(
             name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
         )

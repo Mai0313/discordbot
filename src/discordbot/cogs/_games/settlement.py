@@ -92,6 +92,7 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     """
     is_vip = await get_vip(user_id=player_id)
     effective_delta = apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip)
+    vip_bonus = effective_delta - delta
     new_balance, house_balance = await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
@@ -107,6 +108,9 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
         payout=max(effective_delta, 0),
         new_balance=new_balance,
         house_balance=house_balance,
+        base_delta=delta,
+        vip_bonus=vip_bonus,
+        is_vip=is_vip,
     )
 
 

@@ -76,6 +76,10 @@ class WagerSettlement(BaseModel):
         payout: Positive player credit from the round, excluding losses and pushes.
         new_balance: Player balance after applying the signed round delta.
         house_balance: Dealer ledger balance after mirroring the player's net change.
+        base_delta: Net point change before any VIP payout bonus. ``None`` for
+            legacy/manual test settlements that do not carry bonus details.
+        vip_bonus: Extra points added by the VIP payout bonus.
+        is_vip: Whether the VIP perk was active for this settlement.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -84,6 +88,9 @@ class WagerSettlement(BaseModel):
     payout: int
     new_balance: int
     house_balance: int
+    base_delta: int | None = None
+    vip_bonus: int = 0
+    is_vip: bool = False
 
 
 class BlackjackSettlement(WagerSettlement):

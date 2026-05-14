@@ -19,6 +19,7 @@ from discordbot.cogs._games.blackjack import (
     dealer_visible_value,
 )
 from discordbot.cogs._games.settlement import blackjack_early_finish_note
+from discordbot.cogs._games.presentation import settlement_metadata
 
 
 def test_hand_value_no_aces() -> None:
@@ -92,6 +93,15 @@ def test_settle_player_blackjack_pays_three_to_two() -> None:
     outcome, delta = settle(hand=hand)
     assert outcome == "blackjack"
     assert delta == 150
+
+
+def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
+    """VIP winning settlements surface the base and boosted deltas."""
+    metadata = settlement_metadata(
+        delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
+    )
+
+    assert metadata == "-# 本局 `+150` · VIP加成 `+100` → `+150` · 餘額 `1,150`"
 
 
 def test_settle_double_blackjack_is_push() -> None:
