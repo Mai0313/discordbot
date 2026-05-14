@@ -216,5 +216,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 /data/
-docker-compose.override.yaml
-/.github/reports/
+/docs/
+TODO.md
