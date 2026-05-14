@@ -158,12 +158,15 @@ class JackpotSettlementBatchResult(BaseModel):
 
     Attributes:
         player_balances: Latest post-settlement balance for each touched player.
+        applied_player_deltas: Signed player deltas that were actually applied.
+            Losses may be smaller than requested when the balance clamps at zero.
         jackpot_balance: Pool balance after the final settlement and any reseed.
     """
 
     model_config = ConfigDict(frozen=True)
 
     player_balances: dict[int, int]
+    applied_player_deltas: dict[int, int]
     jackpot_balance: int
 
 

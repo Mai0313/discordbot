@@ -117,7 +117,7 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
         outcome_label, _color = _outcome_presentation(outcome=result.outcome)
         pillars = " ".join(str(card) for card in result.pillars)
         lines.append(
-            f"第 {result.turn_number} 手 {result.participant.display_name}: "
+            f"第 {result.turn_number} 手 {result.participant.account_name}: "
             f"{pillars} → {result.third_card}  {outcome_label} {result.delta:+,}"
         )
     return lines
@@ -129,7 +129,7 @@ def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
     for participant in round_state.participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
         delta = round_state.player_delta(user_id=participant.user_id)
         suffix = " (已離桌)" if participant.user_id in round_state.withdrawn_user_ids else ""
-        lines.append(f"{participant.display_name}{suffix}: {delta:+,}")
+        lines.append(f"{participant.account_name}{suffix}: {delta:+,}")
     return lines
 
 
@@ -621,23 +621,37 @@ class DragonGateView(ui.View):
             except DragonGateError as error:
                 await self._send_bet_error_notice(interaction=interaction, error=error)
                 return
-            self._history.append(turn_result)
-            player_balance, jackpot_after = await apply_jackpot_settlement(
+            was_loss = turn_result.delta < 0
+            player_balance, jackpot_after, applied_delta = await apply_jackpot_settlement(
                 player_id=interaction.user.id,
                 player_account_name=participant.account_name if participant else "",
                 player_avatar_url=participant.avatar_url if participant else "",
                 player_delta=turn_result.delta,
                 game_id=GAME_ID,
             )
+            if applied_delta != turn_result.delta:
+                turn_result = self.round_state.replace_last_result_delta(
+                    user_id=interaction.user.id, delta=applied_delta
+                )
+            self._history.append(turn_result)
             self._jackpot_snapshot = jackpot_after
             self._final_balances[interaction.user.id] = player_balance
             pool_was_cleared = jackpot_after <= 0 or (
-                turn_result.delta > 0 and turn_result.delta >= jackpot_before
+                applied_delta > 0 and applied_delta >= jackpot_before
             )
             if pool_was_cleared:
                 reason = "彩金池清空" if jackpot_after <= 0 else "彩金池清空，系統已自動補池"
                 await self._finalize_locked(message=message, reason=reason)
                 return
+            if (
+                was_loss
+                and player_balance <= 0
+                and self.round_state.is_active(user_id=interaction.user.id)
+            ):
+                self.round_state.withdraw(user_id=interaction.user.id)
+                if self.round_state.finished:
+                    await self._finalize_locked(message=message, reason="所有玩家已離桌或餘額歸零")
+                    return
             self.sync_controls()
             await message.edit(embeds=self.in_progress_embeds(), view=self)
 
@@ -659,7 +673,7 @@ class DragonGateView(ui.View):
                 return
             participant = self._participant_for(user_id=interaction.user.id)
             if delta > 0:
-                player_balance, jackpot_after = await apply_jackpot_settlement(
+                player_balance, jackpot_after, applied_delta = await apply_jackpot_settlement(
                     player_id=interaction.user.id,
                     player_account_name=participant.account_name if participant else "",
                     player_avatar_url=participant.avatar_url if participant else "",
@@ -668,7 +682,9 @@ class DragonGateView(ui.View):
                 )
                 self._jackpot_snapshot = jackpot_after
                 self._final_balances[interaction.user.id] = player_balance
-                self._refunded_to_pool[interaction.user.id] = delta
+                refunded_to_pool = max(-applied_delta, 0)
+                if refunded_to_pool > 0:
+                    self._refunded_to_pool[interaction.user.id] = refunded_to_pool
             if self.round_state.finished:
                 await self._finalize_locked(message=message, reason="所有玩家已離桌")
                 return
@@ -700,7 +716,7 @@ class DragonGateView(ui.View):
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:
                 continue
-            player_balance, jackpot_after = await apply_jackpot_settlement(
+            player_balance, jackpot_after, applied_delta = await apply_jackpot_settlement(
                 player_id=participant.user_id,
                 player_account_name=participant.account_name,
                 player_avatar_url=participant.avatar_url,
@@ -709,7 +725,9 @@ class DragonGateView(ui.View):
             )
             self._jackpot_snapshot = jackpot_after
             self._final_balances[participant.user_id] = player_balance
-            self._refunded_to_pool[participant.user_id] = delta
+            refunded_to_pool = max(-applied_delta, 0)
+            if refunded_to_pool > 0:
+                self._refunded_to_pool[participant.user_id] = refunded_to_pool
 
     async def _finalize_locked(self, message: Message, reason: str) -> None:
         """Builds final results, disables controls, and schedules cleanup."""

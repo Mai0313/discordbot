@@ -124,12 +124,16 @@ class _FollowupStub:
         """Initializes followup send records."""
         self.message = object()
         self.sent_wait: bool | None = None
+        self.sent_ephemeral: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
 
-    async def send(self, embed: nextcord.Embed, wait: bool) -> object:
+    async def send(
+        self, embed: nextcord.Embed, wait: bool = False, ephemeral: bool = False
+    ) -> object:
         """Records the embed send and returns the message object."""
         self.sent_embed = embed
         self.sent_wait = wait
+        self.sent_ephemeral = ephemeral
         return self.message
 
 
@@ -244,6 +248,31 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     assert interaction.followup.sent_wait is True
     assert interaction.followup.sent_embed is embed
     assert scheduled_messages == [interaction.followup.message]
+
+
+async def test_send_private_followup_is_ephemeral_and_not_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Personal economy embeds should not enter the game cleanup scheduler."""
+    scheduled_messages: list[object] = []
+
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records any unexpected scheduler calls."""
+        scheduled_messages.append(message)
+
+    monkeypatch.setattr(
+        target=economy,
+        name="schedule_game_message_delete",
+        value=fake_schedule_game_message_delete,
+    )
+    interaction = _InteractionStub()
+    embed = nextcord.Embed(title="balance")
+
+    await economy._send_private_followup(interaction=cast("Interaction", interaction), embed=embed)
+
+    assert interaction.followup.sent_ephemeral is True
+    assert interaction.followup.sent_embed is embed
+    assert scheduled_messages == []
 
 
 async def test_delete_game_message_after_ignores_already_deleted_message() -> None:

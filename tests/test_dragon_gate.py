@@ -27,6 +27,7 @@ from discordbot.cogs._games.dragon_gate_views import (
     DragonGateLobbyView,
     build_dragon_gate_final_embed,
     build_dragon_gate_lobby_embed,
+    build_dragon_gate_history_embed,
     build_dragon_gate_in_progress_embed,
 )
 
@@ -177,12 +178,17 @@ class JackpotState:
         player_delta: int,
         game_id: str,
         player_avatar_url: str = "",
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """Mocks ``apply_jackpot_settlement`` and tracks the call chain."""
         assert game_id == GAME_ID
         self.balances.setdefault(player_id, self._initial_balance)
-        self.balances[player_id] += player_delta
-        self.jackpot -= player_delta
+        starting_balance = self.balances[player_id]
+        if player_delta < 0:
+            self.balances[player_id] = max(starting_balance + player_delta, 0)
+        else:
+            self.balances[player_id] += player_delta
+        applied_delta = self.balances[player_id] - starting_balance
+        self.jackpot -= applied_delta
         if self._replenish_seed > 0 and self.jackpot <= 0:
             self.jackpot = self._replenish_seed
         self.calls.append({
@@ -191,15 +197,16 @@ class JackpotState:
             "player_delta": player_delta,
             "player_avatar_url": player_avatar_url,
         })
-        return self.balances[player_id], self.jackpot
+        return self.balances[player_id], self.jackpot, applied_delta
 
     async def settle_batch(
         self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
     ) -> JackpotSettlementBatchResult:
         """Mocks ``apply_jackpot_settlement_batch`` with the same state model."""
         player_balances: dict[int, int] = {}
+        applied_player_deltas: dict[int, int] = {}
         for settlement in settlements:
-            player_balance, jackpot_balance = await self.settle(
+            player_balance, jackpot_balance, applied_delta = await self.settle(
                 player_id=settlement.player_id,
                 player_account_name=settlement.player_account_name,
                 player_delta=settlement.player_delta,
@@ -207,9 +214,12 @@ class JackpotState:
                 player_avatar_url=settlement.player_avatar_url,
             )
             player_balances[settlement.player_id] = player_balance
+            applied_player_deltas[settlement.player_id] = applied_delta
             self.jackpot = jackpot_balance
         return JackpotSettlementBatchResult(
-            player_balances=player_balances, jackpot_balance=self.jackpot
+            player_balances=player_balances,
+            applied_player_deltas=applied_player_deltas,
+            jackpot_balance=self.jackpot,
         )
 
 
@@ -594,6 +604,96 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert "系統已自動補池" in embeds[1].description
 
 
+async def test_dragon_gate_view_single_player_zero_balance_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player whose Dragon Gate loss clamps to zero is withdrawn and finalizes."""
+    owner = _participant(user_id=1, display_name="Alice", balance=8_000)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "3", "♣")), participants=[owner]
+    )
+
+    state = JackpotState(initial_jackpot=100_000, initial_balance=8_000)
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    message = MessageStub()
+    view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=round_state,
+        owner=owner,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 8_000},
+    )
+    view.message = message
+    view.sync_controls()
+
+    await view._handle_bet_choice(
+        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    )
+
+    assert state.balances[1] == 0
+    assert state.jackpot == 108_000
+    assert round_state.player_delta(user_id=1) == -8_000
+    assert round_state.is_active(user_id=1) is False
+    assert round_state.finished is True
+    assert view._settled is True
+    embeds = message.edits[-1]["embeds"]
+    assert isinstance(embeds, list)
+    assert isinstance(embeds[1], Embed)
+    assert isinstance(embeds[1].description, str)
+    assert "所有玩家已離桌或餘額歸零" in embeds[1].description
+    history_embed = embeds[-1]
+    assert isinstance(history_embed, Embed)
+    assert isinstance(history_embed.description, str)
+    assert "-8,000" in history_embed.description
+    assert "-20,000" not in history_embed.description
+
+
+async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In multiplayer, a zero-balance loser leaves while the next player continues."""
+    alice = _participant(user_id=1, display_name="Alice", balance=8_000)
+    bob = _participant(user_id=2, display_name="Bob", balance=100_000)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "3", "♣")), participants=[alice, bob]
+    )
+
+    state = JackpotState(initial_jackpot=100_000, initial_balance=100_000)
+    state.balances[1] = 8_000
+    state.balances[2] = 100_000
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    message = MessageStub()
+    view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=round_state,
+        owner=alice,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 8_000, 2: 100_000},
+    )
+    view.message = message
+    view.sync_controls()
+
+    await view._handle_bet_choice(
+        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    )
+
+    assert state.balances[1] == 0
+    assert state.jackpot == 108_000
+    assert round_state.player_delta(user_id=1) == -8_000
+    assert round_state.is_active(user_id=1) is False
+    assert round_state.is_active(user_id=2) is True
+    assert round_state.finished is False
+    assert view._settled is False
+    assert round_state.active_turn is not None
+    assert round_state.active_turn.participant.user_id == 2
+
+
 async def test_dragon_gate_view_leave_refunds_running_winnings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -770,3 +870,26 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert all(isinstance(embed, Embed) for embed in embeds)
+
+
+def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:
+    """History code blocks use stable account names instead of long display names."""
+    participant = GameParticipant(
+        user_id=1,
+        account_name="alice",
+        display_name="Alice With A Very Long Server Nickname",
+        bet=ANTE,
+        balance_at_start=100_000,
+        is_allin=False,
+    )
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[participant]
+    )
+    result = round_state.place_bet(user_id=1, amount=10_000, jackpot=100_000)
+
+    embed = build_dragon_gate_history_embed(history=[result], round_state=round_state)
+
+    assert embed is not None
+    assert isinstance(embed.description, str)
+    assert "alice" in embed.description
+    assert "Alice With A Very Long Server Nickname" not in embed.description

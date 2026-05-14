@@ -54,8 +54,9 @@ _HELP_CONTENT = {
             "`/borrow` take out a loan (cap scales with your Discord account age, "
             "auto-expires at Asia/Taipei midnight); `/repay` pay debt from your balance.\n"
             "Every income event after a loan auto-applies 50% toward principal.\n"
-            "`/balance`, `/leaderboard`, `/loss_leaderboard`, `/house`, `/borrow`, "
-            "and `/repay` results clean themselves up after 3 minutes."
+            "`/balance`, `/borrow`, `/repay`, and `/vip` replies are private. "
+            "`/leaderboard`, `/loss_leaderboard`, and `/house` stay public and "
+            "clean themselves up after 3 minutes."
         ),
         "checkin": (
             "**Daily Check-in** — `/checkin`\n"
@@ -66,7 +67,7 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 1.5x "
-            "blackjack payouts, 2x check-in points, and 2x borrow cap."
+            "blackjack payouts, 2x check-in points, and 2x borrow cap. The reply is private."
         ),
         "games": (
             "**Games**\n"
@@ -78,9 +79,10 @@ _HELP_CONTENT = {
             "minimum bet is 10,000, the maximum bet is the entire pool, and every bet "
             "settles into the player row and the pool the instant it lands. Adjacent "
             "non-pair pillars are redealt without a bet. Players can "
+            "only lose down to balance 0; players who hit 0 automatically leave the table. "
             "leave mid-table via the Leave button; if their running delta is positive at "
             "leave / timeout, that surplus is refunded into the pool (逆贏不拿). The "
-            "table ends when someone wins the whole pool, all players have left, or no "
+            "table ends when someone wins the whole pool, all players have left or hit 0, or no "
             "one has interacted for 180 seconds. Whole-pool wins auto-reseed the jackpot "
             "to 100,000 without affecting `/house`.\n"
             "Final game messages are cleaned up after 3 minutes."
@@ -128,8 +130,8 @@ _HELP_CONTENT = {
             "`/borrow` 依 Discord 帳號年齡借款 (每天 0:00 Asia/Taipei 自動清零); "
             "`/repay` 從餘額還款\n"
             "借款後賺到的點數會自動 50% 用來還本金\n"
-            "`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、"
-            "`/borrow`、`/repay` 結果 3 分鐘後自動清掉"
+            "`/balance`、`/borrow`、`/repay`、`/vip` 是 private reply\n"
+            "`/leaderboard`、`/loss_leaderboard`、`/house` 維持公開, 3 分鐘後自動清掉"
         ),
         "checkin": (
             "**每日簽到** — `/checkin`\n"
@@ -139,7 +141,7 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
-            "VIP Blackjack payout 1.5x, 簽到 2x 點數, 貸款額度 2x"
+            "VIP Blackjack payout 1.5x, 簽到 2x 點數, 貸款額度 2x. 回覆只有自己看得到"
         ),
         "games": (
             "**小遊戲**\n"
@@ -150,10 +152,11 @@ _HELP_CONTENT = {
             "`/dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
             "入場費固定 5,000 點(進彩金池), 最低下注 10,000, 上限就是當下彩金池\n"
             "每次下注後玩家餘額與彩金池同步即時結算, 不再等桌結束\n"
+            "輸錢最多只會扣到餘額 0, 歸零玩家會自動離桌, 其他玩家繼續玩\n"
             "相鄰且不同點的門柱沒有龍門, 會直接重發, 不會下注\n"
             "玩家可隨時按「離桌」中途退出, 不影響其他玩家繼續玩\n"
             "離桌或 180 秒無互動超時時, 若該玩家當下淨贏 > 0, 該部分會逆向退回彩金池(逆贏不拿)"
-            "整桌結束的條件是彩金池被全池贏走, 所有玩家都離桌, 或 180 秒無人互動\n"
+            "整桌結束的條件是彩金池被全池贏走, 所有玩家都離桌或歸零, 或 180 秒無人互動\n"
             "全池被贏走時系統會自動補回 100,000, 不算在 `/house`\n"
             "final game message 會在 3 分鐘後清掉"
         ),
@@ -201,8 +204,8 @@ _HELP_CONTENT = {
             "`/borrow` Discord アカウント年齢に応じて借入 (毎日0:00 Asia/Taipei 自動リセット); "
             "`/repay` 残高から返済。\n"
             "借入後の獲得点数は50%が自動的に元本返済に充当されます。\n"
-            "`/balance`、`/leaderboard`、`/loss_leaderboard`、`/house`、"
-            "`/borrow`、`/repay` の結果は3分後に自動削除されます。"
+            "`/balance`、`/borrow`、`/repay`、`/vip` は private reply です。"
+            "`/leaderboard`、`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
         ),
         "checkin": (
             "**デイリーチェックイン** — `/checkin`\n"
@@ -212,7 +215,7 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入。"
-            "VIP はブラックジャック配当1.5x、チェックイン2x、借入上限2x。"
+            "VIP はブラックジャック配当1.5x、チェックイン2x、借入上限2x。返信は private です。"
         ),
         "games": (
             "**ゲーム**\n"
@@ -223,10 +226,11 @@ _HELP_CONTENT = {
             "`/dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
             "In-Between table を開きます。anteは固定 5,000 (pool へ)、最低 bet は 10,000、"
             "上限は pool の全額、各 bet は player 残高と pool に即時反映されます。\n"
+            "loss は残高 0 までに clamp され、0 になった player は自動で退場します。"
             "隣り合う non-pair の柱は gate なしとして bet せず引き直します。"
             "「離桌」ボタンで途中退場可能で他のプレイヤーは継続。退場 / 180 秒の無操作で "
             "running delta が正なら、その分は pool へ返戻されます (逆贏不拿)。"
-            "table は pool 全額勝利 / 全員退場 / 180 秒の無操作で終了します。"
+            "table は pool 全額勝利 / 全員退場または残高 0 / 180 秒の無操作で終了します。"
             "pool 全額勝利時は system が jackpot を 100,000 へ自動補充し、`/house` には影響しません。\n"
             "final game message は3分後に削除されます。"
         ),

@@ -552,6 +552,8 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
+    monkeypatch.setattr(economy, "borrow", fake_borrow)
+    monkeypatch.setattr(economy, "repay", fake_repay)
     monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
@@ -564,12 +566,17 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
     )
+    await EconomyCogs.borrow_loan.callback(cog, interaction, amount=100)
+    await EconomyCogs.repay_loan.callback(cog, interaction, amount=50)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 7
-    assert scheduled
-    # The /checkin reply must be ephemeral so only the caller sees it.
+    assert len(interaction.followup.sent) == 9
+    assert len(scheduled) == 3
+    assert interaction.followup.sent[0].get("ephemeral") is True
     assert interaction.followup.sent[5].get("ephemeral") is True
+    assert interaction.followup.sent[6].get("ephemeral") is True
+    assert interaction.followup.sent[7].get("ephemeral") is True
+    assert interaction.followup.sent[8].get("ephemeral") is True
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
@@ -624,6 +631,20 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
 
+async def fake_borrow(
+    user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
+) -> database.BorrowResult:
+    """Returns a successful fake borrow result."""
+    return database.BorrowResult(new_balance=250, principal=amount)
+
+
+async def fake_repay(
+    user_id: int, name: str, amount: int, avatar_url: str = ""
+) -> database.RepayResult:
+    """Returns a successful fake repay result."""
+    return database.RepayResult(new_balance=100, principal_repaid=amount, remaining_debt=0)
+
+
 async def fake_checkin(user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
     """Returns a successful fake daily check-in result."""
     return database.CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
@@ -660,9 +681,9 @@ async def fake_apply_jackpot_settlement(
     player_delta: int,
     game_id: str,
     player_avatar_url: str = "",
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Applies a fake single-player jackpot settlement."""
-    return (100_000 + player_delta, 100_000 - player_delta)
+    return (100_000 + player_delta, 100_000 - player_delta, player_delta)
 
 
 class FakeDealer:

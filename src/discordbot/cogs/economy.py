@@ -67,6 +67,11 @@ async def _send_expiring_followup(interaction: Interaction, embed: Embed) -> Non
     schedule_game_message_delete(message=message)
 
 
+async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:
+    """Sends a personal economy embed visible only to the caller."""
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class EconomyCogs(commands.Cog):
     """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
 
@@ -98,7 +103,7 @@ class EconomyCogs(commands.Cog):
         Args:
             interaction: The interaction that triggered the command.
         """
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -129,7 +134,7 @@ class EconomyCogs(commands.Cog):
         embed.set_footer(
             text=f"帳號 {age_days} 天 | 借款上限 {currency_text(amount=limit)}{vip_badge}"
         )
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="leaderboard",
@@ -419,7 +424,7 @@ class EconomyCogs(commands.Cog):
             interaction: The interaction that triggered the command.
             amount: How many points to borrow.
         """
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -447,7 +452,7 @@ class EconomyCogs(commands.Cog):
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
             embed.add_field(name="目前欠款", value=amount_code(amount=current_debt), inline=False)
-            await _send_expiring_followup(interaction=interaction, embed=embed)
+            await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -471,7 +476,7 @@ class EconomyCogs(commands.Cog):
                 f"上限 {currency_text(amount=limit)}"
             )
         )
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="repay",
@@ -504,7 +509,7 @@ class EconomyCogs(commands.Cog):
             interaction: The interaction that triggered the command.
             amount: Maximum amount to repay; clamped to ``min(amount, balance, debt)``.
         """
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -525,7 +530,7 @@ class EconomyCogs(commands.Cog):
             embed = Embed(title="還款失敗", description=f"### {reason}", color=_ERROR_COLOR)
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
-            await _send_expiring_followup(interaction=interaction, embed=embed)
+            await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -548,7 +553,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=True,
         )
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="checkin",
@@ -610,7 +615,7 @@ class EconomyCogs(commands.Cog):
         Args:
             interaction: The interaction that triggered the command.
         """
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -622,7 +627,7 @@ class EconomyCogs(commands.Cog):
                 color=_VIP_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-            await _send_expiring_followup(interaction=interaction, embed=embed)
+            await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         result = await buy_vip(user_id=user.id, name=user.name, avatar_url=user.display_avatar.url)
@@ -638,7 +643,7 @@ class EconomyCogs(commands.Cog):
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-            await _send_expiring_followup(interaction=interaction, embed=embed)
+            await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -656,7 +661,7 @@ class EconomyCogs(commands.Cog):
         embed.add_field(
             name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
         )
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        await _send_private_followup(interaction=interaction, embed=embed)
 
 
 def setup(bot: commands.Bot) -> None:

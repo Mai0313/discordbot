@@ -884,6 +884,44 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
     return read_result.scalar_one_or_none() or 0
 
 
+async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot settlement needs identity and audit metadata
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
+) -> tuple[int, int]:
+    """Applies a jackpot player delta and returns the balance plus applied delta.
+
+    Positive deltas keep the existing casino payout path, including loan
+    auto-repayment, and count as fully applied because debt repayment is still
+    player value. Negative deltas clamp at zero so Dragon Gate losses cannot
+    drive the player account negative; the returned delta is the actual debit.
+    """
+    if delta > 0:
+        credit_result = await _credit_with_repayment_in_session(
+            session=session,
+            user_id=user_id,
+            name=name,
+            avatar_url=avatar_url,
+            amount=delta,
+            kind=TransactionKind.CASINO_PAYOUT,
+            note=None,
+            now=now,
+        )
+        return credit_result.new_balance, delta
+    if delta < 0:
+        return await _apply_clamped_delta_in_session(
+            session=session,
+            user_id=user_id,
+            name=name,
+            avatar_url=avatar_url,
+            delta=delta,
+            kind=TransactionKind.CASINO_BET,
+            now=now,
+        )
+    read_result = await session.execute(
+        statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+    )
+    return read_result.scalar_one_or_none() or 0, 0
+
+
 async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors one income event
     user_id: int,
     name: str,
@@ -1165,7 +1203,7 @@ async def apply_jackpot_settlement(
     player_delta: int,
     game_id: str,
     player_avatar_url: str = "",
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Atomic player-and-jackpot settlement for a single wager event.
 
     This is a convenience wrapper around ``apply_jackpot_settlement_batch``.
@@ -1179,7 +1217,7 @@ async def apply_jackpot_settlement(
         player_avatar_url: Last-seen Discord avatar URL for the player.
 
     Returns:
-        A ``(player_balance_after, jackpot_balance_after)`` tuple.
+        A ``(player_balance_after, jackpot_balance_after, applied_player_delta)`` tuple.
     """
     result = await apply_jackpot_settlement_batch(
         game_id=game_id,
@@ -1192,7 +1230,11 @@ async def apply_jackpot_settlement(
             ),
         ),
     )
-    return result.player_balances.get(player_id, 0), result.jackpot_balance
+    return (
+        result.player_balances.get(player_id, 0),
+        result.jackpot_balance,
+        result.applied_player_deltas.get(player_id, 0),
+    )
 
 
 async def apply_jackpot_settlement_batch(
@@ -1202,7 +1244,7 @@ async def apply_jackpot_settlement_batch(
 
     Positive player deltas (wins) credit the player via the 50% auto-repayment
     path and drain the pool by the same amount; negative deltas (losses) debit
-    the player without a zero clamp and feed the pool. If a seeded pool is
+    the player only down to zero and feed the pool with the actual debit. If a seeded pool is
     drained, the same transaction restores its on-the-house seed. Batched
     settlements share one SQLite transaction, so a multi-player ante charge
     cannot partially commit.
@@ -1212,17 +1254,18 @@ async def apply_jackpot_settlement_batch(
         settlements: Player-side settlements to apply in order.
 
     Returns:
-        The latest balance for each touched player and the final jackpot
-        balance after the final settlement and any reseed.
+        The latest balance for each touched player, the actual applied deltas,
+        and the final jackpot balance after the final settlement and any reseed.
     """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
         player_balances: dict[int, int] = {}
+        applied_player_deltas: dict[int, int] = {}
         jackpot_balance: int | None = None
 
         for settlement in settlements:
-            player_balance = await _apply_player_delta_in_session(
+            player_balance, applied_player_delta = await _apply_jackpot_player_delta_in_session(
                 session=session,
                 user_id=settlement.player_id,
                 name=settlement.player_account_name,
@@ -1231,8 +1274,9 @@ async def apply_jackpot_settlement_batch(
                 now=now,
             )
             player_balances[settlement.player_id] = player_balance
+            applied_player_deltas[settlement.player_id] = applied_player_delta
 
-            if settlement.player_delta == 0:
+            if applied_player_delta == 0:
                 pool_result = await session.execute(
                     statement=select(JackpotPool.pool_balance).where(
                         JackpotPool.game_id == game_id
@@ -1248,7 +1292,7 @@ async def apply_jackpot_settlement_batch(
                 continue
 
             jackpot_balance = await _apply_jackpot_delta_in_session(
-                session=session, game_id=game_id, delta=-settlement.player_delta, now=now
+                session=session, game_id=game_id, delta=-applied_player_delta, now=now
             )
 
         if jackpot_balance is None:
@@ -1265,7 +1309,9 @@ async def apply_jackpot_settlement_batch(
 
         await session.commit()
         return JackpotSettlementBatchResult(
-            player_balances=player_balances, jackpot_balance=jackpot_balance
+            player_balances=player_balances,
+            applied_player_deltas=applied_player_deltas,
+            jackpot_balance=jackpot_balance,
         )
 
 

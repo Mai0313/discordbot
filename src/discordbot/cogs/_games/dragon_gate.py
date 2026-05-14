@@ -240,6 +240,17 @@ class DragonGateRound(BaseModel):
         """Returns a player's cumulative net delta for the table."""
         return self.player_deltas.get(user_id, 0)
 
+    def replace_last_result_delta(self, user_id: int, delta: int) -> DragonGateTurnResult:
+        """Replaces the latest result delta after database-side clamping."""
+        result = self.last_result
+        if result is None or result.participant.user_id != user_id:
+            raise DragonGateParticipantUnknownError("No latest result for user")
+        previous_delta = result.delta
+        self.player_deltas[user_id] += delta - previous_delta
+        adjusted = result.model_copy(update={"delta": delta})
+        self.last_result = adjusted
+        return adjusted
+
     def is_active(self, user_id: int) -> bool:
         """Returns whether the given user is still seated and not withdrawn."""
         return (
