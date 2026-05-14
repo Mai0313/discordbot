@@ -9,8 +9,10 @@ import contextlib
 import logfire
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
+from discordbot.typings.economy import JackpotSettlementRequest
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
-from discordbot.cogs._economy.database import apply_jackpot_settlement
+from discordbot.cogs._economy.database import apply_jackpot_settlement_batch
+from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
 
 if TYPE_CHECKING:
     from random import Random
@@ -174,13 +176,9 @@ class BaseGameLobbyView(ui.View):
         await message.edit(embed=self._build_lobby_embed(status=status), view=self)
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content=content, ephemeral=True)
-                return
-            await interaction.response.send_message(content=content, ephemeral=True)
-        except Exception:
-            logfire.warn("Failed to send lobby notice", _exc_info=True)
+        await send_ephemeral_notice(
+            interaction=interaction, content=content, log_message="Failed to send lobby notice"
+        )
 
     async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
         """Logs lobby component failures instead of only printing to stderr."""
@@ -192,9 +190,7 @@ class BaseGameLobbyView(ui.View):
         )
 
     def _disable_buttons(self) -> None:
-        for child in self.children:
-            if isinstance(child, ui.Button):
-                child.disabled = True
+        disable_view_components(children=self.children, component_types=(ui.Button,))
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
         raise NotImplementedError
@@ -207,8 +203,9 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
     """Base lobby for games sharing a global jackpot pool.
 
     On Start, each participant is charged ``ante`` into the jackpot via
-    ``apply_jackpot_settlement`` before the table begins. Subclasses must
-    declare ``game_id`` / ``ante`` and override ``_start_game_after_antes``.
+    one ``apply_jackpot_settlement_batch`` call before the table begins.
+    Subclasses must declare ``game_id`` / ``ante`` and override
+    ``_start_game_after_antes``.
     """
 
     game_id: ClassVar[str]
@@ -247,24 +244,24 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
     async def _settle_pregame_antes(self) -> dict[int, int]:
         """Charges each participant ``ante`` into the jackpot pool.
 
-        Iterates participants in join order; on each iteration applies one
-        ``apply_jackpot_settlement(player_delta=-ante)`` call atomically. Each
-        return updates ``_jackpot_snapshot`` so a future opener sees a current
-        view of the pool. Returns ``{user_id: post_ante_balance}``.
+        Applies all participant antes in one DB transaction so the lobby cannot
+        partially charge a table. Returns ``{user_id: post_ante_balance}``.
         """
-        final_balances: dict[int, int] = {}
-        jackpot_after = self._jackpot_snapshot
+        settlements: list[JackpotSettlementRequest] = []
         for participant in self.participants:
-            player_balance, jackpot_after = await apply_jackpot_settlement(
-                player_id=participant.user_id,
-                player_account_name=participant.account_name,
-                player_avatar_url=participant.avatar_url,
-                player_delta=-self.ante,
-                game_id=self.game_id,
+            settlements.append(
+                JackpotSettlementRequest(
+                    player_id=participant.user_id,
+                    player_account_name=participant.account_name,
+                    player_avatar_url=participant.avatar_url,
+                    player_delta=-self.ante,
+                )
             )
-            final_balances[participant.user_id] = player_balance
-        self._jackpot_snapshot = jackpot_after
-        return final_balances
+        result = await apply_jackpot_settlement_batch(
+            game_id=self.game_id, settlements=settlements
+        )
+        self._jackpot_snapshot = result.jackpot_balance
+        return result.player_balances
 
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]
