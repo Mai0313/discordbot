@@ -67,7 +67,6 @@ authors = [
     { name = "Wei", email = "mai@mai0313.com" },
 ]
 dependencies = [
-    "logfire[sqlalchemy]>=4.30.0",
     "nextcord[speed,voice]>=3.1.1",
     "openai>=2.30.0",
     "pillow>=12.2.0",
@@ -78,6 +77,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.48",
     "aiosqlite>=0.20.0",
     "yt-dlp>=2026.3.17",
+    "logfire>=4.33.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
