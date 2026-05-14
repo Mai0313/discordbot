@@ -88,7 +88,7 @@ def _direction_label(direction: DragonGateDirection | None) -> str:
 def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
     """Returns the display label and embed color for a turn outcome."""
     values: dict[DragonGateOutcome, tuple[str, int]] = {
-        "gate_win": ("✅ 射進龍門", WIN_COLOR),
+        "gate_win": ("✅ 射中", WIN_COLOR),
         "outside_lose": ("❌ 射偏", LOSE_COLOR),
         "pillar_hit": ("🧱 撞柱", LOSE_COLOR),
         "pair_win": ("✅ 猜中", WIN_COLOR),
