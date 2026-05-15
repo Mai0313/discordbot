@@ -4,7 +4,6 @@ from random import SystemRandom
 import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
-from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import func, text, select, update
@@ -16,6 +15,8 @@ from discordbot.typings.games import GameParticipant, BlackjackSettlement
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
 from discordbot.cogs._games.blackjack_views import BlackjackView
+
+pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 class _DealerStub:
@@ -98,22 +99,6 @@ def _round_from_hand(hand: BlackjackHand, participant: GameParticipant) -> Black
     round_state.dealer = list(hand.dealer)
     round_state.finished = hand.finished
     return round_state
-
-
-@pytest.fixture(autouse=True)
-async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Replaces the module-level engine with a per-test SQLite file.
-
-    Each test gets a fresh DB so writes never leak between tests, and the
-    real ``data/economy.db`` is left alone.
-    """
-    db_path = tmp_path / "economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
-    monkeypatch.setattr(target=database, name="_engine", value=engine)
-    yield
-    await engine.dispose()
 
 
 async def _stored_avatar_url(user_id: int) -> str:

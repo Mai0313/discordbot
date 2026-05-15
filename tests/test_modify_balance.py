@@ -1,25 +1,11 @@
 """Tests for the manual balance adjustment script."""
 
-from pathlib import Path
-from collections.abc import AsyncIterator
-
 import pytest
 from scripts import modify_balance as modify_balance_script
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy import database
 
-
-@pytest.fixture(autouse=True)
-async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Replaces the economy database with a per-test SQLite file."""
-    db_path = tmp_path / "economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
-    monkeypatch.setattr(target=database, name="_engine", value=engine)
-    yield
-    await engine.dispose()
+pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:

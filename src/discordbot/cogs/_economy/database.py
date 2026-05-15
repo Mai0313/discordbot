@@ -1197,6 +1197,24 @@ async def _apply_jackpot_delta_in_session(
     )
 
 
+async def _read_jackpot_balance_or_replenish_in_session(
+    session: AsyncSession, game_id: str, now: datetime
+) -> int:
+    """Reads the jackpot balance, replenishing the seed if depleted.
+
+    Returns 0 if no pool row exists for the game.
+    """
+    result = await session.execute(
+        statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+    )
+    pool_balance = result.scalar_one_or_none()
+    if pool_balance is None:
+        return 0
+    return await _replenish_jackpot_if_depleted_in_session(
+        session=session, game_id=game_id, balance=pool_balance, now=now
+    )
+
+
 async def apply_jackpot_settlement(
     player_id: int,
     player_account_name: str,
@@ -1277,18 +1295,9 @@ async def apply_jackpot_settlement_batch(
             applied_player_deltas[settlement.player_id] = applied_player_delta
 
             if applied_player_delta == 0:
-                pool_result = await session.execute(
-                    statement=select(JackpotPool.pool_balance).where(
-                        JackpotPool.game_id == game_id
-                    )
+                jackpot_balance = await _read_jackpot_balance_or_replenish_in_session(
+                    session=session, game_id=game_id, now=now
                 )
-                pool_balance = pool_result.scalar_one_or_none()
-                if pool_balance is None:
-                    jackpot_balance = 0
-                else:
-                    jackpot_balance = await _replenish_jackpot_if_depleted_in_session(
-                        session=session, game_id=game_id, balance=pool_balance, now=now
-                    )
                 continue
 
             jackpot_balance = await _apply_jackpot_delta_in_session(
@@ -1296,16 +1305,9 @@ async def apply_jackpot_settlement_batch(
             )
 
         if jackpot_balance is None:
-            pool_result = await session.execute(
-                statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+            jackpot_balance = await _read_jackpot_balance_or_replenish_in_session(
+                session=session, game_id=game_id, now=now
             )
-            pool_balance = pool_result.scalar_one_or_none()
-            if pool_balance is None:
-                jackpot_balance = 0
-            else:
-                jackpot_balance = await _replenish_jackpot_if_depleted_in_session(
-                    session=session, game_id=game_id, balance=pool_balance, now=now
-                )
 
         await session.commit()
         return JackpotSettlementBatchResult(
@@ -2036,11 +2038,11 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     Args:
         sender_id: Discord user ID to debit.
         sender_name: Last-seen Discord username to store on the sender account.
-        sender_avatar_url: Last-seen Discord avatar URL for the sender.
         receiver_id: Discord user ID to credit.
         receiver_name: Last-seen Discord username to store on the receiver account.
-        receiver_avatar_url: Last-seen Discord avatar URL for the receiver.
         amount: Number of points to transfer.
+        sender_avatar_url: Last-seen Discord avatar URL for the sender.
+        receiver_avatar_url: Last-seen Discord avatar URL for the receiver.
 
     Returns:
         The post-transfer balances when the transfer committed, or `None`

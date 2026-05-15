@@ -3,32 +3,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy import database
 from discordbot.typings.economy import TransactionKind
 
-if TYPE_CHECKING:
-    from pathlib import Path
-    from collections.abc import AsyncIterator
-
-
-@pytest.fixture(autouse=True)
-async def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Per-test SQLite file with the full loan-aware schema."""
-    db_path = tmp_path / "economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
-    monkeypatch.setattr(target=database, name="_engine", value=engine)
-    yield
-    await engine.dispose()
+pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 def _user_with_age(days_old: int) -> SimpleNamespace:

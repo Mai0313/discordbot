@@ -5,7 +5,6 @@ from typing import Literal
 from nextcord import Embed
 
 from discordbot.typings.games import SettleOutcome
-from discordbot.cogs._economy.presentation import currency_text
 
 IN_PROGRESS_COLOR = 0x5865F2
 WIN_COLOR = 0x57F287
@@ -70,58 +69,6 @@ def allin_note(is_allin: bool) -> str:
     return " | all-in" if is_allin else ""
 
 
-def wager_footer(bet: int, balance_at_start: int, is_allin: bool, status: str) -> str:
-    """Formats the shared footer for an unresolved round.
-
-    Args:
-        bet: Effective wager for the round.
-        balance_at_start: Player balance observed when the round started.
-        is_allin: Whether the requested bet was clamped to the full balance.
-        status: Short status text for the round.
-
-    Returns:
-        Footer text for an in-progress game embed.
-    """
-    return (
-        f"下注 {currency_text(amount=bet)} | "
-        f"目前餘額 {currency_text(amount=balance_at_start)} | {status}"
-        f"{allin_note(is_allin=is_allin)}"
-    )
-
-
-def settlement_footer(delta: int, new_balance: int, is_allin: bool) -> str:
-    """Formats the shared final-round settlement footer.
-
-    Keeps only the two numbers the player needs to see at a glance: the
-    round delta and the post-settlement balance. ``/house`` carries
-    the dealer ledger when the player explicitly asks for it.
-
-    Args:
-        delta: Player net point change for the round.
-        new_balance: Player balance after settlement.
-        is_allin: Whether the requested bet was clamped to the full balance.
-
-    Returns:
-        Footer text for a final game embed.
-    """
-    return (
-        f"本局 {currency_text(amount=delta, signed=True)} | "
-        f"餘額 {currency_text(amount=new_balance)}{allin_note(is_allin=is_allin)}"
-    )
-
-
-def dealer_quote(text: str) -> str:
-    """Formats dealer banter as a compact quote block."""
-    if not text:
-        return ""
-    return "> " + text.replace("\n", "\n> ")
-
-
-def duel_lines(player_name: str, player_value: str, dealer_name: str, dealer_value: str) -> str:
-    """Formats a two-sided game board as one embed field value."""
-    return f"**{player_name}**\n{player_value}\n\n**{dealer_name}**\n{dealer_value}"
-
-
 def card_line(cards_text: str) -> str:
     """Renders a hand string as an H1 line with doubled inter-card spacing.
 
@@ -140,30 +87,6 @@ def card_line(cards_text: str) -> str:
         return ""
     spaced = cards_text.replace(" ", "  ")
     return f"# {spaced}"
-
-
-def status_line(emoji: str, label: str, total: int | None = None) -> str:
-    """Formats an H2 status line for a player or dealer hand.
-
-    The total slot is optional so the same helper covers Blackjack
-    `## ✋ 17 · stand` and result `## 🎉 你贏了 · 20 > 19`.
-
-    Args:
-        emoji: Emoji shown before the textual status.
-        label: Status label or short result phrase.
-        total: Optional numeric total to interleave between emoji and label.
-
-    Returns:
-        Markdown H2 line.
-    """
-    if total is None:
-        return f"## {emoji} {label}"
-    return f"## {emoji} {total} · {label}"
-
-
-def small_status_line(emoji: str, label: str, total: int) -> str:
-    """Formats an H3 status line for non-active waiting players."""
-    return f"### {emoji} {total} · {label}"
 
 
 def metadata_line(text: str) -> str:
