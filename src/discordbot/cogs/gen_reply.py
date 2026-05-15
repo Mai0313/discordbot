@@ -128,7 +128,7 @@ class ReplyGeneratorCogs(commands.Cog):
         now = datetime.now(UTC)
         is_peak = now.weekday() < 5 and 8 <= now.hour < 17
         if is_peak:
-            return ModelSettings(name="azure/gpt-5.4", effort="medium")
+            return ModelSettings(name="gemini-3-flash-preview", effort="medium")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     async def _get_user_prompt(self, content: str) -> str:
