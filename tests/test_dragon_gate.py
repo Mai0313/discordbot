@@ -12,7 +12,11 @@ from nextcord import Embed
 
 from discordbot.cogs._games import lobby, dragon_gate_views
 from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
-from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
+from discordbot.typings.economy import (
+    JackpotSettlementResult,
+    JackpotSettlementRequest,
+    JackpotSettlementBatchResult,
+)
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -166,38 +170,56 @@ class JackpotState:
     ) -> None:
         """Initializes simulated player balances and jackpot state."""
         self.jackpot = initial_jackpot
+        self.generation = 0
         self.balances: dict[int, int] = {}
         self._initial_balance = initial_balance
         self._replenish_seed = replenish_seed
         self.calls: list[dict[str, object]] = []
 
-    async def settle(
+    async def settle(  # noqa: PLR0913 -- mirrors apply_jackpot_settlement for monkeypatching
         self,
         player_id: int,
         player_account_name: str,
         player_delta: int,
         game_id: str,
         player_avatar_url: str = "",
-    ) -> tuple[int, int, int]:
+        expected_jackpot_generation: int | None = None,
+    ) -> JackpotSettlementResult:
         """Mocks ``apply_jackpot_settlement`` and tracks the call chain."""
         assert game_id == GAME_ID
         self.balances.setdefault(player_id, self._initial_balance)
         starting_balance = self.balances[player_id]
-        if player_delta < 0:
+        if (
+            player_delta > 0
+            and expected_jackpot_generation is not None
+            and expected_jackpot_generation != self.generation
+        ):
+            applied_delta = 0
+        elif player_delta < 0:
             self.balances[player_id] = max(starting_balance + player_delta, 0)
+            applied_delta = self.balances[player_id] - starting_balance
         else:
             self.balances[player_id] += player_delta
-        applied_delta = self.balances[player_id] - starting_balance
+            applied_delta = self.balances[player_id] - starting_balance
         self.jackpot -= applied_delta
-        if self._replenish_seed > 0 and self.jackpot <= 0:
+        depleted = self._replenish_seed > 0 and self.jackpot <= 0
+        if depleted:
             self.jackpot = self._replenish_seed
+            self.generation += 1
         self.calls.append({
             "player_id": player_id,
             "player_account_name": player_account_name,
             "player_delta": player_delta,
             "player_avatar_url": player_avatar_url,
+            "expected_jackpot_generation": expected_jackpot_generation,
         })
-        return self.balances[player_id], self.jackpot, applied_delta
+        return JackpotSettlementResult(
+            player_balance=self.balances[player_id],
+            jackpot_balance=self.jackpot,
+            jackpot_generation=self.generation,
+            applied_player_delta=applied_delta,
+            jackpot_depleted=depleted,
+        )
 
     async def settle_batch(
         self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
@@ -206,20 +228,22 @@ class JackpotState:
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
         for settlement in settlements:
-            player_balance, jackpot_balance, applied_delta = await self.settle(
+            result = await self.settle(
                 player_id=settlement.player_id,
                 player_account_name=settlement.player_account_name,
                 player_delta=settlement.player_delta,
                 game_id=game_id,
                 player_avatar_url=settlement.player_avatar_url,
+                expected_jackpot_generation=settlement.expected_jackpot_generation,
             )
-            player_balances[settlement.player_id] = player_balance
-            applied_player_deltas[settlement.player_id] = applied_delta
-            self.jackpot = jackpot_balance
+            player_balances[settlement.player_id] = result.player_balance
+            applied_player_deltas[settlement.player_id] = result.applied_player_delta
+            self.jackpot = result.jackpot_balance
         return JackpotSettlementBatchResult(
             player_balances=player_balances,
             applied_player_deltas=applied_player_deltas,
             jackpot_balance=self.jackpot,
+            jackpot_generation=self.generation,
         )
 
 
@@ -512,9 +536,74 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
             "player_account_name": owner.account_name,
             "player_delta": -ANTE,
             "player_avatar_url": owner.avatar_url,
+            "expected_jackpot_generation": None,
         }
     ]
     assert state.jackpot == 100_000 + ANTE
+
+
+async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ante settlement rejects a non-owner, the lobby stays startable."""
+    owner = _participant(user_id=1, display_name="Alice")
+    bob = _participant(user_id=2, display_name="Bob")
+    message = MessageStub()
+
+    async def prepare_participant(interaction: InteractionStub) -> GameParticipant | None:
+        """Returns Bob when the join interaction is accepted."""
+        assert interaction.user.id == 2
+        return bob
+
+    async def refresh_participants(
+        participants: list[GameParticipant],
+    ) -> tuple[list[GameParticipant], list[str]]:
+        """Leaves all participants seated for lobby start."""
+        return participants, []
+
+    async def rejected_ante_batch(
+        game_id: str, settlements: Sequence[JackpotSettlementRequest]
+    ) -> JackpotSettlementBatchResult:
+        """Rejects Bob's ante without mutating the table."""
+        assert game_id == GAME_ID
+        assert all(settlement.require_full_debit for settlement in settlements)
+        return JackpotSettlementBatchResult(
+            player_balances={},
+            applied_player_deltas={},
+            jackpot_balance=100_000,
+            rejected_player_ids=(2,),
+        )
+
+    monkeypatch.setattr(
+        target=lobby, name="apply_jackpot_settlement_batch", value=rejected_ante_batch
+    )
+    monkeypatch.setattr(
+        target=lobby, name="schedule_game_message_delete", value=lambda message: None
+    )
+
+    view = DragonGateLobbyView(
+        owner=owner,
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
+        dealer=DealerStub(),
+        dealer_name="Dealer",
+        dealer_avatar_url="",
+        prepare_participant=prepare_participant,
+        refresh_participants=refresh_participants,
+        initial_jackpot=100_000,
+    )
+    view.message = message
+
+    join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
+    await join_button.callback(InteractionStub(user_id=2, message=message))
+    start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
+    await start_button.callback(InteractionStub(user_id=1, message=message))
+
+    assert view.participants == [owner]
+    assert view._started is False
+    assert isinstance(message.edits[-1]["view"], DragonGateLobbyView)
+    embed = message.edits[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert embed.description == "餘額不足已移出: Bob"
 
 
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
@@ -602,6 +691,63 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert isinstance(embeds[1], Embed)
     assert isinstance(embeds[1].description, str)
     assert "系統已自動補池" in embeds[1].description
+
+
+async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale view snapshot is replaced by the DB-applied jackpot delta."""
+    owner = _participant(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
+    )
+
+    async def capped_settlement(**kwargs: object) -> JackpotSettlementResult:
+        """Returns a lower applied delta than the rules snapshot requested."""
+        assert kwargs["expected_jackpot_generation"] == 2
+        return JackpotSettlementResult(
+            player_balance=507_000,
+            jackpot_balance=100_000,
+            jackpot_generation=3,
+            applied_player_delta=7_000,
+            jackpot_depleted=True,
+        )
+
+    monkeypatch.setattr(
+        target=dragon_gate_views, name="apply_jackpot_settlement", value=capped_settlement
+    )
+    monkeypatch.setattr(
+        target=dragon_gate_views, name="schedule_game_message_delete", value=lambda message: None
+    )
+
+    message = MessageStub()
+    view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=round_state,
+        owner=owner,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=10_000,
+        jackpot_generation=2,
+        final_balances={1: 500_000},
+    )
+    view.message = message
+    view.sync_controls()
+
+    await view._handle_bet_choice(
+        choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    )
+
+    assert round_state.player_delta(user_id=1) == 7_000
+    assert view._settled is True
+    embeds = message.edits[-1]["embeds"]
+    assert isinstance(embeds, list)
+    final_embed = embeds[1]
+    assert isinstance(final_embed, Embed)
+    assert isinstance(final_embed.description, str)
+    assert "+7,000" in final_embed.description
+    assert "+10,000" not in final_embed.description
+    assert view._jackpot_generation == 3
 
 
 async def test_dragon_gate_view_single_player_zero_balance_finalizes(

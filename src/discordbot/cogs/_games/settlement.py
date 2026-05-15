@@ -59,7 +59,6 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     player_account_name: str,
     dealer_id: int,
     dealer_name: str,
-    bet: int,
     delta: int,
     player_avatar_url: str = "",
     dealer_avatar_url: str = "",
@@ -84,7 +83,6 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
         dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
-        bet: Effective bet amount for the finished round.
         delta: Player net point change for the round.
 
     Returns:
@@ -148,7 +146,6 @@ async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both play
         dealer_id=dealer_id,
         dealer_name=dealer_name,
         dealer_avatar_url=dealer_avatar_url,
-        bet=hand.bet,
         delta=delta,
     )
     return BlackjackSettlement(

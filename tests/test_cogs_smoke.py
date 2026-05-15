@@ -670,20 +670,9 @@ async def _wealthy_game_balance(user_id: int) -> int:
     return 1_000_000
 
 
-async def fake_dragon_gate_jackpot() -> int:
-    """Returns a stable fake Dragon Gate jackpot."""
-    return 100_000
-
-
-async def fake_apply_jackpot_settlement(
-    player_id: int,
-    player_account_name: str,
-    player_delta: int,
-    game_id: str,
-    player_avatar_url: str = "",
-) -> tuple[int, int, int]:
-    """Applies a fake single-player jackpot settlement."""
-    return (100_000 + player_delta, 100_000 - player_delta, player_delta)
+async def fake_dragon_gate_jackpot_snapshot() -> tuple[int, int]:
+    """Returns a stable fake Dragon Gate jackpot snapshot."""
+    return 100_000, 0
 
 
 class FakeDealer:
@@ -725,7 +714,9 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
 
-    monkeypatch.setattr(games, "fetch_dragon_gate_jackpot", fake_dragon_gate_jackpot)
+    monkeypatch.setattr(
+        games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
+    )
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
     dragon_gate_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
@@ -798,7 +789,9 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "get_balance", _wealthy_game_balance)
-    monkeypatch.setattr(games, "fetch_dragon_gate_jackpot", fake_dragon_gate_jackpot)
+    monkeypatch.setattr(
+        games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
+    )
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     cog.__dict__["dealer"] = FakeDealer()

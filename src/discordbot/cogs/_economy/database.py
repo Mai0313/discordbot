@@ -51,7 +51,6 @@ from sqlalchemy import (
     Boolean,
     Integer,
     DateTime,
-    case,
     desc,
     func,
     text,
@@ -74,9 +73,11 @@ from discordbot.typings.economy import (
     CreditResult,
     CheckinResult,
     TransferResult,
+    JackpotSnapshot,
     TransactionKind,
     VipPurchaseResult,
     BalanceAdjustmentResult,
+    JackpotSettlementResult,
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
 )
@@ -93,6 +94,8 @@ _CREDIT_WITH_REPAYMENT_MAX_RETRIES: Final[int] = 8
 _REPAY_MAX_RETRIES: Final[int] = 8
 _CHECKIN_MAX_RETRIES: Final[int] = 8
 _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
+_CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
+_JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
 # Blackjack VIP perk: 1.5x payout on winning rounds, applied as floor(delta * 3 / 2).
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
@@ -256,6 +259,8 @@ class JackpotPool(Base):
             (absolute value of negative deltas from player wins).
         seeded_amount: Lifetime on-the-house seed total; bookkeeping only,
             never decremented.
+        generation: Incremented every time a seeded pool is depleted and
+            replenished, so stale table snapshots cannot claim the next seed.
         updated_at: Taiwan-local timestamp of the last write.
     """
 
@@ -266,6 +271,7 @@ class JackpotPool(Base):
     total_contributed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_claimed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     seeded_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -347,6 +353,14 @@ async def _ensure_schema() -> None:
             await conn.execute(
                 statement=text(text="ALTER TABLE user_account DROP COLUMN loan_last_accrual_at")
             )
+        result = await conn.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
+        jackpot_columns = {row[1] for row in result.all()}
+        if "generation" not in jackpot_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE jackpot_pool ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+                )
+            )
         for seed_game_id, seed_amount in _JACKPOT_SEEDS:
             await conn.execute(
                 statement=insert(JackpotPool)
@@ -356,6 +370,7 @@ async def _ensure_schema() -> None:
                     total_contributed=0,
                     total_claimed=0,
                     seeded_amount=seed_amount,
+                    generation=0,
                     updated_at=_database_now(),
                 )
                 .on_conflict_do_nothing(index_elements=["game_id"])
@@ -468,49 +483,6 @@ def _build_credit_upsert(
     set_: dict[str, Any] = {
         "balance": UserAccount.balance + amount,
         "total_earned": UserAccount.total_earned + amount,
-        "updated_at": now,
-    }
-    if name:
-        set_["name"] = insert_name
-    if avatar_url:
-        set_["avatar_url"] = avatar_url
-    return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
-        UserAccount.balance
-    )
-
-
-def _build_clamped_delta_upsert(
-    user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
-) -> ReturningInsert[tuple[int]]:
-    """UPSERT applying a signed ``delta`` with the resulting balance clamped at 0.
-
-    Positive `delta` credits; negative `delta` debits but never lets the
-    balance go negative. The `applied_delta` (post-clamp) is what feeds
-    `total_earned` / `total_spent`, so a debit larger than the balance only
-    counts the actual amount removed.
-
-    Returns:
-        A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
-    """
-    insert_name = name or str(user_id)
-    initial_balance = max(delta, 0)
-    stmt = insert(UserAccount).values(
-        user_id=user_id,
-        name=insert_name,
-        avatar_url=avatar_url,
-        balance=initial_balance,
-        total_earned=initial_balance,
-        total_spent=0,
-        updated_at=now,
-    )
-    new_balance_expr = func.max(UserAccount.balance + delta, 0)
-    applied_delta_expr = new_balance_expr - UserAccount.balance
-    set_: dict[str, Any] = {
-        "balance": new_balance_expr,
-        "total_earned": UserAccount.total_earned
-        + case((applied_delta_expr > 0, applied_delta_expr), else_=0),
-        "total_spent": UserAccount.total_spent
-        + case((applied_delta_expr < 0, -applied_delta_expr), else_=0),
         "updated_at": now,
     }
     if name:
@@ -790,24 +762,132 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
 ) -> tuple[int, int]:
     """Applies a clamped signed delta and logs any resulting audit row.
 
-    To log the *applied* delta rather than the requested one, this helper
-    reads the pre-update balance first and diffs against the post-update value
-    returned by the UPSERT. A negative delta against a missing row is a no-op
-    so manual clamp operations do not create zero-balance accounts.
+    The observed balance is pinned in the UPDATE predicate, so concurrent
+    clamped debits cannot both compute their applied delta from the same stale
+    balance. A negative delta against a missing row is a no-op so manual clamp
+    operations do not create zero-balance accounts.
     """
-    pre_result = await session.execute(
-        statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+    if delta == 0:
+        read_result = await session.execute(
+            statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+        )
+        return read_result.scalar_one_or_none() or 0, 0
+
+    insert_name = name or str(user_id)
+    for _ in range(_CLAMPED_DELTA_MAX_RETRIES):
+        read_result = await session.execute(
+            statement=select(UserAccount.balance, UserAccount.name).where(
+                UserAccount.user_id == user_id
+            )
+        )
+        row = read_result.one_or_none()
+
+        if row is None:
+            if delta < 0:
+                return 0, 0
+            insert_result = await _try_insert_clamped_positive_delta_in_session(
+                session=session,
+                user_id=user_id,
+                insert_name=insert_name,
+                avatar_url=avatar_url,
+                delta=delta,
+                kind=kind,
+                now=now,
+            )
+            if insert_result is not None:
+                return insert_result
+            continue
+
+        current_balance, existing_name = row
+        update_result = await _try_update_clamped_delta_in_session(
+            session=session,
+            user_id=user_id,
+            name=name,
+            avatar_url=avatar_url,
+            current_balance=current_balance,
+            existing_name=existing_name,
+            kind=kind,
+            delta=delta,
+            now=now,
+        )
+        if update_result is not None:
+            return update_result
+
+    raise RuntimeError(f"apply_clamped_delta retry budget exhausted for user_id={user_id}")
+
+
+async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mirrors the caller's audit identity
+    session: AsyncSession,
+    user_id: int,
+    insert_name: str,
+    avatar_url: str,
+    delta: int,
+    kind: TransactionKind,
+    now: datetime,
+) -> tuple[int, int] | None:
+    """Attempts to create a missing account for a positive clamped delta."""
+    insert_stmt = (
+        insert(UserAccount)
+        .values(
+            user_id=user_id,
+            name=insert_name,
+            avatar_url=avatar_url,
+            balance=delta,
+            total_earned=delta,
+            total_spent=0,
+            updated_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["user_id"])
+        .returning(UserAccount.balance)
     )
-    pre_balance = pre_result.scalar_one_or_none()
-    if pre_balance is None and delta < 0:
-        return 0, 0
-    pre_balance = pre_balance or 0
-    stmt = _build_clamped_delta_upsert(
-        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
+    insert_result = await session.execute(statement=insert_stmt)
+    inserted_balance = insert_result.scalar_one_or_none()
+    if inserted_balance is None:
+        return None
+    await _log_transaction_in_session(
+        session=session,
+        user_id=user_id,
+        kind=kind,
+        delta=delta,
+        balance_after=inserted_balance,
+        note=None,
+        now=now,
     )
-    result = await session.execute(statement=stmt)
-    new_balance = result.scalar_one()
-    applied = new_balance - pre_balance
+    return inserted_balance, delta
+
+
+async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional write needs observed row state
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    avatar_url: str,
+    current_balance: int,
+    existing_name: str,
+    delta: int,
+    kind: TransactionKind,
+    now: datetime,
+) -> tuple[int, int] | None:
+    """Attempts one conditional clamped update against an existing account."""
+    new_balance = max(current_balance + delta, 0)
+    applied = new_balance - current_balance
+    update_values: dict[str, Any] = {"balance": new_balance, "updated_at": now}
+    if applied > 0:
+        update_values["total_earned"] = UserAccount.total_earned + applied
+    elif applied < 0:
+        update_values["total_spent"] = UserAccount.total_spent - applied
+    if name and name != existing_name:
+        update_values["name"] = name
+    if avatar_url:
+        update_values["avatar_url"] = avatar_url
+
+    update_result = await session.execute(
+        statement=update(UserAccount)
+        .where(UserAccount.user_id == user_id, UserAccount.balance == current_balance)
+        .values(**update_values)
+        .returning(UserAccount.balance)
+    )
+    if update_result.scalar_one_or_none() is None:
+        return None
     await _log_transaction_in_session(
         session=session,
         user_id=user_id,
@@ -1108,29 +1188,28 @@ async def get_jackpot_pool(game_id: str) -> int:
     Returns:
         The current pool balance in points.
     """
+    snapshot = await get_jackpot_snapshot(game_id=game_id)
+    return snapshot.balance
+
+
+async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
+    """Returns the current jackpot balance and generation for a shared pool."""
     await _ensure_schema()
     async with open_session() as session:
-        result = await session.execute(
-            statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+        snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+            session=session, game_id=game_id, now=_database_now()
         )
-        pool_balance = result.scalar_one_or_none()
-        if pool_balance is None:
-            return 0
-        replenished_balance = await _replenish_jackpot_if_depleted_in_session(
-            session=session, game_id=game_id, balance=pool_balance, now=_database_now()
-        )
-        if replenished_balance != pool_balance:
-            await session.commit()
-        return replenished_balance
+        await session.commit()
+        return snapshot
 
 
 async def _replenish_jackpot_if_depleted_in_session(
-    session: AsyncSession, game_id: str, balance: int, now: datetime
-) -> int:
+    session: AsyncSession, game_id: str, balance: int, generation: int, now: datetime
+) -> JackpotSnapshot:
     """Tops a seeded jackpot back up when the stored balance is drained."""
     seed_amount = _jackpot_seed_amount(game_id=game_id)
     if seed_amount <= 0 or balance > 0:
-        return balance
+        return JackpotSnapshot(balance=balance, generation=generation)
     replenishment = seed_amount - min(balance, 0)
     stmt = (
         update(JackpotPool)
@@ -1139,17 +1218,21 @@ async def _replenish_jackpot_if_depleted_in_session(
         .values(
             pool_balance=seed_amount,
             seeded_amount=JackpotPool.seeded_amount + replenishment,
+            generation=JackpotPool.generation + 1,
             updated_at=now,
         )
-        .returning(JackpotPool.pool_balance)
+        .returning(JackpotPool.pool_balance, JackpotPool.generation)
     )
     result = await session.execute(statement=stmt)
-    return result.scalar_one_or_none() or balance
+    row = result.one_or_none()
+    if row is None:
+        return JackpotSnapshot(balance=balance, generation=generation)
+    return JackpotSnapshot(balance=row[0], generation=row[1])
 
 
 async def _apply_jackpot_delta_in_session(
     session: AsyncSession, game_id: str, delta: int, now: datetime
-) -> int:
+) -> tuple[JackpotSnapshot, bool]:
     """Applies a signed delta to a game's jackpot pool inside the caller's session.
 
     Positive deltas accumulate ``total_contributed`` (player losses /
@@ -1165,7 +1248,8 @@ async def _apply_jackpot_delta_in_session(
         now: ``_database_now()`` value pinned for this transaction.
 
     Returns:
-        The pool balance after the write and any automatic replenishment.
+        A tuple containing the pool balance after the write and any automatic
+        replenishment, plus whether the pool was depleted by this write.
     """
     contributed_add = max(delta, 0)
     claimed_add = max(-delta, 0)
@@ -1177,6 +1261,7 @@ async def _apply_jackpot_delta_in_session(
             total_contributed=contributed_add,
             total_claimed=claimed_add,
             seeded_amount=0,
+            generation=0,
             updated_at=now,
         )
         .on_conflict_do_update(
@@ -1188,40 +1273,98 @@ async def _apply_jackpot_delta_in_session(
                 "updated_at": now,
             },
         )
-        .returning(JackpotPool.pool_balance)
+        .returning(JackpotPool.pool_balance, JackpotPool.generation)
     )
     result = await session.execute(statement=stmt)
-    pool_balance = result.scalar_one()
-    return await _replenish_jackpot_if_depleted_in_session(
-        session=session, game_id=game_id, balance=pool_balance, now=now
+    pool_balance, generation = result.one()
+    jackpot_depleted = pool_balance <= 0 and _jackpot_seed_amount(game_id=game_id) > 0
+    snapshot = await _replenish_jackpot_if_depleted_in_session(
+        session=session, game_id=game_id, balance=pool_balance, generation=generation, now=now
     )
+    return snapshot, jackpot_depleted
 
 
-async def _read_jackpot_balance_or_replenish_in_session(
+async def _read_jackpot_snapshot_or_replenish_in_session(
     session: AsyncSession, game_id: str, now: datetime
-) -> int:
+) -> JackpotSnapshot:
     """Reads the jackpot balance, replenishing the seed if depleted.
 
-    Returns 0 if no pool row exists for the game.
+    Returns a zero snapshot if no pool row exists for the game.
     """
     result = await session.execute(
-        statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == game_id)
+        statement=select(JackpotPool.pool_balance, JackpotPool.generation).where(
+            JackpotPool.game_id == game_id
+        )
     )
-    pool_balance = result.scalar_one_or_none()
-    if pool_balance is None:
-        return 0
+    row = result.one_or_none()
+    if row is None:
+        return JackpotSnapshot(balance=0, generation=0)
+    pool_balance, generation = row
     return await _replenish_jackpot_if_depleted_in_session(
-        session=session, game_id=game_id, balance=pool_balance, now=now
+        session=session, game_id=game_id, balance=pool_balance, generation=generation, now=now
     )
 
 
-async def apply_jackpot_settlement(
+async def _claim_jackpot_payout_in_session(
+    session: AsyncSession,
+    game_id: str,
+    amount: int,
+    expected_generation: int | None,
+    now: datetime,
+) -> tuple[int, JackpotSnapshot, bool]:
+    """Atomically claims up to ``amount`` from the requested jackpot generation."""
+    if amount <= 0:
+        snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+            session=session, game_id=game_id, now=now
+        )
+        return 0, snapshot, False
+
+    for _ in range(_JACKPOT_CLAIM_MAX_RETRIES):
+        snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+            session=session, game_id=game_id, now=now
+        )
+        if expected_generation is not None and snapshot.generation != expected_generation:
+            return 0, snapshot, False
+        claim = min(amount, snapshot.balance)
+        if claim <= 0:
+            return 0, snapshot, False
+
+        new_balance = snapshot.balance - claim
+        stmt = (
+            update(JackpotPool)
+            .where(JackpotPool.game_id == game_id)
+            .where(JackpotPool.pool_balance == snapshot.balance)
+            .where(JackpotPool.generation == snapshot.generation)
+            .values(
+                pool_balance=new_balance,
+                total_claimed=JackpotPool.total_claimed + claim,
+                updated_at=now,
+            )
+            .returning(JackpotPool.pool_balance, JackpotPool.generation)
+        )
+        result = await session.execute(statement=stmt)
+        row = result.one_or_none()
+        if row is None:
+            continue
+
+        pool_balance, generation = row
+        jackpot_depleted = pool_balance <= 0 and _jackpot_seed_amount(game_id=game_id) > 0
+        final_snapshot = await _replenish_jackpot_if_depleted_in_session(
+            session=session, game_id=game_id, balance=pool_balance, generation=generation, now=now
+        )
+        return claim, final_snapshot, jackpot_depleted
+
+    raise RuntimeError(f"claim_jackpot_payout retry budget exhausted for game_id={game_id}")
+
+
+async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mirrors player identity + snapshot guard
     player_id: int,
     player_account_name: str,
     player_delta: int,
     game_id: str,
     player_avatar_url: str = "",
-) -> tuple[int, int, int]:
+    expected_jackpot_generation: int | None = None,
+) -> JackpotSettlementResult:
     """Atomic player-and-jackpot settlement for a single wager event.
 
     This is a convenience wrapper around ``apply_jackpot_settlement_batch``.
@@ -1233,9 +1376,11 @@ async def apply_jackpot_settlement(
             as a negative delta and the absolute value flows into the pool.
         game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
         player_avatar_url: Last-seen Discord avatar URL for the player.
+        expected_jackpot_generation: Optional pool generation observed by the
+            caller. Positive payouts only claim from this generation.
 
     Returns:
-        A ``(player_balance_after, jackpot_balance_after, applied_player_delta)`` tuple.
+        The single-player jackpot settlement outcome.
     """
     result = await apply_jackpot_settlement_batch(
         game_id=game_id,
@@ -1245,13 +1390,43 @@ async def apply_jackpot_settlement(
                 player_account_name=player_account_name,
                 player_avatar_url=player_avatar_url,
                 player_delta=player_delta,
+                expected_jackpot_generation=expected_jackpot_generation,
             ),
         ),
     )
-    return (
-        result.player_balances.get(player_id, 0),
-        result.jackpot_balance,
-        result.applied_player_deltas.get(player_id, 0),
+    return JackpotSettlementResult(
+        player_balance=result.player_balances.get(player_id, 0),
+        jackpot_balance=result.jackpot_balance,
+        jackpot_generation=result.jackpot_generation,
+        applied_player_delta=result.applied_player_deltas.get(player_id, 0),
+        jackpot_depleted=result.jackpot_depleted,
+        rejected=player_id in result.rejected_player_ids,
+    )
+
+
+async def _full_debit_rejections_in_session(
+    session: AsyncSession, settlements: Sequence[JackpotSettlementRequest]
+) -> tuple[int, ...]:
+    """Returns required-full-debit player IDs that cannot cover their debits."""
+    required_debits: dict[int, int] = {}
+    for settlement in settlements:
+        if settlement.require_full_debit and settlement.player_delta < 0:
+            required_debits[settlement.player_id] = (
+                required_debits.get(settlement.player_id, 0) - settlement.player_delta
+            )
+    if not required_debits:
+        return ()
+
+    result = await session.execute(
+        statement=select(UserAccount.user_id, UserAccount.balance).where(
+            UserAccount.user_id.in_(other=tuple(required_debits))
+        )
+    )
+    balances = {row[0]: row[1] for row in result.all()}
+    return tuple(
+        user_id
+        for user_id, required in required_debits.items()
+        if balances.get(user_id, 0) < required
     )
 
 
@@ -1260,12 +1435,11 @@ async def apply_jackpot_settlement_batch(
 ) -> JackpotSettlementBatchResult:
     """Atomically applies one or more player settlements against a jackpot pool.
 
-    Positive player deltas (wins) credit the player via the 50% auto-repayment
-    path and drain the pool by the same amount; negative deltas (losses) debit
-    the player only down to zero and feed the pool with the actual debit. If a seeded pool is
-    drained, the same transaction restores its on-the-house seed. Batched
-    settlements share one SQLite transaction, so a multi-player ante charge
-    cannot partially commit.
+    Positive player deltas (wins) are capped to the live pool balance inside
+    this transaction, then credited via the 50% auto-repayment path. Negative
+    deltas normally clamp at zero and feed the pool with the actual debit.
+    Required-full-debit settlements reject the whole batch instead. If a seeded
+    pool is drained, the same transaction restores its on-the-house seed.
 
     Args:
         game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
@@ -1280,32 +1454,76 @@ async def apply_jackpot_settlement_batch(
     async with open_session() as session:
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
-        jackpot_balance: int | None = None
+        jackpot_snapshot: JackpotSnapshot | None = None
+        jackpot_depleted = False
+
+        rejected_player_ids = await _full_debit_rejections_in_session(
+            session=session, settlements=settlements
+        )
+        if rejected_player_ids:
+            jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+                session=session, game_id=game_id, now=now
+            )
+            await session.commit()
+            return JackpotSettlementBatchResult(
+                player_balances={},
+                applied_player_deltas={},
+                jackpot_balance=jackpot_snapshot.balance,
+                jackpot_generation=jackpot_snapshot.generation,
+                rejected_player_ids=rejected_player_ids,
+            )
 
         for settlement in settlements:
+            effective_player_delta = settlement.player_delta
+            if effective_player_delta > 0:
+                claim, jackpot_snapshot, depleted = await _claim_jackpot_payout_in_session(
+                    session=session,
+                    game_id=game_id,
+                    amount=effective_player_delta,
+                    expected_generation=settlement.expected_jackpot_generation,
+                    now=now,
+                )
+                effective_player_delta = claim
+                jackpot_depleted = jackpot_depleted or depleted
+
             player_balance, applied_player_delta = await _apply_jackpot_player_delta_in_session(
                 session=session,
                 user_id=settlement.player_id,
                 name=settlement.player_account_name,
                 avatar_url=settlement.player_avatar_url,
-                delta=settlement.player_delta,
+                delta=effective_player_delta,
                 now=now,
             )
+            if settlement.require_full_debit and applied_player_delta != effective_player_delta:
+                await session.rollback()
+                jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+                    session=session, game_id=game_id, now=now
+                )
+                await session.commit()
+                return JackpotSettlementBatchResult(
+                    player_balances={},
+                    applied_player_deltas={},
+                    jackpot_balance=jackpot_snapshot.balance,
+                    jackpot_generation=jackpot_snapshot.generation,
+                    rejected_player_ids=(settlement.player_id,),
+                )
             player_balances[settlement.player_id] = player_balance
             applied_player_deltas[settlement.player_id] = applied_player_delta
 
             if applied_player_delta == 0:
-                jackpot_balance = await _read_jackpot_balance_or_replenish_in_session(
+                jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
                     session=session, game_id=game_id, now=now
                 )
                 continue
 
-            jackpot_balance = await _apply_jackpot_delta_in_session(
-                session=session, game_id=game_id, delta=-applied_player_delta, now=now
-            )
+            if applied_player_delta < 0:
+                jackpot_snapshot, depleted = await _apply_jackpot_delta_in_session(
+                    session=session, game_id=game_id, delta=-applied_player_delta, now=now
+                )
+                jackpot_depleted = jackpot_depleted or depleted
 
-        if jackpot_balance is None:
-            jackpot_balance = await _read_jackpot_balance_or_replenish_in_session(
+        if jackpot_snapshot is None:
+            jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
                 session=session, game_id=game_id, now=now
             )
 
@@ -1313,7 +1531,9 @@ async def apply_jackpot_settlement_batch(
         return JackpotSettlementBatchResult(
             player_balances=player_balances,
             applied_player_deltas=applied_player_deltas,
-            jackpot_balance=jackpot_balance,
+            jackpot_balance=jackpot_snapshot.balance,
+            jackpot_generation=jackpot_snapshot.generation,
+            jackpot_depleted=jackpot_depleted,
         )
 
 

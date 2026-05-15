@@ -447,12 +447,7 @@ async def test_settle_wager_updates_player_and_house() -> None:
     await _add_balance(user_id=1, name="alice", amount=100)
 
     settlement = await settle_wager(
-        player_id=1,
-        player_account_name="alice",
-        dealer_id=99,
-        dealer_name="house",
-        bet=40,
-        delta=40,
+        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=40
     )
     assert settlement.payout == 40
     assert settlement.new_balance == 140
@@ -1015,12 +1010,7 @@ async def test_settle_wager_applies_vip_bonus_on_win() -> None:
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
     settlement = await settle_wager(
-        player_id=1,
-        player_account_name="alice",
-        dealer_id=99,
-        dealer_name="house",
-        bet=100,
-        delta=100,
+        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=100
     )
     assert settlement.delta == 150
     assert settlement.base_delta == 100
@@ -1035,12 +1025,7 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     purchase = await database.buy_vip(user_id=1, name="alice")
     assert purchase is not None
     settlement = await settle_wager(
-        player_id=1,
-        player_account_name="alice",
-        dealer_id=99,
-        dealer_name="house",
-        bet=100,
-        delta=-100,
+        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=-100
     )
     assert settlement.delta == -100
     assert settlement.base_delta == -100
@@ -1055,25 +1040,27 @@ async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None
     # _ensure_schema already seeded the dragon_gate pool at 100_000.
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
 
-    player_balance, jackpot_after, applied_delta = await database.apply_jackpot_settlement(
+    settlement = await database.apply_jackpot_settlement(
         player_id=1, player_account_name="alice", player_delta=20_000, game_id="dragon_gate"
     )
 
-    assert player_balance == 30_000
-    assert jackpot_after == 80_000
-    assert applied_delta == 20_000
+    assert settlement.player_balance == 30_000
+    assert settlement.jackpot_balance == 80_000
+    assert settlement.applied_player_delta == 20_000
+    assert settlement.jackpot_depleted is False
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 80_000
 
 
 async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
     """A seeded jackpot restores itself after a player wins the whole pool."""
-    player_balance, jackpot_after, applied_delta = await database.apply_jackpot_settlement(
+    settlement = await database.apply_jackpot_settlement(
         player_id=1, player_account_name="alice", player_delta=100_000, game_id="dragon_gate"
     )
 
-    assert player_balance == 100_000
-    assert jackpot_after == 100_000
-    assert applied_delta == 100_000
+    assert settlement.player_balance == 100_000
+    assert settlement.jackpot_balance == 100_000
+    assert settlement.applied_player_delta == 100_000
+    assert settlement.jackpot_depleted is True
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
     async with database.open_session() as session:
         result = await session.execute(
@@ -1090,13 +1077,13 @@ async def test_apply_jackpot_settlement_clamps_loss_and_grows_pool_by_actual_deb
     """Player losses stop at zero and feed the jackpot with the actual debit."""
     await _add_balance(user_id=1, name="alice", amount=15_000)
 
-    player_balance, jackpot_after, applied_delta = await database.apply_jackpot_settlement(
+    settlement = await database.apply_jackpot_settlement(
         player_id=1, player_account_name="alice", player_delta=-25_000, game_id="dragon_gate"
     )
 
-    assert player_balance == 0
-    assert jackpot_after == 115_000
-    assert applied_delta == -15_000
+    assert settlement.player_balance == 0
+    assert settlement.jackpot_balance == 115_000
+    assert settlement.applied_player_delta == -15_000
     async with database.open_session() as session:
         result = await session.execute(
             statement=select(
@@ -1109,6 +1096,70 @@ async def test_apply_jackpot_settlement_clamps_loss_and_grows_pool_by_actual_deb
     assert kind == database.TransactionKind.CASINO_BET.value
     assert delta == -15_000
     assert balance_after == 0
+
+
+async def test_apply_jackpot_settlement_concurrent_clamped_losses_log_actual_debit() -> None:
+    """Concurrent clamped jackpot losses cannot over-credit the pool."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+
+    first, second = await asyncio.gather(
+        database.apply_jackpot_settlement(
+            player_id=1, player_account_name="alice", player_delta=-80, game_id="dragon_gate"
+        ),
+        database.apply_jackpot_settlement(
+            player_id=1, player_account_name="alice", player_delta=-80, game_id="dragon_gate"
+        ),
+    )
+
+    applied_total = first.applied_player_delta + second.applied_player_delta
+    assert applied_total == -100
+    assert await database.get_balance(user_id=1) == 0
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_100
+    async with database.open_session() as session:
+        result = await session.execute(
+            statement=select(func.sum(database.PointTransaction.delta)).where(
+                database.PointTransaction.user_id == 1,
+                database.PointTransaction.kind == database.TransactionKind.CASINO_BET.value,
+            )
+        )
+        assert result.scalar_one() == -100
+
+
+async def test_apply_jackpot_settlement_caps_win_to_live_pool() -> None:
+    """A stale oversized jackpot win only pays the live pool amount."""
+    settlement = await database.apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=150_000, game_id="dragon_gate"
+    )
+
+    assert settlement.player_balance == 100_000
+    assert settlement.applied_player_delta == 100_000
+    assert settlement.jackpot_balance == 100_000
+    assert settlement.jackpot_depleted is True
+
+
+async def test_apply_jackpot_settlement_concurrent_wins_do_not_double_claim_pool() -> None:
+    """Concurrent whole-pool wins cannot both claim the same jackpot generation."""
+    snapshot = await database.get_jackpot_snapshot(game_id="dragon_gate")
+    first, second = await asyncio.gather(
+        database.apply_jackpot_settlement(
+            player_id=1,
+            player_account_name="alice",
+            player_delta=100_000,
+            game_id="dragon_gate",
+            expected_jackpot_generation=snapshot.generation,
+        ),
+        database.apply_jackpot_settlement(
+            player_id=2,
+            player_account_name="bob",
+            player_delta=100_000,
+            game_id="dragon_gate",
+            expected_jackpot_generation=snapshot.generation,
+        ),
+    )
+
+    applied_total = first.applied_player_delta + second.applied_player_delta
+    assert applied_total == 100_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
 
 
 async def test_apply_jackpot_settlement_batch_charges_multiple_players_atomically() -> None:
@@ -1134,6 +1185,37 @@ async def test_apply_jackpot_settlement_batch_charges_multiple_players_atomicall
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 112_000
 
 
+async def test_apply_jackpot_settlement_batch_rejects_required_full_debit() -> None:
+    """Ante-style full-debit batches reject without partially charging anyone."""
+    await _add_balance(user_id=1, name="alice", amount=10_000)
+    await _add_balance(user_id=2, name="bob", amount=3_000)
+
+    result = await database.apply_jackpot_settlement_batch(
+        game_id="dragon_gate",
+        settlements=(
+            database.JackpotSettlementRequest(
+                player_id=1,
+                player_account_name="alice",
+                player_delta=-5_000,
+                require_full_debit=True,
+            ),
+            database.JackpotSettlementRequest(
+                player_id=2,
+                player_account_name="bob",
+                player_delta=-5_000,
+                require_full_debit=True,
+            ),
+        ),
+    )
+
+    assert result.rejected_player_ids == (2,)
+    assert result.player_balances == {}
+    assert result.applied_player_deltas == {}
+    assert await database.get_balance(user_id=1) == 10_000
+    assert await database.get_balance(user_id=2) == 3_000
+    assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+
+
 async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1145,7 +1227,9 @@ async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
     calls = 0
     original_apply = database._apply_jackpot_delta_in_session
 
-    async def flaky_apply_jackpot_delta_in_session(**kwargs: object) -> int:
+    async def flaky_apply_jackpot_delta_in_session(
+        **kwargs: object,
+    ) -> tuple[database.JackpotSnapshot, bool]:
         """Fails on the second jackpot write to test batch rollback."""
         nonlocal calls
         calls += 1
@@ -1185,13 +1269,13 @@ async def test_apply_jackpot_settlement_skips_vip_blackjack_bonus() -> None:
 
     player_balance_before = await database.get_balance(user_id=1)
     pool_before = await database.get_jackpot_pool(game_id="dragon_gate")
-    player_balance, jackpot_after, applied_delta = await database.apply_jackpot_settlement(
+    settlement = await database.apply_jackpot_settlement(
         player_id=1, player_account_name="alice", player_delta=100, game_id="dragon_gate"
     )
 
-    assert player_balance == player_balance_before + 100
-    assert jackpot_after == pool_before - 100
-    assert applied_delta == 100
+    assert settlement.player_balance == player_balance_before + 100
+    assert settlement.jackpot_balance == pool_before - 100
+    assert settlement.applied_player_delta == 100
 
 
 async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
@@ -1211,6 +1295,8 @@ async def test_get_jackpot_pool_replenishes_legacy_drained_seed_pool() -> None:
         await session.commit()
 
     assert await database.get_jackpot_pool(game_id="dragon_gate") == 100_000
+    snapshot = await database.get_jackpot_snapshot(game_id="dragon_gate")
+    assert snapshot.generation == 1
 
 
 async def test_ensure_schema_seeds_dragon_gate_jackpot_once(

@@ -283,10 +283,10 @@ class BlackjackLobbyView(BaseGameLobbyView):
             status=status,
         )
 
-    async def _start_game(self, message: Message | None) -> None:
+    async def _start_game(self, message: Message | None) -> bool:
         """Deals the table and replaces the lobby message with the game view."""
         if message is None:
-            return
+            return False
         round_state = BlackjackRound.from_participants(
             rng=self.rng, participants=self.participants
         )
@@ -313,7 +313,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         view.message = message
         if round_state.finished:
             await view.finalize(message=message)
-            return
+            return True
         await edit_message_with_retry(
             message=message,
             embeds=[
@@ -326,6 +326,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             ],
             view=view,
         )
+        return True
 
 
 class BlackjackView(ui.View):
@@ -434,10 +435,6 @@ class BlackjackView(ui.View):
         """Settles every player exactly once."""
         async with self._round_lock:
             await self._finalize_locked(message=message)
-
-    async def _finalize(self, message: Message) -> None:
-        """Backward-compatible wrapper for tests and older internal callers."""
-        await self.finalize(message=message)
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes dealer talk and table embeds while holding the round lock."""

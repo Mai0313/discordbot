@@ -9,7 +9,7 @@ import contextlib
 import logfire
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
-from discordbot.typings.economy import JackpotSettlementRequest
+from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import apply_jackpot_settlement_batch
 from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
@@ -50,7 +50,7 @@ class BaseGameLobbyView(ui.View):
 
     Subclasses must override:
       - ``_build_lobby_embed(status: str) -> Embed`` — used by refresh + timeout
-      - ``_start_game(message: Message | None) -> None`` — invoked after Start
+      - ``_start_game(message: Message | None) -> bool`` — invoked after Start
 
     Optional class attribute:
       - ``max_players: ClassVar[int | None]`` — None means unlimited
@@ -167,8 +167,9 @@ class BaseGameLobbyView(ui.View):
         if dropped:
             names = ", ".join(dropped)
             await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
-        self.stop()
-        await self._start_game(message=interaction.message)
+        started = await self._start_game(message=interaction.message)
+        if started:
+            self.stop()
 
     async def _refresh_message(self, message: Message | None, status: str) -> None:
         """Edits the lobby message with the latest participant state."""
@@ -200,7 +201,7 @@ class BaseGameLobbyView(ui.View):
         """Builds the lobby embed for a concrete game type."""
         raise NotImplementedError
 
-    async def _start_game(self, message: Message | None) -> None:
+    async def _start_game(self, message: Message | None) -> bool:
         """Starts a concrete game from the current lobby participants."""
         raise NotImplementedError
 
@@ -228,6 +229,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
         timeout: int,
+        initial_jackpot_generation: int | None = None,
     ) -> None:
         """Initializes jackpot lobby state with the live pool snapshot."""
         super().__init__(
@@ -241,19 +243,41 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
             timeout=timeout,
         )
         self._jackpot_snapshot = initial_jackpot
+        self._jackpot_generation = initial_jackpot_generation
 
-    async def _start_game(self, message: Message | None) -> None:
+    async def _start_game(self, message: Message | None) -> bool:
         """Charges antes before delegating to the jackpot game start hook."""
         if message is None:
-            return
-        final_balances = await self._settle_pregame_antes()
-        await self._start_game_after_antes(message=message, final_balances=final_balances)
+            self._started = False
+            return False
+        result = await self._settle_pregame_antes()
+        if result.rejected_player_ids:
+            rejected = set(result.rejected_player_ids)
+            owner_rejected = self.owner.user_id in rejected
+            dropped: list[str] = []
+            for user_id in rejected:
+                if user_id == self.owner.user_id:
+                    continue
+                participant = self._participants.pop(user_id, None)
+                if participant is not None:
+                    dropped.append(participant.display_name)
+            self._started = False
+            if owner_rejected:
+                status = "房主餘額不足"
+            elif dropped:
+                status = f"餘額不足已移出: {', '.join(dropped)}"
+            else:
+                status = "餘額不足, 請重新開始"
+            await self._refresh_message(message=message, status=status)
+            return False
+        await self._start_game_after_antes(message=message, final_balances=result.player_balances)
+        return True
 
-    async def _settle_pregame_antes(self) -> dict[int, int]:
+    async def _settle_pregame_antes(self) -> JackpotSettlementBatchResult:
         """Charges each participant ``ante`` into the jackpot pool.
 
         Applies all participant antes in one DB transaction so the lobby cannot
-        partially charge a table. Returns ``{user_id: post_ante_balance}``.
+        partially charge a table.
         """
         settlements: list[JackpotSettlementRequest] = []
         for participant in self.participants:
@@ -263,13 +287,15 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
                     player_account_name=participant.account_name,
                     player_avatar_url=participant.avatar_url,
                     player_delta=-self.ante,
+                    require_full_debit=True,
                 )
             )
         result = await apply_jackpot_settlement_batch(
             game_id=self.game_id, settlements=settlements
         )
         self._jackpot_snapshot = result.jackpot_balance
-        return result.player_balances
+        self._jackpot_generation = result.jackpot_generation
+        return result
 
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]

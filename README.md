@@ -80,7 +80,7 @@ Game-related public response embeds are automatically deleted after three minute
 - `/borrow <amount>` — privately borrow against your Discord account age. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
 - `/repay <amount>` — privately repay outstanding principal from your current balance.
 - `/give <member> <amount>` — transfer Points to another member (no self-transfer, no bots).
-- `/house` — show the dealer's accumulated win/loss across casino games. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the casino is losing overall.
+- `/house` — show the Blackjack dealer's accumulated win/loss. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the Blackjack table is losing overall.
 
 After borrowing, 50% of each income event (message reward, chat reward, casino payout) automatically repays principal before the rest lands in the wallet. `/give` recipients are not auto-repaid.
 
@@ -117,7 +117,7 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/give <member> <amount>`         | Transfer Points to another member                                                     |
 | `/blackjack <bet>`                | Open a 21 lobby; players join before the owner starts, then take Hit / Stand turns    |
 | `/dragon_gate`                    | Open a 射龍門 lobby over the global jackpot pool (losses clamp at 0, leave button)    |
-| `/house`                          | Show the dealer's accumulated win/loss across casino games                            |
+| `/house`                          | Show the Blackjack dealer's accumulated win/loss                                      |
 | `/maple_monster <name>`           | Search MapleStory monsters and drops                                                  |
 | `/maple_equip <name>`             | Search MapleStory equipment                                                           |
 | `/maple_scroll <name>`            | Search MapleStory scrolls                                                             |

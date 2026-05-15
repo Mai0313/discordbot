@@ -30,8 +30,8 @@ from discordbot.cogs._games.blackjack_views import (
 )
 from discordbot.cogs._games.dragon_gate_views import (
     DragonGateLobbyView,
-    fetch_dragon_gate_jackpot,
     build_dragon_gate_lobby_embed,
+    fetch_dragon_gate_jackpot_snapshot,
 )
 
 
@@ -307,7 +307,7 @@ class GamesCogs(commands.Cog):
             return
 
         _dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
-        initial_jackpot = await fetch_dragon_gate_jackpot()
+        initial_jackpot, initial_jackpot_generation = await fetch_dragon_gate_jackpot_snapshot()
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
@@ -322,6 +322,7 @@ class GamesCogs(commands.Cog):
             ),
             refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
             initial_jackpot=initial_jackpot,
+            initial_jackpot_generation=initial_jackpot_generation,
         )
         embed = build_dragon_gate_lobby_embed(
             owner=owner, participants=view.participants, jackpot=initial_jackpot

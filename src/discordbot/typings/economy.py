@@ -143,6 +143,12 @@ class JackpotSettlementRequest(BaseModel):
         player_account_name: Last-seen account name stored on the player row.
         player_delta: Signed change for the player; the pool receives the inverse.
         player_avatar_url: Last-seen Discord avatar URL for the player.
+        require_full_debit: Whether a negative delta must be applied in full,
+            rejecting the whole batch instead of clamping at the player's
+            current balance. Used by pre-game antes.
+        expected_jackpot_generation: Optional jackpot generation observed by
+            the game view. Positive payouts only claim from this generation,
+            so a stale action cannot spend a freshly reseeded pool.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -151,6 +157,8 @@ class JackpotSettlementRequest(BaseModel):
     player_account_name: str
     player_delta: int
     player_avatar_url: str = ""
+    require_full_debit: bool = False
+    expected_jackpot_generation: int | None = None
 
 
 class JackpotSettlementBatchResult(BaseModel):
@@ -161,6 +169,12 @@ class JackpotSettlementBatchResult(BaseModel):
         applied_player_deltas: Signed player deltas that were actually applied.
             Losses may be smaller than requested when the balance clamps at zero.
         jackpot_balance: Pool balance after the final settlement and any reseed.
+        jackpot_generation: Pool generation after the final settlement and any
+            reseed.
+        jackpot_depleted: True when a seeded pool was drained and automatically
+            replenished during this batch.
+        rejected_player_ids: Player IDs whose required full debit could not be
+            applied; no mutation is committed when this is non-empty.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -168,6 +182,31 @@ class JackpotSettlementBatchResult(BaseModel):
     player_balances: dict[int, int]
     applied_player_deltas: dict[int, int]
     jackpot_balance: int
+    jackpot_generation: int = 0
+    jackpot_depleted: bool = False
+    rejected_player_ids: tuple[int, ...] = ()
+
+
+class JackpotSnapshot(BaseModel):
+    """Read-only snapshot of a shared jackpot pool."""
+
+    model_config = ConfigDict(frozen=True)
+
+    balance: int
+    generation: int = 0
+
+
+class JackpotSettlementResult(BaseModel):
+    """Outcome of a single player settlement against a shared jackpot pool."""
+
+    model_config = ConfigDict(frozen=True)
+
+    player_balance: int
+    jackpot_balance: int
+    jackpot_generation: int = 0
+    applied_player_delta: int
+    jackpot_depleted: bool = False
+    rejected: bool = False
 
 
 class TransferResult(BaseModel):
@@ -229,6 +268,8 @@ __all__ = [
     "CreditResult",
     "JackpotSettlementBatchResult",
     "JackpotSettlementRequest",
+    "JackpotSettlementResult",
+    "JackpotSnapshot",
     "LoanView",
     "RepayResult",
     "TransactionKind",
