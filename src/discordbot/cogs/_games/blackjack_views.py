@@ -6,9 +6,16 @@ from typing import TYPE_CHECKING, Final
 import asyncio
 import contextlib
 
+import logfire
 from nextcord import Embed, Message, ButtonStyle, Interaction, ui
 
-from discordbot.typings.games import Card, GameParticipant, BlackjackPlayerResult
+from discordbot.typings.games import (
+    Card,
+    GameParticipant,
+    BlackjackDealerStep,
+    BlackjackDealerAction,
+    BlackjackPlayerResult,
+)
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import (
@@ -46,6 +53,7 @@ if TYPE_CHECKING:
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 5
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
+MAX_DEALER_DECISION_STEPS: Final[int] = 8
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -64,6 +72,25 @@ def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
             return card_line(cards_text=str(up_card))
         return ""
     return _hand_summary_line(cards=round_state.dealer)
+
+
+def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
+    """Formats compact AI dealer decisions for the final embed."""
+    if not steps:
+        return ""
+    parts: list[str] = []
+    for step in steps:
+        part = f"{step.total_before} {step.action}"
+        if step.drawn_card is not None:
+            part += f" 抽 {step.drawn_card}"
+            if step.total_after is not None:
+                part += f" → {step.total_after}"
+        if step.fallback:
+            part += " (fallback basic rule)"
+        elif step.forced:
+            part += " (guard)"
+        parts.append(part)
+    return "；".join(parts)
 
 
 def _player_status_suffix(player: BlackjackPlayerHand) -> str:
@@ -158,6 +185,35 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     return "；".join(lines)
 
 
+def _dealer_player_status(player: BlackjackPlayerHand) -> str:
+    """Returns a compact status label for dealer decision context."""
+    if player.is_blackjack():
+        return "blackjack"
+    if player.is_bust():
+        return "bust"
+    if player.finished:
+        return "stand"
+    return "acting"
+
+
+def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
+    """Builds the full table state sent to the AI dealer."""
+    lines: list[str] = [
+        "遊戲: 21 點",
+        f"莊家手牌: {render_hand(cards=round_state.dealer)}",
+        f"莊家總點數: {round_state.dealer_total()}",
+        "玩家:",
+    ]
+    for player in round_state.players:
+        participant = player.participant
+        lines.append(
+            f"- {participant.display_name}: "
+            f"{render_hand(cards=player.cards)} = {player.total()}, "
+            f"bet={participant.bet}, status={_dealer_player_status(player=player)}"
+        )
+    return "\n".join(lines)
+
+
 def _table_color(results: list[BlackjackPlayerResult]) -> int:
     """Returns the final embed color from the table's net player result."""
     total_delta = sum(result.settlement.delta for result in results)
@@ -198,14 +254,20 @@ def _final_title(
 
 
 def build_final_embed(
-    dealer_name: str, round_state: BlackjackRound, results: list[BlackjackPlayerResult]
+    dealer_name: str,
+    round_state: BlackjackRound,
+    results: list[BlackjackPlayerResult],
+    dealer_steps: list[BlackjackDealerStep] | None = None,
 ) -> Embed:
     """Builds the final embed for a settled Blackjack table."""
     dealer_total = round_state.dealer_total()
+    dealer_decision_path = _format_dealer_decision_path(steps=dealer_steps or [])
     description_parts: list[str] = [
         f"### {dealer_name}",
         _format_dealer_block(round_state=round_state, hide_hole=False),
     ]
+    if dealer_decision_path:
+        description_parts.append(metadata_line(text=f"AI決策: {dealer_decision_path}"))
     for result in results:
         participant = result.participant
         player = next(
@@ -288,7 +350,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         if message is None:
             return False
         round_state = BlackjackRound.from_participants(
-            rng=self.rng, participants=self.participants
+            rng=self.rng, participants=self.participants, auto_play_dealer=False
         )
         round_state.deal_initial()
         table_bet = sum(participant.bet for participant in self.participants)
@@ -356,6 +418,8 @@ class BlackjackView(ui.View):
         self._round_lock = asyncio.Lock()
         self._settled = False
         self._dealer_line = dealer_line
+        self.round_state.auto_play_dealer = False
+        self._dealer_steps: list[BlackjackDealerStep] = []
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         """Restricts Hit / Stand to the active player only."""
@@ -455,6 +519,7 @@ class BlackjackView(ui.View):
         self._settled = True
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
+        await self._play_dealer_locked()
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
@@ -477,13 +542,105 @@ class BlackjackView(ui.View):
             dealer_avatar_url=self.dealer_avatar_url,
         )
         final_embed = build_final_embed(
-            dealer_name=self.dealer_name, round_state=self.round_state, results=results
+            dealer_name=self.dealer_name,
+            round_state=self.round_state,
+            results=results,
+            dealer_steps=self._dealer_steps,
         )
         self._disable_buttons()
         self.stop()
         with contextlib.suppress(Exception):
             await message.edit(embeds=[talk_embed, final_embed], view=self)
         schedule_game_message_delete(message=message)
+
+    async def _play_dealer_locked(self) -> None:
+        """Runs the AI dealer phase before settlement."""
+        if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
+            return
+
+        use_basic_rule = False
+        for _step_index in range(MAX_DEALER_DECISION_STEPS):
+            total_before = self.round_state.dealer_total()
+            if total_before > 21:
+                self.round_state.mark_dealer_played()
+                return
+            if total_before == 21:
+                self._dealer_steps.append(
+                    BlackjackDealerStep(
+                        total_before=total_before,
+                        action="stand",
+                        reason="guard: 21 點必停",
+                        forced=True,
+                    )
+                )
+                self.round_state.mark_dealer_played()
+                return
+
+            action: BlackjackDealerAction
+            if total_before <= 11:
+                action = "hit"
+                reason = "guard: 11 點以下不會爆"
+                fallback = False
+                forced = True
+            elif use_basic_rule:
+                action = "hit" if total_before < 17 else "stand"
+                reason = "fallback basic rule"
+                fallback = True
+                forced = False
+            else:
+                decision = await self.dealer.decide_blackjack_action(
+                    author_name=self.author_name,
+                    table_state=_dealer_decision_table_state(round_state=self.round_state),
+                    dealer_total=total_before,
+                )
+                action = decision.action
+                reason = decision.reason
+                fallback = reason.startswith("basic rule:")
+                forced = False
+                if fallback:
+                    use_basic_rule = True
+
+            drawn_card: Card | None = None
+            total_after: int | None = None
+            if action == "stand":
+                self._dealer_steps.append(
+                    BlackjackDealerStep(
+                        total_before=total_before,
+                        action="stand",
+                        reason=reason,
+                        fallback=fallback,
+                        forced=forced,
+                    )
+                )
+                self.round_state.mark_dealer_played()
+                return
+
+            drawn_card = self.round_state.draw_dealer_card()
+            total_after = self.round_state.dealer_total()
+            self._dealer_steps.append(
+                BlackjackDealerStep(
+                    total_before=total_before,
+                    action="hit",
+                    reason=reason,
+                    drawn_card=drawn_card,
+                    total_after=total_after,
+                    fallback=fallback,
+                    forced=forced,
+                )
+            )
+        logfire.warn(
+            "Dealer Blackjack decision loop reached maximum steps; forcing stand",
+            max_steps=MAX_DEALER_DECISION_STEPS,
+        )
+        self._dealer_steps.append(
+            BlackjackDealerStep(
+                total_before=self.round_state.dealer_total(),
+                action="stand",
+                reason="guard: decision limit",
+                forced=True,
+            )
+        )
+        self.round_state.mark_dealer_played()
 
     async def _settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
         """Builds single-player or table-level dealer settlement banter."""

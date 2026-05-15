@@ -19,6 +19,7 @@ from discordbot.cogs._games import dealer as dealer_module
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs._economy import database
 from discordbot.cogs.template import TemplateCogs
+from discordbot.typings.games import BlackjackDealerDecision
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
@@ -183,6 +184,20 @@ class HangingClient:
     def __init__(self) -> None:
         """Initializes the hanging responses resource."""
         self.responses = HangingResponses()
+
+
+class ParsedDecisionResponses:
+    """Fake Responses API resource for Blackjack dealer decision parsing."""
+
+    def __init__(self, output_parsed: BlackjackDealerDecision | None) -> None:
+        """Stores the parsed output to return."""
+        self.output_parsed = output_parsed
+        self.calls: list[dict[str, object]] = []
+
+    async def parse(self, **kwargs: object) -> SimpleNamespace:
+        """Records parse arguments and returns the configured parsed output."""
+        self.calls.append(kwargs)
+        return SimpleNamespace(output_parsed=self.output_parsed)
 
 
 class DownloadResultStub:
@@ -824,6 +839,41 @@ async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert line == "下好離手, 不要等下哭"
+
+
+async def test_dealer_ai_parses_blackjack_decision() -> None:
+    """Verifies Blackjack dealer decisions use Responses API structured parsing."""
+    responses = ParsedDecisionResponses(
+        output_parsed=BlackjackDealerDecision(action="hit", reason="追過最高玩家")
+    )
+    client = SimpleNamespace(responses=responses)
+    dealer = DealerAI(
+        client=cast("AsyncOpenAI", client),
+        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+    )
+
+    decision = await dealer.decide_blackjack_action(
+        author_name="alice", table_state="莊家總點數: 13\n玩家: Alice = 18", dealer_total=13
+    )
+
+    assert decision.action == "hit"
+    assert responses.calls[0]["text_format"] is BlackjackDealerDecision
+
+
+async def test_dealer_ai_empty_blackjack_decision_uses_basic_rule() -> None:
+    """Verifies an empty parsed decision falls back to deterministic dealer rules."""
+    responses = ParsedDecisionResponses(output_parsed=None)
+    client = SimpleNamespace(responses=responses)
+    dealer = DealerAI(
+        client=cast("AsyncOpenAI", client),
+        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+    )
+
+    decision = await dealer.decide_blackjack_action(
+        author_name="alice", table_state="莊家總點數: 18\n玩家: Alice = 17", dealer_total=18
+    )
+
+    assert decision == BlackjackDealerDecision(action="stand", reason="basic rule: 已達 17 點")
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:

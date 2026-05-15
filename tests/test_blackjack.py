@@ -234,6 +234,35 @@ def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
     assert round_state.dealer_total() >= 17 or is_bust(cards=round_state.dealer)
 
 
+def test_blackjack_round_can_wait_for_async_dealer_play() -> None:
+    """Async dealer mode leaves the dealer hand unchanged after players stand."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=12345),
+        participants=[
+            _participant(user_id=1, display_name="Alice"),
+            _participant(user_id=2, display_name="Bob"),
+        ],
+        auto_play_dealer=False,
+    )
+    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
+    round_state.players[1].cards = [Card(rank="9", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+
+    round_state.stand(user_id=1)
+    round_state.stand(user_id=2)
+
+    assert round_state.finished is True
+    assert round_state.dealer_played is False
+    assert round_state.needs_dealer_play() is True
+    assert [str(card) for card in round_state.dealer] == ["5♣", "6♦"]
+
+    round_state.draw_dealer_card()
+    round_state.mark_dealer_played()
+
+    assert round_state.dealer_played is True
+    assert len(round_state.dealer) == 3
+
+
 def test_blackjack_round_rejects_action_from_non_active_player() -> None:
     """Only the current player can mutate the shared round."""
     round_state = BlackjackRound.from_participants(

@@ -5,18 +5,27 @@ import asyncio
 
 from openai import AsyncOpenAI
 import logfire
+from pydantic import ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.typings.games import GameKind, SettleOutcome
+from discordbot.typings.games import GameKind, SettleOutcome, BlackjackDealerDecision
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import (
     DEALER_HINT_PROMPT,
     DEALER_SETTLE_PROMPT,
     DEALER_TAUNT_BET_PROMPT,
+    DEALER_BLACKJACK_DECISION_PROMPT,
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 DEALER_AI_TIMEOUT_SECONDS = 5.0
+
+
+def _fallback_blackjack_decision(dealer_total: int) -> BlackjackDealerDecision:
+    """Returns the deterministic basic-rule dealer decision."""
+    if dealer_total < 17:
+        return BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")
+    return BlackjackDealerDecision(action="stand", reason="basic rule: 已達 17 點")
 
 
 class DealerAI:
@@ -227,3 +236,55 @@ class DealerAI:
             fallback="看你自己的, 我可不會手下留情",
             end_user_id=author_name,
         )
+
+    async def decide_blackjack_action(
+        self, author_name: str, table_state: str, dealer_total: int
+    ) -> BlackjackDealerDecision:
+        """Returns the AI dealer's next Blackjack hit / stand decision.
+
+        Args:
+            author_name: Discord username used as the LiteLLM end-user ID.
+            table_state: Full table state available to the dealer.
+            dealer_total: Current dealer hand total, used for fallback rules.
+
+        Returns:
+            Parsed dealer decision, or the basic-rule fallback on timeout,
+            parse failure, empty output, or SDK failure.
+        """
+        fallback = _fallback_blackjack_decision(dealer_total=dealer_total)
+        try:
+            async with asyncio.timeout(delay=DEALER_AI_TIMEOUT_SECONDS):
+                responses = await self.client.responses.parse(
+                    model=self.model.name,
+                    instructions=DEALER_BLACKJACK_DECISION_PROMPT,
+                    input=cast(
+                        "ResponseInputParam",
+                        [EasyInputMessageParam(role="user", content=table_state)],
+                    ),
+                    text_format=BlackjackDealerDecision,
+                    reasoning=self.model.reasoning,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": author_name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
+        except TimeoutError:
+            logfire.warn(
+                "Dealer Blackjack decision timed out; using basic-rule fallback",
+                timeout_seconds=DEALER_AI_TIMEOUT_SECONDS,
+            )
+            return fallback
+        except ValidationError:
+            logfire.warn(
+                "Dealer Blackjack decision parse failed; using basic-rule fallback", _exc_info=True
+            )
+            return fallback
+        except Exception:
+            logfire.warn(
+                "Dealer Blackjack decision request failed; using basic-rule fallback",
+                _exc_info=True,
+            )
+            return fallback
+        if responses.output_parsed is None:
+            logfire.warn("Dealer Blackjack decision was empty; using basic-rule fallback")
+            return fallback
+        return responses.output_parsed

@@ -48,3 +48,15 @@ DEALER_HINT_PROMPT = f"""
 - 偶爾也可以正向提醒, 但要帶刺 (像是 你這手不要再多了, 我看不下去)
 - 不要明說建議的方向, 留給玩家自行判斷
 """
+
+DEALER_BLACKJACK_DECISION_PROMPT = """
+你是 21 點遊戲的莊家, 現在所有玩家都已完成動作, 請決定莊家要 hit 還是 stand。
+
+硬性規則:
+- 只能輸出 action 與 reason 的 structured result
+- action 只能是 hit 或 stand
+- reason 用繁體中文, 30 字以內
+- 你可以看莊家完整手牌、所有玩家總點數、下注與狀態
+- 不要猜測下一張牌, 只能根據目前局面決定
+- 目標是讓莊家勝率合理提高, 但不要做出明顯違反 21 點直覺的行為
+"""

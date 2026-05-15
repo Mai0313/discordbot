@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
 GameKind = Literal["blackjack", "dragon_gate"]
+BlackjackDealerAction = Literal["hit", "stand"]
 
 
 class Card(BaseModel):
@@ -119,6 +120,29 @@ class BlackjackPlayerResult(BaseModel):
     settlement: BlackjackSettlement
 
 
+class BlackjackDealerDecision(BaseModel):
+    """Structured hit / stand decision returned by the AI Blackjack dealer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: BlackjackDealerAction
+    reason: str
+
+
+class BlackjackDealerStep(BaseModel):
+    """One dealer action recorded during the Blackjack dealer phase."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_before: int
+    action: BlackjackDealerAction
+    reason: str
+    drawn_card: Card | None = None
+    total_after: int | None = None
+    fallback: bool = False
+    forced: bool = False
+
+
 class DragonGatePlayerResult(BaseModel):
     """Final outcome for one player after a 射龍門 table closes.
 
@@ -149,6 +173,9 @@ class DragonGatePlayerResult(BaseModel):
 
 
 __all__ = [
+    "BlackjackDealerAction",
+    "BlackjackDealerDecision",
+    "BlackjackDealerStep",
     "BlackjackPlayerResult",
     "BlackjackSettlement",
     "Card",

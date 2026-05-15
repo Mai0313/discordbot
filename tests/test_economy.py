@@ -1,6 +1,7 @@
 """Tests for the economy persistence layer."""
 
 from random import SystemRandom
+from typing import cast
 import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -9,9 +10,10 @@ import pytest
 from sqlalchemy import func, text, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from discordbot.cogs._games import blackjack as blackjack_rules
 from discordbot.cogs._games import blackjack_views as views
 from discordbot.cogs._economy import database
-from discordbot.typings.games import GameParticipant, BlackjackSettlement
+from discordbot.typings.games import GameParticipant, BlackjackSettlement, BlackjackDealerDecision
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
 from discordbot.cogs._games.blackjack_views import BlackjackView
@@ -26,6 +28,8 @@ class _DealerStub:
         """Initializes call counters for dealer interactions."""
         self.settle_calls = 0
         self.hint_calls = 0
+        self.decision_calls = 0
+        self.decisions: list[BlackjackDealerDecision] = []
 
     async def settle(self, **_kwargs: object) -> str:
         """Returns deterministic banter and tracks settlement calls."""
@@ -39,6 +43,14 @@ class _DealerStub:
         await asyncio.sleep(delay=0)
         return "hint"
 
+    async def decide_blackjack_action(self, **_kwargs: object) -> BlackjackDealerDecision:
+        """Returns deterministic dealer decisions and tracks calls."""
+        self.decision_calls += 1
+        await asyncio.sleep(delay=0)
+        if self.decisions:
+            return self.decisions.pop(0)
+        return BlackjackDealerDecision(action="stand", reason="stub stand")
+
 
 class _MessageStub:
     """Minimal message stub that records edit calls."""
@@ -46,10 +58,12 @@ class _MessageStub:
     def __init__(self) -> None:
         """Initializes the message edit counter."""
         self.edit_calls = 0
+        self.edits: list[dict[str, object]] = []
 
     async def edit(self, **_kwargs: object) -> None:
         """Records a Discord message edit."""
         self.edit_calls += 1
+        self.edits.append(_kwargs)
 
 
 class _ResponseStub:
@@ -558,6 +572,110 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert await database.get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
     assert message.edit_calls == 1
+    assert cleanup_messages == [message]
+
+
+async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dealer AI can hit once, stand, and settle with the updated dealer hand."""
+    cleanup_messages: list[object] = []
+
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
+        cleanup_messages.append(message)
+
+    def draw_fixed_card(rng: object) -> Card:
+        """Returns a deterministic dealer draw."""
+        return Card(rank="5", suit="♣")
+
+    monkeypatch.setattr(
+        target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
+    )
+    monkeypatch.setattr(target=blackjack_rules, name="draw_card", value=draw_fixed_card)
+    await _add_balance(user_id=1, name="alice", amount=100)
+
+    participant = _participant()
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[participant], auto_play_dealer=False
+    )
+    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
+
+    dealer = _DealerStub()
+    dealer.decisions = [
+        BlackjackDealerDecision(action="hit", reason="追過玩家"),
+        BlackjackDealerDecision(action="stand", reason="18 點夠了"),
+    ]
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    await view.finalize(message=message)
+
+    assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
+    assert view.round_state.dealer_played is True
+    assert dealer.decision_calls == 2
+    assert await database.get_balance(user_id=1) == 50
+    assert await database.get_balance(user_id=99) == 50
+    embeds = cast("list[object]", message.edits[0]["embeds"])
+    description = cast("str", embeds[1].description)
+    assert "AI決策: 13 hit 抽 5♣ → 18；18 stand" in description
+    assert cleanup_messages == [message]
+
+
+async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DealerAI fallback decision switches the rest of the dealer phase to basic rule."""
+    cleanup_messages: list[object] = []
+    draws = [Card(rank="5", suit="♣")]
+
+    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
+        cleanup_messages.append(message)
+
+    def draw_fixed_card(rng: object) -> Card:
+        """Returns deterministic dealer draws."""
+        return draws.pop(0)
+
+    monkeypatch.setattr(
+        target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
+    )
+    monkeypatch.setattr(target=blackjack_rules, name="draw_card", value=draw_fixed_card)
+    await _add_balance(user_id=1, name="alice", amount=100)
+
+    participant = _participant()
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[participant], auto_play_dealer=False
+    )
+    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
+
+    dealer = _DealerStub()
+    dealer.decisions = [BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")]
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    await view.finalize(message=message)
+
+    assert dealer.decision_calls == 1
+    assert view.round_state.dealer_total() == 18
+    assert len(view.round_state.dealer) == 3
+    embeds = cast("list[object]", message.edits[0]["embeds"])
+    description = cast("str", embeds[1].description)
+    assert "fallback basic rule" in description
     assert cleanup_messages == [message]
 
 

@@ -185,6 +185,8 @@ class BlackjackRound(BaseModel):
         current_player_index: Index of the player whose turn is active.
         dealer_played: True once the dealer has drawn for all standing players.
         finished: True once no more player actions remain.
+        auto_play_dealer: True when the pure rules should draw dealer cards
+            synchronously after player actions finish.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -195,14 +197,15 @@ class BlackjackRound(BaseModel):
     current_player_index: int = 0
     dealer_played: bool = False
     finished: bool = False
+    auto_play_dealer: bool = True
 
     @classmethod
     def from_participants(
-        cls, rng: Random, participants: list[GameParticipant]
+        cls, rng: Random, participants: list[GameParticipant], auto_play_dealer: bool = True
     ) -> "BlackjackRound":
         """Builds a round from registered lobby participants."""
         players = [BlackjackPlayerHand(participant=participant) for participant in participants]
-        return cls(rng=rng, players=players)
+        return cls(rng=rng, players=players, auto_play_dealer=auto_play_dealer)
 
     def deal_initial(self) -> None:
         """Deals two cards to every player and two cards to the dealer."""
@@ -268,6 +271,21 @@ class BlackjackRound(BaseModel):
         hand = BlackjackHand(rng=self.rng, bet=0, dealer=list(self.dealer))
         return dealer_visible_value(hand=hand)
 
+    def needs_dealer_play(self) -> bool:
+        """Returns whether the dealer still needs a draw/stand phase."""
+        return self._needs_dealer_play()
+
+    def draw_dealer_card(self) -> Card:
+        """Draws one card into the dealer hand and returns it."""
+        card = draw_card(rng=self.rng)
+        self.dealer.append(card)
+        return card
+
+    def mark_dealer_played(self) -> None:
+        """Marks the dealer phase complete."""
+        self.dealer_played = True
+        self.finished = True
+
     def settlement_hand(self, player: BlackjackPlayerHand) -> BlackjackHand:
         """Builds the single-player hand shape used by settlement helpers."""
         return BlackjackHand(
@@ -297,7 +315,7 @@ class BlackjackRound(BaseModel):
         """Finishes the round after all player actions have resolved."""
         if self.finished:
             return
-        if self._needs_dealer_play():
+        if self._needs_dealer_play() and self.auto_play_dealer:
             self._play_dealer()
         self.finished = True
 
@@ -310,8 +328,8 @@ class BlackjackRound(BaseModel):
     def _play_dealer(self) -> None:
         """Draws dealer cards until the standing threshold is reached."""
         while hand_value(cards=self.dealer) < 17:
-            self.dealer.append(draw_card(rng=self.rng))
-        self.dealer_played = True
+            self.draw_dealer_card()
+        self.mark_dealer_played()
 
 
 def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
