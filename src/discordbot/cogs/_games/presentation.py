@@ -53,6 +53,7 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
         "blackjack": ("Blackjack!", WIN_COLOR),
         "player_bust": ("你爆牌了", LOSE_COLOR),
         "dealer_bust": ("莊家爆牌, 你贏了", WIN_COLOR),
+        "surrender": ("投降 · 退一半", LOSE_COLOR),
     }
     return blackjack_result[outcome]
 
@@ -178,7 +179,7 @@ def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total:
     return f"## {player_result_inline(outcome=outcome, player_total=player_total, dealer_total=dealer_total)}"
 
 
-def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:
+def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total: int) -> str:  # noqa: PLR0911 -- one branch per SettleOutcome label keeps the mapping obvious
     """Single-line result label without heading prefix, for embed titles."""
     if outcome == "blackjack":
         return f"{NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
@@ -190,4 +191,6 @@ def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total
         return f"{WIN_RESULT_EMOJI} 你贏了 · {player_total} > {dealer_total}"
     if outcome == "lose":
         return f"{LOSE_RESULT_EMOJI} 你輸了 · {player_total} < {dealer_total}"
+    if outcome == "surrender":
+        return "🏳️ 投降 · 退一半"
     return f"平手 · {player_total} = {dealer_total}"

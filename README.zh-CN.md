@@ -65,10 +65,12 @@
 
 | Slash command       | 玩法                                                                                                                                                                                                                                                                                 |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/blackjack <下注>` | 支持多人 21 点 lobby，含 Join / Leave / Start button，开始后依序 Hit / Stand；天生 Blackjack 赔 1.5 倍，庄家只用看得到的 dealer card 给 hint，所有玩家结束后由 AI 决定庄家 hit / stand。                                                                                             |
+| `/blackjack <下注>` | 支持多人 21 点 lobby，含 Join / Leave / Start button。玩家动作包含 **Hit / Stand / Double Down / Split / Surrender**，庄家明牌 A 时还会开放 Insurance side bet。所有玩家结束后由 AI 庄家决定 hit / stand（Soft 17 交由 AI 判断）。                                                   |
 | `/dragon_gate`      | 支持多人射龙门 lobby, 跑**跨桌全局彩金池** (cross-table 累积)。入场费固定 5,000 进彩金池, 最低下注 10,000, 上限 = 当下彩金池, 每手即时结算; 玩家可中途按「离桌」退出 (逆赢不拿); 180 秒无互动 timeout 整桌结束。射进龙门从彩金池赢 1 倍；loss 最多扣到玩家目前余额，归零后自动离桌。 |
 
-**21 点提前结算规则：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌。玩家起手 Blackjack 会跳过该玩家操作，table 结算时赔 1.5 倍；庄家起手 Blackjack 会直接结算整桌，除非玩家同时也是 Blackjack，否则玩家输。这不是任意凑到 21 点都会提前结束，只有起手 natural Blackjack 才会跳过 Hit / Stand。
+**21 点玩家动作：** Double Down 加倍下注后只再抽一张并强制 stand。Split 仅同 rank pair 可分；**Split 后禁止 Double**（No DAS），Split Aces 两手各只能再拿一张，且 21 点算一般 1 倍赢（不是天生 Blackjack 1.5 倍）。Late Surrender 退回一半本金；庄家 peek 出 Blackjack 后就无法投降。
+
+**21 点提前结算与 peek：** `Blackjack` 指的是起手两张牌就是 A + 10 点牌，赔 1.5 倍。庄家明牌 A 时会先进入 Insurance phase（保险注 = 原注一半，庄家 peek 到 Blackjack 赔 2:1），明牌 10 点则 silent peek。peek 命中 Blackjack 会直接结算整桌，玩家同样也是天生 Blackjack 才平手。任意凑到 21 不算 natural Blackjack，不会跳过动作阶段。
 
 **管理点数：**
 
@@ -102,32 +104,32 @@ Slash command 的名称、描述，以及 `/help` 使用指南目前支持英文
 
 ## 指令
 
-| 指令                            | 说明                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                     |
-| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                         |
-| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频           |
-| `/balance`                      | private 查看你目前的点数余额、贷款与 VIP 状态（跨服务器）               |
-| `/checkin`                      | 领取今日签到奖励（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置） |
-| `/vip`                          | private 购买永久 VIP（1.5x Blackjack payout、2x 签到、2x 借款上限）     |
-| `/leaderboard`                  | 全域点数 Top 10                                                         |
-| `/loss_leaderboard`             | 今日输最多 Top 10（每天 Taipei 00:00 重置）                             |
-| `/borrow <金额>`                | private 依 Discord 账号年龄借点数（每天 Taipei 00:00 自动归零）         |
-| `/repay <金额>`                 | private 从余额偿还未还本金                                              |
-| `/give <成员> <点数>`           | 把点数转给其他成员                                                      |
-| `/blackjack <下注>`             | 开一个 21 点 lobby，玩家依序 Hit / Stand，之后由 AI 决定庄家动作        |
-| `/dragon_gate`                  | 开一桌射龙门 lobby，跑跨桌全局彩金池 (loss clamp 到 0、含离桌按钮)      |
-| `/house`                        | 查看庄家在赌场游戏累积的输赢                                            |
-| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                  |
-| `/maple_equip <名称>`           | 搜索枫之谷装备                                                          |
-| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                          |
-| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                          |
-| `/maple_quest <名称>`           | 搜索枫之谷任务                                                          |
-| `/maple_map <名称>`             | 搜索枫之谷地图                                                          |
-| `/maple_item <名称>`            | 搜索枫之谷物品来源                                                      |
-| `/maple_stats`                  | 查看枫之谷数据库统计                                                    |
-| `/help`                         | 显示机器人使用指南                                                      |
-| `/ping`                         | 测试机器人延迟                                                          |
+| 指令                            | 说明                                                                          |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| `@bot <消息>`                   | 与 AI 对话（文字、媒体/文件、生成、摘要、网络搜索）                           |
+| _Threads 链接_                  | 自动展开 Threads.net 帖子与媒体                                               |
+| `/download_video <网址> [画质]` | 从 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下载视频                 |
+| `/balance`                      | private 查看你目前的点数余额、贷款与 VIP 状态（跨服务器）                     |
+| `/checkin`                      | 领取今日签到奖励（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）       |
+| `/vip`                          | private 购买永久 VIP（1.5x Blackjack payout、2x 签到、2x 借款上限）           |
+| `/leaderboard`                  | 全域点数 Top 10                                                               |
+| `/loss_leaderboard`             | 今日输最多 Top 10（每天 Taipei 00:00 重置）                                   |
+| `/borrow <金额>`                | private 依 Discord 账号年龄借点数（每天 Taipei 00:00 自动归零）               |
+| `/repay <金额>`                 | private 从余额偿还未还本金                                                    |
+| `/give <成员> <点数>`           | 把点数转给其他成员                                                            |
+| `/blackjack <下注>`             | 开一个 21 点 lobby，含 Hit / Stand / Double / Split / Surrender 与庄家 A 保险 |
+| `/dragon_gate`                  | 开一桌射龙门 lobby，跑跨桌全局彩金池 (loss clamp 到 0、含离桌按钮)            |
+| `/house`                        | 查看庄家在赌场游戏累积的输赢                                                  |
+| `/maple_monster <名称>`         | 搜索枫之谷怪物与掉落物                                                        |
+| `/maple_equip <名称>`           | 搜索枫之谷装备                                                                |
+| `/maple_scroll <名称>`          | 搜索枫之谷卷轴                                                                |
+| `/maple_npc <名称>`             | 搜索枫之谷 NPC                                                                |
+| `/maple_quest <名称>`           | 搜索枫之谷任务                                                                |
+| `/maple_map <名称>`             | 搜索枫之谷地图                                                                |
+| `/maple_item <名称>`            | 搜索枫之谷物品来源                                                            |
+| `/maple_stats`                  | 查看枫之谷数据库统计                                                          |
+| `/help`                         | 显示机器人使用指南                                                            |
+| `/ping`                         | 测试机器人延迟                                                                |
 
 ## 自托管
 
