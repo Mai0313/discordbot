@@ -227,6 +227,18 @@ async def test_adjust_balance_logs_manual_adjustment() -> None:
     assert rows == [(database.TransactionKind.MANUAL_ADJUSTMENT.value, 100, 100)]
 
 
+async def test_adjust_balance_logs_note() -> None:
+    """Manual adjustments can annotate the audit row."""
+    await database.adjust_balance(user_id=42, name="alice", delta=100, note="refund_tax by 1")
+    async with database.open_session() as session:
+        note = await session.scalar(
+            statement=select(database.PointTransaction.note).where(
+                database.PointTransaction.user_id == 42
+            )
+        )
+    assert note == "refund_tax by 1"
+
+
 async def test_adjust_balance_clamps_at_zero() -> None:
     """Negative manual adjustment clamps at zero by default."""
     await _add_balance(user_id=42, name="alice", amount=10)
@@ -267,6 +279,45 @@ async def test_adjust_balance_stores_and_refreshes_avatar_url() -> None:
 
     await _add_balance(user_id=42, name="alice", amount=10, avatar_url="https://cdn.example/b.png")
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/b.png"
+
+
+async def test_admin_flag_defaults_to_false() -> None:
+    """Unknown users and normal accounts are not economy admins."""
+    assert await database.get_admin(user_id=42) is False
+    await _add_balance(user_id=42, name="alice", amount=10)
+    assert await database.get_admin(user_id=42) is False
+
+
+async def test_set_admin_creates_user() -> None:
+    """Granting admin creates a zero-balance account row."""
+    applied = await database.set_admin(user_id=42, name="alice", is_admin=True)
+    assert applied is True
+    assert await database.get_admin(user_id=42) is True
+    assert await database.get_balance(user_id=42) == 0
+
+
+async def test_set_admin_revokes_existing_user() -> None:
+    """Revoking admin clears the flag on an existing account."""
+    await database.set_admin(user_id=42, name="alice", is_admin=True)
+    applied = await database.set_admin(user_id=42, name="alice", is_admin=False)
+    assert applied is True
+    assert await database.get_admin(user_id=42) is False
+
+
+async def test_set_admin_revoke_missing_user_noops() -> None:
+    """Revoking a missing user does not create an account row."""
+    applied = await database.set_admin(user_id=42, name="alice", is_admin=False)
+    assert applied is False
+    assert await database.get_account(user_id=42) is None
+
+
+async def test_list_admins_returns_only_admin_accounts() -> None:
+    """Admin listing filters out normal economy users."""
+    await database.set_admin(user_id=42, name="alice", is_admin=True)
+    await database.set_admin(user_id=43, name="bob", is_admin=True)
+    await _add_balance(user_id=44, name="carol", amount=10)
+    await database.set_admin(user_id=43, name="bob", is_admin=False)
+    assert await database.list_admins() == [(42, "alice")]
 
 
 async def test_write_timestamps_use_taiwan_local_time() -> None:
@@ -343,7 +394,7 @@ async def test_existing_economy_db_gets_schema_migrations(
     async with database.open_session() as session:
         result = await session.execute(statement=text(text="PRAGMA table_info(user_account)"))
         columns = {row[1] for row in result.all()}
-    assert {"is_vip", "last_checkin_at", "checkin_streak"} <= columns
+    assert {"is_vip", "last_checkin_at", "checkin_streak", "is_admin"} <= columns
     assert "loan_interest" not in columns
     assert "loan_last_accrual_at" not in columns
 

@@ -61,6 +61,8 @@ The bot keeps a **persistent, cross-server Points balance** for every Discord ac
 
 **VIP:** `/vip` buys a permanent VIP flag for a one-time 10,000,000 Points. VIPs get 1.5× blackjack payouts on positive deltas, 2× base daily check-in points, and 2× the standard loan cap.
 
+**Admin adjustments:** economy admins are stored in `user_account.is_admin` and managed with `uv run python scripts/manage_admin.py grant|revoke|list`. Admins can use `/admin refund_tax` to credit Points and `/admin collect_tax` to debit Points through the manual-adjustment audit path. Tax collection clamps at balance 0.
+
 Game-related public response embeds are automatically deleted after three minutes: final casino round embeds after settlement, rejected zero-balance bets after rejection, and `/leaderboard`, `/loss_leaderboard`, and `/house` lookup embeds after they are sent. `/balance`, `/borrow`, `/repay`, `/checkin`, and `/vip` replies are private to the caller. Game response message IDs are stored locally so a bot restart can delete stale in-progress or already-settled game embeds on the next startup. Transfer records from `/give` are intentionally kept.
 
 | Slash command      | Game                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -79,10 +81,11 @@ Game-related public response embeds are automatically deleted after three minute
 - `/vip` — privately buy permanent VIP for 10,000,000 Points.
 - `/leaderboard` — global Top 10 across every server the bot is in (the bot's own house-ledger row is excluded).
 - `/loss_leaderboard` — global Top 10 biggest casino net losers since 00:00 Asia/Taipei today.
-- `/borrow <amount>` — privately borrow against your Discord account age. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
+- `/borrow <amount>` — privately borrow against your Discord account age. If you request more than the remaining daily cap, the bot borrows that remaining cap. **Loan principal resets to zero at 00:00 Asia/Taipei daily.** No interest.
 - `/repay <amount>` — privately repay outstanding principal from your current balance.
 - `/give <member> <amount>` — transfer Points to another member (no self-transfer, no bots).
 - `/house` — show the Blackjack dealer's accumulated win/loss. Because the bot effectively has unlimited funds, the dealer's ledger balance can go negative when the Blackjack table is losing overall.
+- `/admin refund_tax|collect_tax` — admin-only manual balance adjustments. Admins are managed with `scripts/manage_admin.py`.
 
 After borrowing, 50% of each income event (message reward, chat reward, casino payout) automatically repays principal before the rest lands in the wallet. `/give` recipients are not auto-repaid.
 
@@ -114,9 +117,10 @@ Slash command names, descriptions, and the `/help` guide are localized for Engli
 | `/vip`                            | Privately buy permanent VIP (1.5× blackjack payout, 2× check-in, 2× loan cap)         |
 | `/leaderboard`                    | Global Top 10 Points holders                                                          |
 | `/loss_leaderboard`               | Today's Top 10 biggest casino losers (resets at Taipei 00:00)                         |
-| `/borrow <amount>`                | Privately borrow Points against your Discord account age (resets at Taipei 00:00)     |
+| `/borrow <amount>`                | Privately borrow Points; over-cap requests borrow the remaining cap                   |
 | `/repay <amount>`                 | Privately repay outstanding principal from your balance                               |
 | `/give <member> <amount>`         | Transfer Points to another member                                                     |
+| `/admin refund_tax\|collect_tax`  | Admin-only manual Point credits/debits                                                |
 | `/blackjack <bet>`                | Open a 21 lobby with Hit / Stand / Double / Split / Surrender + dealer-A Insurance    |
 | `/dragon_gate`                    | Open a 射龍門 lobby over the global jackpot pool (losses clamp at 0, leave button)    |
 | `/house`                          | Show the Blackjack dealer's accumulated win/loss                                      |

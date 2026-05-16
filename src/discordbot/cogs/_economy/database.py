@@ -36,9 +36,10 @@ when ``loan_opened_at`` is older than today's local midnight. The audit log
 lives in a separate ``point_transaction`` table that every mutating helper
 writes into via ``_log_transaction_in_session``.
 
-VIP is a single boolean column on ``user_account``. It bumps daily check-in
-rewards, the borrow cap, and the player's winning payout from games. The
-flag is permanent once set.
+VIP and admin status are boolean columns on ``user_account``. VIP bumps daily
+check-in rewards, the borrow cap, and the player's winning payout from games.
+The flag is permanent once set. Admin status gates maintenance-only economy
+commands and is managed out-of-band by scripts.
 """
 
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -173,6 +174,7 @@ class UserAccount(Base):
             for users who have never checked in.
         checkin_streak: Consecutive-day streak (1..``CHECKIN_STREAK_CYCLE``),
             persisted after the latest ``/checkin``. 0 means never checked in.
+        is_admin: Whether the user can run Discord-side economy admin commands.
     """
 
     __tablename__ = "user_account"
@@ -201,6 +203,7 @@ class UserAccount(Base):
         DateTime(timezone=True), nullable=True
     )
     checkin_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class PointTransaction(Base):
@@ -303,14 +306,14 @@ def _jackpot_seed_amount(game_id: str) -> int:
 _schema_ready_for: AsyncEngine | None = None
 
 
-async def _ensure_schema() -> None:
+async def _ensure_schema() -> None:  # noqa: C901 -- idempotent SQLite migrations are safest kept inline
     """Bootstraps the schema once per ``_engine`` value.
 
     Idempotent migrations:
 
     * Adds ``avatar_url`` to legacy DBs that predated the avatar cache.
-    * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` so VIP
-      and check-in features keep working on DBs from before they shipped.
+    * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` /
+      ``is_admin`` so newer account flags keep working on older DBs.
     * Drops legacy ``loan_interest`` / ``loan_last_accrual_at`` columns
       so the new model can INSERT fresh rows without violating their old
       ``NOT NULL`` constraints. Requires SQLite 3.35+ (`DROP COLUMN`),
@@ -343,6 +346,12 @@ async def _ensure_schema() -> None:
             await conn.execute(
                 statement=text(
                     text="ALTER TABLE user_account ADD COLUMN checkin_streak INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "is_admin" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
         if "loan_interest" in existing_columns:
@@ -759,6 +768,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     delta: int,
     kind: TransactionKind,
     now: datetime,
+    note: str | None = None,
 ) -> tuple[int, int]:
     """Applies a clamped signed delta and logs any resulting audit row.
 
@@ -793,6 +803,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
                 delta=delta,
                 kind=kind,
                 now=now,
+                note=note,
             )
             if insert_result is not None:
                 return insert_result
@@ -809,6 +820,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
             kind=kind,
             delta=delta,
             now=now,
+            note=note,
         )
         if update_result is not None:
             return update_result
@@ -824,6 +836,7 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
     delta: int,
     kind: TransactionKind,
     now: datetime,
+    note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts to create a missing account for a positive clamped delta."""
     insert_stmt = (
@@ -850,7 +863,7 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
         kind=kind,
         delta=delta,
         balance_after=inserted_balance,
-        note=None,
+        note=note,
         now=now,
     )
     return inserted_balance, delta
@@ -866,6 +879,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     delta: int,
     kind: TransactionKind,
     now: datetime,
+    note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
     new_balance = max(current_balance + delta, 0)
@@ -894,7 +908,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
         kind=kind,
         delta=applied,
         balance_after=new_balance,
-        note=None,
+        note=note,
         now=now,
     )
     return new_balance, applied
@@ -908,6 +922,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     delta: int,
     kind: TransactionKind,
     now: datetime,
+    note: str | None = None,
 ) -> int:
     """Applies a signed delta without clamping and logs the audit row.
 
@@ -926,7 +941,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
         kind=kind,
         delta=delta,
         balance_after=new_balance,
-        note=None,
+        note=note,
         now=now,
     )
     return new_balance
@@ -1055,8 +1070,13 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
         return result
 
 
-async def adjust_balance(
-    user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
+async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, delta, clamp policy, and audit metadata
+    user_id: int,
+    name: str,
+    delta: int,
+    allow_negative: bool = False,
+    avatar_url: str = "",
+    note: str | None = None,
 ) -> BalanceAdjustmentResult:
     """Applies an explicit manual balance adjustment.
 
@@ -1071,6 +1091,7 @@ async def adjust_balance(
         delta: Signed amount to apply.
         allow_negative: Whether the resulting balance may go below zero.
         avatar_url: Last-seen Discord avatar URL to store when available.
+        note: Optional audit-log annotation.
 
     Returns:
         The post-adjustment balance and the applied delta after any clamp.
@@ -1093,6 +1114,7 @@ async def adjust_balance(
                 delta=delta,
                 kind=TransactionKind.MANUAL_ADJUSTMENT,
                 now=now,
+                note=note,
             )
             applied_delta = delta
         else:
@@ -1104,6 +1126,7 @@ async def adjust_balance(
                 delta=delta,
                 kind=TransactionKind.MANUAL_ADJUSTMENT,
                 now=now,
+                note=note,
             )
         await session.commit()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
@@ -1565,7 +1588,8 @@ async def _try_insert_borrow_in_session(  # noqa: PLR0913 -- borrow insert needs
     now: datetime,
 ) -> tuple[BorrowResult | None, bool]:
     """Attempts first-borrow INSERT; returns ``(result, retry_needed)``."""
-    if amount > credit_limit_value:
+    effective_amount = min(amount, credit_limit_value)
+    if effective_amount <= 0:
         return None, False
     insert_name = name or str(user_id)
     insert_stmt = (
@@ -1574,11 +1598,11 @@ async def _try_insert_borrow_in_session(  # noqa: PLR0913 -- borrow insert needs
             user_id=user_id,
             name=insert_name,
             avatar_url=avatar_url,
-            balance=amount,
+            balance=effective_amount,
             total_earned=0,
             total_spent=0,
-            loan_principal=amount,
-            loan_total_borrowed=amount,
+            loan_principal=effective_amount,
+            loan_total_borrowed=effective_amount,
             loan_total_repaid=0,
             loan_opened_at=now,
             updated_at=now,
@@ -1595,13 +1619,18 @@ async def _try_insert_borrow_in_session(  # noqa: PLR0913 -- borrow insert needs
         session=session,
         user_id=user_id,
         kind=TransactionKind.BORROW,
-        delta=amount,
+        delta=effective_amount,
         balance_after=balance_after,
         debt_after=principal_after,
         note=None,
         now=now,
     )
-    return BorrowResult(new_balance=balance_after, principal=principal_after), False
+    return (
+        BorrowResult(
+            new_balance=balance_after, principal=principal_after, borrowed_amount=effective_amount
+        ),
+        False,
+    )
 
 
 async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs observed state for CAS
@@ -1616,15 +1645,16 @@ async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs
 ) -> tuple[BorrowResult | None, bool]:
     """Attempts conditional borrow UPDATE; returns ``(result, retry_needed)``."""
     current_balance, existing_name, current_principal, loan_opened_at = state
-    if current_principal + amount > credit_limit_value:
+    effective_amount = min(amount, credit_limit_value - current_principal)
+    if effective_amount <= 0:
         return None, False
 
-    new_balance = current_balance + amount
-    new_principal = current_principal + amount
+    new_balance = current_balance + effective_amount
+    new_principal = current_principal + effective_amount
     update_values: dict[str, Any] = {
         "balance": new_balance,
         "loan_principal": new_principal,
-        "loan_total_borrowed": UserAccount.loan_total_borrowed + amount,
+        "loan_total_borrowed": UserAccount.loan_total_borrowed + effective_amount,
         "loan_opened_at": loan_opened_at or now,
         "updated_at": now,
     }
@@ -1660,30 +1690,35 @@ async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs
         session=session,
         user_id=user_id,
         kind=TransactionKind.BORROW,
-        delta=amount,
+        delta=effective_amount,
         balance_after=balance_after,
         debt_after=principal_after,
         note=None,
         now=now,
     )
-    return BorrowResult(new_balance=balance_after, principal=principal_after), False
+    return (
+        BorrowResult(
+            new_balance=balance_after, principal=principal_after, borrowed_amount=effective_amount
+        ),
+        False,
+    )
 
 
 async def borrow(
     user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
 ) -> BorrowResult | None:
-    """Disburses ``amount`` points to the user as new principal.
+    """Disburses up to ``amount`` points to the user as new principal.
 
-    Rejected (``None`` returned) when ``amount`` is non-positive or when
-    the post-borrow principal (existing + requested amount) would exceed
-    ``credit_limit_value``. Loans expire at the next Asia/Taipei midnight,
-    so the daily cap matches the daily reset window. Borrowed funds do
-    **not** bump ``total_earned`` — debt isn't earnings.
+    Rejected (``None`` returned) when ``amount`` is non-positive or when the
+    user has no remaining credit. Requests above the remaining daily credit
+    are clamped to that remaining amount. Loans expire at the next Asia/Taipei
+    midnight, so the daily cap matches the daily reset window. Borrowed funds
+    do **not** bump ``total_earned`` — debt isn't earnings.
 
     Args:
         user_id: Discord user ID for the borrower.
         name: Last-seen Discord username.
-        amount: Amount to borrow (must be positive).
+        amount: Requested amount to borrow (must be positive).
         credit_limit_value: Maximum allowed post-borrow principal; the
             caller is expected to compute this with ``credit_limit``.
         avatar_url: Last-seen Discord avatar URL to store when available.
@@ -2174,6 +2209,103 @@ async def get_vip(user_id: int) -> bool:
             statement=select(UserAccount.is_vip).where(UserAccount.user_id == user_id)
         )
         return bool(result.scalar_one_or_none())
+
+
+async def get_admin(user_id: int) -> bool:
+    """Returns whether the user can run economy admin commands.
+
+    Args:
+        user_id: Discord user ID to look up.
+
+    Returns:
+        ``True`` when the account has ``is_admin`` set, else ``False``.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(UserAccount.is_admin).where(UserAccount.user_id == user_id)
+        )
+        return bool(result.scalar_one_or_none())
+
+
+async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
+    """Sets the economy admin flag for a Discord user.
+
+    Granting admin creates a zero-balance account row if the user has never
+    touched the economy system. Revoking admin updates an existing row only;
+    missing users are left untouched so revoke operations do not create empty
+    account rows.
+
+    Args:
+        user_id: Discord user ID to modify.
+        name: Last-seen Discord username to store when available.
+        is_admin: Desired admin flag value.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        ``True`` when a row was created or updated; ``False`` when revoking a
+        missing user.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    effective_name = name or str(user_id)
+    async with open_session() as session:
+        if is_admin:
+            stmt = insert(UserAccount).values(
+                user_id=user_id,
+                name=effective_name,
+                avatar_url=avatar_url,
+                balance=0,
+                total_earned=0,
+                total_spent=0,
+                updated_at=now,
+                loan_principal=0,
+                loan_total_borrowed=0,
+                loan_total_repaid=0,
+                loan_opened_at=None,
+                is_vip=False,
+                last_checkin_at=None,
+                checkin_streak=0,
+                is_admin=True,
+            )
+            set_: dict[str, Any] = {"is_admin": True, "updated_at": now}
+            if name:
+                set_["name"] = effective_name
+            if avatar_url:
+                set_["avatar_url"] = avatar_url
+            result = await session.execute(
+                statement=stmt.on_conflict_do_update(
+                    index_elements=["user_id"], set_=set_
+                ).returning(UserAccount.user_id)
+            )
+            await session.commit()
+            return result.scalar_one_or_none() is not None
+
+        values: dict[str, Any] = {"is_admin": False, "updated_at": now}
+        if name:
+            values["name"] = effective_name
+        if avatar_url:
+            values["avatar_url"] = avatar_url
+        result = await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == user_id)
+            .values(**values)
+            .returning(UserAccount.user_id)
+        )
+        await session.commit()
+        return result.scalar_one_or_none() is not None
+
+
+async def list_admins() -> list[tuple[int, str]]:
+    """Returns all economy admins ordered by user ID."""
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(UserAccount.user_id, UserAccount.name)
+            .where(UserAccount.is_admin.is_(True))
+            .order_by(UserAccount.user_id)
+        )
+        return [(row[0], row[1]) for row in result.all()]
 
 
 async def get_account(user_id: int) -> tuple[str, int, int, int] | None:

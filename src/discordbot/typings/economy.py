@@ -97,12 +97,14 @@ class BorrowResult(BaseModel):
     Attributes:
         new_balance: User balance after the disbursement.
         principal: Outstanding principal after this borrow.
+        borrowed_amount: Amount actually disbursed for this borrow request.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int
     principal: int
+    borrowed_amount: int = 0
 
 
 class RepayResult(BaseModel):

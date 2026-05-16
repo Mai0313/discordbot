@@ -122,6 +122,7 @@ async def test_borrow_first_time_creates_row_and_disburses() -> None:
     assert result is not None
     assert result.new_balance == 500
     assert result.principal == 500
+    assert result.borrowed_amount == 500
 
     view = await database.get_loan_view(user_id=1)
     assert view is not None
@@ -142,20 +143,40 @@ async def test_borrow_accumulates_principal_on_existing_loan() -> None:
     assert result is not None
     assert result.new_balance == 700
     assert result.principal == 700
+    assert result.borrowed_amount == 400
     view = await database.get_loan_view(user_id=1)
     assert view is not None
     assert view.opened_at == first_opened_at
     assert view.total_borrowed == 700
 
 
-async def test_borrow_over_limit_rejected() -> None:
-    """A borrow that would exceed the cap is rejected without side effects."""
+async def test_borrow_over_limit_clamps_to_remaining_credit() -> None:
+    """A borrow that would exceed the cap disburses the remaining daily credit."""
     await database.borrow(user_id=1, name="alice", amount=800, credit_limit_value=1_000)
     result = await database.borrow(user_id=1, name="alice", amount=300, credit_limit_value=1_000)
-    assert result is None
+    assert result is not None
+    assert result.new_balance == 1_000
+    assert result.principal == 1_000
+    assert result.borrowed_amount == 200
     view = await database.get_loan_view(user_id=1)
     assert view is not None
-    assert view.principal == 800
+    assert view.principal == 1_000
+
+
+async def test_borrow_first_request_over_limit_clamps_to_limit() -> None:
+    """A first borrow request above the cap borrows the full cap."""
+    result = await database.borrow(user_id=1, name="alice", amount=1_500, credit_limit_value=1_000)
+    assert result is not None
+    assert result.new_balance == 1_000
+    assert result.principal == 1_000
+    assert result.borrowed_amount == 1_000
+
+
+async def test_borrow_rejects_when_remaining_credit_is_zero() -> None:
+    """Once principal reaches the cap, additional borrow requests are rejected."""
+    await database.borrow(user_id=1, name="alice", amount=1_500, credit_limit_value=1_000)
+    result = await database.borrow(user_id=1, name="alice", amount=1, credit_limit_value=1_000)
+    assert result is None
 
 
 async def test_borrow_concurrent_requests_cannot_exceed_limit() -> None:
@@ -164,11 +185,12 @@ async def test_borrow_concurrent_requests_cannot_exceed_limit() -> None:
         database.borrow(user_id=1, name="alice", amount=800, credit_limit_value=1_000),
         database.borrow(user_id=1, name="alice", amount=800, credit_limit_value=1_000),
     )
-    assert sum(result is not None for result in results) == 1
+    assert all(result is not None for result in results)
     view = await database.get_loan_view(user_id=1)
     assert view is not None
-    assert view.principal == 800
-    assert await database.get_balance(user_id=1) == 800
+    assert view.principal == 1_000
+    assert await database.get_balance(user_id=1) == 1_000
+    assert sum(result.borrowed_amount for result in results if result is not None) == 1_000
 
 
 async def test_borrow_treats_borrowed_money_as_debt_not_earnings() -> None:

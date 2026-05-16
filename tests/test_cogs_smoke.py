@@ -562,10 +562,12 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
+    monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "top_n", fake_top_n)
     monkeypatch.setattr(economy, "top_losers", fake_top_losers)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
+    monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
     monkeypatch.setattr(economy, "borrow", fake_borrow)
     monkeypatch.setattr(economy, "repay", fake_repay)
@@ -578,6 +580,12 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
+    await EconomyCogs.admin_refund_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+    )
+    await EconomyCogs.admin_collect_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=50
+    )
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
     )
@@ -585,19 +593,49 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.repay_loan.callback(cog, interaction, amount=50)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 9
+    assert len(interaction.followup.sent) == 11
     assert len(scheduled) == 3
     assert interaction.followup.sent[0].get("ephemeral") is True
+    assert interaction.followup.sent[4].get("ephemeral") is True
     assert interaction.followup.sent[5].get("ephemeral") is True
-    assert interaction.followup.sent[6].get("ephemeral") is True
     assert interaction.followup.sent[7].get("ephemeral") is True
     assert interaction.followup.sent[8].get("ephemeral") is True
+    assert interaction.followup.sent[9].get("ephemeral") is True
+    assert interaction.followup.sent[10].get("ephemeral") is True
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
         cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount=1
     )
     assert "不能" in bot_receiver.followup.sent[0]["embed"].description
+
+
+async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin economy commands must check the DB admin flag before mutating balance."""
+    called = False
+
+    async def fake_get_admin_false(user_id: int) -> bool:
+        """Returns a non-admin status."""
+        return False
+
+    async def fake_adjust_balance_guard(**_kwargs: object) -> database.BalanceAdjustmentResult:
+        """Fails the test if a non-admin reaches the mutation path."""
+        nonlocal called
+        called = True
+        return database.BalanceAdjustmentResult(new_balance=0, applied_delta=0)
+
+    monkeypatch.setattr(economy, "get_admin", fake_get_admin_false)
+    monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await EconomyCogs.admin_refund_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+    )
+
+    assert called is False
+    assert interaction.followup.sent[0].get("ephemeral") is True
+    assert "權限不足" in interaction.followup.sent[0]["embed"].title
 
 
 async def fake_get_balance(user_id: int) -> int:
@@ -612,6 +650,11 @@ async def fake_get_loan_view(user_id: int) -> None:
 async def fake_get_vip(user_id: int) -> bool:
     """Returns non-VIP status."""
     return False
+
+
+async def fake_get_admin(user_id: int) -> bool:
+    """Returns economy admin status."""
+    return True
 
 
 async def fake_top_n(
@@ -646,11 +689,23 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
     return database.TransferResult(sender_balance=50, receiver_balance=100)
 
 
+async def fake_adjust_balance(  # noqa: PLR0913 -- mirrors database.adjust_balance signature
+    user_id: int,
+    name: str,
+    delta: int,
+    allow_negative: bool = False,
+    avatar_url: str = "",
+    note: str | None = None,
+) -> database.BalanceAdjustmentResult:
+    """Returns a successful fake manual adjustment result."""
+    return database.BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
+
+
 async def fake_borrow(
     user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
 ) -> database.BorrowResult:
     """Returns a successful fake borrow result."""
-    return database.BorrowResult(new_balance=250, principal=amount)
+    return database.BorrowResult(new_balance=250, principal=amount, borrowed_amount=amount)
 
 
 async def fake_repay(

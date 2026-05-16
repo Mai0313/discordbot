@@ -16,11 +16,13 @@ from discordbot.cogs._economy.database import (
     checkin,
     get_vip,
     transfer,
+    get_admin,
     top_losers,
     get_account,
     get_balance,
     credit_limit,
     get_loan_view,
+    adjust_balance,
     checkin_reward,
     apply_vip_blackjack_bonus,
 )
@@ -35,6 +37,7 @@ _BALANCE_COLOR = 0x57F287
 _LEADERBOARD_COLOR = 0xFEE75C
 _LOSS_LEADERBOARD_COLOR = 0xE67E22
 _TRANSFER_COLOR = 0x5865F2
+_ADMIN_COLOR = 0x3498DB
 _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
@@ -98,6 +101,11 @@ async def _send_private_followup(interaction: Interaction, embed: Embed) -> None
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+def _admin_note(action: str, actor: nextcord.User | Member) -> str:
+    """Builds a compact audit note for admin balance adjustments."""
+    return f"{action} by {actor.name or actor.id} ({actor.id})"
+
+
 class EconomyCogs(commands.Cog):
     """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
 
@@ -112,6 +120,168 @@ class EconomyCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+
+    @nextcord.slash_command(
+        name="admin",
+        description=f"Run admin-only {CURRENCY_NAME} maintenance operations.",
+        name_localizations={Locale.zh_TW: "管理員", Locale.ja: "管理者"},
+        description_localizations={
+            Locale.zh_TW: f"執行管理員限定的{CURRENCY_NAME}維護操作",
+            Locale.ja: f"管理者専用の{CURRENCY_NAME}メンテナンス操作を実行します。",
+        },
+        nsfw=False,
+    )
+    async def admin(self, interaction: Interaction) -> None:
+        """Slash command group for economy admin operations."""
+
+    @admin.subcommand(
+        name="refund_tax",
+        description=f"Admin-only: credit {CURRENCY_NAME} to a member.",
+        name_localizations={Locale.zh_TW: "退稅", Locale.ja: "税還付"},
+        description_localizations={
+            Locale.zh_TW: f"管理員限定：無條件增加某位成員的{CURRENCY_NAME}",
+            Locale.ja: f"管理者専用：メンバーに{CURRENCY_NAME}を付与します。",
+        },
+    )
+    async def admin_refund_tax(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description=f"The member to receive the {CURRENCY_NAME}.",
+            name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
+            description_localizations={
+                Locale.zh_TW: f"要增加{CURRENCY_NAME}的成員",
+                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバー。",
+            },
+            required=True,
+        ),
+        amount: int = SlashOption(
+            name="amount",
+            description=f"How much {CURRENCY_NAME} to add.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: f"要增加的{CURRENCY_NAME}",
+                Locale.ja: f"追加する{CURRENCY_NAME}。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Credits points to a member through the manual-adjustment audit path."""
+        await self._run_admin_adjustment(
+            interaction=interaction,
+            member=member,
+            amount=amount,
+            action="refund_tax",
+            title="退稅完成",
+            delta=amount,
+        )
+
+    @admin.subcommand(
+        name="collect_tax",
+        description=f"Admin-only: debit {CURRENCY_NAME} from a member.",
+        name_localizations={Locale.zh_TW: "收稅", Locale.ja: "徴税"},
+        description_localizations={
+            Locale.zh_TW: f"管理員限定：無條件扣除某位成員的{CURRENCY_NAME}",
+            Locale.ja: f"管理者専用：メンバーから{CURRENCY_NAME}を徴収します。",
+        },
+    )
+    async def admin_collect_tax(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description=f"The member to debit the {CURRENCY_NAME} from.",
+            name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
+            description_localizations={
+                Locale.zh_TW: f"要扣除{CURRENCY_NAME}的成員",
+                Locale.ja: f"{CURRENCY_NAME}を徴収するメンバー。",
+            },
+            required=True,
+        ),
+        amount: int = SlashOption(
+            name="amount",
+            description=f"How much {CURRENCY_NAME} to debit.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: f"要扣除的{CURRENCY_NAME}",
+                Locale.ja: f"徴収する{CURRENCY_NAME}。",
+            },
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Debits points from a member through the manual-adjustment audit path."""
+        await self._run_admin_adjustment(
+            interaction=interaction,
+            member=member,
+            amount=amount,
+            action="collect_tax",
+            title="收稅完成",
+            delta=-amount,
+        )
+
+    async def _run_admin_adjustment(  # noqa: PLR0913 -- shared handler needs command metadata and target delta
+        self,
+        interaction: Interaction,
+        member: Member,
+        amount: int,
+        action: str,
+        title: str,
+        delta: int,
+    ) -> None:
+        """Runs a gated admin balance adjustment and replies privately."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        actor = interaction.user
+        if not await get_admin(user_id=actor.id):
+            embed = Embed(
+                title="權限不足",
+                description="### 只有 economy admin 可以執行這個操作",
+                color=_ERROR_COLOR,
+            )
+            embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        if member.bot:
+            embed = Embed(
+                title=f"{title}失敗",
+                description="### 不能對 bot 操作\n請選一般成員",
+                color=_ERROR_COLOR,
+            )
+            embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+
+        result = await adjust_balance(
+            user_id=member.id,
+            name=member.name,
+            delta=delta,
+            allow_negative=False,
+            avatar_url=member.display_avatar.url,
+            note=_admin_note(action=action, actor=actor),
+        )
+        embed = Embed(
+            title=title,
+            description=f"### {member.mention}\n{currency_text(amount=result.applied_delta, signed=True)}",
+            color=_ADMIN_COLOR,
+        )
+        embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
+        _set_optional_thumbnail(embed=embed, avatar_url=member.display_avatar.url)
+        embed.add_field(
+            name="操作結果",
+            value=(
+                f"申請 {amount_code(amount=delta, signed=True)}\n"
+                f"實際 {amount_code(amount=result.applied_delta, signed=True)}\n"
+                f"餘額 {amount_code(amount=result.new_balance)}"
+            ),
+            inline=False,
+        )
+        if action == "collect_tax" and result.applied_delta != delta:
+            embed.set_footer(text="收稅最多扣到餘額 0")
+        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="balance",
@@ -261,7 +431,7 @@ class EconomyCogs(commands.Cog):
     @nextcord.slash_command(
         name="give",
         description=f"Transfer your {CURRENCY_NAME} to another member.",
-        name_localizations={Locale.zh_TW: "轉虛擬歡樂豆", Locale.ja: "虛擬歡樂豆送付"},
+        name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "虛擬歡樂豆送付"},
         description_localizations={
             Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員",
             Locale.ja: f"他のメンバーに{CURRENCY_NAME}を送ります。",
@@ -459,6 +629,8 @@ class EconomyCogs(commands.Cog):
         user = interaction.user
         is_vip = await get_vip(user_id=user.id)
         limit = credit_limit(user=user, is_vip=is_vip)
+        loan_before = await get_loan_view(user_id=user.id)
+        debt_before = loan_before.principal if loan_before else 0
         result = await borrow(
             user_id=user.id,
             name=user.name,
@@ -488,13 +660,23 @@ class EconomyCogs(commands.Cog):
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
+        borrowed_amount = result.borrowed_amount or max(result.principal - debt_before, 0)
         embed = Embed(
             title="💴 借款完成",
-            description=f"### {currency_text(amount=amount, signed=True)} 入帳",
+            description=f"### {currency_text(amount=borrowed_amount, signed=True)} 入帳",
             color=_BORROW_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        if borrowed_amount != amount:
+            embed.add_field(
+                name="自動調整",
+                value=(
+                    f"申請 {amount_code(amount=amount)}\n"
+                    f"剩餘額度 {amount_code(amount=borrowed_amount)}"
+                ),
+                inline=False,
+            )
         embed.add_field(
             name="借款後",
             value=(

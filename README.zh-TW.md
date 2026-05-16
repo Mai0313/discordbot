@@ -61,6 +61,8 @@
 
 **VIP：** `/vip` 一次性花費 10,000,000 虛擬歡樂豆購買永久 VIP 標記。VIP 會獲得 1.5x Blackjack payout、2x 簽到基礎點數、2x 借款上限。
 
+**管理員調整：** economy admin 會存在 `user_account.is_admin`，用 `uv run python scripts/manage_admin.py grant|revoke|list` 管理。admin 可以用 `/admin refund_tax` 退稅加點，也可以用 `/admin collect_tax` 收稅扣點；收稅會 clamp 在餘額 0，不會扣成負數。
+
 遊戲相關公開 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/leaderboard`、`/loss_leaderboard`、`/house` 查詢 embed 也會在送出後清掉。`/balance`、`/borrow`、`/repay`、`/checkin`、`/vip` 回覆只有呼叫者看得到。遊戲 response 的 message ID 會存在本機，bot 重啟後會在下次 startup 刪掉上次留下的進行中或已結算遊戲 embed。`/give` 的轉點紀錄會保留，不自動刪除。
 
 | Slash command       | 玩法                                                                                                                                                                                                                                                                                 |
@@ -79,10 +81,11 @@
 - `/vip` — private 花 10,000,000 虛擬歡樂豆購買永久 VIP。
 - `/leaderboard` — 機器人所有伺服器的全域 Top 10（莊家自己的帳戶會被排除）。
 - `/loss_leaderboard` — 今日 00:00 Asia/Taipei 之後賭場淨輸最多的全域 Top 10。
-- `/borrow <金額>` — private 依 Discord 帳號年齡借虛擬歡樂豆，**每天 00:00 Asia/Taipei 本金自動歸零**，沒有利息。
+- `/borrow <金額>` — private 依 Discord 帳號年齡借虛擬歡樂豆，超過今日剩餘額度時會自動借到剩餘額度。**每天 00:00 Asia/Taipei 本金自動歸零**，沒有利息。
 - `/repay <金額>` — private 從目前餘額償還未還本金。
 - `/give <成員> <金額>` — 把虛擬歡樂豆轉給其他人（不能轉給自己或機器人）。
 - `/house` — 查看莊家在賭場遊戲累積的輸贏。莊家資金無上限，所以 ledger balance 可以是負數（代表整體玩家從莊家手上贏走的虛擬歡樂豆比較多）。
+- `/admin refund_tax|collect_tax` — admin-only 退稅加點/收稅扣點，admin 用 `scripts/manage_admin.py` 管理。
 
 借款後，每次 income event（message reward / chat reward / 賭場 payout）會先自動拿 50% 還本金，剩下才進錢包。`/give` 的收款方不會被自動扣去還債。
 
@@ -104,32 +107,33 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 
 ## 指令
 
-| 指令                            | 說明                                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------- |
-| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                           |
-| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                               |
-| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片                 |
-| `/balance`                      | private 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）               |
-| `/checkin`                      | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）       |
-| `/vip`                          | private 購買永久 VIP（1.5x Blackjack payout、2x 簽到、2x 借款上限）           |
-| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                         |
-| `/loss_leaderboard`             | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                                   |
-| `/borrow <金額>`                | private 依 Discord 帳號年齡借虛擬歡樂豆（每天 Taipei 00:00 自動歸零）         |
-| `/repay <金額>`                 | private 從餘額償還未還本金                                                    |
-| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                      |
-| `/blackjack <下注>`             | 開一個 21 點 lobby，含 Hit / Stand / Double / Split / Surrender 與莊家 A 保險 |
-| `/dragon_gate`                  | 開一桌射龍門 lobby，跑跨桌全域彩金池 (loss clamp 到 0、含離桌按鈕)            |
-| `/house`                        | 查看莊家在賭場遊戲累積的輸贏                                                  |
-| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                        |
-| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                                |
-| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                                |
-| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                                |
-| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                                |
-| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                                |
-| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                            |
-| `/maple_stats`                  | 查看楓之谷資料庫統計                                                          |
-| `/help`                         | 顯示機器人使用指南                                                            |
-| `/ping`                         | 測試機器人延遲                                                                |
+| 指令                             | 說明                                                                          |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `@bot <訊息>`                    | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                           |
+| _Threads 連結_                   | 自動展開 Threads.net 貼文與媒體                                               |
+| `/download_video <網址> [品質]`  | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片                 |
+| `/balance`                       | private 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）               |
+| `/checkin`                       | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）       |
+| `/vip`                           | private 購買永久 VIP（1.5x Blackjack payout、2x 簽到、2x 借款上限）           |
+| `/leaderboard`                   | 全域虛擬歡樂豆 Top 10                                                         |
+| `/loss_leaderboard`              | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                                   |
+| `/borrow <金額>`                 | private 借虛擬歡樂豆；超過上限時自動借到今日剩餘額度                          |
+| `/repay <金額>`                  | private 從餘額償還未還本金                                                    |
+| `/give <成員> <虛擬歡樂豆>`      | 把虛擬歡樂豆轉給其他成員                                                      |
+| `/admin refund_tax\|collect_tax` | admin-only 退稅加點/收稅扣點                                                  |
+| `/blackjack <下注>`              | 開一個 21 點 lobby，含 Hit / Stand / Double / Split / Surrender 與莊家 A 保險 |
+| `/dragon_gate`                   | 開一桌射龍門 lobby，跑跨桌全域彩金池 (loss clamp 到 0、含離桌按鈕)            |
+| `/house`                         | 查看莊家在賭場遊戲累積的輸贏                                                  |
+| `/maple_monster <名稱>`          | 搜尋楓之谷怪物與掉落物                                                        |
+| `/maple_equip <名稱>`            | 搜尋楓之谷裝備                                                                |
+| `/maple_scroll <名稱>`           | 搜尋楓之谷捲軸                                                                |
+| `/maple_npc <名稱>`              | 搜尋楓之谷 NPC                                                                |
+| `/maple_quest <名稱>`            | 搜尋楓之谷任務                                                                |
+| `/maple_map <名稱>`              | 搜尋楓之谷地圖                                                                |
+| `/maple_item <名稱>`             | 搜尋楓之谷物品來源                                                            |
+| `/maple_stats`                   | 查看楓之谷資料庫統計                                                          |
+| `/help`                          | 顯示機器人使用指南                                                            |
+| `/ping`                          | 測試機器人延遲                                                                |
 
 ## 自架設
 
