@@ -273,10 +273,12 @@ async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both play
 
 
 def _aggregate_outcome(
-    hand_settlements: list[BlackjackHandSettlement], base_delta: int
+    hand_settlements: list[BlackjackHandSettlement],
+    insurance: BlackjackInsuranceSettlement | None,
+    base_delta: int,
 ) -> SettleOutcome:
     """Returns the single outcome label for a (possibly multi-hand) result."""
-    if len(hand_settlements) == 1:
+    if len(hand_settlements) == 1 and insurance is None:
         return hand_settlements[0].outcome
     if base_delta > 0:
         return "win"
@@ -367,7 +369,9 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         dealer_delta=-effective_delta,
     )
     return BlackjackPlayerSettlement(
-        outcome=_aggregate_outcome(hand_settlements=hand_settlements, base_delta=base_delta),
+        outcome=_aggregate_outcome(
+            hand_settlements=hand_settlements, insurance=insurance, base_delta=base_delta
+        ),
         detail=blackjack_detail_player(
             player=player,
             dealer=round_state.dealer,

@@ -81,14 +81,16 @@ def _hand_with(player: list[Card], dealer: list[Card], bet: int = 100) -> Blackj
     return hand
 
 
-def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
+def _participant(
+    user_id: int, display_name: str, bet: int = 100, balance_at_start: int = 1_000
+) -> GameParticipant:
     """Builds a prepared Blackjack participant for round tests."""
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),
         display_name=display_name,
         bet=bet,
-        balance_at_start=1_000,
+        balance_at_start=balance_at_start,
         is_allin=False,
     )
 
@@ -487,6 +489,42 @@ def test_split_aces_twenty_one_settles_as_regular_win_not_blackjack() -> None:
     assert delta == 100
 
 
+def test_split_twenty_one_loses_to_dealer_natural_blackjack() -> None:
+    """A split-derived 21 is not natural and loses to dealer Blackjack."""
+    hand = BlackjackHandState(
+        cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")],
+        bet=100,
+        base_bet=100,
+        is_split_hand=True,
+        is_split_aces=True,
+        finished=True,
+    )
+    outcome, delta = settle_hand(
+        hand=hand, dealer=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")], rng=Random(x=0)
+    )
+    assert outcome == "lose"
+    assert delta == -100
+
+
+def test_split_twenty_one_pushes_dealer_non_natural_twenty_one() -> None:
+    """A split-derived 21 pushes a dealer 21 made with more than two cards."""
+    hand = BlackjackHandState(
+        cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")],
+        bet=100,
+        base_bet=100,
+        is_split_hand=True,
+        is_split_aces=True,
+        finished=True,
+    )
+    outcome, delta = settle_hand(
+        hand=hand,
+        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
+        rng=Random(x=0),
+    )
+    assert outcome == "push"
+    assert delta == 0
+
+
 def test_surrender_marks_hand_with_half_bet_refund() -> None:
     """Surrender stops the hand and books a half-bet loss at settlement."""
     round_state = _two_player_round(
@@ -512,6 +550,25 @@ def test_take_insurance_requires_ace_phase() -> None:
     )
     with pytest.raises(expected_exception=ValueError, match="Insurance"):
         round_state.take_insurance(user_id=1, amount=50)
+
+
+def test_take_insurance_requires_uncommitted_balance() -> None:
+    """All-in players cannot add an insurance side bet on top of their wager."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[
+            _participant(user_id=1, display_name="Alice", bet=100, balance_at_start=100)
+        ],
+    )
+    round_state.phase = "insurance"
+    round_state.insurance_offered = True
+
+    with pytest.raises(expected_exception=ValueError, match="balance"):
+        round_state.take_insurance(user_id=1, amount=50)
+
+    player = round_state.players[0]
+    assert player.insurance_bet == 0
+    assert player.insurance_resolved is False
 
 
 def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:

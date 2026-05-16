@@ -412,11 +412,10 @@ def settle_hand(
 ) -> tuple[SettleOutcome, int]:
     """Resolves one finished sub-hand into an outcome label and net delta.
 
-    Surrender short-circuits to a half-bet refund. Otherwise the sub-hand is
-    wrapped as a ``BlackjackHand`` and passed to ``settle`` so the standard
-    win / lose / push / bust / natural logic still drives the result; a
-    ``blackjack`` outcome on a split-derived hand is rewritten to a regular
-    win at 1:1 (split 21 is not a natural Blackjack).
+    Surrender short-circuits to a half-bet refund. Split-derived two-card 21
+    is handled before the legacy ``settle`` wrapper so it never counts as a
+    natural Blackjack; every other sub-hand uses the standard settlement
+    logic.
 
     Args:
         hand: Finished sub-hand to settle.
@@ -429,13 +428,17 @@ def settle_hand(
     """
     if hand.surrendered:
         return "surrender", -(hand.base_bet // 2)
+    if hand.is_split_hand and is_blackjack(cards=hand.cards):
+        dealer_total = hand_value(cards=dealer)
+        if is_blackjack(cards=dealer):
+            return "lose", -hand.bet
+        if dealer_total == 21:
+            return "push", 0
+        return "win", hand.bet
     wrapped = BlackjackHand(
         rng=rng, bet=hand.bet, player=list(hand.cards), dealer=list(dealer), finished=True
     )
-    outcome, delta = settle(hand=wrapped)
-    if hand.is_split_hand and outcome == "blackjack":
-        outcome, delta = "win", hand.bet
-    return outcome, delta
+    return settle(hand=wrapped)
 
 
 class BlackjackRound(BaseModel):
@@ -545,6 +548,9 @@ class BlackjackRound(BaseModel):
         expected = player.participant.bet // 2
         if amount != expected:
             raise ValueError("Insurance amount must equal half of the original bet")
+        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
+        if not can_insure(player=player, balance_remaining=balance_remaining):
+            raise ValueError("Not enough balance for insurance")
         player.insurance_bet = amount
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()

@@ -161,9 +161,9 @@ class BlackjackPlayerSettlement(WagerSettlement):
     backs it.
 
     Attributes:
-        outcome: Outcome label of the first (or only) sub-hand. Kept for
-            backward compatibility with downstream dealer banter prompts;
-            multi-hand callers should read ``hands`` directly.
+        outcome: Aggregate player-facing outcome. Single-hand results without
+            insurance preserve the hand outcome; insurance and multi-hand
+            results collapse to win / lose / push by net base delta.
         hands: Per-hand settlements in display order.
         insurance: Insurance side-bet result, or ``None`` when the player
             never took insurance.
