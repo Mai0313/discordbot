@@ -65,10 +65,12 @@
 
 | Slash command       | 玩法                                                                                                                                                                                                                                                                                 |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/blackjack <下注>` | 支援多人 21 點 lobby，含 Join / Leave / Start button，開始後依序 Hit / Stand；天生 Blackjack 賠 1.5 倍，莊家只用看得到的 dealer card 給 hint，所有玩家結束後由 AI 決定莊家 hit / stand。                                                                                             |
+| `/blackjack <下注>` | 支援多人 21 點 lobby，含 Join / Leave / Start button。玩家動作包含 **Hit / Stand / Double Down / Split / Surrender**，莊家明牌 A 時還會開放 Insurance side bet。所有玩家結束後由 AI 莊家決定 hit / stand（Soft 17 交由 AI 判斷）。                                                   |
 | `/dragon_gate`      | 支援多人射龍門 lobby, 跑**跨桌全域彩金池** (cross-table 累積)。入場費固定 5,000 進彩金池, 最低下注 10,000, 上限 = 當下彩金池, 每手即時結算; 玩家可中途按「離桌」退出 (逆贏不拿); 180 秒無互動 timeout 整桌結束。射進龍門從彩金池贏 1 倍；loss 最多扣到玩家目前餘額，歸零後自動離桌。 |
 
-**21 點提前結算規則：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌。玩家起手 Blackjack 會跳過該玩家操作，table 結算時賠 1.5 倍；莊家起手 Blackjack 會直接結算整桌，除非玩家同時也是 Blackjack，否則玩家輸。這不是任意湊到 21 點都會提前結束，只有起手 natural Blackjack 才會跳過 Hit / Stand。
+**21 點玩家動作：** Double Down 加倍下注後只再抽一張並強制 stand。Split 僅同 rank pair 可分；**Split 後禁止 Double**（No DAS），Split Aces 兩手各只能再拿一張，且 21 點算一般 1 倍贏（不是天生 Blackjack 1.5 倍）。Late Surrender 退回一半本金；莊家 peek 出 Blackjack 後就無法投降。
+
+**21 點提前結算與 peek：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌，賠 1.5 倍。莊家明牌 A 時會先進入 Insurance phase（保險注 = 原注一半，莊家 peek 到 Blackjack 賠 2:1），明牌 10 點則 silent peek。peek 命中 Blackjack 會直接結算整桌，玩家同樣也是天生 Blackjack 才平手。任意湊到 21 不算 natural Blackjack，不會跳過動作階段。
 
 **管理虛擬歡樂豆：**
 
@@ -102,32 +104,32 @@ Slash command 的名稱、描述，以及 `/help` 使用指南目前支援英文
 
 ## 指令
 
-| 指令                            | 說明                                                                    |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                     |
-| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                         |
-| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片           |
-| `/balance`                      | private 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）         |
-| `/checkin`                      | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置） |
-| `/vip`                          | private 購買永久 VIP（1.5x Blackjack payout、2x 簽到、2x 借款上限）     |
-| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                   |
-| `/loss_leaderboard`             | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                             |
-| `/borrow <金額>`                | private 依 Discord 帳號年齡借虛擬歡樂豆（每天 Taipei 00:00 自動歸零）   |
-| `/repay <金額>`                 | private 從餘額償還未還本金                                              |
-| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                |
-| `/blackjack <下注>`             | 開一個 21 點 lobby，玩家依序 Hit / Stand，之後由 AI 決定莊家動作        |
-| `/dragon_gate`                  | 開一桌射龍門 lobby，跑跨桌全域彩金池 (loss clamp 到 0、含離桌按鈕)      |
-| `/house`                        | 查看莊家在賭場遊戲累積的輸贏                                            |
-| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                  |
-| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                          |
-| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                          |
-| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                          |
-| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                          |
-| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                          |
-| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                      |
-| `/maple_stats`                  | 查看楓之谷資料庫統計                                                    |
-| `/help`                         | 顯示機器人使用指南                                                      |
-| `/ping`                         | 測試機器人延遲                                                          |
+| 指令                            | 說明                                                                          |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| `@bot <訊息>`                   | 與 AI 對話（文字、媒體/檔案、生成、摘要、網路搜尋）                           |
+| _Threads 連結_                  | 自動展開 Threads.net 貼文與媒體                                               |
+| `/download_video <網址> [品質]` | 從 YouTube、TikTok、Instagram、X、Facebook、Bilibili 下載影片                 |
+| `/balance`                      | private 查看你目前的虛擬歡樂豆餘額、貸款與 VIP 狀態（跨伺服器）               |
+| `/checkin`                      | 領取今日簽到獎勵（ephemeral；7 天 streak 加成，每天 Taipei 00:00 重置）       |
+| `/vip`                          | private 購買永久 VIP（1.5x Blackjack payout、2x 簽到、2x 借款上限）           |
+| `/leaderboard`                  | 全域虛擬歡樂豆 Top 10                                                         |
+| `/loss_leaderboard`             | 今日輸最多 Top 10（每天 Taipei 00:00 重置）                                   |
+| `/borrow <金額>`                | private 依 Discord 帳號年齡借虛擬歡樂豆（每天 Taipei 00:00 自動歸零）         |
+| `/repay <金額>`                 | private 從餘額償還未還本金                                                    |
+| `/give <成員> <虛擬歡樂豆>`     | 把虛擬歡樂豆轉給其他成員                                                      |
+| `/blackjack <下注>`             | 開一個 21 點 lobby，含 Hit / Stand / Double / Split / Surrender 與莊家 A 保險 |
+| `/dragon_gate`                  | 開一桌射龍門 lobby，跑跨桌全域彩金池 (loss clamp 到 0、含離桌按鈕)            |
+| `/house`                        | 查看莊家在賭場遊戲累積的輸贏                                                  |
+| `/maple_monster <名稱>`         | 搜尋楓之谷怪物與掉落物                                                        |
+| `/maple_equip <名稱>`           | 搜尋楓之谷裝備                                                                |
+| `/maple_scroll <名稱>`          | 搜尋楓之谷捲軸                                                                |
+| `/maple_npc <名稱>`             | 搜尋楓之谷 NPC                                                                |
+| `/maple_quest <名稱>`           | 搜尋楓之谷任務                                                                |
+| `/maple_map <名稱>`             | 搜尋楓之谷地圖                                                                |
+| `/maple_item <名稱>`            | 搜尋楓之谷物品來源                                                            |
+| `/maple_stats`                  | 查看楓之谷資料庫統計                                                          |
+| `/help`                         | 顯示機器人使用指南                                                            |
+| `/ping`                         | 測試機器人延遲                                                                |
 
 ## 自架設
 

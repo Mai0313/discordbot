@@ -13,9 +13,19 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from discordbot.cogs._games import blackjack as blackjack_rules
 from discordbot.cogs._games import blackjack_views as views
 from discordbot.cogs._economy import database
-from discordbot.typings.games import GameParticipant, BlackjackSettlement, BlackjackDealerDecision
+from discordbot.typings.games import (
+    GameParticipant,
+    BlackjackPlayerResult,
+    BlackjackDealerDecision,
+    BlackjackHandSettlement,
+    BlackjackPlayerSettlement,
+)
 from discordbot.cogs._games.blackjack import Card, BlackjackHand, BlackjackRound
-from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_round
+from discordbot.cogs._games.settlement import (
+    settle_wager,
+    settle_blackjack_round,
+    settle_blackjack_player,
+)
 from discordbot.cogs._games.blackjack_views import BlackjackView
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
@@ -30,6 +40,7 @@ class _DealerStub:
         self.hint_calls = 0
         self.decision_calls = 0
         self.decisions: list[BlackjackDealerDecision] = []
+        self.hints: list[dict[str, object]] = []
 
     async def settle(self, **_kwargs: object) -> str:
         """Returns deterministic banter and tracks settlement calls."""
@@ -40,6 +51,7 @@ class _DealerStub:
     async def hint(self, **_kwargs: object) -> str:
         """Returns deterministic in-progress banter and tracks hint calls."""
         self.hint_calls += 1
+        self.hints.append(_kwargs)
         await asyncio.sleep(delay=0)
         return "hint"
 
@@ -77,14 +89,40 @@ class _ResponseStub:
         """Records that the button interaction was deferred."""
         self.deferred = True
 
+    def is_done(self) -> bool:
+        """Returns whether the interaction response was already used."""
+        return self.deferred
+
+
+class _FollowupStub:
+    """Minimal followup stub for private button notices."""
+
+    def __init__(self) -> None:
+        """Initializes recorded followup sends."""
+        self.sent: list[dict[str, object]] = []
+
+    async def send(self, **kwargs: object) -> None:
+        """Records a followup send payload."""
+        self.sent.append(kwargs)
+
+
+class _UserStub:
+    """Minimal interaction user stub."""
+
+    def __init__(self, user_id: int = 1) -> None:
+        """Initializes a Discord-like user identity."""
+        self.id = user_id
+
 
 class _InteractionStub:
     """Minimal button interaction stub."""
 
-    def __init__(self, message: _MessageStub) -> None:
+    def __init__(self, message: _MessageStub, user_id: int = 1) -> None:
         """Initializes an interaction with a message and response stub."""
         self.message = message
         self.response = _ResponseStub()
+        self.followup = _FollowupStub()
+        self.user = _UserStub(user_id=user_id)
 
 
 def _participant(
@@ -108,10 +146,11 @@ def _participant(
 def _round_from_hand(hand: BlackjackHand, participant: GameParticipant) -> BlackjackRound:
     """Adapts a single-player hand into the multiplayer round shape."""
     round_state = BlackjackRound.from_participants(rng=hand.rng, participants=[participant])
-    round_state.players[0].cards = list(hand.player)
-    round_state.players[0].finished = hand.finished
+    round_state.players[0].hands[0].cards = list(hand.player)
+    round_state.players[0].hands[0].finished = hand.finished
     round_state.dealer = list(hand.dealer)
     round_state.finished = hand.finished
+    round_state.phase = "settled" if hand.finished else "player_actions"
     return round_state
 
 
@@ -597,8 +636,9 @@ async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.Monke
     round_state = BlackjackRound.from_participants(
         rng=SystemRandom(), participants=[participant], auto_play_dealer=False
     )
-    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
+    round_state.phase = "player_actions"
 
     dealer = _DealerStub()
     dealer.decisions = [
@@ -653,8 +693,9 @@ async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
     round_state = BlackjackRound.from_participants(
         rng=SystemRandom(), participants=[participant], auto_play_dealer=False
     )
-    round_state.players[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
+    round_state.phase = "player_actions"
 
     dealer = _DealerStub()
     dealer.decisions = [BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")]
@@ -691,19 +732,32 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
-    async def delayed_settle_blackjack_round(**_kwargs: object) -> BlackjackSettlement:
+    async def delayed_settle_blackjack_player(**_kwargs: object) -> BlackjackPlayerSettlement:
         """Blocks settlement until the test releases the finalization lock."""
         settlement_started.set()
         await continue_settlement.wait()
-        return BlackjackSettlement(
-            outcome="win", delta=50, payout=50, new_balance=150, house_balance=-50, detail="win"
+        return BlackjackPlayerSettlement(
+            outcome="win",
+            delta=50,
+            payout=50,
+            new_balance=150,
+            house_balance=-50,
+            detail="win",
+            hands=[
+                BlackjackHandSettlement(
+                    cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+                    bet=50,
+                    outcome="win",
+                    delta=50,
+                )
+            ],
         )
 
     monkeypatch.setattr(
         target=views, name="schedule_game_message_delete", value=fake_schedule_game_message_delete
     )
     monkeypatch.setattr(
-        target=views, name="settle_blackjack_round", value=delayed_settle_blackjack_round
+        target=views, name="settle_blackjack_player", value=delayed_settle_blackjack_player
     )
 
     hand = BlackjackHand(rng=SystemRandom(), bet=50)
@@ -722,22 +776,162 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         dealer_name="house",
     )
 
-    hit_button, stand_button = view.children
+    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
+    stand_button = next(child for child in view.children if child.custom_id == "bj:stand")
     stand_task = asyncio.create_task(coro=stand_button.callback(_InteractionStub(message=message)))
     await settlement_started.wait()
 
     hit_task = asyncio.create_task(coro=hit_button.callback(_InteractionStub(message=message)))
     await asyncio.sleep(delay=0)
 
-    assert len(view.round_state.players[0].cards) == 2
+    assert len(view.round_state.players[0].hands[0].cards) == 2
     continue_settlement.set()
     await asyncio.gather(stand_task, hit_task)
 
-    assert len(view.round_state.players[0].cards) == 2
+    assert len(view.round_state.players[0].hands[0].cards) == 2
     assert dealer.settle_calls == 1
     assert dealer.hint_calls == 0
     assert message.edit_calls == 1
     assert cleanup_messages == [message]
+
+
+async def test_blackjack_view_rejects_stale_double_without_mutating_next_player() -> None:
+    """A stale Double interaction cannot double the next active player's hand."""
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(),
+        participants=[
+            _participant(user_id=1, account_name="alice", display_name="Alice"),
+            _participant(user_id=2, account_name="bob", display_name="Bob"),
+        ],
+        auto_play_dealer=False,
+    )
+    alice = round_state.players[0].hands[0]
+    bob = round_state.players[1].hands[0]
+    alice.cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    alice.finished = True
+    bob.cards = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="7", suit="♦")]
+    round_state.current_player_index = 1
+
+    dealer = _DealerStub()
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    double_button = next(child for child in view.children if child.custom_id == "bj:double")
+    interaction = _InteractionStub(message=message, user_id=1)
+    await double_button.callback(interaction)
+
+    assert bob.bet == 50
+    assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
+    assert interaction.followup.sent[0]["content"] == "這個操作已經失效，請看最新牌桌"
+    assert interaction.followup.sent[0]["ephemeral"] is True
+    assert message.edit_calls == 1
+    assert dealer.hint_calls == 0
+
+
+async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale Hit interaction cannot draw a card for the next active player."""
+
+    def fail_draw(rng: object) -> Card:
+        """Fails the test if stale Hit reaches card draw."""
+        raise AssertionError("stale hit should not draw")
+
+    monkeypatch.setattr(target=blackjack_rules, name="draw_card", value=fail_draw)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(),
+        participants=[
+            _participant(user_id=1, account_name="alice", display_name="Alice"),
+            _participant(user_id=2, account_name="bob", display_name="Bob"),
+        ],
+        auto_play_dealer=False,
+    )
+    alice = round_state.players[0].hands[0]
+    bob = round_state.players[1].hands[0]
+    alice.cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    alice.finished = True
+    bob.cards = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="7", suit="♦")]
+    round_state.current_player_index = 1
+
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=_DealerStub(),
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
+    interaction = _InteractionStub(message=message, user_id=1)
+    await hit_button.callback(interaction)
+
+    assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
+    assert interaction.followup.sent[0]["content"] == "這個操作已經失效，請看最新牌桌"
+    assert message.edit_calls == 1
+
+
+async def test_blackjack_view_hit_hint_uses_active_split_hand_total(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hit hint should describe the active split hand, not the first hand."""
+
+    def draw_five(rng: object) -> Card:
+        """Returns a deterministic card for the active split hand."""
+        return Card(rank="5", suit="♣")
+
+    monkeypatch.setattr(target=blackjack_rules, name="draw_card", value=draw_five)
+    participant = _participant(user_id=1, account_name="alice", display_name="Alice")
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[participant], auto_play_dealer=False
+    )
+    player = round_state.players[0]
+    player.hands = [
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="9", suit="♣"), Card(rank="2", suit="♦")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+        ),
+    ]
+    round_state.dealer = [Card(rank="9", suit="♥"), Card(rank="7", suit="♦")]
+    round_state.current_hand_index = 1
+
+    dealer = _DealerStub()
+    message = _MessageStub()
+    view = BlackjackView(
+        dealer=dealer,
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
+    await hit_button.callback(_InteractionStub(message=message, user_id=1))
+
+    assert [str(card) for card in player.hands[1].cards] == ["9♣", "2♦", "5♣"]
+    assert dealer.hint_calls == 1
+    assert dealer.hints[0]["player_total"] == 16
+    assert message.edit_calls == 1
 
 
 async def test_add_balance_concurrent_credits_accumulate() -> None:
@@ -1150,6 +1344,228 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     assert settlement.vip_bonus == 0
     assert settlement.is_vip is True
     assert settlement.house_balance == 100
+
+
+# Multi-hand Blackjack settlement -----------------------------------------
+
+
+async def _settle_player(round_state: BlackjackRound) -> BlackjackPlayerSettlement:
+    """Helper that runs settle_blackjack_player against the only player."""
+    player = round_state.players[0]
+    return await settle_blackjack_player(
+        round_state=round_state,
+        player=player,
+        player_id=player.participant.user_id,
+        player_account_name=player.participant.account_name,
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+
+async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
+    """Surrender refunds half the original bet and writes the audit row."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=50)]
+    )
+    hand = round_state.players[0].hands[0]
+    hand.cards = [Card(rank="10", suit="♠"), Card(rank="6", suit="♥")]
+    hand.surrendered = True
+    hand.finished = True
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.outcome == "surrender"
+    assert settlement.delta == -25
+    assert settlement.new_balance == 75
+    assert settlement.house_balance == 25
+
+
+async def test_settle_blackjack_player_double_doubles_loss_when_dealer_higher() -> None:
+    """Doubled hands lose 2x the original bet on settlement."""
+    await _add_balance(user_id=1, name="alice", amount=200)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=50)]
+    )
+    hand = round_state.players[0].hands[0]
+    hand.cards = [Card(rank="5", suit="♠"), Card(rank="6", suit="♥"), Card(rank="2", suit="♣")]
+    hand.bet = 100
+    hand.doubled = True
+    hand.finished = True
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="9", suit="♦")]
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.delta == -100
+    assert settlement.new_balance == 100
+
+
+async def test_settle_blackjack_player_split_both_wins_aggregates_delta() -> None:
+    """Split hands aggregate into a single ledger write."""
+    await _add_balance(user_id=1, name="alice", amount=200)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=50)]
+    )
+    player = round_state.players[0]
+    player.hands = [
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="8", suit="♠"), Card(rank="K", suit="♥")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="8", suit="♣"), Card(rank="9", suit="♦")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+    ]
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.delta == 100
+    assert len(settlement.hands) == 2
+    assert settlement.hands[0].outcome == "win"
+    assert settlement.hands[1].outcome == "win"
+    assert settlement.new_balance == 300
+
+
+async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
+    """A split that nets to zero does not trigger the VIP bonus."""
+    await _add_balance(user_id=1, name="alice", amount=database.VIP_PURCHASE_COST + 200)
+    purchase = await database.buy_vip(user_id=1, name="alice")
+    assert purchase is not None
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=50)]
+    )
+    player = round_state.players[0]
+    player.hands = [
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="8", suit="♠"), Card(rank="K", suit="♥")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+        blackjack_rules.BlackjackHandState(
+            cards=[Card(rank="8", suit="♣"), Card(rank="2", suit="♦")],
+            bet=50,
+            base_bet=50,
+            is_split_hand=True,
+            finished=True,
+        ),
+    ]
+    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="7", suit="♦")]
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    # hand1 win 50, hand2 lose 50 → net 0; VIP perk is suppressed on non-positive.
+    assert settlement.base_delta == 0
+    assert settlement.delta == 0
+    assert settlement.vip_bonus == 0
+
+
+async def test_settle_blackjack_player_insurance_won_with_dealer_blackjack() -> None:
+    """Insurance pays 2:1 when peek confirms dealer Blackjack."""
+    await _add_balance(user_id=1, name="alice", amount=300)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=100)]
+    )
+    player = round_state.players[0]
+    hand = player.hands[0]
+    hand.cards = [Card(rank="9", suit="♠"), Card(rank="8", suit="♥")]
+    hand.finished = True
+    player.insurance_bet = 50
+    player.insurance_resolved = True
+    round_state.dealer = [Card(rank="K", suit="♣"), Card(rank="A", suit="♦")]
+    round_state.peeked_blackjack = True
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.insurance is not None
+    assert settlement.insurance.won is True
+    assert settlement.insurance.delta == 100
+    assert settlement.base_delta == 0  # -100 main bet + +100 insurance
+    assert settlement.delta == 0
+    assert settlement.outcome == "push"
+
+
+async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> None:
+    """Insurance break-even should present as aggregate push in the final title."""
+    await _add_balance(user_id=1, name="alice", amount=300)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=100)]
+    )
+    player = round_state.players[0]
+    hand = player.hands[0]
+    hand.cards = [Card(rank="9", suit="♠"), Card(rank="8", suit="♥")]
+    hand.finished = True
+    player.insurance_bet = 50
+    player.insurance_resolved = True
+    round_state.dealer = [Card(rank="K", suit="♣"), Card(rank="A", suit="♦")]
+    round_state.peeked_blackjack = True
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+    embed = views.build_final_embed(
+        dealer_name="house",
+        round_state=round_state,
+        results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
+    )
+
+    assert embed.title == "♠️ 二十一點 · 1 平"
+    description = cast("str", embed.description)
+    assert "## 😢 你輸了 · 17 < 21" in description
+    assert "保險 `50` → 中獎 (+100)" in description
+    assert "17 = 21" not in embed.title
+
+
+async def test_settle_blackjack_player_insurance_lost_when_no_dealer_blackjack() -> None:
+    """Insurance loses when the peek shows no Blackjack."""
+    await _add_balance(user_id=1, name="alice", amount=300)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=100)]
+    )
+    player = round_state.players[0]
+    hand = player.hands[0]
+    hand.cards = [Card(rank="K", suit="♠"), Card(rank="Q", suit="♥")]
+    hand.finished = True
+    player.insurance_bet = 50
+    player.insurance_resolved = True
+    round_state.dealer = [
+        Card(rank="9", suit="♣"),
+        Card(rank="A", suit="♦"),
+        Card(rank="9", suit="♥"),
+    ]
+    round_state.peeked_blackjack = False
+    round_state.dealer_played = True
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.insurance is not None
+    assert settlement.insurance.won is False
+    assert settlement.insurance.delta == -50
+    # main win 100 - insurance 50 = +50
+    assert settlement.base_delta == 50
+    assert settlement.outcome == "win"
 
 
 async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None:

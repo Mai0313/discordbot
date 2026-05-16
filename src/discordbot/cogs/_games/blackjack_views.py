@@ -20,18 +20,31 @@ from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, 
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
+    BlackjackHandState,
     BlackjackPlayerHand,
+    can_split,
+    can_double,
     hand_value,
     render_hand,
+    can_surrender,
+    committed_wagers,
 )
-from discordbot.cogs._games.settlement import settle_blackjack_round, blackjack_early_finish_note
-from discordbot.cogs._games.interactions import disable_view_components, edit_message_with_retry
+from discordbot.cogs._games.settlement import (
+    settle_blackjack_player,
+    blackjack_player_early_finish_note,
+)
+from discordbot.cogs._games.interactions import (
+    send_ephemeral_notice,
+    disable_view_components,
+    edit_message_with_retry,
+)
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
     PUSH_COLOR,
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
+    IN_PROGRESS_COLOR,
     LOSE_RESULT_EMOJI,
     NATURAL_RESULT_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
@@ -93,25 +106,60 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     return "；".join(parts)
 
 
-def _player_status_suffix(player: BlackjackPlayerHand) -> str:
-    """Returns the inline status label appended to a player's hand total."""
-    if player.is_blackjack():
+def _hand_status_suffix(hand: BlackjackHandState, is_active: bool) -> str:  # noqa: PLR0911 -- ladder of mutually exclusive hand states; flattening hurts clarity
+    """Returns the inline status label appended to one sub-hand's total."""
+    if hand.surrendered:
+        return " 🏳️ 投降"
+    if hand.is_blackjack():
         return f" {NATURAL_RESULT_EMOJI} BLACKJACK"
-    if player.is_bust():
+    if hand.is_bust():
         return f" {BUST_RESULT_EMOJI} 爆牌"
-    if player.finished:
+    if hand.doubled and hand.finished:
+        return " 💰 doubled"
+    if hand.finished:
         return " ✋ stand"
+    if is_active:
+        return " ▶ 進行中"
     return ""
 
 
-def _format_player_block(player: BlackjackPlayerHand) -> str:
-    """Formats one player's hand and wager metadata for the table embed."""
-    summary = _hand_summary_line(cards=player.cards, suffix=_player_status_suffix(player=player))
-    participant = player.participant
-    bet_text = f"下注 `{participant.bet:,}`"
-    if participant.is_allin:
-        bet_text += " · all-in"
-    return f"{summary}\n{metadata_line(text=bet_text)}"
+def _hand_metadata_text(hand: BlackjackHandState, participant: GameParticipant) -> str:
+    """Returns the small-text metadata for one sub-hand."""
+    parts: list[str] = [f"下注 `{hand.bet:,}`"]
+    if hand.is_split_hand:
+        parts.append("split A" if hand.is_split_aces else "split")
+    if hand.doubled:
+        parts.append("doubled")
+    if participant.is_allin and not hand.is_split_hand and not hand.doubled:
+        parts.append("all-in")
+    return " · ".join(parts)
+
+
+def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
+    """Returns the per-player status text shown during the insurance phase."""
+    if player.insurance_bet > 0:
+        return f"保險 `{player.insurance_bet:,}`"
+    if player.insurance_resolved:
+        return "已拒絕保險"
+    return "保險待決定"
+
+
+def _format_player_block(
+    player: BlackjackPlayerHand, active_hand_index: int | None, insurance_status: str | None
+) -> str:
+    """Formats one player's hands and wager metadata for the table embed."""
+    lines: list[str] = []
+    for index, hand in enumerate(player.hands):
+        is_active = active_hand_index == index
+        summary = _hand_summary_line(
+            cards=hand.cards, suffix=_hand_status_suffix(hand=hand, is_active=is_active)
+        )
+        meta = _hand_metadata_text(hand=hand, participant=player.participant)
+        lines.append(summary)
+        lines.append(metadata_line(text=meta))
+    if insurance_status:
+        lines.append(metadata_line(text=insurance_status))
+    return "\n".join(lines)
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -151,26 +199,57 @@ def build_blackjack_lobby_embed(
     return embed
 
 
+def _footer_status(round_state: BlackjackRound) -> str:
+    """Returns the in-progress footer status text."""
+    if round_state.phase == "insurance":
+        undecided = sum(1 for player in round_state.players if not player.insurance_resolved)
+        return f"保險決定中 · 莊家明牌 A · 等待 {undecided} 位玩家決定"
+    active = round_state.active_player()
+    if active is None:
+        return "準備結算"
+    if len(active.hands) > 1:
+        return f"輪到 {active.participant.display_name} 第 {round_state.current_hand_index + 1} 手"
+    return f"輪到 {active.participant.display_name}"
+
+
 def build_in_progress_embed(dealer_name: str, round_state: BlackjackRound) -> Embed:
     """Builds the shared Blackjack table embed while players are acting."""
-    active = round_state.active_player()
-    footer_status = "準備結算" if active is None else f"輪到 {active.participant.display_name}"
-
     description_parts: list[str] = [
         f"### {dealer_name}",
         _format_dealer_block(round_state=round_state, hide_hole=True),
     ]
-    for player in round_state.players:
+    for player_index, player in enumerate(round_state.players):
         participant = player.participant
+        active_hand_index: int | None = None
+        if (
+            round_state.current_player_index == player_index
+            and round_state.phase == "player_actions"
+        ):
+            active_hand_index = round_state.current_hand_index
+        insurance_status: str | None = None
+        if round_state.phase == "insurance":
+            insurance_status = _insurance_phase_status(player=player)
+        elif player.insurance_bet > 0:
+            insurance_status = f"保險 `{player.insurance_bet:,}`"
         description_parts.append("")
         description_parts.append(f"### {participant.display_name}")
-        description_parts.append(_format_player_block(player=player))
+        description_parts.append(
+            _format_player_block(
+                player=player,
+                active_hand_index=active_hand_index,
+                insurance_status=insurance_status,
+            )
+        )
 
-    embed = Embed(title="♠️ 二十一點", description="\n".join(description_parts), color=PUSH_COLOR)
+    color = IN_PROGRESS_COLOR if round_state.phase == "insurance" else PUSH_COLOR
+    embed = Embed(title="♠️ 二十一點", description="\n".join(description_parts), color=color)
     if round_state.players and round_state.players[0].participant.avatar_url:
         embed.set_thumbnail(url=round_state.players[0].participant.avatar_url)
     embed.set_footer(
-        text=f"{footer_status} · 不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
+        text=(
+            f"{_footer_status(round_state=round_state)} · "
+            f"不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
+        )
     )
     return embed
 
@@ -185,32 +264,45 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     return "；".join(lines)
 
 
-def _dealer_player_status(player: BlackjackPlayerHand) -> str:
-    """Returns a compact status label for dealer decision context."""
-    if player.is_blackjack():
+def _dealer_hand_status(hand: BlackjackHandState) -> str:
+    """Returns a compact status label for one sub-hand."""
+    if hand.surrendered:
+        return "surrender"
+    if hand.is_blackjack():
         return "blackjack"
-    if player.is_bust():
+    if hand.is_bust():
         return "bust"
-    if player.finished:
+    if hand.doubled:
+        return "doubled"
+    if hand.finished:
         return "stand"
     return "acting"
 
 
 def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
     """Builds the full table state sent to the AI dealer."""
+    soft, total = round_state.dealer_is_soft_total()
     lines: list[str] = [
         "遊戲: 21 點",
         f"莊家手牌: {render_hand(cards=round_state.dealer)}",
-        f"莊家總點數: {round_state.dealer_total()}",
+        f"莊家總點數: {total}",
+        f"莊家是否 soft total: {'是' if soft else '否'}",
+        f"莊家是否 soft 17: {'是' if round_state.dealer_is_soft_17() else '否'}",
         "玩家:",
     ]
     for player in round_state.players:
         participant = player.participant
-        lines.append(
-            f"- {participant.display_name}: "
-            f"{render_hand(cards=player.cards)} = {player.total()}, "
-            f"bet={participant.bet}, status={_dealer_player_status(player=player)}"
-        )
+        for index, hand in enumerate(player.hands):
+            label = (
+                participant.display_name
+                if len(player.hands) == 1
+                else f"{participant.display_name} (手{index + 1})"
+            )
+            lines.append(
+                f"- {label}: "
+                f"{render_hand(cards=hand.cards)} = {hand.total()}, "
+                f"bet={hand.bet}, status={_dealer_hand_status(hand=hand)}"
+            )
     return "\n".join(lines)
 
 
@@ -235,11 +327,12 @@ def _final_title(
             for player in round_state.players
             if player.participant.user_id == result.participant.user_id
         )
-        return "♠️ 二十一點 · " + player_result_inline(
-            outcome=result.settlement.outcome,
-            player_total=player.total(),
-            dealer_total=dealer_total,
-        )
+        if len(player.hands) == 1 and result.settlement.insurance is None:
+            return "♠️ 二十一點 · " + player_result_inline(
+                outcome=result.settlement.outcome,
+                player_total=player.hands[0].total(),
+                dealer_total=dealer_total,
+            )
     wins = sum(1 for result in results if result.settlement.delta > 0)
     losses = sum(1 for result in results if result.settlement.delta < 0)
     pushes = len(results) - wins - losses
@@ -275,12 +368,26 @@ def build_final_embed(
             for player in round_state.players
             if player.participant.user_id == participant.user_id
         )
-        summary = _hand_summary_line(cards=player.cards)
-        title = player_result_title(
-            outcome=result.settlement.outcome,
-            player_total=player.total(),
-            dealer_total=dealer_total,
-        )
+        description_parts.append("")
+        description_parts.append(f"### {participant.display_name}")
+        for hand_index, hand_settlement in enumerate(result.settlement.hands):
+            cards = hand_settlement.cards
+            summary = _hand_summary_line(cards=cards)
+            hand_total = hand_value(cards=cards)
+            title = player_result_title(
+                outcome=hand_settlement.outcome, player_total=hand_total, dealer_total=dealer_total
+            )
+            if len(result.settlement.hands) > 1:
+                description_parts.append(metadata_line(text=f"手{hand_index + 1}"))
+            description_parts.append(f"{summary}\n{title}")
+        if result.settlement.insurance is not None:
+            ins = result.settlement.insurance
+            label = (
+                f"保險 `{ins.bet:,}` → 中獎 (+{ins.delta:,})"
+                if ins.won
+                else f"保險 `{ins.bet:,}` → 莊家無 BJ ({ins.delta:+,})"
+            )
+            description_parts.append(metadata_line(text=label))
         metadata = settlement_metadata(
             delta=result.settlement.delta,
             new_balance=result.settlement.new_balance,
@@ -288,11 +395,12 @@ def build_final_embed(
             base_delta=result.settlement.base_delta,
             vip_bonus=result.settlement.vip_bonus,
         )
-        note = blackjack_early_finish_note(hand=round_state.settlement_hand(player=player))
-        note_segment = f"\n{metadata_line(text=note)}" if note else ""
-        description_parts.append("")
-        description_parts.append(f"### {participant.display_name}")
-        description_parts.append(f"{summary}\n{title}\n{metadata}{note_segment}")
+        description_parts.append(metadata)
+        note = blackjack_player_early_finish_note(
+            player=player, dealer=round_state.dealer, peeked_blackjack=round_state.peeked_blackjack
+        )
+        if note:
+            description_parts.append(metadata_line(text=note))
 
     embed = Embed(
         title=_final_title(results=results, dealer_total=dealer_total, round_state=round_state),
@@ -376,6 +484,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         if round_state.finished:
             await view.finalize(message=message)
             return True
+        view.sync_buttons()
         await edit_message_with_retry(
             message=message,
             embeds=[
@@ -392,7 +501,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
 
 
 class BlackjackView(ui.View):
-    """Hit / Stand buttons for an active multiplayer Blackjack table."""
+    """Hit / Stand / Double / Split / Surrender / Insurance controls."""
 
     def __init__(  # noqa: PLR0913 -- view needs table, dealer, and ledger identity
         self,
@@ -421,14 +530,32 @@ class BlackjackView(ui.View):
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
 
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        """Restricts Hit / Stand to the active player only."""
+    async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
+        """Restricts buttons to the active player (or any undecided insurance player)."""
         if self._settled:
             return False
+        if interaction.user is None:
+            return False
+        if self.round_state.phase == "insurance":
+            player = next(
+                (
+                    candidate
+                    for candidate in self.round_state.players
+                    if candidate.participant.user_id == interaction.user.id
+                ),
+                None,
+            )
+            if player is None:
+                await interaction.response.send_message(content="你不在這個牌桌", ephemeral=True)
+                return False
+            if player.insurance_resolved:
+                await interaction.response.send_message(content="你已決定過保險", ephemeral=True)
+                return False
+            return True
         active = self.round_state.active_player()
-        if interaction.user is not None and active is not None:
-            if interaction.user.id == active.participant.user_id:
-                return True
+        if active is not None and interaction.user.id == active.participant.user_id:
+            return True
+        if active is not None:
             await interaction.response.send_message(
                 content=f"現在輪到 {active.participant.display_name}", ephemeral=True
             )
@@ -437,20 +564,25 @@ class BlackjackView(ui.View):
         return False
 
     async def on_timeout(self) -> None:
-        """Auto-stands unresolved players and settles the table."""
+        """Auto-resolves the round when nobody clicked in time."""
         if self.message is None:
             return
         async with self._round_lock:
             if self._settled:
                 return
+            if self.round_state.phase == "insurance":
+                self.round_state.decline_insurance_for_all_unresolved()
+                if self.round_state.finished:
+                    await self._finalize_locked(message=self.message)
+                    return
             self.round_state.stand_all_remaining()
             await self._finalize_locked(message=self.message)
 
-    @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary)
+    @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0)
     async def hit(self, _button: ui.Button, interaction: Interaction) -> None:
         """Handles the active player's Hit button."""
         await interaction.response.defer()
-        if interaction.message is None:
+        if interaction.message is None or interaction.user is None:
             return
         async with self._round_lock:
             if self._settled or self.round_state.finished:
@@ -459,28 +591,36 @@ class BlackjackView(ui.View):
             if active is None:
                 await self._finalize_locked(message=interaction.message)
                 return
-            self.round_state.hit(user_id=active.participant.user_id)
+            try:
+                self.round_state.hit(user_id=interaction.user.id)
+            except ValueError:
+                await self._reject_stale_action_locked(
+                    interaction=interaction, message=interaction.message
+                )
+                return
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
             active_after_hit = self.round_state.active_player()
+            active_hand = self.round_state.active_hand()
             if (
                 active_after_hit is not None
-                and active_after_hit.participant.user_id == active.participant.user_id
+                and active_after_hit.participant.user_id == interaction.user.id
+                and active_hand is not None
             ):
                 self._dealer_line = await self.dealer.hint(
-                    author_name=active.participant.account_name,
-                    player_name=active.participant.display_name,
-                    player_total=active_after_hit.total(),
+                    author_name=active_after_hit.participant.account_name,
+                    player_name=active_after_hit.participant.display_name,
+                    player_total=active_hand.total(),
                     dealer_visible=self.round_state.dealer_visible_value(),
                 )
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(label="停手", emoji="✋", style=ButtonStyle.secondary)
+    @ui.button(label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0)
     async def stand(self, _button: ui.Button, interaction: Interaction) -> None:
         """Handles the active player's Stand button."""
         await interaction.response.defer()
-        if interaction.message is None:
+        if interaction.message is None or interaction.user is None:
             return
         async with self._round_lock:
             if self._settled or self.round_state.finished:
@@ -489,7 +629,156 @@ class BlackjackView(ui.View):
             if active is None:
                 await self._finalize_locked(message=interaction.message)
                 return
-            self.round_state.stand(user_id=active.participant.user_id)
+            try:
+                self.round_state.stand(user_id=interaction.user.id)
+            except ValueError:
+                await self._reject_stale_action_locked(
+                    interaction=interaction, message=interaction.message
+                )
+                return
+            if self.round_state.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            await self._edit_in_progress_locked(message=interaction.message)
+
+    @ui.button(label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=0)
+    async def double(self, _button: ui.Button, interaction: Interaction) -> None:
+        """Doubles the active hand's bet and finishes it after one draw."""
+        await interaction.response.defer()
+        if interaction.message is None or interaction.user is None:
+            return
+        async with self._round_lock:
+            if self._settled or self.round_state.finished:
+                return
+            active = self.round_state.active_player()
+            if active is None:
+                await self._finalize_locked(message=interaction.message)
+                return
+            try:
+                self.round_state.double_down(user_id=interaction.user.id)
+            except ValueError:
+                await self._reject_stale_action_locked(
+                    interaction=interaction, message=interaction.message
+                )
+                return
+            if self.round_state.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            await self._edit_in_progress_locked(message=interaction.message)
+
+    @ui.button(label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=0)
+    async def split(self, _button: ui.Button, interaction: Interaction) -> None:
+        """Splits the active pair into two sibling sub-hands."""
+        await interaction.response.defer()
+        if interaction.message is None or interaction.user is None:
+            return
+        async with self._round_lock:
+            if self._settled or self.round_state.finished:
+                return
+            active = self.round_state.active_player()
+            if active is None:
+                await self._finalize_locked(message=interaction.message)
+                return
+            try:
+                self.round_state.split(user_id=interaction.user.id)
+            except ValueError:
+                await self._reject_stale_action_locked(
+                    interaction=interaction, message=interaction.message
+                )
+                return
+            if self.round_state.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            await self._edit_in_progress_locked(message=interaction.message)
+
+    @ui.button(label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=0)
+    async def surrender(self, _button: ui.Button, interaction: Interaction) -> None:
+        """Surrenders the active hand for a half-bet refund."""
+        await interaction.response.defer()
+        if interaction.message is None or interaction.user is None:
+            return
+        async with self._round_lock:
+            if self._settled or self.round_state.finished:
+                return
+            active = self.round_state.active_player()
+            if active is None:
+                await self._finalize_locked(message=interaction.message)
+                return
+            try:
+                self.round_state.surrender(user_id=interaction.user.id)
+            except ValueError:
+                await self._reject_stale_action_locked(
+                    interaction=interaction, message=interaction.message
+                )
+                return
+            if self.round_state.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            await self._edit_in_progress_locked(message=interaction.message)
+
+    @ui.button(
+        label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
+    )
+    async def insure_yes(self, _button: ui.Button, interaction: Interaction) -> None:
+        """Takes insurance for the calling player."""
+        await interaction.response.defer()
+        if interaction.message is None:
+            return
+        async with self._round_lock:
+            if self._settled:
+                return
+            if interaction.user is None:
+                return
+            player = next(
+                (
+                    candidate
+                    for candidate in self.round_state.players
+                    if candidate.participant.user_id == interaction.user.id
+                ),
+                None,
+            )
+            if player is None:
+                return
+            try:
+                self.round_state.take_insurance(
+                    user_id=interaction.user.id, amount=player.participant.bet // 2
+                )
+            except ValueError as error:
+                content = (
+                    "餘額不足，不能買保險"
+                    if "balance" in str(error).lower()
+                    else "現在不能買保險，請看最新牌桌"
+                )
+                await send_ephemeral_notice(
+                    interaction=interaction,
+                    content=content,
+                    log_message="Failed to send Blackjack insurance rejection notice",
+                )
+                await self._edit_in_progress_locked(message=interaction.message)
+                return
+            if self.round_state.finished:
+                await self._finalize_locked(message=interaction.message)
+                return
+            await self._edit_in_progress_locked(message=interaction.message)
+
+    @ui.button(
+        label="不保險", emoji="❌", style=ButtonStyle.secondary, custom_id="bj:insure_no", row=1
+    )
+    async def insure_no(self, _button: ui.Button, interaction: Interaction) -> None:
+        """Declines insurance for the calling player."""
+        await interaction.response.defer()
+        if interaction.message is None:
+            return
+        async with self._round_lock:
+            if self._settled:
+                return
+            if interaction.user is None:
+                return
+            try:
+                self.round_state.decline_insurance(user_id=interaction.user.id)
+            except ValueError:
+                await self._edit_in_progress_locked(message=interaction.message)
+                return
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -500,8 +789,47 @@ class BlackjackView(ui.View):
         async with self._round_lock:
             await self._finalize_locked(message=message)
 
+    def sync_buttons(self) -> None:  # noqa: C901 -- single switch over six button kinds; splitting hurts readability
+        """Recomputes ``disabled`` on every action / insurance button."""
+        in_insurance = self.round_state.phase == "insurance"
+        in_actions = self.round_state.phase == "player_actions"
+        active_player = self.round_state.active_player() if in_actions else None
+        active_hand = self.round_state.active_hand() if in_actions else None
+        balance_remaining = 0
+        if active_player is not None:
+            balance_remaining = active_player.participant.balance_at_start - committed_wagers(
+                player=active_player
+            )
+        for child in self.children:
+            if not isinstance(child, ui.Button):
+                continue
+            cid = child.custom_id or ""
+            if cid in ("bj:insure_yes", "bj:insure_no"):
+                child.disabled = not in_insurance
+                continue
+            if not in_actions or active_hand is None:
+                child.disabled = True
+                continue
+            if cid == "bj:hit":
+                child.disabled = active_hand.finished or active_hand.is_split_aces
+            elif cid == "bj:stand":
+                child.disabled = active_hand.finished
+            elif cid == "bj:double":
+                child.disabled = not can_double(
+                    hand=active_hand, balance_remaining=balance_remaining
+                )
+            elif cid == "bj:split":
+                child.disabled = not can_split(
+                    hand=active_hand, balance_remaining=balance_remaining
+                )
+            elif cid == "bj:surrender":
+                child.disabled = not can_surrender(
+                    hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
+                )
+
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes dealer talk and table embeds while holding the round lock."""
+        self.sync_buttons()
         talk_embed = build_dealer_talk_embed(
             dealer_line=self._dealer_line,
             dealer_name=self.dealer_name,
@@ -512,11 +840,24 @@ class BlackjackView(ui.View):
         )
         await message.edit(embeds=[talk_embed, main_embed], view=self)
 
+    async def _reject_stale_action_locked(
+        self, interaction: Interaction, message: Message
+    ) -> None:
+        """Sends a private stale-action notice and refreshes the table."""
+        await send_ephemeral_notice(
+            interaction=interaction,
+            content="這個操作已經失效，請看最新牌桌",
+            log_message="Failed to send Blackjack stale action notice",
+        )
+        await self._edit_in_progress_locked(message=message)
+
     async def _finalize_locked(self, message: Message) -> None:
         """Applies settlements and publishes the final table embeds once."""
         if self._settled:
             return
         self._settled = True
+        if self.round_state.phase == "insurance":
+            self.round_state.decline_insurance_for_all_unresolved()
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
         await self._play_dealer_locked()
@@ -524,8 +865,9 @@ class BlackjackView(ui.View):
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
             participant = player.participant
-            settlement = await settle_blackjack_round(
-                hand=self.round_state.settlement_hand(player=player),
+            settlement = await settle_blackjack_player(
+                round_state=self.round_state,
+                player=player,
                 player_id=participant.user_id,
                 player_account_name=participant.account_name,
                 player_avatar_url=participant.avatar_url,
@@ -666,7 +1008,7 @@ class BlackjackView(ui.View):
         )
 
     def _disable_buttons(self) -> None:
-        """Disables Hit and Stand controls after settlement."""
+        """Disables every action / insurance control after settlement."""
         disable_view_components(children=self.children, component_types=(ui.Button,))
 
 

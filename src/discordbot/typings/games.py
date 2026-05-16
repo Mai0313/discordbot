@@ -11,7 +11,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-SettleOutcome = Literal["win", "lose", "push", "blackjack", "player_bust", "dealer_bust"]
+SettleOutcome = Literal[
+    "win", "lose", "push", "blackjack", "player_bust", "dealer_bust", "surrender"
+]
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
 
@@ -106,6 +108,74 @@ class BlackjackSettlement(WagerSettlement):
     detail: str
 
 
+class BlackjackHandSettlement(BaseModel):
+    """Per-hand result for one sub-hand of a Blackjack player.
+
+    Split turns a single participant into two settlement rows; otherwise
+    each player has exactly one ``BlackjackHandSettlement`` aggregated into
+    their ``BlackjackPlayerSettlement``.
+
+    Attributes:
+        cards: Cards held by this sub-hand at settlement time.
+        bet: Effective wager for this hand (doubled bets land here as 2x).
+        outcome: Player-facing outcome label for this sub-hand.
+        delta: Signed point change for this single hand before VIP bonus.
+        doubled: True if this hand was doubled.
+        surrendered: True if this hand was surrendered.
+        is_split_hand: True if this hand came out of a Split.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cards: list[Card]
+    bet: int
+    outcome: SettleOutcome
+    delta: int
+    doubled: bool = False
+    surrendered: bool = False
+    is_split_hand: bool = False
+
+
+class BlackjackInsuranceSettlement(BaseModel):
+    """Insurance side-bet result for one player.
+
+    Attributes:
+        bet: Insurance bet amount (half the original wager).
+        won: True only when the dealer's hole-card peek was a Blackjack.
+        delta: Signed point change for this side bet (``+bet*2`` on win,
+            ``-bet`` on loss).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bet: int
+    won: bool
+    delta: int
+
+
+class BlackjackPlayerSettlement(WagerSettlement):
+    """Aggregated Blackjack settlement for one participant.
+
+    Combines every sub-hand result plus any insurance side bet into a
+    single point delta and the one ``apply_round_settlement`` write that
+    backs it.
+
+    Attributes:
+        outcome: Aggregate player-facing outcome. Single-hand results without
+            insurance preserve the hand outcome; insurance and multi-hand
+            results collapse to win / lose / push by net base delta.
+        hands: Per-hand settlements in display order.
+        insurance: Insurance side-bet result, or ``None`` when the player
+            never took insurance.
+        detail: Short game-state summary for the dealer AI prompt.
+    """
+
+    outcome: SettleOutcome
+    detail: str
+    hands: list[BlackjackHandSettlement] = []
+    insurance: BlackjackInsuranceSettlement | None = None
+
+
 class BlackjackPlayerResult(BaseModel):
     """Settlement result for one player at a Blackjack table.
 
@@ -117,7 +187,7 @@ class BlackjackPlayerResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     participant: GameParticipant
-    settlement: BlackjackSettlement
+    settlement: BlackjackPlayerSettlement
 
 
 class BlackjackDealerDecision(BaseModel):
@@ -176,7 +246,10 @@ __all__ = [
     "BlackjackDealerAction",
     "BlackjackDealerDecision",
     "BlackjackDealerStep",
+    "BlackjackHandSettlement",
+    "BlackjackInsuranceSettlement",
     "BlackjackPlayerResult",
+    "BlackjackPlayerSettlement",
     "BlackjackSettlement",
     "Card",
     "DragonGatePlayerResult",
