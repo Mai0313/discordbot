@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import contextlib
 
@@ -431,9 +431,7 @@ class DragonGateView(ui.View):
         if self._settled or interaction.user is None:
             return False
         data = (
-            cast("dict[str, object]", interaction.data)
-            if isinstance(interaction.data, dict)
-            else {}
+            cast("dict[str, Any]", interaction.data) if isinstance(interaction.data, dict) else {}
         )
         custom_id_value = data.get("custom_id", "")
         custom_id = custom_id_value if isinstance(custom_id_value, str) else ""

@@ -3,7 +3,7 @@
 import pytest
 from scripts import manage_admin as manage_admin_script
 
-from discordbot.cogs._economy import database
+from discordbot.cogs._economy.database import get_admin, get_account, get_balance, adjust_balance
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
@@ -30,8 +30,8 @@ async def test_grant_admin_creates_admin_row() -> None:
 
     assert result.applied is True
     assert result.is_admin is True
-    assert await database.get_admin(user_id=42) is True
-    assert await database.get_balance(user_id=42) == 0
+    assert await get_admin(user_id=42) is True
+    assert await get_balance(user_id=42) == 0
 
 
 async def test_revoke_admin_clears_existing_flag() -> None:
@@ -42,7 +42,7 @@ async def test_revoke_admin_clears_existing_flag() -> None:
 
     assert result.applied is True
     assert result.is_admin is False
-    assert await database.get_admin(user_id=42) is False
+    assert await get_admin(user_id=42) is False
 
 
 async def test_revoke_admin_missing_user_noops() -> None:
@@ -51,12 +51,12 @@ async def test_revoke_admin_missing_user_noops() -> None:
 
     assert result.applied is False
     assert result.is_admin is False
-    assert await database.get_account(user_id=42) is None
+    assert await get_account(user_id=42) is None
 
 
 async def test_list_admin_accounts_filters_non_admins() -> None:
     """The script lists only current admins."""
     await manage_admin_script.grant_admin(user_id=42, name="alice")
-    await database.adjust_balance(user_id=43, name="bob", delta=100)
+    await adjust_balance(user_id=43, name="bob", delta=100)
 
     assert await manage_admin_script.list_admin_accounts() == [(42, "alice")]

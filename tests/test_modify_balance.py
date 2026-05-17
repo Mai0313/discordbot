@@ -3,14 +3,14 @@
 import pytest
 from scripts import modify_balance as modify_balance_script
 
-from discordbot.cogs._economy import database
+from discordbot.cogs._economy.database import BalanceAdjustmentResult, get_account, adjust_balance
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:
     """Seeds a balance through the manual adjustment API."""
-    result = await database.adjust_balance(user_id=user_id, name=name, delta=amount)
+    result = await adjust_balance(user_id=user_id, name=name, delta=amount)
     return result.new_balance
 
 
@@ -32,10 +32,10 @@ async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     assert len(result.changes) == 2
     assert result.applied_delta == 100_000
     assert all(not change.created for change in result.changes)
-    assert await database.get_account(user_id=3) is None
+    assert await get_account(user_id=3) is None
 
-    alice = await database.get_account(user_id=1)
-    bob = await database.get_account(user_id=2)
+    alice = await get_account(user_id=1)
+    bob = await get_account(user_id=2)
     assert alice is not None
     assert bob is not None
     assert alice[1] == 50_100
@@ -46,7 +46,7 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CLI summary uses the adjustment result, not the pre-read projection."""
-    call: dict[str, object] = {}
+    call: dict[str, int | str | bool] = {}
 
     async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
         """Returns a stale pre-adjustment account snapshot."""
@@ -55,7 +55,7 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
-    ) -> database.BalanceAdjustmentResult:
+    ) -> BalanceAdjustmentResult:
         """Records the requested adjustment and returns the true DB result."""
         call.update({
             "user_id": user_id,
@@ -63,13 +63,11 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
             "delta": delta,
             "allow_negative": allow_negative,
         })
-        return database.BalanceAdjustmentResult(new_balance=0, applied_delta=-25)
+        return BalanceAdjustmentResult(new_balance=0, applied_delta=-25)
 
+    monkeypatch.setattr(target=modify_balance_script, name="get_account", value=fake_get_account)
     monkeypatch.setattr(
-        target=modify_balance_script.database, name="get_account", value=fake_get_account
-    )
-    monkeypatch.setattr(
-        target=modify_balance_script.database, name="adjust_balance", value=fake_adjust_balance
+        target=modify_balance_script, name="adjust_balance", value=fake_adjust_balance
     )
 
     result = await modify_balance_script.modify_balance(user_id=1, name="", delta=-80)
@@ -89,14 +87,14 @@ async def test_modify_balance_missing_user_negative_noops_without_creating() -> 
     assert result.applied_delta == 0
     assert result.after == 0
     assert result.created is False
-    assert await database.get_account(user_id=3) is None
+    assert await get_account(user_id=3) is None
 
 
 async def test_modify_balance_missing_user_negative_delegates_to_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing-user negative writes still go through the transactional API."""
-    call: dict[str, object] = {}
+    call: dict[str, int | str | bool] = {}
 
     async def fake_get_account(user_id: int) -> None:
         """Returns no account for the requested user."""
@@ -104,7 +102,7 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
-    ) -> database.BalanceAdjustmentResult:
+    ) -> BalanceAdjustmentResult:
         """Records that the missing-user write still reaches the DB facade."""
         call.update({
             "user_id": user_id,
@@ -112,13 +110,11 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
             "delta": delta,
             "allow_negative": allow_negative,
         })
-        return database.BalanceAdjustmentResult(new_balance=20, applied_delta=-80)
+        return BalanceAdjustmentResult(new_balance=20, applied_delta=-80)
 
+    monkeypatch.setattr(target=modify_balance_script, name="get_account", value=fake_get_account)
     monkeypatch.setattr(
-        target=modify_balance_script.database, name="get_account", value=fake_get_account
-    )
-    monkeypatch.setattr(
-        target=modify_balance_script.database, name="adjust_balance", value=fake_adjust_balance
+        target=modify_balance_script, name="adjust_balance", value=fake_adjust_balance
     )
 
     result = await modify_balance_script.modify_balance(user_id=3, name="", delta=-100)

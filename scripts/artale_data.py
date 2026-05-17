@@ -15,8 +15,9 @@ from rich.console import Console
 
 console = Console()
 
-# Raw JSON record from the website RSC payload
-type JsonRecord = dict[str, str | int | float | bool | list | dict | None]
+# Raw JSON values from the website RSC payload
+type JsonValue = str | int | float | bool | list[JsonValue] | dict[str, JsonValue] | None
+type JsonRecord = dict[str, JsonValue]
 
 BASE_URL = "https://www.artalemaplestory.com"
 LOCALE = "zh"
@@ -109,14 +110,16 @@ def extract_json_list(text: str, key: str) -> list[JsonRecord] | None:
     return value if isinstance(value, list) else None
 
 
-def _get_nested_dict(d: Mapping[str, object], *keys: str) -> dict[str, str]:
+def _get_nested_dict(d: Mapping[str, JsonValue], *keys: str) -> dict[str, str]:
     """Traverse nested dicts safely, returning {} if any key is missing."""
-    current: object = d
+    current: JsonValue | Mapping[str, JsonValue] = d
     for k in keys:
-        if not isinstance(current, dict):
+        if not isinstance(current, Mapping):
             return {}
         current = current.get(k, {})
-    return current if isinstance(current, dict) else {}
+    if not isinstance(current, dict):
+        return {}
+    return {key: value for key, value in current.items() if isinstance(value, str)}
 
 
 def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:

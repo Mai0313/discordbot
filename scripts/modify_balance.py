@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
-from discordbot.cogs._economy import database
+from discordbot.cogs._economy.database import top_n, get_account, adjust_balance
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 console = Console()
@@ -113,7 +113,7 @@ async def modify_balance(
     Returns:
         A `BalanceChange` summary describing the requested and applied change.
     """
-    account = await database.get_account(user_id=user_id)
+    account = await get_account(user_id=user_id)
     created = account is None
     existing_name = account[0] if account is not None else ""
     before = account[1] if account is not None else 0
@@ -134,7 +134,7 @@ async def modify_balance(
             dry_run=dry_run,
         )
 
-    adjustment = await database.adjust_balance(
+    adjustment = await adjust_balance(
         user_id=user_id, name=effective_name, delta=delta, allow_negative=allow_negative
     )
     actual_before = adjustment.new_balance - adjustment.applied_delta
@@ -168,7 +168,7 @@ async def modify_all_balances(
     Returns:
         A `BulkBalanceChange` summary for the requested operation.
     """
-    accounts = await database.top_n(limit=2_147_483_647)
+    accounts = await top_n(limit=2_147_483_647)
     changes: list[BalanceChange] = []
     for account in accounts:
         changes.append(

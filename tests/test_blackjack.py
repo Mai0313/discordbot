@@ -3,10 +3,10 @@
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from random import Random
+from unittest.mock import patch
 
 import pytest
 
-from discordbot.cogs._games import blackjack as blackjack_module
 from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import (
     Card,
@@ -640,12 +640,8 @@ def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
     def fake_draw(rng: Random) -> Card:
         return queue.pop(0)
 
-    original_draw = blackjack_module.draw_card
-    blackjack_module.draw_card = fake_draw
-    try:
+    with patch("discordbot.cogs._games.blackjack.draw_card", fake_draw):
         round_state.deal_initial()
-    finally:
-        blackjack_module.draw_card = original_draw
 
     assert round_state.phase == "insurance"
     assert round_state.insurance_offered is True
@@ -667,12 +663,8 @@ def test_dealer_peek_blackjack_settles_round_immediately() -> None:
     def fake_draw(rng: Random) -> Card:
         return queue.pop(0)
 
-    original_draw = blackjack_module.draw_card
-    blackjack_module.draw_card = fake_draw
-    try:
+    with patch("discordbot.cogs._games.blackjack.draw_card", fake_draw):
         round_state.deal_initial()
-    finally:
-        blackjack_module.draw_card = original_draw
 
     assert round_state.peeked_blackjack is True
     assert round_state.phase == "settled"
@@ -694,14 +686,10 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
     def fake_draw(rng: Random) -> Card:
         return queue.pop(0)
 
-    original_draw = blackjack_module.draw_card
-    blackjack_module.draw_card = fake_draw
-    try:
+    with patch("discordbot.cogs._games.blackjack.draw_card", fake_draw):
         round_state.deal_initial()
         assert round_state.phase == "insurance"
         round_state.take_insurance(user_id=1, amount=50)
-    finally:
-        blackjack_module.draw_card = original_draw
 
     assert round_state.peeked_blackjack is True
     assert round_state.phase == "settled"

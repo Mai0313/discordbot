@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
-from discordbot.cogs._economy import database
+from discordbot.cogs._economy.database import get_admin, set_admin, list_admins
 
 console = Console()
 
@@ -64,33 +64,31 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 async def grant_admin(user_id: int, name: str = "", avatar_url: str = "") -> AdminChange:
     """Grants economy admin access to a Discord user."""
-    applied = await database.set_admin(
-        user_id=user_id, name=name, avatar_url=avatar_url, is_admin=True
-    )
+    applied = await set_admin(user_id=user_id, name=name, avatar_url=avatar_url, is_admin=True)
     return AdminChange(
         user_id=user_id,
         name=name or str(user_id),
         action="grant",
         applied=applied,
-        is_admin=await database.get_admin(user_id=user_id),
+        is_admin=await get_admin(user_id=user_id),
     )
 
 
 async def revoke_admin(user_id: int, name: str = "") -> AdminChange:
     """Revokes economy admin access from an existing Discord user."""
-    applied = await database.set_admin(user_id=user_id, name=name, is_admin=False)
+    applied = await set_admin(user_id=user_id, name=name, is_admin=False)
     return AdminChange(
         user_id=user_id,
         name=name or str(user_id),
         action="revoke",
         applied=applied,
-        is_admin=await database.get_admin(user_id=user_id),
+        is_admin=await get_admin(user_id=user_id),
     )
 
 
 async def list_admin_accounts() -> list[tuple[int, str]]:
     """Lists all economy admins."""
-    return await database.list_admins()
+    return await list_admins()
 
 
 def _print_change(change: AdminChange) -> None:
