@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
     from openai import AsyncOpenAI
     import pytest
+    from nextcord.ui import View
 
 
 class DiscordPayload(TypedDict, total=False):
@@ -58,7 +59,7 @@ class DiscordPayload(TypedDict, total=False):
     embeds: list[Embed]
     file: File
     files: list[File]
-    view: nextcord.ui.View
+    view: View
     wait: bool
     ephemeral: bool
     suppress: bool

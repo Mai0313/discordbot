@@ -7,7 +7,9 @@ import asyncio
 import contextlib
 
 import logfire
-from nextcord import Embed, Message, ButtonStyle, Interaction, ui
+import nextcord
+from nextcord import Embed, Message, ButtonStyle, Interaction
+from nextcord.ui import Item, View, Button
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
@@ -43,7 +45,7 @@ class RefreshParticipants(Protocol):
         """Returns refreshed participants and display names removed from the table."""
 
 
-class BaseGameLobbyView(ui.View):
+class BaseGameLobbyView(View):
     """Join / leave / start scaffold shared by multiplayer game lobbies.
 
     Subclasses must override:
@@ -97,8 +99,8 @@ class BaseGameLobbyView(ui.View):
             await self.message.edit(embed=embed, view=self)
         schedule_game_message_delete(message=self.message)
 
-    @ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
-    async def join(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
+    async def join(self, _button: Button, interaction: Interaction) -> None:
         """Adds the interacting user to the lobby."""
         if interaction.user is None:
             return
@@ -121,8 +123,8 @@ class BaseGameLobbyView(ui.View):
                 message=interaction.message, status=f"{participant.display_name} 已加入"
             )
 
-    @ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
-    async def leave(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
+    async def leave(self, _button: Button, interaction: Interaction) -> None:
         """Removes the interacting user from the lobby."""
         if interaction.user is None:
             return
@@ -142,8 +144,8 @@ class BaseGameLobbyView(ui.View):
                 message=interaction.message, status=f"{participant.display_name} 已離開"
             )
 
-    @ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
-    async def start(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
+    async def start(self, _button: Button, interaction: Interaction) -> None:
         """Starts the game if the lobby owner pressed the button."""
         if interaction.user is None:
             return
@@ -184,7 +186,7 @@ class BaseGameLobbyView(ui.View):
             interaction=interaction, content=content, log_message="Failed to send lobby notice"
         )
 
-    async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
+    async def on_error(self, error: Exception, item: Item, interaction: Interaction) -> None:
         """Logs lobby component failures instead of only printing to stderr."""
         logfire.error(
             "Lobby interaction failed",
@@ -195,7 +197,7 @@ class BaseGameLobbyView(ui.View):
 
     def _disable_buttons(self) -> None:
         """Disables all button components on the lobby view."""
-        disable_view_components(children=self.children, component_types=(ui.Button,))
+        disable_view_components(children=self.children, component_types=(Button,))
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
         """Builds the lobby embed for a concrete game type."""

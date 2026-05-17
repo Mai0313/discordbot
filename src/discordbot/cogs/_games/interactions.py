@@ -5,7 +5,8 @@ import asyncio
 from collections.abc import Iterable
 
 import logfire
-from nextcord import Message, Interaction, ui
+from nextcord import Message, Interaction
+from nextcord.ui import Item
 from nextcord.errors import DiscordServerError
 
 
@@ -21,7 +22,7 @@ async def send_ephemeral_notice(interaction: Interaction, content: str, log_mess
 
 
 def disable_view_components(
-    children: Iterable[ui.Item], component_types: tuple[type[ui.Item], ...]
+    children: Iterable[Item], component_types: tuple[type[Item], ...]
 ) -> None:
     """Disables view children matching any supplied component type."""
     for child in children:
