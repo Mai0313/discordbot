@@ -19,6 +19,7 @@ from discordbot.cogs._games.prompts import (
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 DEALER_AI_TIMEOUT_SECONDS = 5.0
+DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS = 20.0
 
 
 def _fallback_blackjack_decision(dealer_total: int) -> BlackjackDealerDecision:
@@ -253,7 +254,7 @@ class DealerAI:
         """
         fallback = _fallback_blackjack_decision(dealer_total=dealer_total)
         try:
-            async with asyncio.timeout(delay=DEALER_AI_TIMEOUT_SECONDS):
+            async with asyncio.timeout(delay=DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS):
                 responses = await self.client.responses.parse(
                     model=self.model.name,
                     instructions=DEALER_BLACKJACK_DECISION_PROMPT,
@@ -270,7 +271,7 @@ class DealerAI:
         except TimeoutError:
             logfire.warn(
                 "Dealer Blackjack decision timed out; using basic-rule fallback",
-                timeout_seconds=DEALER_AI_TIMEOUT_SECONDS,
+                timeout_seconds=DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS,
             )
             return fallback
         except ValidationError:

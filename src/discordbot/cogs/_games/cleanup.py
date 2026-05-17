@@ -1,4 +1,4 @@
-"""Timed cleanup helpers for casino game messages."""
+"""Timed cleanup helpers for public game and economy messages."""
 
 from typing import Any, Final
 import asyncio
@@ -40,7 +40,7 @@ ORDER BY created_at ASC, message_id ASC
 
 
 class PendingGameMessage(BaseModel):
-    """A game response that still needs Discord-side cleanup."""
+    """A public response that still needs Discord-side cleanup."""
 
     channel_id: int
     message_id: int
@@ -116,7 +116,7 @@ def _list_pending_game_messages_sync() -> list[PendingGameMessage]:
 
 
 async def track_game_message(message: Message) -> PendingGameMessage | None:
-    """Records a game message so a restart can delete it later.
+    """Records a public response so a restart can delete it later.
 
     Args:
         message: Discord message created for a game round or related expiring response.
@@ -164,7 +164,7 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingGameMessage) 
 
 
 async def delete_tracked_game_messages(bot: commands.Bot) -> None:
-    """Deletes persisted game responses left by an earlier bot process."""
+    """Deletes persisted public responses left by an earlier bot process."""
     records = await list_pending_game_messages()
     deleted_count = 0
     for record in records:
@@ -203,7 +203,7 @@ async def delete_tracked_game_messages(bot: commands.Bot) -> None:
 async def delete_game_message_after(
     message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
 ) -> None:
-    """Deletes a game response after a delay.
+    """Deletes a public response after a delay.
 
     Args:
         message: Discord message to delete.
@@ -225,7 +225,7 @@ async def delete_game_message_after(
 def schedule_game_message_delete(
     message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
 ) -> None:
-    """Schedules delayed deletion for a casino game response."""
+    """Schedules delayed deletion for a public game/economy response."""
     asyncio.create_task(  # noqa: RUF006 -- fire-and-forget cleanup cannot block commands.
         coro=delete_game_message_after(message=message, delay=delay), name="delete-game-response"
     )

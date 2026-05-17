@@ -58,7 +58,8 @@ _HELP_CONTENT = {
             "auto-expires at Asia/Taipei midnight); `/repay` pay debt from your balance.\n"
             "Every income event after a loan auto-applies 50% toward principal.\n"
             "`/balance`, `/borrow`, `/repay`, and `/vip` replies are private. "
-            "`/leaderboard`, `/loss_leaderboard`, and `/house` stay public and "
+            "`/give`, successful `/admin` tax adjustments, `/leaderboard`, "
+            "`/loss_leaderboard`, and `/house` stay public and "
             "clean themselves up after 3 minutes."
         ),
         "checkin": (
@@ -90,7 +91,8 @@ _HELP_CONTENT = {
             "the hole card; a natural "
             "Blackjack settles the round immediately without offering player actions.\n"
             "After every hand stands / busts, the AI dealer decides hit / stand for the "
-            "house (Soft 17 is left up to the AI); the final embed shows the decision path.\n"
+            "house (Soft 17 is left up to the AI); the table shows when the dealer is "
+            "thinking, and the final embed shows the decision path.\n"
             "`/dragon_gate` opens an In-Between table over a **global jackpot pool** "
             "shared across every table. The ante is fixed at 5,000 (into the pool), the "
             "minimum bet is 10,000, the maximum bet is the entire pool, and every bet "
@@ -149,7 +151,8 @@ _HELP_CONTENT = {
             "`/repay` 從餘額還款\n"
             "借款後賺到的點數會自動 50% 用來還本金\n"
             "`/balance`、`/borrow`、`/repay`、`/vip` 是 private reply\n"
-            "`/leaderboard`、`/loss_leaderboard`、`/house` 維持公開, 3 分鐘後自動清掉"
+            "`/give`、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
+            "`/house` 維持公開, 3 分鐘後自動清掉"
         ),
         "checkin": (
             "**每日簽到** — `/checkin`\n"
@@ -178,7 +181,7 @@ _HELP_CONTENT = {
             "明牌 **A 或 10 點** 莊家會 peek 暗牌，若 peek 出 Blackjack 立即結算，"
             "玩家無法做動作\n"
             "所有玩家結束後 AI 莊家會決定每一步 hit / stand（Soft 17 交給 AI 判斷），"
-            "final result 會顯示 dealer decision path\n"
+            "牌桌會先顯示莊家思考中，final result 會顯示 dealer decision path\n"
             "`/dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
             "入場費固定 5,000 點(進彩金池), 最低下注 10,000, 上限就是當下彩金池\n"
             "每次下注後玩家餘額與彩金池同步即時結算, 不再等桌結束\n"
@@ -237,7 +240,8 @@ _HELP_CONTENT = {
             "`/repay` 残高から返済。\n"
             "借入後の獲得点数は50%が自動的に元本返済に充当されます。\n"
             "`/balance`、`/borrow`、`/repay`、`/vip` は private reply です。"
-            "`/leaderboard`、`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
+            "`/give`、successful `/admin` tax adjustments、`/leaderboard`、"
+            "`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
         ),
         "checkin": (
             "**デイリーチェックイン** — `/checkin`\n"
@@ -266,7 +270,7 @@ _HELP_CONTENT = {
             "up-card が **A または 10 点** のときは dealer が hole card を peek し、"
             "natural Blackjack なら即時清算します。\n"
             "全 action 後、AI dealer が hit / stand を決定し (Soft 17 は AI 判断)、"
-            "final result に decision path を表示します。\n"
+            "table は dealer thinking 状態を表示し、final result に decision path を表示します。\n"
             "`/dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
             "In-Between table を開きます。anteは固定 5,000 (pool へ)、最低 bet は 10,000、"
             "上限は pool の全額、各 bet は player 残高と pool に即時反映されます。\n"

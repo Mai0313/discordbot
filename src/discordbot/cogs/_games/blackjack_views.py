@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 import asyncio
 import contextlib
 
@@ -529,6 +529,10 @@ class BlackjackView(ui.View):
         self._dealer_line = dealer_line
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
+        self._insurance_buttons: tuple[ui.Button, ui.Button] = (
+            cast("ui.Button", self.insure_yes),
+            cast("ui.Button", self.insure_no),
+        )
 
     async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
@@ -793,6 +797,7 @@ class BlackjackView(ui.View):
         """Recomputes ``disabled`` on every action / insurance button."""
         in_insurance = self.round_state.phase == "insurance"
         in_actions = self.round_state.phase == "player_actions"
+        self._sync_insurance_button_visibility(in_insurance=in_insurance)
         active_player = self.round_state.active_player() if in_actions else None
         active_hand = self.round_state.active_hand() if in_actions else None
         balance_remaining = 0
@@ -827,6 +832,14 @@ class BlackjackView(ui.View):
                     hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
                 )
 
+    def _sync_insurance_button_visibility(self, in_insurance: bool) -> None:
+        """Adds insurance controls only while the table is in insurance phase."""
+        for button in self._insurance_buttons:
+            if in_insurance and button not in self.children:
+                self.add_item(item=button)
+            elif not in_insurance and button in self.children:
+                self.remove_item(item=button)
+
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes dealer talk and table embeds while holding the round lock."""
         self.sync_buttons()
@@ -860,6 +873,7 @@ class BlackjackView(ui.View):
             self.round_state.decline_insurance_for_all_unresolved()
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
+        await self._edit_dealer_thinking_locked(message=message)
         await self._play_dealer_locked()
 
         results: list[BlackjackPlayerResult] = []
@@ -894,6 +908,24 @@ class BlackjackView(ui.View):
         with contextlib.suppress(Exception):
             await message.edit(embeds=[talk_embed, final_embed], view=self)
         schedule_game_message_delete(message=message)
+
+    async def _edit_dealer_thinking_locked(self, message: Message) -> None:
+        """Shows that the dealer is choosing hit / stand before the AI call."""
+        if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
+            return
+        self.sync_buttons()
+        self._disable_buttons()
+        talk_embed = build_dealer_talk_embed(
+            dealer_line="莊家正在思考 hit / stand, 請稍等",
+            dealer_name=self.dealer_name,
+            dealer_avatar_url=self.dealer_avatar_url,
+        )
+        main_embed = build_in_progress_embed(
+            dealer_name=self.dealer_name, round_state=self.round_state
+        )
+        main_embed.set_footer(text="莊家正在思考 hit / stand, 請稍等")
+        with contextlib.suppress(Exception):
+            await message.edit(embeds=[talk_embed, main_embed], view=self)
 
     async def _play_dealer_locked(self) -> None:
         """Runs the AI dealer phase before settlement."""
@@ -1009,6 +1041,7 @@ class BlackjackView(ui.View):
 
     def _disable_buttons(self) -> None:
         """Disables every action / insurance control after settlement."""
+        self._sync_insurance_button_visibility(in_insurance=self.round_state.phase == "insurance")
         disable_view_components(children=self.children, component_types=(ui.Button,))
 
 

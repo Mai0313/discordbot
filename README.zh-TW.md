@@ -57,22 +57,22 @@
 
 **獲得虛擬歡樂豆：** 每則非 bot 使用者訊息都會獲得 5,000 虛擬歡樂豆。AI 串流回覆會再追加以 `total_tokens` (input + output) 計算的 bonus，實際數字會顯示在回覆 footer。`/checkin` 每天可領 100,000 虛擬歡樂豆，連續 7 天為一個 cycle（線性加成：第 1 天 1×、第 7 天 4×）。Threads 解析與 `/download_video` 不會在基礎訊息獎勵之外再付額外 action reward。
 
-**花用虛擬歡樂豆：** 賭場遊戲會先開 lobby。房主可以單人開始，也可以等其他玩家加入；只有房主可以開始 table。Blackjack bet 會在玩家加入時檢查，開始時重新確認餘額，等 table 結算時才套用本局正負結果。如果 Blackjack 房主輸入超過目前餘額的 bet，lobby 的 table stake 會 clamp 成房主實際 all-in 金額，後續玩家預設跟這個金額，不會被原本過大的輸入值強制全下；只有餘額為 0 或負數時才會拒絕玩家。射龍門則跑在**跨桌共用的全域彩金池**上 (`jackpot_pool` 中 `game_id="dragon_gate"` 的單一 row，首次啟動由系統種入 100,000 點 on the house)。入場費固定 5,000 (進場時直接撥進彩金池)，最低下注 10,000，下注上限就是當下彩金池總額，每一手下注的賠付即時寫入玩家帳戶與彩金池，不再等桌結束才結算。Dragon Gate loss 會 clamp 在餘額 0，彩金池只收到實際扣到的金額，歸零玩家會自動離桌，其他玩家繼續玩。任何玩家都可中途按「離桌」退出；若離桌或 timeout 時該玩家的桌內累計仍為正，那部分淨贏會逆向退回彩金池 (「逆贏不拿」)。桌結束的條件是彩金池被刷光、所有玩家都離桌或歸零、或 180 秒無人互動。莊家是個 AI，開局會嘴一下整桌下注，所有 Blackjack 玩家結束後會決定莊家 hit / stand，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 會顯示每位玩家的本局 delta、結算後餘額，以及 Blackjack 莊家的 decision path；`/house` 看的是 Blackjack 莊家的 ledger，射龍門的對手是彩金池而不是莊家，所以不會影響 `/house` 數字。
+**花用虛擬歡樂豆：** 賭場遊戲會先開 lobby。房主可以單人開始，也可以等其他玩家加入；只有房主可以開始 table。Blackjack bet 會在玩家加入時檢查，開始時重新確認餘額，等 table 結算時才套用本局正負結果。如果 Blackjack 房主輸入超過目前餘額的 bet，lobby 的 table stake 會 clamp 成房主實際 all-in 金額，後續玩家預設跟這個金額，不會被原本過大的輸入值強制全下；只有餘額為 0 或負數時才會拒絕玩家。射龍門則跑在**跨桌共用的全域彩金池**上 (`jackpot_pool` 中 `game_id="dragon_gate"` 的單一 row，首次啟動由系統種入 100,000 點 on the house)。入場費固定 5,000 (進場時直接撥進彩金池)，最低下注 10,000，下注上限就是當下彩金池總額，每一手下注的賠付即時寫入玩家帳戶與彩金池，不再等桌結束才結算。Dragon Gate loss 會 clamp 在餘額 0，彩金池只收到實際扣到的金額，歸零玩家會自動離桌，其他玩家繼續玩。任何玩家都可中途按「離桌」退出；若離桌或 timeout 時該玩家的桌內累計仍為正，那部分淨贏會逆向退回彩金池 (「逆贏不拿」)。桌結束的條件是彩金池被刷光、所有玩家都離桌或歸零、或 180 秒無人互動。莊家是個 AI，開局會嘴一下整桌下注，所有 Blackjack 玩家結束後會顯示思考中並決定莊家 hit / stand，結算時會依結果嘴或誇玩家。Embed 上「莊家」的顯示名稱直接用機器人自己的 Discord display name，所以未來 `gen_reply` 看歷史訊息時會把這些對白認作自己過去的發言，而不是某個無名 dealer。遊戲結算 footer 會顯示每位玩家的本局 delta、結算後餘額，以及 Blackjack 莊家的 decision path；`/house` 看的是 Blackjack 莊家的 ledger，射龍門的對手是彩金池而不是莊家，所以不會影響 `/house` 數字。
 
 **VIP：** `/vip` 一次性花費 10,000,000 虛擬歡樂豆購買永久 VIP 標記。VIP 會獲得 1.5x Blackjack payout、2x 簽到基礎點數、2x 借款上限。
 
 **管理員調整：** economy admin 會存在 `user_account.is_admin`，用 `uv run python scripts/manage_admin.py grant|revoke|list` 管理。admin 可以用 `/admin refund_tax` 退稅加點，也可以用 `/admin collect_tax` 收稅扣點；收稅會 clamp 在餘額 0，不會扣成負數。
 
-遊戲相關公開 response embed 會在三分鐘後自動刪除：賭場遊戲 final embed 從回合結算後開始算，餘額不足拒絕開局的回覆從送出後開始算，`/leaderboard`、`/loss_leaderboard`、`/house` 查詢 embed 也會在送出後清掉。`/balance`、`/borrow`、`/repay`、`/checkin`、`/vip` 回覆只有呼叫者看得到。遊戲 response 的 message ID 會存在本機，bot 重啟後會在下次 startup 刪掉上次留下的進行中或已結算遊戲 embed。`/give` 的轉點紀錄會保留，不自動刪除。
+可互動的 game/lobby message 使用 180 秒無互動 timeout，這裡的三分鐘是指沒有任何 component interaction，不是從開桌固定倒數。公開 response 進入不可互動狀態後，會在送出或結算三分鐘後自動刪除，包含賭場遊戲 final embed、餘額不足拒絕開局回覆、`/leaderboard`、`/loss_leaderboard`、`/house`、`/give` 轉帳結果 embed，以及 `/admin refund_tax` / `/admin collect_tax` 成功結果 embed。`/balance`、`/borrow`、`/repay`、`/checkin`、`/vip` 和 admin 錯誤回覆只有呼叫者看得到。遊戲 response 的 message ID 會存在本機，bot 重啟後會在下次 startup 刪掉上次留下的進行中或已結算遊戲 embed。
 
 | Slash command       | 玩法                                                                                                                                                                                                                                                                                 |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/blackjack <下注>` | 支援多人 21 點 lobby，含 Join / Leave / Start button。玩家動作包含 **Hit / Stand / Double Down / Split / Surrender**，莊家明牌 A 時還會開放 Insurance side bet。所有玩家結束後由 AI 莊家決定 hit / stand（Soft 17 交由 AI 判斷）。                                                   |
+| `/blackjack <下注>` | 支援多人 21 點 lobby，含 Join / Leave / Start button。玩家動作包含 **Hit / Stand / Double Down / Split / Surrender**；只有莊家明牌 A 且可買 Insurance 時才會顯示保險 button。所有玩家結束後牌桌會先顯示莊家思考中，再由 AI 莊家決定 hit / stand（Soft 17 交由 AI 判斷）。            |
 | `/dragon_gate`      | 支援多人射龍門 lobby, 跑**跨桌全域彩金池** (cross-table 累積)。入場費固定 5,000 進彩金池, 最低下注 10,000, 上限 = 當下彩金池, 每手即時結算; 玩家可中途按「離桌」退出 (逆贏不拿); 180 秒無互動 timeout 整桌結束。射進龍門從彩金池贏 1 倍；loss 最多扣到玩家目前餘額，歸零後自動離桌。 |
 
 **21 點玩家動作：** Double Down 加倍下注後只再抽一張並強制 stand。Split 僅同 rank pair 可分；**Split 後禁止 Double**（No DAS），Split Aces 兩手各只能再拿一張，且 21 點算一般 1 倍贏（不是天生 Blackjack 1.5 倍）。Late Surrender 退回一半本金；莊家 peek 出 Blackjack 後就無法投降。
 
-**21 點提前結算與 peek：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌，賠 1.5 倍。莊家明牌 A 時會先進入 Insurance phase（保險注 = 原注一半，莊家 peek 到 Blackjack 賠 2:1），明牌 10 點則 silent peek。peek 命中 Blackjack 會直接結算整桌，玩家同樣也是天生 Blackjack 才平手。任意湊到 21 不算 natural Blackjack，不會跳過動作階段。
+**21 點提前結算與 peek：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌，賠 1.5 倍。莊家明牌 A 時會先進入 Insurance phase（保險注 = 原注一半，莊家 peek 到 Blackjack 賠 2:1），Insurance Yes / No button 只會在這個 phase 顯示；明牌 10 點則 silent peek。peek 命中 Blackjack 會直接結算整桌，玩家同樣也是天生 Blackjack 才平手。任意湊到 21 不算 natural Blackjack，不會跳過動作階段。
 
 **管理虛擬歡樂豆：**
 
@@ -217,7 +217,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1   # 或任何 OpenAI 相容端點
 
 - **訊息記錄**：機器人所在頻道的訊息會記錄到本機 SQLite (`data/messages.db`)。資料僅存在你的伺服器，不會外傳。
 - **虛擬歡樂豆資料庫**：每位使用者的虛擬歡樂豆餘額儲存在另一個本機 SQLite 檔案 (`data/economy.db`)，會記錄 Discord user ID、最近一次看到的 username、avatar URL，以及餘額相關計數。餘額會跨機器人運行的所有伺服器共用。
-- **遊戲清理資料庫**：等待清理的遊戲 response 只會把 Discord channel ID 與 message ID 存在 `data/game_cleanup.db`，讓 bot 重啟後能刪除殘留的遊戲 embed。
+- **遊戲清理資料庫**：等待清理的公開 game / economy response 只會把 Discord channel ID 與 message ID 存在 `data/game_cleanup.db`，讓 bot 重啟後能刪除殘留的 cleanup target。
 - **API 呼叫**：文字、圖片、支援的檔案附件、內嵌媒體，以及發送者身份（目前對話上下文中參與者的 display name、username 與 Discord user ID）僅在機器人需要回覆時才會發送至設定的 LLM API，例如在 guild 被標記或收到 DM 時。user ID 會一併傳入，讓機器人在被要求時可以標記其他成員。不會與其他第三方分享資料。
 - **權限**：機器人需要 Message Content 意圖用於標記聊天和可選的本地記錄。斜線指令與嵌入/附件權限用於互動功能。
 - **停用**：伺服器擁有者可透過調整機器人設定來停用訊息記錄。

@@ -177,6 +177,11 @@ class HangingResponses:
         await asyncio.sleep(delay=10)
         return SimpleNamespace(output_text="late")
 
+    async def parse(self, **_kwargs: object) -> SimpleNamespace:
+        """Sleeps before returning a late parsed response."""
+        await asyncio.sleep(delay=10)
+        return SimpleNamespace(output_parsed=None)
+
 
 class HangingClient:
     """Fake OpenAI client containing the hanging Responses resource."""
@@ -594,10 +599,11 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 11
-    assert len(scheduled) == 3
+    assert len(scheduled) == 6
     assert interaction.followup.sent[0].get("ephemeral") is True
-    assert interaction.followup.sent[4].get("ephemeral") is True
-    assert interaction.followup.sent[5].get("ephemeral") is True
+    assert interaction.followup.sent[4].get("ephemeral") is not True
+    assert interaction.followup.sent[5].get("ephemeral") is not True
+    assert interaction.followup.sent[6].get("ephemeral") is not True
     assert interaction.followup.sent[7].get("ephemeral") is True
     assert interaction.followup.sent[8].get("ephemeral") is True
     assert interaction.followup.sent[9].get("ephemeral") is True
@@ -929,6 +935,23 @@ async def test_dealer_ai_empty_blackjack_decision_uses_basic_rule() -> None:
     )
 
     assert decision == BlackjackDealerDecision(action="stand", reason="basic rule: 已達 17 點")
+
+
+async def test_dealer_ai_blackjack_decision_times_out_to_basic_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies slow Blackjack decisions use the dedicated decision timeout."""
+    monkeypatch.setattr(dealer_module, "DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS", 0.01)
+    dealer = DealerAI(
+        client=cast("AsyncOpenAI", HangingClient()),
+        model=ModelSettings(name="gemini-flash-latest", effort="medium"),
+    )
+
+    decision = await dealer.decide_blackjack_action(
+        author_name="alice", table_state="莊家總點數: 16\n玩家: Alice = 18", dealer_total=16
+    )
+
+    assert decision == BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -231,12 +231,12 @@ class EconomyCogs(commands.Cog):
         title: str,
         delta: int,
     ) -> None:
-        """Runs a gated admin balance adjustment and replies privately."""
-        await interaction.response.defer(ephemeral=True)
+        """Runs a gated admin balance adjustment and publishes successful results."""
         if interaction.user is None:
             return
         actor = interaction.user
         if not await get_admin(user_id=actor.id):
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="權限不足",
                 description="### 只有 economy admin 可以執行這個操作",
@@ -246,6 +246,7 @@ class EconomyCogs(commands.Cog):
             await _send_private_followup(interaction=interaction, embed=embed)
             return
         if member.bot:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title=f"{title}失敗",
                 description="### 不能對 bot 操作\n請選一般成員",
@@ -255,6 +256,7 @@ class EconomyCogs(commands.Cog):
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
+        await interaction.response.defer()
         result = await adjust_balance(
             user_id=member.id,
             name=member.name,
@@ -281,7 +283,7 @@ class EconomyCogs(commands.Cog):
         )
         if action == "collect_tax" and result.applied_delta != delta:
             embed.set_footer(text="收稅最多扣到餘額 0")
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="balance",
@@ -481,12 +483,12 @@ class EconomyCogs(commands.Cog):
                 title="轉帳失敗", description="### 不能轉給 bot\n請選一般成員", color=_ERROR_COLOR
             )
             embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
-            await interaction.followup.send(embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
         if member.id == sender.id:
             embed = Embed(title="轉帳失敗", description="### 不能轉給自己", color=_ERROR_COLOR)
             embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
-            await interaction.followup.send(embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         transfer_result = await transfer(
@@ -510,7 +512,7 @@ class EconomyCogs(commands.Cog):
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
-            await interaction.followup.send(embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -528,7 +530,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        await interaction.followup.send(embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="house",
