@@ -30,10 +30,14 @@ from discordbot.cogs._economy.database import (
     BASE_CHECKIN_REWARD_AMOUNT,
     JackpotPool,
     UserAccount,
+    AdminAccount,
     TransferResult,
+    AccountSnapshot,
     JackpotSnapshot,
     TransactionKind,
+    LeaderboardEntry,
     PointTransaction,
+    LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementRequest,
     top_n,
@@ -102,6 +106,20 @@ class _DealerStub:
         if self.decisions:
             return self.decisions.pop(0)
         return BlackjackDealerDecision(action="stand", reason="stub stand")
+
+
+def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
+    """Default Blackjack hand settlement lists are isolated per model instance."""
+    first = BlackjackPlayerSettlement(
+        delta=0, payout=0, new_balance=100, house_balance=0, outcome="push", detail="first"
+    )
+    second = BlackjackPlayerSettlement(
+        delta=0, payout=0, new_balance=100, house_balance=0, outcome="push", detail="second"
+    )
+
+    first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
+
+    assert second.hands == []
 
 
 class _MessageStub:
@@ -300,8 +318,8 @@ async def test_adjust_balance_refreshes_name() -> None:
     await _add_balance(user_id=42, name="alice", amount=10)
     await _add_balance(user_id=42, name="alice_renamed", amount=10)
     rows = await top_n(limit=1)
-    assert rows[0][1] == "alice_renamed"
-    assert rows[0][3] == ""
+    assert rows[0].name == "alice_renamed"
+    assert rows[0].avatar_url == ""
 
 
 async def test_adjust_balance_stores_and_refreshes_avatar_url() -> None:
@@ -349,7 +367,7 @@ async def test_list_admins_returns_only_admin_accounts() -> None:
     await set_admin(user_id=43, name="bob", is_admin=True)
     await _add_balance(user_id=44, name="carol", amount=10)
     await set_admin(user_id=43, name="bob", is_admin=False)
-    assert await list_admins() == [(42, "alice")]
+    assert await list_admins() == [AdminAccount(user_id=42, name="alice")]
 
 
 async def test_write_timestamps_use_taiwan_local_time() -> None:
@@ -516,7 +534,10 @@ async def test_top_n_orders_by_balance_descending() -> None:
     await _add_balance(user_id=2, name="bob", amount=300, avatar_url="https://cdn/b.png")
     await _add_balance(user_id=3, name="carol", amount=50)
     rows = await top_n(limit=2)
-    assert rows == [(2, "bob", 300, "https://cdn/b.png"), (1, "alice", 100, "https://cdn/a.png")]
+    assert rows == [
+        LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="https://cdn/b.png"),
+        LeaderboardEntry(user_id=1, name="alice", balance=100, avatar_url="https://cdn/a.png"),
+    ]
 
 
 async def test_top_n_excludes_specified_users() -> None:
@@ -525,8 +546,8 @@ async def test_top_n_excludes_specified_users() -> None:
     await _add_balance(user_id=2, name="bob", amount=300)
     await _add_balance(user_id=99, name="house", amount=999)
     rows = await top_n(limit=10, exclude_user_ids=(99,))
-    assert all(row[0] != 99 for row in rows)
-    assert rows[0][:3] == (2, "bob", 300)
+    assert all(row.user_id != 99 for row in rows)
+    assert rows[0] == LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="")
 
 
 async def test_apply_round_settlement_allows_negative_house_balance() -> None:
@@ -561,12 +582,9 @@ async def test_apply_round_settlement_house_accumulates_gross_flows() -> None:
         dealer_delta=-300,
     )
     account = await get_account(user_id=99)
-    assert account is not None
-    name, balance, total_earned, total_spent = account
-    assert name == "house"
-    assert balance == -100
-    assert total_earned == 200
-    assert total_spent == 300
+    assert account == AccountSnapshot(
+        name="house", balance=-100, total_earned=200, total_spent=300
+    )
 
 
 async def test_settle_wager_updates_player_and_house() -> None:
@@ -1113,10 +1131,9 @@ async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> N
     ])
     account = await get_account(user_id=99)
     assert account is not None
-    _, balance, total_earned, total_spent = account
-    assert balance == 100
-    assert total_earned == 100
-    assert total_spent == 0
+    assert account.balance == 100
+    assert account.total_earned == 100
+    assert account.total_spent == 0
 
 
 async def test_apply_round_settlement_is_atomic() -> None:
@@ -1153,9 +1170,8 @@ async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
     assert house_balance == 40
     account = await get_account(user_id=1)
     assert account is not None
-    _, _, total_earned, total_spent = account
-    assert total_earned == 100
-    assert total_spent == 40
+    assert account.total_earned == 100
+    assert account.total_spent == 40
 
 
 async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
@@ -1373,7 +1389,7 @@ async def test_top_losers_only_lists_net_negative_players() -> None:
         dealer_delta=-200,
     )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert [(row[0], row[1], row[2]) for row in rows] == [(1, "alice", 300)]
+    assert rows == [LossLeaderboardEntry(user_id=1, name="alice", loss_amount=300, avatar_url="")]
 
 
 async def test_top_losers_orders_by_loss_magnitude() -> None:
@@ -1389,7 +1405,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
             dealer_delta=loss,
         )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert [(row[0], row[2]) for row in rows] == [(2, 500), (3, 250), (1, 100)]
+    assert [(row.user_id, row.loss_amount) for row in rows] == [(2, 500), (3, 250), (1, 100)]
 
 
 async def test_top_losers_excludes_specified_users() -> None:
@@ -1404,7 +1420,7 @@ async def test_top_losers_excludes_specified_users() -> None:
         dealer_delta=500,
     )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert all(row[0] != 99 for row in rows)
+    assert all(row.user_id != 99 for row in rows)
 
 
 async def test_top_losers_ignores_events_before_today() -> None:

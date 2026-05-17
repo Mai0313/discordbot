@@ -70,13 +70,17 @@ from discordbot.typings.economy import (
     BASE_CHECKIN_REWARD_AMOUNT,
     LoanView,
     RepayResult,
+    AdminAccount,
     BorrowResult,
     CreditResult,
     CheckinResult,
     TransferResult,
+    AccountSnapshot,
     JackpotSnapshot,
     TransactionKind,
+    LeaderboardEntry,
     VipPurchaseResult,
+    LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementResult,
     JackpotSettlementRequest,
@@ -2296,7 +2300,7 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
         return result.scalar_one_or_none() is not None
 
 
-async def list_admins() -> list[tuple[int, str]]:
+async def list_admins() -> list[AdminAccount]:
     """Returns all economy admins ordered by user ID."""
     await _ensure_schema()
     async with open_session() as session:
@@ -2305,18 +2309,17 @@ async def list_admins() -> list[tuple[int, str]]:
             .where(UserAccount.is_admin.is_(True))
             .order_by(UserAccount.user_id)
         )
-        return [(row[0], row[1]) for row in result.all()]
+        return [AdminAccount(user_id=row[0], name=row[1]) for row in result.all()]
 
 
-async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
+async def get_account(user_id: int) -> AccountSnapshot | None:
     """Returns the stored account snapshot for a user.
 
     Args:
         user_id: Discord user ID to look up.
 
     Returns:
-        A `(name, balance, total_earned, total_spent)` tuple, or `None` if the
-        user has never been seen.
+        An account snapshot, or `None` if the user has never been seen.
     """
     await _ensure_schema()
     async with open_session() as session:
@@ -2331,7 +2334,9 @@ async def get_account(user_id: int) -> tuple[str, int, int, int] | None:
         row = result.one_or_none()
         if row is None:
             return None
-        return (row[0], row[1], row[2], row[3])
+        return AccountSnapshot(
+            name=row[0], balance=row[1], total_earned=row[2], total_spent=row[3]
+        )
 
 
 async def get_loan_view(user_id: int) -> LoanView | None:
@@ -2463,9 +2468,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 
 
-async def top_n(
-    limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, str]]:
+async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
     ``exclude_user_ids`` filters out specific accounts (notably the bot's
@@ -2478,9 +2481,8 @@ async def top_n(
         exclude_user_ids: User IDs to filter out before applying the limit.
 
     Returns:
-        `(user_id, name, balance, avatar_url)` tuples ordered by balance
-        descending. ``avatar_url`` is empty when the user has never been
-        seen by an avatar-aware write path.
+        Leaderboard entries ordered by balance descending. ``avatar_url`` is
+        empty when the user has never been seen by an avatar-aware write path.
     """
     await _ensure_schema()
     async with open_session() as session:
@@ -2491,12 +2493,15 @@ async def top_n(
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
-        return [(row[0], row[1], row[2], row[3]) for row in result.all()]
+        return [
+            LeaderboardEntry(user_id=row[0], name=row[1], balance=row[2], avatar_url=row[3] or "")
+            for row in result.all()
+        ]
 
 
 async def top_losers(
     limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, str]]:
+) -> list[LossLeaderboardEntry]:
     """Returns the biggest net casino losers since today's Taipei midnight.
 
     Loss sums every ``CASINO_BET`` and ``CASINO_PAYOUT`` delta written to
@@ -2513,8 +2518,8 @@ async def top_losers(
         exclude_user_ids: User IDs to filter out before applying the limit.
 
     Returns:
-        `(user_id, name, loss_amount, avatar_url)` tuples ordered by loss
-        descending. ``loss_amount`` is always positive.
+        Loss leaderboard entries ordered by loss descending. ``loss_amount``
+        is always positive.
     """
     await _ensure_schema()
     if limit <= 0:
@@ -2542,5 +2547,11 @@ async def top_losers(
             stmt = stmt.where(PointTransaction.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)
         return [
-            (row[0], row[1] or str(row[0]), int(-row[3]), row[2] or "") for row in result.all()
+            LossLeaderboardEntry(
+                user_id=row[0],
+                name=row[1] or str(row[0]),
+                loss_amount=int(-row[3]),
+                avatar_url=row[2] or "",
+            )
+            for row in result.all()
         ]

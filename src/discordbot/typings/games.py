@@ -9,7 +9,7 @@ stays in ``cogs/_games/blackjack.py`` because it owns mutating rules methods
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 
 SettleOutcome = Literal[
     "win", "lose", "push", "blackjack", "player_bust", "dealer_bust", "surrender"
@@ -69,6 +69,34 @@ class GameParticipantIdentity(BaseModel):
     account_name: str
     display_name: str
     avatar_url: str = ""
+
+
+class DealerIdentity(BaseModel):
+    """Discord identity used for the AI dealer in game views."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dealer_id: int
+    dealer_name: str
+    dealer_avatar_url: str = ""
+
+
+class ParticipantPreparationResult(BaseModel):
+    """Result of preparing a Discord user for a wagered game seat."""
+
+    model_config = ConfigDict(frozen=True)
+
+    participant: GameParticipant | None
+    balance: int
+
+
+class RefreshParticipantsResult(BaseModel):
+    """Result of re-checking seated players before a lobby starts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    participants: list[GameParticipant] = Field(default_factory=list)
+    dropped_names: list[str] = Field(default_factory=list)
 
 
 class WagerSettlement(BaseModel):
@@ -172,7 +200,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
 
     outcome: SettleOutcome
     detail: str
-    hands: list[BlackjackHandSettlement] = []
+    hands: list[BlackjackHandSettlement] = Field(default_factory=list)
     insurance: BlackjackInsuranceSettlement | None = None
 
 
@@ -252,10 +280,13 @@ __all__ = [
     "BlackjackPlayerSettlement",
     "BlackjackSettlement",
     "Card",
+    "DealerIdentity",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
     "GameParticipantIdentity",
+    "ParticipantPreparationResult",
+    "RefreshParticipantsResult",
     "SettleOutcome",
     "WagerSettlement",
 ]

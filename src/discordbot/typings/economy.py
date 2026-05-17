@@ -73,6 +73,55 @@ class LoanView(BaseModel):
     total_repaid: int
 
 
+class AccountSnapshot(BaseModel):
+    """Read-only account totals for maintenance and house-ledger views.
+
+    Attributes:
+        name: Last-seen Discord account name.
+        balance: Current point balance.
+        total_earned: Lifetime gross earned amount.
+        total_spent: Lifetime gross spent amount.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    balance: int
+    total_earned: int
+    total_spent: int
+
+
+class AdminAccount(BaseModel):
+    """Read-only economy admin account row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    name: str
+
+
+class LeaderboardEntry(BaseModel):
+    """One account row in the balance leaderboard."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    name: str
+    balance: int
+    avatar_url: str = ""
+
+
+class LossLeaderboardEntry(BaseModel):
+    """One account row in the daily casino loss leaderboard."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    name: str
+    loss_amount: int
+    avatar_url: str = ""
+
+
 class CreditResult(BaseModel):
     """Outcome of an income event that may auto-repay outstanding debt.
 
@@ -264,6 +313,8 @@ __all__ = [
     "BASE_MESSAGE_REWARD_AMOUNT",
     "CHECKIN_STREAK_CYCLE",
     "VIP_PURCHASE_COST",
+    "AccountSnapshot",
+    "AdminAccount",
     "BalanceAdjustmentResult",
     "BorrowResult",
     "CheckinResult",
@@ -272,7 +323,9 @@ __all__ = [
     "JackpotSettlementRequest",
     "JackpotSettlementResult",
     "JackpotSnapshot",
+    "LeaderboardEntry",
     "LoanView",
+    "LossLeaderboardEntry",
     "RepayResult",
     "TransactionKind",
     "TransferResult",

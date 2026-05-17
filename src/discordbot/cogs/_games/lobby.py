@@ -17,7 +17,7 @@ from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_v
 if TYPE_CHECKING:
     from random import Random
 
-    from discordbot.typings.games import GameParticipant
+    from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
     from discordbot.cogs._games.dealer import DealerAI
 
 
@@ -39,9 +39,7 @@ class RefreshParticipants(Protocol):
     Wager / mode are bound by the caller via ``functools.partial``.
     """
 
-    async def __call__(
-        self, participants: list[GameParticipant]
-    ) -> tuple[list[GameParticipant], list[str]]:
+    async def __call__(self, participants: list[GameParticipant]) -> RefreshParticipantsResult:
         """Returns refreshed participants and display names removed from the table."""
 
 
@@ -157,15 +155,17 @@ class BaseGameLobbyView(ui.View):
             if self._started:
                 await self._send_notice(interaction=interaction, content="這桌已經開始了")
                 return
-            refreshed, dropped = await self.refresh_participants(participants=self.participants)
-            self._participants = {participant.user_id: participant for participant in refreshed}
+            refreshed = await self.refresh_participants(participants=self.participants)
+            self._participants = {
+                participant.user_id: participant for participant in refreshed.participants
+            }
             if self.owner.user_id not in self._participants:
                 await self._send_notice(interaction=interaction, content="你的餘額不足, 不能開始")
                 await self._refresh_message(message=interaction.message, status="房主餘額不足")
                 return
             self._started = True
-        if dropped:
-            names = ", ".join(dropped)
+        if refreshed.dropped_names:
+            names = ", ".join(refreshed.dropped_names)
             await self._send_notice(interaction=interaction, content=f"餘額不足已移出: {names}")
         started = await self._start_game(message=interaction.message)
         if started:

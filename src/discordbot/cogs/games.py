@@ -10,7 +10,13 @@ from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.games import GameParticipant, GameParticipantIdentity
+from discordbot.typings.games import (
+    DealerIdentity,
+    GameParticipant,
+    GameParticipantIdentity,
+    RefreshParticipantsResult,
+    ParticipantPreparationResult,
+)
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
@@ -83,8 +89,8 @@ class GamesCogs(commands.Cog):
         """
         return DealerAI(client=self.client, model=self.dealer_model)
 
-    def _dealer_identity(self) -> tuple[int, str, str]:
-        """Returns ``(dealer_id, dealer_name, dealer_avatar_url)`` from the bot user.
+    def _dealer_identity(self) -> DealerIdentity:
+        """Returns the dealer identity from the bot user.
 
         Slash commands only fire after the gateway has connected, so
         ``self.bot.user`` is guaranteed non-None at call time. We still fall
@@ -93,8 +99,12 @@ class GamesCogs(commands.Cog):
         user (e.g. mid-reconnect).
         """
         if self.bot.user is None:
-            return (0, "莊家", "")
-        return (self.bot.user.id, self.bot.user.display_name, self.bot.user.display_avatar.url)
+            return DealerIdentity(dealer_id=0, dealer_name="莊家", dealer_avatar_url="")
+        return DealerIdentity(
+            dealer_id=self.bot.user.id,
+            dealer_name=self.bot.user.display_name,
+            dealer_avatar_url=self.bot.user.display_avatar.url,
+        )
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -116,17 +126,17 @@ class GamesCogs(commands.Cog):
 
     async def _participant_from_user(
         self, user: nextcord.User | nextcord.Member, wager: int, mode: WagerMode
-    ) -> tuple[GameParticipant | None, int]:
+    ) -> ParticipantPreparationResult:
         """Builds a lobby participant under the requested wager and mode."""
         balance = await get_balance(user_id=user.id)
-        return (
-            build_wager_participant(
+        return ParticipantPreparationResult(
+            participant=build_wager_participant(
                 identity=self._identity_from_user(user=user),
                 balance=balance,
                 wager=wager,
                 mode=mode,
             ),
-            balance,
+            balance=balance,
         )
 
     async def _prepare_participant(
@@ -143,18 +153,16 @@ class GamesCogs(commands.Cog):
         """
         if interaction.user is None:
             return None
-        participant, balance = await self._participant_from_user(
-            user=interaction.user, wager=wager, mode=mode
-        )
-        if participant is None:
+        result = await self._participant_from_user(user=interaction.user, wager=wager, mode=mode)
+        if result.participant is None:
             await interaction.followup.send(
-                embed=insufficient_embed_builder(balance), ephemeral=True
+                embed=insufficient_embed_builder(result.balance), ephemeral=True
             )
-        return participant
+        return result.participant
 
     async def _refresh_participants(
         self, participants: list[GameParticipant], wager: int, mode: WagerMode
-    ) -> tuple[list[GameParticipant], list[str]]:
+    ) -> RefreshParticipantsResult:
         """Re-checks balances when the lobby owner starts the table."""
         refreshed: list[GameParticipant] = []
         dropped: list[str] = []
@@ -175,7 +183,7 @@ class GamesCogs(commands.Cog):
                 dropped.append(participant.display_name)
                 continue
             refreshed.append(refreshed_participant)
-        return refreshed, dropped
+        return RefreshParticipantsResult(participants=refreshed, dropped_names=dropped)
 
     def _insufficient_balance_embed(self, balance: int) -> Embed:
         """Builds the shared insufficient-balance embed for clamp-mode tables."""
@@ -236,26 +244,28 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        owner, balance = await self._participant_from_user(
+        participant_result = await self._participant_from_user(
             user=interaction.user, wager=bet, mode="clamp"
         )
+        owner = participant_result.participant
         if owner is None:
             message = await interaction.followup.send(
-                embed=self._insufficient_balance_embed(balance=balance), wait=True
+                embed=self._insufficient_balance_embed(balance=participant_result.balance),
+                wait=True,
             )
             schedule_game_message_delete(message=message)
             return
 
         table_bet = owner.bet
-        dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
+        dealer_identity = self._dealer_identity()
         view = BlackjackLobbyView(
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
             dealer=self.dealer,
-            dealer_id=dealer_id,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
+            dealer_id=dealer_identity.dealer_id,
+            dealer_name=dealer_identity.dealer_name,
+            dealer_avatar_url=dealer_identity.dealer_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=table_bet,
@@ -296,24 +306,28 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
-        owner, balance = await self._participant_from_user(
+        participant_result = await self._participant_from_user(
             user=interaction.user, wager=ANTE, mode="exact"
         )
+        owner = participant_result.participant
         if owner is None:
             message = await interaction.followup.send(
-                embed=self._dragon_gate_insufficient_balance_embed(balance=balance), wait=True
+                embed=self._dragon_gate_insufficient_balance_embed(
+                    balance=participant_result.balance
+                ),
+                wait=True,
             )
             schedule_game_message_delete(message=message)
             return
 
-        _dealer_id, dealer_name, dealer_avatar_url = self._dealer_identity()
-        initial_jackpot, initial_jackpot_generation = await fetch_dragon_gate_jackpot_snapshot()
+        dealer_identity = self._dealer_identity()
+        initial_jackpot = await fetch_dragon_gate_jackpot_snapshot()
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
             dealer=self.dealer,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
+            dealer_name=dealer_identity.dealer_name,
+            dealer_avatar_url=dealer_identity.dealer_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=ANTE,
@@ -321,11 +335,11 @@ class GamesCogs(commands.Cog):
                 insufficient_embed_builder=self._dragon_gate_insufficient_balance_embed,
             ),
             refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
-            initial_jackpot=initial_jackpot,
-            initial_jackpot_generation=initial_jackpot_generation,
+            initial_jackpot=initial_jackpot.balance,
+            initial_jackpot_generation=initial_jackpot.generation,
         )
         embed = build_dragon_gate_lobby_embed(
-            owner=owner, participants=view.participants, jackpot=initial_jackpot
+            owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
         await track_game_message(message=message)

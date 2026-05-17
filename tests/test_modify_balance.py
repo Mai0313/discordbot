@@ -3,6 +3,7 @@
 import pytest
 from scripts import modify_balance as modify_balance_script
 
+from discordbot.typings.economy import AccountSnapshot
 from discordbot.cogs._economy.database import BalanceAdjustmentResult, get_account, adjust_balance
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
@@ -38,8 +39,8 @@ async def test_modify_all_balances_updates_existing_accounts_only() -> None:
     bob = await get_account(user_id=2)
     assert alice is not None
     assert bob is not None
-    assert alice[1] == 50_100
-    assert bob[1] == 50_200
+    assert alice.balance == 50_100
+    assert bob.balance == 50_200
 
 
 async def test_modify_balance_reports_actual_adjustment_after_stale_read(
@@ -48,10 +49,10 @@ async def test_modify_balance_reports_actual_adjustment_after_stale_read(
     """The CLI summary uses the adjustment result, not the pre-read projection."""
     call: dict[str, int | str | bool] = {}
 
-    async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
+    async def fake_get_account(user_id: int) -> AccountSnapshot:
         """Returns a stale pre-adjustment account snapshot."""
         assert user_id == 1
-        return ("alice", 100, 100, 0)
+        return AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool
@@ -96,9 +97,10 @@ async def test_modify_balance_missing_user_negative_delegates_to_database(
     """Missing-user negative writes still go through the transactional API."""
     call: dict[str, int | str | bool] = {}
 
-    async def fake_get_account(user_id: int) -> None:
+    async def fake_get_account(user_id: int) -> AccountSnapshot | None:
         """Returns no account for the requested user."""
         assert user_id == 3
+        return None
 
     async def fake_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool

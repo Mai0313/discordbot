@@ -469,9 +469,9 @@ class ThreadsOutput(BaseModel):
 
     text: str = Field(default="")
     url: str = Field(default="")
-    image_urls: list[str] = Field(default=[])
+    image_urls: list[str] = Field(default_factory=list)
     video_urls: list[str] = Field(default_factory=list)
-    video_paths: list[Path] = Field(default=[])
+    video_paths: list[Path] = Field(default_factory=list)
     author_name: str = Field(default="")
     author_icon_url: str = Field(default="")
     like_count: int = Field(default=0)

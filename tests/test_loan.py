@@ -215,9 +215,8 @@ async def test_borrow_treats_borrowed_money_as_debt_not_earnings() -> None:
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     account = await get_account(user_id=1)
     assert account is not None
-    _, balance, total_earned, _ = account
-    assert balance == 500
-    assert total_earned == 0
+    assert account.balance == 500
+    assert account.total_earned == 0
 
 
 async def test_borrow_on_existing_account_preserves_total_earned() -> None:
@@ -228,9 +227,8 @@ async def test_borrow_on_existing_account_preserves_total_earned() -> None:
     assert result.new_balance == 500
     account = await get_account(user_id=1)
     assert account is not None
-    _, balance, total_earned, _ = account
-    assert balance == 500
-    assert total_earned == 100
+    assert account.balance == 500
+    assert account.total_earned == 100
 
 
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1, -1000])
@@ -321,8 +319,7 @@ async def test_repay_does_not_bump_total_spent() -> None:
     await repay(user_id=1, name="alice", amount=200)
     account = await get_account(user_id=1)
     assert account is not None
-    _, _, _, total_spent = account
-    assert total_spent == 0
+    assert account.total_spent == 0
 
 
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1])

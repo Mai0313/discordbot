@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
+from discordbot.typings.economy import AdminAccount
 from discordbot.cogs._economy.database import get_admin, set_admin, list_admins
 
 console = Console()
@@ -86,7 +87,7 @@ async def revoke_admin(user_id: int, name: str = "") -> AdminChange:
     )
 
 
-async def list_admin_accounts() -> list[tuple[int, str]]:
+async def list_admin_accounts() -> list[AdminAccount]:
     """Lists all economy admins."""
     return await list_admins()
 
@@ -102,11 +103,11 @@ def _print_change(change: AdminChange) -> None:
     console.print(f"is_admin: {change.is_admin}")
 
 
-def _print_admins(admins: list[tuple[int, str]]) -> None:
+def _print_admins(admins: list[AdminAccount]) -> None:
     """Prints the admin account list."""
     console.print(f"[bold]Economy admins[/bold]: {len(admins)}")
-    for user_id, name in admins:
-        console.print(f"{user_id}: {name}")
+    for admin in admins:
+        console.print(f"{admin.user_id}: {admin.name}")
 
 
 async def _async_main(argv: Sequence[str] | None = None) -> None:

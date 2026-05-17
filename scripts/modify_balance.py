@@ -115,8 +115,8 @@ async def modify_balance(
     """
     account = await get_account(user_id=user_id)
     created = account is None
-    existing_name = account[0] if account is not None else ""
-    before = account[1] if account is not None else 0
+    existing_name = account.name if account is not None else ""
+    before = account.balance if account is not None else 0
     effective_name = name or existing_name or str(user_id)
 
     projected_after = before + delta if allow_negative else max(before + delta, 0)
@@ -173,8 +173,8 @@ async def modify_all_balances(
     for account in accounts:
         changes.append(
             await modify_balance(
-                user_id=account[0],
-                name=account[1],
+                user_id=account.user_id,
+                name=account.name,
                 delta=delta,
                 allow_negative=allow_negative,
                 dry_run=dry_run,

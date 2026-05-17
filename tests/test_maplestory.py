@@ -26,6 +26,7 @@ from discordbot.cogs._maplestory.embeds import (
 from discordbot.cogs._maplestory.models import (
     NPC,
     Quest,
+    MapNPC,
     Scroll,
     Monster,
     Useable,
@@ -36,13 +37,19 @@ from discordbot.cogs._maplestory.models import (
     QuestStep,
     StatValue,
     HuntTarget,
+    MapMonster,
     RegionMaps,
+    Acquisition,
     CollectItem,
     QuestReward,
     MonsterDrops,
+    MonsterQuest,
+    AcquisitionNPC,
     CraftingRecipe,
     EquipmentStats,
+    AcquisitionQuest,
     CraftingMaterial,
+    AcquisitionMonster,
     EquipmentRestriction,
 )
 from discordbot.cogs._maplestory.service import MapleStoryService, _load_json, _load_translations
@@ -125,6 +132,93 @@ class _FakeInteraction:
 def _write_json(path: Path, payload: JsonValue) -> None:
     """Writes a JSON fixture file."""
     path.write_text(data=json.dumps(obj=payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_maplestory_region_recipe_defaults_are_isolated() -> None:
+    """Region and recipe defaults are not shared between instances."""
+    first_region = RegionMaps(region="Victoria")
+    second_region = RegionMaps(region="Ossyria")
+    first_region.maps.append("Henesys")
+    assert second_region.maps == []
+
+    first_recipe = CraftingRecipe()
+    second_recipe = CraftingRecipe()
+    first_recipe.materials.append(CraftingMaterial(item="Metal", quantity=1))
+    assert second_recipe.materials == []
+
+
+def test_maplestory_acquisition_defaults_are_isolated() -> None:
+    """Acquisition list defaults are not shared between instances."""
+    first_acquisition = Acquisition()
+    second_acquisition = Acquisition()
+    first_acquisition.monsters.append(AcquisitionMonster(name="Slime"))
+    first_acquisition.npcs.append(AcquisitionNPC(name="Shop"))
+    first_acquisition.quests.append(AcquisitionQuest(name="Quest"))
+    first_acquisition.craftings.append(CraftingRecipe(output="Sword"))
+    assert second_acquisition.monsters == []
+    assert second_acquisition.npcs == []
+    assert second_acquisition.quests == []
+    assert second_acquisition.craftings == []
+
+
+def test_maplestory_drop_monster_equipment_defaults_are_isolated() -> None:
+    """Drop, monster, and equipment list defaults are isolated."""
+    first_drop = DropItem(name="Sword")
+    second_drop = DropItem(name="Shield")
+    first_drop.jobs.append("Warrior")
+    assert second_drop.jobs == []
+
+    first_monster = Monster(name="Slime")
+    second_monster = Monster(name="Pig")
+    first_monster.modifiers.append("Fire")
+    first_monster.quests.append(MonsterQuest(name="Helping Hand"))
+    assert second_monster.modifiers == []
+    assert second_monster.quests == []
+
+    first_equipment = Equipment(name="Sword")
+    second_equipment = Equipment(name="Shield")
+    first_equipment.jobs.append("Warrior")
+    assert second_equipment.jobs == []
+
+
+def test_maplestory_scroll_npc_defaults_are_isolated() -> None:
+    """Scroll dict and NPC list defaults are isolated."""
+    first_scroll = Scroll(name="Scroll")
+    second_scroll = Scroll(name="Other Scroll")
+    first_scroll.stats["atk"] = 1
+    assert second_scroll.stats == {}
+
+    first_npc = NPC(name="Shopkeeper")
+    second_npc = NPC(name="Guide")
+    first_npc.quests.append(AcquisitionQuest(name="Quest"))
+    first_npc.recipes.append(CraftingRecipe(output="Sword"))
+    assert second_npc.quests == []
+    assert second_npc.recipes == []
+
+
+def test_maplestory_quest_reward_defaults_are_isolated() -> None:
+    """Quest reward and quest list defaults are isolated."""
+    first_reward = QuestReward()
+    second_reward = QuestReward()
+    first_reward.items["items"] = [CollectItem(name="Potion", quantity=1)]
+    assert second_reward.items == {}
+
+    first_quest = Quest(name="Quest")
+    second_quest = Quest(name="Other Quest")
+    first_quest.steps.append(QuestStep(startNPC="Guide"))
+    first_quest.prerequisites.append("Prelude")
+    assert second_quest.steps == []
+    assert second_quest.prerequisites == []
+
+
+def test_maplestory_map_defaults_are_isolated() -> None:
+    """Map NPC and monster defaults are isolated."""
+    first_map = MapEntry(name="Henesys")
+    second_map = MapEntry(name="Kerning City")
+    first_map.npcs.append(MapNPC(name="Guide"))
+    first_map.monsters.append(MapMonster(name="Slime"))
+    assert second_map.npcs == []
+    assert second_map.monsters == []
 
 
 @pytest.fixture

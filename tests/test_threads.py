@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsDownloader
+from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsOutput, ThreadsDownloader
 
 
 @pytest.fixture
@@ -52,6 +52,18 @@ def test_find_post_with_parents_root_has_no_parents() -> None:
     post, parents = chain.find_post_with_parents(post_code="ROOT")
     assert post is not None
     assert parents == []
+
+
+def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
+    """Threads output image and local video path defaults are isolated."""
+    first = ThreadsOutput()
+    second = ThreadsOutput()
+
+    first.image_urls.append("https://cdn.example/image.jpg")
+    first.video_paths.append(tmp_path / "clip.mp4")
+
+    assert second.image_urls == []
+    assert second.video_paths == []
 
 
 @pytest.mark.parametrize(
