@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Project-specific guidance for Claude Code when working in this repository.
 
 ## Commands
 
@@ -8,193 +8,196 @@ All tooling runs through `uv`.
 
 ```bash
 uv run discordbot                # run the bot
-uv run pytest                    # tests (coverage gate: 80%)
-uv run pre-commit run -a         # the canonical pre-push check
-make fmt                         # == pre-commit run -a
+uv run pytest                    # tests, coverage gate: 80%
+uv run pre-commit run -a         # canonical pre-push check
+make fmt                         # same as pre-commit run -a
 make gen-docs                    # regenerate docs/ from sources
 ```
 
-## Architecture
+## Runtime Shape
 
-### Bot runtime (`src/discordbot/cli.py`)
+- `src/discordbot/cli.py` defines `DiscordBot(commands.Bot)`.
+- Intents start from `Intents.all()`, then disable `members` and `presences`.
+- Cog loading is synchronous inside `DiscordBot.__init__` before gateway
+    connection. First `on_ready` syncs global application commands and starts the
+    status task.
+- Every cog module must expose sync `def setup(bot): ...` and add cogs with
+    `override=True`. Do not use `async def setup`; nextcord schedules it without
+    awaiting, so the first command sync can see no commands.
+- Helper packages live in sibling `_<cog>/` directories so they are not
+    auto-loaded as cogs.
+- Add common command errors in `DiscordBot.on_command_error` instead of catching
+    them in each cog.
 
-`DiscordBot(commands.Bot)` enables all intents except `members` and `presences`. Cog loading runs **synchronously inside `__init__`** before the gateway connects, so application commands are registered before the first sync:
+## Cog Rules
 
-1. `_load_cogs_sync()` globs `src/discordbot/cogs/*.py` (skipping `__*`) and calls `load_extensions(stop_at_error=True)`. Helper packages live in sibling `_<cog>/` folders so they're not auto-loaded.
-2. First `on_ready` (gated by `_initial_setup_done`) calls `sync_all_application_commands()` and starts the 1-minute `status_task`.
+- Cog modules should define one `commands.Cog` subclass plus a sync `setup`.
+- Cogs should not import peer cogs directly. Use the bot instance, shared
+    typings, or cog-private helper packages.
+- Slash commands need localized names and descriptions for English,
+    Traditional Chinese, and Japanese where the command is user-facing.
+- Any user-visible command or behavior change must update
+    `src/discordbot/cogs/help.py` in the same change and keep
+    `tests/test_help.py` passing.
 
-**Every cog's `setup` must be sync**, not `async def setup`. nextcord's `load_extension` fires `async def setup` via `asyncio.create_task` without awaiting, leaving cogs un-registered when the first command sync runs. Do not revert this.
+## AI Pipeline
 
-`on_command_error` has pre-built embeds for common `commands.*` exception types; add new cases there rather than catching in cogs.
+- Runtime LLM calls use `AsyncOpenAI` clients and the OpenAI Responses API.
+    Do not switch chat, routing, or captioning back to Chat Completions.
+- `OPENAI_BASE_URL` usually points at LiteLLM. Provider selection happens via
+    model strings, `ModelSettings.tools`, and `extra_body`.
+- Do not import provider-native SDKs such as `google-genai` or `anthropic` into
+    runtime request paths. `scripts/prompt_dev.py` is the exception for local
+    experimentation.
+- `ReplyGeneratorCogs.fast_model`, `slow_model`, `image_model`, and
+    `video_model` are properties because model strings change often. Update those
+    properties, not call sites.
+- `slow_model` intentionally dispatches by time of day for peak-hour fallback.
+    Do not flatten it into a static model.
+- Streaming SDK objects are named `responses`; loop items are named `response`.
+- AI progress is communicated with reactions on the user's message. Preserve the
+    no-intermediate-message UX.
+- Attachment ingestion is gated by `get_supported_modalities` for the slow
+    model. Unsupported attachments should be dropped before any LLM call.
+- Images are resized and JPEG re-encoded into `input_image` data URIs. Other
+    supported attachments are sent as `input_file`.
+- For Discord embeds, prefer `media.discordapp.net` `proxy_url` over origin URLs
+    because CDN links expire.
+- History, referenced messages, and current messages are fetched with
+    `asyncio.gather`. Keep the task list built in a `for` loop on its own lines.
 
-### Cog conventions
+### Responses API Gotchas
 
-- Cog = `commands.Cog` subclass + module-level **sync** `def setup(bot): bot.add_cog(..., override=True)`.
-- Cogs don't import peers directly; cross-cog calls go through the bot instance or shared typings.
-- Slash commands need `name_localizations` / `description_localizations` for `en-US`, `zh-TW`, `ja`. See `cogs/help.py` and `cogs/maplestory.py` for the pattern.
-- Every user-facing feature or behavior change must update `cogs/help.py` (`_HELP_CONTENT`) in the same change so `/help` stays accurate; keep `tests/test_help.py` passing.
-- Cog-private helpers live in sibling `_<cog>/` packages (e.g. `_gen_reply/`, `_maplestory/`).
+- Current OpenAI models are strict about role and content part pairing:
+    `user` / `system` / `developer` use `input_text`, `input_image`, and
+    `input_file`; `assistant` uses `output_text` or `refusal`.
+- Use `EasyInputMessageParam` plus the concrete Responses content part types,
+    then cast only at the SDK boundary.
+- Prefer string-content shorthand when there are no attachments.
+- Processed Discord messages with attachments fall back to `role=user` because
+    assistant content cannot contain `input_image` or `input_file`.
+- Separator messages use `role=system`, not `developer`, for Gemini and Claude
+    compatibility through LiteLLM.
+- Gemini may prepend leading newlines to streamed reasoning output when
+    `reasoning.effort != "none"`. `_handle_streaming` strips them on the first
+    content delta; keep that guard.
+- Gemini thought summaries only flow through the Responses API.
+- `client.images.edit(image=...)` needs raw `bytes`, not image-reference dicts.
+- Per-token pricing comes from `utils.model_pricing` and its cached LiteLLM
+    JSON. Do not hardcode rates in `gen_reply.py`.
+- `message.snapshots` are intentionally not walked by cleaned-content or
+    attachment ingestion.
+- `BELIEF` in `_gen_reply/prompts.py` is currently disabled but kept in the
+    signature for a possible future re-enable.
 
-### AI pipeline (`cogs/gen_reply.py` + `cogs/_gen_reply/prompts.py`)
+## Economy
 
-All LLM calls go through one `AsyncOpenAI` client built from `LLMConfig`. **`OPENAI_BASE_URL` points at a [LiteLLM](https://github.com/BerriAI/litellm) proxy** — every provider (OpenAI, Gemini, Claude, DeepSeek, Vertex, …) is dispatched by the LiteLLM `model` string. **Do not import `google-genai` / `anthropic` into the request path**; provider-specific knobs go through `extra_body` instead. (`scripts/prompt_dev.py` is the only place provider-native SDKs are used.)
+- SQLite files are separate: `data/messages.db` for message logs,
+    `data/economy.db` for 虛擬歡樂豆, and `data/game_cleanup.db` for cleanup
+    targets.
+- `cogs/_economy/database.py` owns the module-level async engine `_engine`.
+    Do not move it to `cached_property`; tests monkeypatch `_engine` and expect
+    helpers to bind sessions directly from the current object.
+- `UserAccount` has no `guild_id`. Balances, VIP, loans, check-ins, admin flags,
+    and leaderboards are cross-server by design.
+- Every balance mutation should write a `PointTransaction` row unless the helper
+    intentionally skips `delta == 0`.
+- `credit_with_repayment` is the income path for message reward, chat reward,
+    and casino payout. It auto-applies 50% of positive income to loan principal.
+    `/give` recipients are not auto-repaid.
+- Loan helpers reset stale principal lazily at Asia/Taipei midnight. Borrowing
+    over the remaining daily cap clamps to the remaining cap; only zero remaining
+    credit rejects.
+- Admin adjustments use `adjust_balance(..., allow_negative=..., note=...)` and
+    `MANUAL_ADJUSTMENT`, not casino transaction kinds.
+- `credit_limit(user, *, is_vip)` is pure and tiered by Discord account age.
+    Keep the tier table inline in that function.
+- `/balance`, `/borrow`, `/repay`, `/checkin`, `/vip`, and admin error replies
+    are private. Public economy embeds schedule cleanup after send.
+- `cli.py` grants the global 5,000-point message reward for every non-bot
+    message. `gen_reply.py` adds token-based chat reward only after streamed AI
+    replies. Other cogs should not invent action rewards.
 
-Models are `@property` methods on `ReplyGeneratorCogs` (`fast_model`, `slow_model`, `image_model`, `video_model`) returning `ModelSettings(name=…, effort=…)`. **Model strings swap frequently** — read them from these properties rather than memorising them, and update the property bodies, not the call sites. **`slow_model` is time-of-day dispatched**: during a known peak window it falls back to a cheaper model; otherwise the regular one. Don't replace this with a static return — the peak-hours fallback is the whole point.
+## Games
 
-All chat/routing/captioning use the **OpenAI Responses API** (`client.responses.create`), not Chat Completions. Streaming results are always named `responses` and iterated as `response` — keep this naming.
+- Pure rules live in `cogs/_games/blackjack.py` and
+    `cogs/_games/dragon_gate.py`; production uses `random.SystemRandom`, tests
+    inject seeded `random.Random`.
+- Lobby scaffolding lives in `cogs/_games/lobby.py`. Do not convert the base
+    views to `abc.ABC`; project style uses `raise NotImplementedError`.
+- Casino settlement is one atomic step after the round resolves. Validate or
+    clamp bets up front, then settle through the game settlement helpers.
+- Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and
+    peek. No Double after Split. Split-hand 21 is not natural Blackjack.
+- Blackjack dealer decisions call `DealerAI.decide_blackjack_action` after all
+    player hands finish. Keep deterministic fallback rules so rounds never stall.
+- Blackjack player settlements mirror `-player_delta` into the bot's house
+    ledger through `apply_round_settlement`.
+- Dragon Gate is backed by the shared `jackpot_pool` row
+    `game_id="dragon_gate"`. Do not route it through the house ledger.
+- Dragon Gate ante, losses, wins, leave refunds, and timeout refunds settle
+    through jackpot helpers. Losses clamp at balance 0.
+- On Dragon Gate leave or timeout, positive per-player running delta is refunded
+    into the pool unless the whole-pool win branch already cleared the jackpot.
+- Interactive game and lobby views use 180-second idle timeouts. Terminal public
+    messages schedule deletion 180 seconds after settlement or send.
+- `build_dealer_talk_embed` is the dedicated dealer-talk embed. In-progress and
+    final game messages may send multiple embeds in order
+    `[dealer talk, main, history?]`.
+- Discord markdown headings render reliably only inside `embed.description`.
+    Put card, total, and result sections there; use fields for auxiliary details.
+- Dealer identity comes from `bot.user`. The message is still sent by the bot
+    account so `log_msg.py` records the speaker correctly.
+- `GamesCogs.dealer` is a `cached_property`. Each cog with an LLM client owns
+    its own client intentionally.
 
-Flow per `on_message`:
+## Other Cogs
 
-1. **Trigger gate**: DMs always respond. Guilds respond only if `<@{bot_id}>` is in `message.content`. A Discord *reply notification* alone doesn't qualify — this prevents self-summoning when users reply to the bot's own embeds.
-2. **Route**: `_route_message` calls the fast model via `client.responses.parse(text_format=RouteDecision)` to pin output to `IMAGE` / `VIDEO` / `SUMMARY` / `QA`. `ValidationError` (e.g. safety filter blanked the output) defaults to `QA`.
-3. **Dispatch**:
-    - `IMAGE` → `client.images.edit` if image inputs exist, else `client.images.generate`; then a fast-model caption pass.
-    - `VIDEO` → `client.videos.create` + poll until `completed`, upload MP4.
-    - `SUMMARY` → slow path, `SUMMARY_PROMPT`, `history_limit=100`.
-    - `QA` → slow path, `REPLY_PROMPT`, `history_limit=30`.
-4. **Slow path** (`_handle_message_reply` → `_handle_streaming`): streams `response.output_text.delta` and appends a footer with model name, token usage, cost, and chat-reward balance. The balance comes from `_award_chat_points` (calls `credit_with_repayment`) on `response.completed`; on DB failure the footer degrades gracefully rather than blocking the reply. The first 30 chars create a `reply`; subsequent chunks `edit` it. A `🌐` reaction is added if any `response.output_text.annotation.added` event fires (web search was invoked).
-5. **Per-provider tools**: `ModelSettings.tools` dispatches by substring match on `name` to Gemini's `googleSearch`+`urlContext`, Claude's `web_search_*`+`web_fetch_*`, or OpenAI's `web_search`. Extend that property for new providers.
-6. **Progress UX**: status is communicated via reactions on the **user's** message (🤔 → 🔀 → 🎨/🎬/📖/❓ → 🆗, plus 🌐 / ❌). The bot never sends an intermediate "thinking…" message — preserve this.
-7. **Attachment ingestion** (`_get_attachment_parts`) is gated by `get_supported_modalities(model_name=slow_model.name)`. Attachments whose modality the slow model doesn't accept are dropped before any LLM call. Images go through `_image_to_part` (PIL resize + JPEG re-encode, sent as `input_image` data URI); everything else (`video/*`, `application/pdf`, `text/plain`, …) goes through `_attachment_to_part` as `input_file`. For Discord embeds, `media.discordapp.net` `proxy_url` is preferred over the origin URL since CDN links expire.
-8. History / reference / current messages are fetched in parallel via `asyncio.gather`. The tasks list is built in a `for` loop on its own line, then gathered — don't collapse into a comprehension.
+- `parse_threads.py` watches for `threads.net` and `threads.com` URLs and uses
+    reactions for status. It adds no reward beyond the global message reward.
+- `video.py` keeps progress text on the deferred original message and sends the
+    final file via followup. Do not collapse file delivery into
+    `edit_original_message`; Discord may drop content on multipart edits.
+- `auto_unmute.py` clears timeouts applied to the bot, finds the moderator from
+    recent audit log entries, and replies in the last active human channel or the
+    guild system channel.
+- `log_msg.py` logs human messages and this bot's own replies, never third-party
+    bots. Streaming replies converge via UPSERT on `discord_message_id`.
+- `log_msg.py` owns module-level `_sql_engine`; do not move it to a
+    per-message cached property.
 
-### Economy (`cogs/economy.py` + `cogs/_economy/database.py` + `typings/economy.py`)
+## Config And Types
 
-Persistent point balances backing the global message reward, AI chat reward, casino games, house ledger, loans, daily check-in, VIP, admin adjustments, and `/balance` / `/checkin` / `/vip` / `/leaderboard` / `/loss_leaderboard` / `/give` / `/house` / `/borrow` / `/repay` / `/admin`.
+- Environment-backed config classes use `pydantic_settings.BaseSettings` with
+    explicit `validation_alias=AliasChoices("ENV_NAME")`. `.env` is loaded at
+    import time.
+- Pure shared result types, enums, and constants live under
+    `src/discordbot/typings/` when they do not depend on cogs or utils.
+- Use Pydantic models for structured data. Do not introduce `dataclass`.
+- Keep `Field(description=..., examples=...)` populated for configurable
+    values.
 
-- **DB**: SQLite at `data/economy.db` (NOT `messages.db`). The `AsyncEngine` is a module-level singleton (`_engine`). Do not move it onto a `cached_property` — that's the same memory-leak pattern `log_msg.py` already learned. Each helper opens `AsyncSession(bind=_engine, expire_on_commit=False)` directly so tests can monkeypatch `_engine` and the swap takes effect immediately.
-- **Schema**:
-    - `UserAccount(user_id PK, ...)` — **no `guild_id`**, points are cross-server by design (so `/leaderboard`, loans, VIP, check-in, and admin status are all cross-server). Loan / VIP / admin / check-in columns live on the same row so message reward / chat reward / casino payout can pay debt and check-in can update streak inside one UPDATE. `name` / `avatar_url` are last-seen Discord metadata refreshed opportunistically on economy writes.
-    - `PointTransaction` — append-only audit log; every balance-mutating helper writes one row via `_log_transaction_in_session`. `delta == 0` is intentionally skipped to keep push settlements out of the log. `kind` values come from `typings.economy.TransactionKind`. Indexed on `(occurred_at, kind)` so `top_losers` can scan one day of casino rows cheaply.
-    - `JackpotPool(game_id PK, pool_balance, total_contributed, total_claimed, seeded_amount, updated_at)` — per-game shared jackpot, currently only used by Dragon Gate. Seeded by `_ensure_schema` via `ON CONFLICT DO NOTHING`; the seed list lives in `_JACKPOT_SEEDS`. Seeded pools are automatically topped back up to their seed amount whenever they are drained. `seeded_amount` is lifetime system-seed bookkeeping only — the bot's `user_account` row is **not** decremented to fund the seed (it's "on the house"). `apply_jackpot_settlement(player_id, player_delta, game_id)` is the single-player convenience wrapper and returns `(player_balance, jackpot_balance, applied_player_delta)`; `apply_jackpot_settlement_batch(game_id, settlements)` is the public multi-player atomic path for lobby antes and reports `applied_player_deltas`. There's no audit row for the pool itself; positive player deltas use `_credit_with_repayment_in_session`, while negative Dragon Gate deltas use `_apply_clamped_delta_in_session` so the pool only receives the actual debit.
-    - **Legacy migration**: `_ensure_schema()` `ALTER TABLE`-adds `avatar_url` / `is_vip` / `last_checkin_at` / `checkin_streak` / `is_admin` with column-level defaults so existing rows backfill cleanly, and drops obsolete `loan_interest` / `loan_last_accrual_at` columns on startup (older DBs declared them `NOT NULL` without a default).
-- **Design rules** (read `cogs/_economy/database.py` for full signatures):
-    - **50% auto-repay**: `credit_with_repayment` is the income path for message reward / chat reward / casino payout — half of every positive event pays down outstanding principal. `/give` recipients are **not** auto-repaid (gifts shouldn't be confiscated).
-    - **No interest, daily reset**: every loan helper calls `_reset_expired_loan_in_session` first; any loan opened before today's Taipei midnight has `loan_principal` (and `loan_opened_at`) cleared as a lazy daily reset before anything else runs. If `/borrow` requests more than the remaining daily credit, `borrow` clamps the disbursement to that remaining credit; only zero remaining credit is rejected.
-    - **Manual balance changes**: admin tooling uses `adjust_balance(..., allow_negative=..., note=...)`, which writes `MANUAL_ADJUSTMENT` audit rows and does not pollute casino leaderboards or house P&L. Discord-side `/admin refund_tax` credits points, `/admin collect_tax` debits points and clamps at zero; both are gated by `user_account.is_admin`. Manage that flag with `scripts/manage_admin.py`, not Discord commands.
-    - **Borrow concurrency**: `borrow` uses a bounded SELECT-then-conditional-UPDATE retry loop gated on the observed balance / principal / opened_at state, so parallel requests cannot exceed the same remaining credit limit.
-    - **House ledger can go negative**: `apply_round_settlement` applies both the player delta and dealer mirror in one transaction. Player losses and dealer deltas are signed, unclamped writes, so a finished loss can drive the player's balance negative if they spent the bet between deal and settle.
-    - **Casino settlement is one atomic step**: slash games validate/clamp the bet up front but don't mutate balance until the round resolves through `cogs/_games/settlement.py:settle_wager`, which applies the signed `player_delta` and dealer mirror via `apply_round_settlement`.
-    - **`credit_limit(user, *, is_vip)`** is pure and tiered by Discord account age (snowflake-derived): \<30d→1k, \<180d→10k, \<1y→50k, \<3y→200k, ≥3y→500k. Doubled for VIPs. Inline tier table in the function body — don't extract a module-level constant.
-    - **VIP Blackjack bonus** (`apply_vip_blackjack_bonus`) returns `int(delta * 3 // 2)` only when `delta > 0` and `is_vip`. Applied at `settle_wager` time so the rule lives in the game layer.
-    - **Check-in concurrency**: `checkin` is SELECT-then-conditional-UPDATE in a retry loop gated on the observed `last_checkin_at`, so two concurrent calls can't double-credit on the same Taipei day. New users go through `INSERT … ON CONFLICT DO NOTHING` and fall back to the UPDATE path on conflict.
-    - **Leaderboards exclude the house**: `top_n` is always called with `(bot.user.id,)`. `top_losers` sums `CASINO_BET` + `CASINO_PAYOUT` since today's Taipei midnight and is read-only.
-- **Private economy replies**: `/balance`, `/borrow`, `/repay`, `/checkin`, `/vip`, and admin error replies are ephemeral/private. `/leaderboard`, `/loss_leaderboard`, `/house`, `/give` result embeds, and successful `/admin refund_tax` / `/admin collect_tax` embeds stay public and schedule cleanup after send. `/balance` shows the `未還本金` field when debt exists, a 👑 VIP badge when applicable, and a `帳號年齡 X 天 · 借款上限 Y · 每天 00:00 Asia/Taipei 重置` footer either way.
+## Coding Conventions
 
-### Games (`cogs/games.py` + `cogs/_games/`)
+- Ruff is formatter and linter. Use narrow `# noqa: <rule>` comments with a
+    reason when needed.
+- mypy runs in pre-commit. `Any` is a last resort.
+- Keyword arguments are required for normal function calls, including
+    single-argument calls. Do not add bare `*` to new function signatures solely
+    to force keyword-only usage.
+- Allowed positional idioms include `len(x)`, `str(x)`, `Path("x")`, exception
+    constructors, variadic collectors, and `logfire.info("message")`.
+- Avoid intermediate one-level aliases such as `usage = responses.usage` when
+    direct access is clearer.
+- LLM latency matters. Do not add extra LLM calls for cosmetic improvements.
+- Comments should explain non-obvious behavior only.
+- `docs/` is generated by `make gen-docs`; do not hand-edit it.
+- Do not touch the README badge block unless the user explicitly asks for badge
+    maintenance.
 
-Slash commands `/blackjack` and `/dragon_gate`, each opens a lobby against an AI dealer.
+## Documentation Split
 
-All mini-games support multiplayer. The default flow is: initiator opens a game, the bot shows join buttons for other players, then the initiator starts the game. Add game-specific setup steps in the lobby only when the rules need them. A single player must still be allowed to start so the same commands keep working in DMs.
-
-- **Pure rules** live in `cogs/_games/blackjack.py` and `cogs/_games/dragon_gate.py`. Side-effect-free; tests inject a seeded `random.Random`, production uses `random.SystemRandom()`.
-- **Lobby base classes** live in `cogs/_games/lobby.py`. `BaseGameLobbyView(ui.View)` owns the shared join / leave / start scaffold, the participant lock, `on_timeout`, `_send_notice` (with `is_done()` fallback), `on_error` (logfire), `_disable_buttons`, and an optional `max_players` class attr. Subclasses override `_build_lobby_embed(status)` and `_start_game(message)`. `BaseJackpotLobbyView(BaseGameLobbyView)` adds the pre-game ante settlement loop (`_settle_pregame_antes` → one `apply_jackpot_settlement_batch` call for every seated participant) and an `_jackpot_snapshot` field; subclasses declare `game_id` + `ante` ClassVar and override `_start_game_after_antes(message, final_balances)`. **Do not use `abc.ABC` here** — `nextcord.ui.View.__class__ is type`, so multiple inheritance works, but the project prefers `raise NotImplementedError` for thin base classes. New jackpot game = subclass `BaseJackpotLobbyView` + two hook implementations.
-- **`PrepareParticipant` / `RefreshParticipants`** (in `lobby.py`) are the uniform callback protocols both lobby kinds share. `PrepareParticipant` returns a `GameParticipant | None`; `RefreshParticipants` returns `RefreshParticipantsResult(participants=..., dropped_names=...)`. Game-specific wager / mode / insufficient-balance embed builders are bound by the caller (`/blackjack` and `/dragon_gate` in `games.py`) via `functools.partial` so the lobby never sees `requested_bet` or game-specific embed copy directly.
-- **Natural Blackjack**: `is_blackjack` means exactly two cards totaling 21. Player natural settles immediately at 1.5×. Dealer natural also settles immediately unless player also has natural (push). The final embed adds an "提前結束原因" field when this skips the Hit / Stand flow. **Split hands that hit 21 are NOT natural** — `settle_hand` (in `blackjack.py`) rewrites a split-hand `blackjack` outcome to `win` at 1:1.
-- **Player actions**: Hit / Stand / **Double Down** / **Split** / **Surrender**. The state machine lives in `BlackjackRound`; each participant now owns a list of `BlackjackHandState` rows (one entry by default, two after Split). `_advance_or_finish` walks `current_hand_index` inside the active player before moving on to the next player. **No DAS** (`can_double(..., allow_after_split=False)`) is hard-wired into the view. Split Aces auto-finish after one draw on each half. Late Surrender is gated on `actions_taken == 0` and `peeked_blackjack == False`.
-- **Insurance & peek (American rule)**: when the dealer up-card is **A**, `BlackjackRound.deal_initial` flips `phase = "insurance"` and exposes Yes/No buttons on row 1 of `BlackjackView`; `_sync_insurance_button_visibility` removes those controls outside the insurance phase. `_maybe_close_insurance_phase` peeks the hole card once every seated player decides; a peek BJ short-circuits the round to `phase = "settled"` and pays insurance side bets 2:1. When the up-card is **10-value** the deal does a silent peek; a peek BJ skips player actions entirely. Even Money is intentionally **not** implemented — a player BJ vs dealer A still goes through the normal insurance flow.
-- **AI Blackjack dealer phase**: `BlackjackLobbyView` creates rounds with `auto_play_dealer=False`; after every hand stands/busts, `_edit_dealer_thinking_locked()` edits the table into a disabled `莊家正在思考 hit / stand` state, then `BlackjackView._play_dealer_locked()` calls `DealerAI.decide_blackjack_action()` via `client.responses.parse(text_format=BlackjackDealerDecision)`. Blackjack decisions use `DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS`, separate from the shorter banter timeout, so medium-effort models have room to respond. The table state passed to the prompt now includes `莊家是否 soft total` and `莊家是否 soft 17` so the model can pick H17 / S17 dynamically; the deterministic fallback stays at S17 (`< 17 hit`, `>= 17 stand`). Guard rails force obvious actions (≤11 hit, 21 stand), fallback to the basic rule on timeout/parse failure, and show a compact decision path in the final embed.
-- **Dragon Gate** (射龍門): two pillar cards make an opening, third card resolves the bet. Adjacent non-pair pillars have no opening and are immediately redealt without counting as a turn. `gate_win` pays 1:1, `pillar_hit` charges up to 2× into the pot, `outside_lose` charges up to 1×. Pair pillars require a `higher`/`lower` choice first; `pair_win` pays 1:1, `pair_pillar_hit` (super-pillar-hit) charges up to **3× into the pot**, `pair_lose` charges up to 1×. Losses clamp at balance 0.
-- **Dragon Gate is a global-jackpot game**: there is no per-round pot. A single row in `jackpot_pool` (`game_id = "dragon_gate"`) is shared across every table; the ante (fixed `ANTE = 5_000`), wins, and actual debited losses all flow into / out of that row. The pool is seeded with 100,000 by `_ensure_schema` (on the house; `seeded_amount` is lifetime system-seed bookkeeping, the bot's own user_account is **not** decremented). Whenever a seeded pool is drained, jackpot settlement replenishes it back to 100,000 in the same SQLite transaction. Lobby antes are charged through one `apply_jackpot_settlement_batch(...)` call; each active turn and leave/timeout refund uses `apply_jackpot_settlement(...)`. The `MIN_BET = 10_000` floor and `max_bet = pool` cap are read from the live snapshot held in `DragonGateView._jackpot_snapshot`, refreshed every settlement.
-- **Per-player leave + 逆贏不拿**: a `Leave` button (row 2) lets any seated player withdraw without ending the table. A player whose loss leaves them at balance 0 is automatically withdrawn; other active seats keep playing, and the table finishes only when no active participants remain. On leave / timeout, if `round_state.player_delta(user_id) > 0` (player is ahead since joining), that surplus is refunded back into the jackpot (`apply_jackpot_settlement(player_delta=-delta)`) up to the player's current balance; a non-positive delta is left untouched (losses already flowed into the pool at bet time). The whole-pool win branch in `_place_bet_locked_by_interaction` deliberately skips this refund — when the pool is naturally cleared, winners keep their winnings and the system seed refills the jackpot for the next table. `DragonGateView.interaction_check` opens the Leave button to every non-withdrawn participant while keeping high/low and bet-select restricted to the active turn's player. `DragonGateRound.withdraw(user_id)` advances rotation past withdrawn seats and flips `finished=True` once everyone is out.
-- **Shared settlement** lives in `cogs/_games/settlement.py`. `settle_blackjack_player(round_state, player, ...)` is the multi-hand entry point used by `BlackjackView._finalize_locked`: it walks every `BlackjackHandState` through the pure `settle_hand(...)` helper, computes the insurance delta (`+bet*2` on peek BJ, `-bet` otherwise), sums hand deltas + insurance into `base_delta`, runs `apply_vip_blackjack_bonus` once at the **player aggregate** level, and writes a single atomic `apply_round_settlement(...)`. `settle_blackjack_round(hand=...)` is kept as the legacy single-hand wrapper for older callers / tests. Dragon Gate does **not** go through `apply_round_settlement` — it has its own `apply_jackpot_settlement(player_id, player_delta, game_id)` in `cogs/_economy/database.py` that routes the counter-party flow into `jackpot_pool` instead of the dealer ledger.
-- **Response cleanup** lives in `cogs/_games/cleanup.py`. Game response messages are persisted by `(channel_id, message_id)` in `data/game_cleanup.db` as soon as the round message is created, so `GamesCogs.on_ready` can delete stale messages left by a previous bot process. Interactive game/lobby views use 180-second idle timeouts, meaning component interactions reset the timer. Terminal public messages then schedule deletion 180 seconds after settlement/send: final casino embeds, zero-balance rejection embeds, public economy lookups (`/leaderboard`, `/loss_leaderboard`, `/house`), `/give` result embeds, and successful `/admin refund_tax` / `/admin collect_tax` embeds. Private `/balance` / `/borrow` / `/repay` / `/checkin` / `/vip` responses and admin error replies are intentionally not tracked. Keep Blackjack timeout settlement separate so abandoned hands still settle before their final embed cleanup starts.
-- **Presentation** (`cogs/_games/presentation.py`) centralizes colors, emoji constants, and Markdown helpers (`card_line`, `metadata_line`, `lobby_participant_line`, `player_result_title`, `settlement_metadata`, `build_dealer_talk_embed`). `莊家餘額` is an absolute ledger balance with no leading `+`; only the player round delta shows a sign.
-- **Embed layout strategy**: Discord renders `#`/`##`/`###` headings reliably only inside `embed.description` (and not at all inside `inline=True` fields). Any heading-driven content (cards, totals, results) belongs in description; auxiliary text lives in fields or footer. `set_thumbnail(url=owner.avatar_url)` puts the initiator's avatar in the top-right of every game embed (lobby/in-progress/final).
-- **Multi-embed messages**: in-progress and final messages send multiple embeds in one `message.edit(embeds=[...], view=...)`. Order is `[dealer talk, main, history?]`. The dealer talk embed (`build_dealer_talk_embed`) uses `set_author(name, icon_url)` so the dealer name+avatar shows in the top-left of that embed. Dragon Gate adds a third history embed built by `build_dragon_gate_history_embed` — a single code block with each turn and a cumulative scoreboard, using stable `account_name` instead of long guild nicknames. `DragonGateView.in_progress_embeds()` is the shared helper that builds this list, called by both `DragonGateLobbyView._start_game_after_antes` and `DragonGateView` action callbacks.
-- **`BlackjackView`** (in `cogs/_games/blackjack_views.py`) drives Hit / Stand / Double / Split / Surrender on row 0 (`custom_id="bj:hit"/...`/`bj:surrender"`) and Insurance Yes/No on row 1 (`bj:insure_yes` / `bj:insure_no`) only while `phase == "insurance"`. `interaction_check` opens the insurance buttons to any participant who hasn't decided yet during `phase == "insurance"`, and limits action buttons to the active player otherwise. `_sync_buttons` recomputes `disabled` on every embed refresh using `can_double` / `can_split` / `can_surrender` plus a `balance_at_start - committed_wagers(player)` solvency check, so split halves and doubled hands cannot consume more than the player started with. `on_timeout` auto-declines insurance for everyone still pending and then auto-stands every unresolved hand. `finalize` is guarded by an `asyncio.Lock` + `_settled` flag so concurrent callbacks can't pay out twice. The view also accepts a `dealer_line` parameter so the lobby's `taunt_bet` line flows into the first dealer talk embed (don't revert to the hard-coded default). `BlackjackLobbyView` is a thin subclass of `BaseGameLobbyView` (`max_players = MAX_BLACKJACK_PLAYERS`); it only adds `requested_bet` / `dealer_id` fields and implements `_build_lobby_embed` + `_start_game`.
-- **`DragonGateView`** drives high/low button + bet StringSelectMenu + the per-player Leave button. The Row 0 buttons (`同點猜大`/`同點猜小`) only enable when the current pillars are a pair and direction is unchosen; selected direction is marked with ` ✓` suffix. The Row 1 StringSelectMenu (`custom_id="dg:bet"`) has three options: `底注 X` (min), `全池 X` (max), `自訂` (opens `DragonGateBetModal`). Row 2 holds `離桌` (`custom_id="dg:leave"`) which is gated by `is_active(user_id)` and runs the 逆贏不拿 refund + rotation advance via `round_state.withdraw(user_id)`. The `_handle_bet_choice(choice, interaction)` helper routes the select value; tests call it directly instead of going through Discord's component plumbing. `sync_controls` updates button labels/disabled states and the select's options/placeholder/disabled — including a fresh min/max read from `_jackpot_snapshot` — in lockstep after every settlement.
-- **Dealer hint visibility**: the embed hides the dealer's first card and shows the second. `dealer_visible_value(...)` must reflect this so `DealerAI.hint(...)` never sees hidden-card info.
-- **Dealer identity is dynamic**: `_dealer_identity()` returns a `DealerIdentity(dealer_id=..., dealer_name=..., dealer_avatar_url=...)` snapshot from `bot.user`. Dealer banter goes into the dedicated dealer talk embed (`build_dealer_talk_embed`) with bot avatar as the embed author icon; `log_msg.py` records the speaker correctly because the message is still sent by the bot account.
-- **House ledger row**: every **Blackjack** player settlement mirrors `-player_delta` into the bot's own `UserAccount` row through `apply_round_settlement`. Excluded from `/leaderboard`, surfaced separately by `/house`. Dragon Gate **does not** touch the house ledger — its counter-party is `jackpot_pool`, so `/house` numbers reflect Blackjack P&L only.
-- **Dealer AI** is `cogs/_games/dealer.py:DealerAI` — a thin wrapper around an `AsyncOpenAI` client. Banter entry points (`taunt_bet`, `settle`, `hint`, `table_settle`) fall back to hard-coded lines; Blackjack decisions (`decide_blackjack_action`) fall back to basic hit-under-17 rules so rounds never stall. Prompts live in `cogs/_games/prompts.py` as fixed strings (no `{dealer_name}` placeholder — the dynamic name only flows into the embed). Keep `GameKind` labels in sync when adding games.
-- **`GamesCogs.dealer`** is a `cached_property`. Each cog with an LLM client (this one, `ReplyGeneratorCogs`, `AutoUnmuteCogs`) owns its own — three independent clients are intentional, not duplication.
-
-### Threads parsing (`cogs/parse_threads.py`)
-
-Listener that watches `on_message` for Threads URLs (`threads.net` / `threads.com`) and replies with parsed embeds + downloaded videos. Status communicated via reactions (🔗 → 🆗 / ⚠️ / ❌). Adds no extra action reward beyond the global base message reward.
-
-### Video downloader (`cogs/video.py`)
-
-`/download_video` around `utils.downloader.VideoDownloader` (yt-dlp). The `_deliver` helper is shared between the direct path and the "file too big, retry at low quality" fallback — don't duplicate message-build logic in the branches. Pays no points.
-
-**Status text and the file go through different mechanisms on purpose.** Progress text rides on the deferred placeholder via `interaction.edit_original_message(content=...)`; the final file goes out as a fresh `interaction.followup.send(content=..., file=...)`, then the placeholder collapses to `"✅"`. **Discord drops `content` when a multipart file is attached to `edit_original_message`** — an earlier version pushing both at once silently lost the text. Do not collapse `_deliver` back into a single edit.
-
-### Auto-unmute (`cogs/auto_unmute.py` + `cogs/_auto_unmute/prompts.py`)
-
-When a moderator times out the bot itself, this cog detects the `on_member_update` transition to a future-dated `communication_disabled_until`, looks up the moderator via the audit log, clears the timeout, and posts a single sassy AI reply.
-
-- **Reply target**: `_last_active_channel[guild.id]` (updated on every human `on_message`), falling back to `guild.system_channel`. Discord's `member_update` audit entry doesn't carry a channel — this is the only reliable handle.
-- **Audit lookup walks 5 entries** because the `member_update` bucket covers nickname / mute / deafen too; pick the entry whose diff carries `communication_disabled_until`.
-- `member.edit(timeout=None, …)` fires `on_member_update` again; the early return at the top of the listener prevents an infinite loop.
-- `nextcord.Forbidden` (missing `view_audit_log`) is logged and swallowed; the AI gripes at an anonymous moderator.
-
-### Config (`src/discordbot/typings/`)
-
-Each config is a `pydantic_settings.BaseSettings` with `validation_alias=AliasChoices("ENV_NAME")` so env-var names are explicit. `.env` is auto-loaded at import time. `ModelSettings(name, effort)` builds the Responses-API reasoning block and dispatches the right provider's web-search tool; accepted input modalities are looked up via `utils/model_pricing.get_supported_modalities` (kept out of `typings/` to avoid `utils/` imports).
-
-`typings/economy.py` holds pure frozen `pydantic.BaseModel` types, the `TransactionKind` enum, and tunable constants (`BASE_MESSAGE_REWARD_AMOUNT`, `BASE_CHECKIN_REWARD_AMOUNT`, `CHECKIN_STREAK_CYCLE`, `VIP_PURCHASE_COST`). Pure types go here even when they're not env-backed config, as long as they don't pull in `cogs/` or `utils/`. Single-caller numeric coefficients (e.g. the day-1→day-7 streak step) are inlined into their function body, not exported.
-
-Keep `Field(description=..., examples=...)` populated when adding configurable values — descriptions are load-bearing here.
-
-### Logging (`src/discordbot/__init__.py`)
-
-`setup_logging()` configures `logfire` with `send_to_logfire=False` (local-only) and tees stdout into `data/logs/<timestamp>.log` via a `_TeeStream` that strips ANSI escape codes. A `LogfireLoggingHandler` is attached to the `nextcord.state` logger. Use `logfire.info / warn / error(..., _exc_info=True)` in new code — avoid stdlib `logging.*`.
-
-### Message logging (`cogs/log_msg.py`)
-
-Every loggable `on_message` is UPSERTed into the `messages` table in `data/messages.db`. The engine is a module-level singleton (`_sql_engine`) — do not move it back onto a per-instance `cached_property` (that was the dominant memory leak). SQLite I/O stays off the event loop via `asyncio.to_thread`; connection PRAGMAs enable WAL + `busy_timeout`.
-
-**Logs human messages AND this bot's own replies — never third-party bots.** The author filter lives in `LogMessageCog._should_log`; `MessageLogger.log` itself is filter-free so a future caller can log any message without re-implementing the gate.
-
-**Streaming bot replies are captured via UPSERT.** Both `on_message` and `on_message_edit` go through the same INSERT keyed by `discord_message_id` with a partial unique index; `ON CONFLICT DO UPDATE` refreshes content/attachments and pins `created_at`. The multi-edit streaming flow in `_handle_streaming` collapses into one row mirroring the final on-Discord state.
-
-### Utilities (`src/discordbot/utils/`)
-
-- `model_pricing.py` — lazy LiteLLM price-table fetch + on-disk cache at `data/model_prices.json`. Exposes `get_token_rates()` and `get_supported_modalities()`. Defaults to `{"text", "image"}` for under-populated upstream entries. Returns `(0.0, 0.0)` for unknown models so the footer shows `$0.00000000` rather than a bogus estimate.
-- `images.py` — the image-edit path passes `use_b64=False` to get raw `bytes` (not base64).
-- `downloader.py` — yt-dlp wrapper. `DownloadResult` is a context manager that unlinks the file on exit.
-
-### Data dir (`data/`)
-
-- `messages.db` — message log.
-- `economy.db` — point balances, daily-resetting loan principal, VIP/admin flags, check-in streak, `point_transaction` audit log, `jackpot_pool` (per-game shared jackpots; only Dragon Gate currently registered).
-- `game_cleanup.db` — pending public game/economy response `(channel_id, message_id)` records for restart cleanup.
-- `model_prices.json` — cached LiteLLM price table.
-- `downloads/`, `threads/` are ephemeral scratch cleaned up by their respective cogs.
-
-## Coding conventions
-
-- **Ruff** is formatter + linter, configured in `pyproject.toml`. Don't blanket-`# noqa`; prefer the narrowest possible `# noqa: <rule>` with a one-line reason.
-- **mypy** runs in pre-commit. `Any` is a last resort.
-- **Keyword arguments are required for every call**, including single-arg ones (`create_engine(url=...)`, `re.compile(pattern=...)`, `BytesIO(initial_bytes=...)`). This is a call-site style rule: write `f(a=1, b=2)` when calling functions, but do not add a bare `*` in new function signatures solely to force keyword-only arguments. Prefer `def f(a: int, b: int) -> None:` over `def f(*, a: int, b: int) -> None:` unless an external API or correctness issue explicitly requires keyword-only parameters. Exceptions:
-    1. Signature-level positional-only (`Path("a/b")`, exception constructors, `logfire.info("…")`).
-    2. Variadic `*args` collectors (`contextlib.suppress(Exception, OSError)`, `AliasChoices("ENV_NAME")`).
-    3. One-line stdlib idioms (`len(x)`, `str(x)`, `s.split(",")`).
-- **No intermediate one-level aliases** (`usage = responses.usage` → use `responses.usage` directly).
-- **`responses` / `response` naming**: LLM SDK return objects are named `responses` (streaming or not); loop variable is `response`.
-- **LLM latency matters** in the request path. No extra LLM calls for cosmetic improvements; no executor/`asyncio.gather` scaffolding for ~100 ms CPU work without measuring.
-- **Comments**: never narrate what code says or reference PRs / issues.
-- **Docs**: `docs/` is generated; `make gen-docs` regenerates it. Don't hand-edit.
-
-## Non-obvious things to remember
-
-- **Do not touch the README badge block.** It may be outdated but is curated.
-- **Prompts live only in `cogs/_gen_reply/prompts.py`.** Service logic stays in `gen_reply.py`; don't mass-extract for symmetry.
-- DO NOT USE `dataclass`, use `pydantic` instead.
-- DO NOT ADD TOO MANY `_*` for global args and module private constant.
-- **`AsyncOpenAI` is a `cached_property`** on each cog that needs it. Lazy construction is intentional — moving it into `__init__` would fail at import time in tests where env vars aren't loaded. Three independent clients is intentional.
-- **Gemini quirk**: when `reasoning.effort != "none"`, the OpenAI-compat layer prepends `\n\n\n` to streamed text. `_handle_streaming` strips leading newlines on the first delta (`content_started` flag) — don't remove that guard.
-- **Gemini thought summary only flows through the Responses API.** Chat Completions silently drops it via LiteLLM. With `reasoning.effort != "none"` and `reasoning.summary` set, the Responses API emits both `reasoning_summary_text.delta` (condensed) and `reasoning_text.delta` (full). Don't swap call sites back to Chat Completions for "simplicity".
-- **Responses API role ↔ content-type pairing is strict on current OpenAI models** (Gemini/Claude via LiteLLM are lax, which has masked violations in the past — so the same payload can silently work on the slow model and fail after a swap):
-    - `role=user/system/developer` → content parts `input_text` / `input_image` / `input_file`.
-    - `role=assistant` → content parts `output_text` / `refusal` only.
-    - Build inputs with `EasyInputMessageParam` + `ResponseInputTextParam` / `ResponseInputImageParam` / `ResponseInputFileParam`; `cast("ResponseInputParam", message_list)` only at the SDK boundary.
-    - Prefer the string-content shorthand when there are no attachments — the SDK picks the right part type and preserves assistant-role semantic weighting.
-    - Any processed Discord message with attachments falls back to `role=user` (since `output_text` can't hold `input_image`/`input_file`); identity is carried via the `{display_name} ({name}) [id: {id}]:` prefix from `_get_cleaned_content`.
-    - Separator messages use `role=system`, not `developer`, for Gemini/Claude compatibility via LiteLLM. The real system prompt goes through `instructions`.
-- **OpenAI SDK image-edit quirk**: `client.images.edit(image=...)` needs raw `bytes`, not `ImageInputReferenceParam` dicts. `_handle_image_reply` extracts via `get_image_data(use_b64=False)`.
-- **Per-token pricing comes from `utils.model_pricing`**, fetched lazily from upstream LiteLLM JSON and cached at `data/model_prices.json`. If a new model shows `$0.00000000`, the upstream JSON hasn't catalogued it yet — wait or delete the cache to force a refresh. Do NOT hardcode rates in `gen_reply.py`.
-- **`message.snapshots` (Discord forwards) are intentionally NOT walked** by `_get_cleaned_content` or `_get_attachment_parts`. Forwards are rare; doubling per-message work isn't worth it. Revisit if they become common.
-- **`BELIEF` (in `_gen_reply/prompts.py`) is currently disabled** in `_handle_message_reply` — the model treated it as too prescriptive and refused benign requests. The argument still flows through the signature for a future re-enable; don't delete it.
-- **Point rewards:** `cli.py` pays the global 5,000-point `MESSAGE_REWARD` for every non-bot `Message`; `gen_reply.py` adds token-based `CHAT_REWARD` only when the bot streams an AI reply. Other cogs should not call `adjust_balance(...)` or invent per-action rewards; that helper is for explicit admin maintenance only.
+- `README.md` is the concise, canonical user-facing README.
+- `README.zh-CN.md` and `README.zh-TW.md` mirror `README.md` structure.
+- `CONTRIBUTING.md` is developer-facing and stays in English.
+- `CLAUDE.md` is AI-agent-facing. Keep it dense and project-specific.
