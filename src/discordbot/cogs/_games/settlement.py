@@ -21,6 +21,7 @@ from discordbot.cogs._games.blackjack import (
     hand_value,
     settle_hand,
     is_blackjack,
+    dealer_up_card,
 )
 from discordbot.cogs._economy.database import (
     get_vip,
@@ -153,9 +154,9 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
         and is_blackjack(cards=first_hand.cards)
     )
     if peeked_blackjack and player_bj:
-        return "莊家 peek 確認 Blackjack, 你也起手 Blackjack, 本局直接平手"
+        return f"{_dealer_peek_note(dealer=dealer)}, 你也起手 Blackjack, 本局直接平手"
     if peeked_blackjack:
-        return "莊家 peek 確認 Blackjack, 本局直接結算"
+        return f"{_dealer_peek_note(dealer=dealer)}, 本局直接結算"
     if dealer_bj and player_bj:
         return "雙方起手 Blackjack, 本局直接平手"
     if player_bj:
@@ -163,6 +164,14 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
     if dealer_bj:
         return "莊家起手 Blackjack, 依規則本局直接結算"
     return None
+
+
+def _dealer_peek_note(dealer: list[Card]) -> str:
+    """Returns the reason text for dealer Blackjack revealed by a hole-card peek."""
+    up = dealer_up_card(dealer=dealer)
+    if up is None:
+        return "莊家 peek 暗牌確認 Blackjack"
+    return f"莊家明牌 {up}, peek 暗牌確認 Blackjack"
 
 
 async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys

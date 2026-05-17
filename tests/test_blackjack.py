@@ -27,8 +27,12 @@ from discordbot.cogs._games.blackjack import (
     is_soft_total,
     dealer_visible_value,
 )
-from discordbot.cogs._games.settlement import blackjack_early_finish_note
+from discordbot.cogs._games.settlement import (
+    blackjack_early_finish_note,
+    blackjack_player_early_finish_note,
+)
 from discordbot.cogs._games.presentation import settlement_metadata
+from discordbot.cogs._games.blackjack_views import build_in_progress_embed
 
 
 def test_hand_value_no_aces() -> None:
@@ -142,6 +146,23 @@ def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
         dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
     )
     assert blackjack_early_finish_note(hand=hand) is None
+
+
+def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
+    """Peek notes tell players the dealer used the visible up-card plus hole card."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
+    )
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="8", suit="♥")]
+
+    note = blackjack_player_early_finish_note(
+        player=player,
+        dealer=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
+        peeked_blackjack=True,
+    )
+
+    assert note == "莊家明牌 K♦, peek 暗牌確認 Blackjack, 本局直接結算"
 
 
 def test_settle_player_bust_loses_bet() -> None:
@@ -311,6 +332,37 @@ def test_dealer_visible_value_uses_up_card() -> None:
     assert dealer_visible_value(hand=hand) == 11
     hand.dealer = [Card(rank="7", suit="♠")]
     assert dealer_visible_value(hand=hand) == 7
+
+
+def test_blackjack_in_progress_embed_shows_hole_card_marker_and_up_card() -> None:
+    """The dealer block shows one hidden card marker plus the visible up-card."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
+
+    embed = build_in_progress_embed(dealer_name="Dealer", round_state=round_state)
+
+    assert isinstance(embed.description, str)
+    assert "🂠" in embed.description
+    assert "K♦" in embed.description
+    assert "8♣" not in embed.description
+
+
+def test_blackjack_in_progress_embed_single_dealer_card_is_visible() -> None:
+    """A one-card dealer fallback should not render as a hidden hole card."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    round_state.dealer = [Card(rank="8", suit="♣")]
+
+    embed = build_in_progress_embed(dealer_name="Dealer", round_state=round_state)
+
+    assert isinstance(embed.description, str)
+    assert "8♣" in embed.description
+    assert "🂠" not in embed.description
 
 
 # Helper predicates ---------------------------------------------------------

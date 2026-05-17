@@ -80,10 +80,11 @@ def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
 def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
     """Formats dealer cards for an in-progress or final table embed."""
     if hide_hole:
-        if len(round_state.dealer) >= 2:
-            up_card = round_state.dealer[1]
-            return card_line(cards_text=str(up_card))
-        return ""
+        if not round_state.dealer:
+            return ""
+        if len(round_state.dealer) == 1:
+            return card_line(cards_text=str(round_state.dealer[0]))
+        return card_line(cards_text=render_hand(cards=round_state.dealer, hide_first=True))
     return _hand_summary_line(cards=round_state.dealer)
 
 

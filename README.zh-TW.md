@@ -72,7 +72,7 @@
 
 **21 點玩家動作：** Double Down 加倍下注後只再抽一張並強制 stand。Split 僅同 rank pair 可分；**Split 後禁止 Double**（No DAS），Split Aces 兩手各只能再拿一張，且 21 點算一般 1 倍贏（不是天生 Blackjack 1.5 倍）。Late Surrender 退回一半本金；莊家 peek 出 Blackjack 後就無法投降。
 
-**21 點提前結算與 peek：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌，賠 1.5 倍。莊家明牌 A 時會先進入 Insurance phase（保險注 = 原注一半，莊家 peek 到 Blackjack 賠 2:1），Insurance Yes / No button 只會在這個 phase 顯示；明牌 10 點則 silent peek。peek 命中 Blackjack 會直接結算整桌，玩家同樣也是天生 Blackjack 才平手。任意湊到 21 不算 natural Blackjack，不會跳過動作階段。
+**21 點提前結算與 peek：** `Blackjack` 指的是起手兩張牌就是 A + 10 點牌，賠 1.5 倍。莊家會拿一張 hidden hole card 和一張 visible up-card；玩家操作期間牌桌會顯示成 `🂠 <明牌>`，明確告訴玩家有暗牌，但不 reveal 點數。莊家明牌 A 時會先進入 Insurance phase（保險注 = 原注一半，莊家 peek 到 Blackjack 賠 2:1），Insurance Yes / No button 只會在這個 phase 顯示；明牌 10 點則 silent peek。peek 命中 Blackjack 會直接結算整桌，玩家同樣也是天生 Blackjack 才平手。任意湊到 21 不算 natural Blackjack，不會跳過動作階段。
 
 **管理虛擬歡樂豆：**
 
