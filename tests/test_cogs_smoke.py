@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
-from typing import TYPE_CHECKING, Self, Unpack, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
 
@@ -15,9 +15,7 @@ from discordbot import cli
 from discordbot.cogs import games, video, economy, template, auto_unmute, parse_threads
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
-from discordbot.cogs._games import dealer as dealer_module
 from discordbot.cogs.economy import EconomyCogs
-from discordbot.cogs._economy import database
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import BlackjackDealerDecision
 from discordbot.utils.threads import ThreadsOutput
@@ -25,6 +23,16 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.cogs._economy.database import (
+    VIP_PURCHASE_COST,
+    RepayResult,
+    BorrowResult,
+    CreditResult,
+    CheckinResult,
+    TransferResult,
+    VipPurchaseResult,
+    BalanceAdjustmentResult,
+)
 from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
@@ -172,12 +180,12 @@ class FakeDiscordMessage:
 class HangingResponses:
     """Fake Responses API resource that sleeps longer than dealer timeout."""
 
-    async def create(self, **_kwargs: object) -> SimpleNamespace:
+    async def create(self, **_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Sleeps before returning a late response."""
         await asyncio.sleep(delay=10)
         return SimpleNamespace(output_text="late")
 
-    async def parse(self, **_kwargs: object) -> SimpleNamespace:
+    async def parse(self, **_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Sleeps before returning a late parsed response."""
         await asyncio.sleep(delay=10)
         return SimpleNamespace(output_parsed=None)
@@ -197,9 +205,9 @@ class ParsedDecisionResponses:
     def __init__(self, output_parsed: BlackjackDealerDecision | None) -> None:
         """Stores the parsed output to return."""
         self.output_parsed = output_parsed
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
 
-    async def parse(self, **kwargs: object) -> SimpleNamespace:
+    async def parse(self, **kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records parse arguments and returns the configured parsed output."""
         self.calls.append(kwargs)
         return SimpleNamespace(output_parsed=self.output_parsed)
@@ -624,11 +632,11 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
         """Returns a non-admin status."""
         return False
 
-    async def fake_adjust_balance_guard(**_kwargs: object) -> database.BalanceAdjustmentResult:
+    async def fake_adjust_balance_guard(**_kwargs: Any) -> BalanceAdjustmentResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Fails the test if a non-admin reaches the mutation path."""
         nonlocal called
         called = True
-        return database.BalanceAdjustmentResult(new_balance=0, applied_delta=0)
+        return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin_false)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
@@ -682,53 +690,51 @@ async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
     return ("Bot", -50, 100, 150)
 
 
-async def fake_transfer(  # noqa: PLR0913 -- mirrors database.transfer signature
+async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
     sender_id: int,
     sender_name: str,
-    sender_avatar_url: str,
     receiver_id: int,
     receiver_name: str,
-    receiver_avatar_url: str,
     amount: int,
-) -> database.TransferResult:
+    sender_avatar_url: str = "",
+    receiver_avatar_url: str = "",
+) -> TransferResult | None:
     """Returns a successful fake transfer result."""
-    return database.TransferResult(sender_balance=50, receiver_balance=100)
+    return TransferResult(sender_balance=50, receiver_balance=100)
 
 
-async def fake_adjust_balance(  # noqa: PLR0913 -- mirrors database.adjust_balance signature
+async def fake_adjust_balance(  # noqa: PLR0913 -- mirrors adjust_balance signature
     user_id: int,
     name: str,
     delta: int,
     allow_negative: bool = False,
     avatar_url: str = "",
     note: str | None = None,
-) -> database.BalanceAdjustmentResult:
+) -> BalanceAdjustmentResult:
     """Returns a successful fake manual adjustment result."""
-    return database.BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
+    return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
 
 
 async def fake_borrow(
     user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
-) -> database.BorrowResult:
+) -> BorrowResult:
     """Returns a successful fake borrow result."""
-    return database.BorrowResult(new_balance=250, principal=amount, borrowed_amount=amount)
+    return BorrowResult(new_balance=250, principal=amount, borrowed_amount=amount)
 
 
-async def fake_repay(
-    user_id: int, name: str, amount: int, avatar_url: str = ""
-) -> database.RepayResult:
+async def fake_repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> RepayResult:
     """Returns a successful fake repay result."""
-    return database.RepayResult(new_balance=100, principal_repaid=amount, remaining_debt=0)
+    return RepayResult(new_balance=100, principal_repaid=amount, remaining_debt=0)
 
 
-async def fake_checkin(user_id: int, name: str, avatar_url: str) -> database.CheckinResult:
+async def fake_checkin(user_id: int, name: str, avatar_url: str) -> CheckinResult:
     """Returns a successful fake daily check-in result."""
-    return database.CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
+    return CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
 
 
-async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> database.VipPurchaseResult:
+async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseResult:
     """Returns a successful fake VIP purchase result."""
-    return database.VipPurchaseResult(new_balance=500_000, cost=database.VIP_PURCHASE_COST)
+    return VipPurchaseResult(new_balance=500_000, cost=VIP_PURCHASE_COST)
 
 
 def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
@@ -889,7 +895,7 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
 
 async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies DealerAI returns fallback banter when the LLM call times out."""
-    monkeypatch.setattr(dealer_module, "DEALER_AI_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs._games.dealer.DEALER_AI_TIMEOUT_SECONDS", 0.01)
     dealer = DealerAI(
         client=cast("AsyncOpenAI", HangingClient()),
         model=ModelSettings(name="gemini-flash-latest", effort="none"),
@@ -941,7 +947,9 @@ async def test_dealer_ai_blackjack_decision_times_out_to_basic_rule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies slow Blackjack decisions use the dedicated decision timeout."""
-    monkeypatch.setattr(dealer_module, "DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "discordbot.cogs._games.dealer.DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS", 0.01
+    )
     dealer = DealerAI(
         client=cast("AsyncOpenAI", HangingClient()),
         model=ModelSettings(name="gemini-flash-latest", effort="medium"),
@@ -1022,16 +1030,16 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
 async def test_cli_message_and_command_error_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies base message rewards and common command error embeds."""
     processed: list[SimpleNamespace] = []
-    rewards: list[dict[str, object]] = []
+    rewards: list[dict[str, Any]] = []
 
     async def record_processed(message: SimpleNamespace) -> None:
         """Records messages passed to process_commands."""
         processed.append(message)
 
-    async def record_reward(**kwargs: object) -> database.CreditResult:
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
         rewards.append(kwargs)
-        return database.CreditResult(
+        return CreditResult(
             new_balance=5_000, credited_amount=5_000, principal_repaid=0, remaining_debt=0
         )
 

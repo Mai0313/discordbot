@@ -1,25 +1,25 @@
 """Tests for the yt-dlp downloader facade."""
 
-from typing import Self
+from types import TracebackType
+from typing import Any, Self
 from pathlib import Path
 
 import pytest
 
-from discordbot.utils import downloader as downloader_module
 from discordbot.utils.downloader import VideoDownloader
 
 
 def _install_youtube_dl_stub(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Installs a yt-dlp stub and returns captured params and calls."""
-    captured_params: list[dict[str, object]] = []
-    captured_calls: list[dict[str, object]] = []
+    captured_params: list[dict[str, Any]] = []
+    captured_calls: list[dict[str, Any]] = []
 
     class _YoutubeDLStub:
         """Small context-manager stub for yt-dlp."""
 
-        def __init__(self, params: dict[str, object]) -> None:
+        def __init__(self, params: dict[str, Any]) -> None:
             """Records the yt-dlp params passed by the downloader."""
             self.params = params
             captured_params.append(params)
@@ -32,7 +32,7 @@ def _install_youtube_dl_stub(
             self,
             exc_type: type[BaseException] | None,
             exc_val: BaseException | None,
-            exc_tb: object,
+            exc_tb: TracebackType | None,
         ) -> None:
             """Matches yt-dlp's context-manager shape."""
 
@@ -45,7 +45,7 @@ def _install_youtube_dl_stub(
             """Returns the filename yt-dlp would prepare for the result."""
             return (tmp_path / f"{info['id']}.{info['ext']}").as_posix()
 
-    monkeypatch.setattr(target=downloader_module, name="YoutubeDL", value=_YoutubeDLStub)
+    monkeypatch.setattr("discordbot.utils.downloader.YoutubeDL", _YoutubeDLStub)
     return captured_params, captured_calls
 
 

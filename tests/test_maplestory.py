@@ -11,8 +11,7 @@ from nextcord import Embed, SelectOption
 
 from discordbot.cogs import maplestory
 from discordbot.cogs.maplestory import MapleStoryCogs
-from discordbot.cogs._maplestory import views
-from discordbot.cogs._maplestory.views import MapleDropSearchView
+from discordbot.cogs._maplestory.views import _RESOLVERS, MapleDropSearchView
 from discordbot.cogs._maplestory.embeds import (
     _truncate,
     create_map_embed,
@@ -477,7 +476,7 @@ async def test_maplestory_view_resolvers_and_selection(service: MapleStoryServic
         ("quest", "Helping Hand"),
         ("map", "Henesys > Hunting Ground"),
     ]:
-        resolver = views._RESOLVERS[search_type]
+        resolver = _RESOLVERS[search_type]
         embed = resolver(service=service, name=name, tr=service.translate)
         assert isinstance(embed, Embed)
 

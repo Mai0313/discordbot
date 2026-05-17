@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs._economy import database
+from discordbot.cogs._economy.database import Base
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ async def economy_isolated_db(
     db_path = tmp_path / "economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
-        await conn.run_sync(database.Base.metadata.create_all)
-    monkeypatch.setattr(target=database, name="_engine", value=engine)
+        await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
     yield
     await engine.dispose()

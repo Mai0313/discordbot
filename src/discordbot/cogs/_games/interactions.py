@@ -21,7 +21,7 @@ async def send_ephemeral_notice(interaction: Interaction, content: str, log_mess
 
 
 def disable_view_components(
-    children: Iterable[ui.Item], component_types: tuple[type[object], ...]
+    children: Iterable[ui.Item], component_types: tuple[type[ui.Item], ...]
 ) -> None:
     """Disables view children matching any supplied component type."""
     for child in children:

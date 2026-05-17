@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from random import Random
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
 from nextcord import Embed
 
-from discordbot.cogs._games import lobby, dragon_gate_views
 from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
 from discordbot.typings.economy import (
     JackpotSettlementResult,
@@ -48,9 +47,9 @@ class MessageStub:
 
     def __init__(self) -> None:
         """Initializes the recorded edit payloads."""
-        self.edits: list[dict[str, object]] = []
+        self.edits: list[dict[str, Any]] = []
 
-    async def edit(self, **kwargs: object) -> None:
+    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records a message edit payload."""
         self.edits.append(kwargs)
 
@@ -61,14 +60,14 @@ class ResponseStub:
     def __init__(self) -> None:
         """Initializes interaction response state records."""
         self.deferred = False
-        self.sent: list[dict[str, object]] = []
-        self.modals: list[object] = []
+        self.sent: list[dict[str, Any]] = []
+        self.modals: list[DragonGateBetModal] = []
 
     async def defer(self) -> None:
         """Records that the interaction was deferred."""
         self.deferred = True
 
-    async def send_message(self, **kwargs: object) -> None:
+    async def send_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records an ephemeral or public interaction message."""
         self.sent.append(kwargs)
 
@@ -76,7 +75,7 @@ class ResponseStub:
         """Returns whether the interaction response has already been used."""
         return self.deferred or bool(self.sent) or bool(self.modals)
 
-    async def send_modal(self, modal: object) -> None:
+    async def send_modal(self, modal: DragonGateBetModal) -> None:
         """Records a modal launch."""
         self.modals.append(modal)
 
@@ -86,9 +85,9 @@ class FollowupStub:
 
     def __init__(self) -> None:
         """Initializes recorded followup sends."""
-        self.sent: list[dict[str, object]] = []
+        self.sent: list[dict[str, Any]] = []
 
-    async def send(self, **kwargs: object) -> MessageStub:
+    async def send(self, **kwargs: Any) -> MessageStub:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records followup sends and returns a fake message."""
         self.sent.append(kwargs)
         return MessageStub()
@@ -110,7 +109,7 @@ class InteractionStub:
         self.message = message
         self.response = ResponseStub()
         self.followup = FollowupStub()
-        self.data: dict[str, object] = {"custom_id": custom_id}
+        self.data: dict[str, Any] = {"custom_id": custom_id}
 
 
 class DealerStub:
@@ -118,15 +117,15 @@ class DealerStub:
 
     def __init__(self) -> None:
         """Initializes dealer call records."""
-        self.table_settle_calls: list[dict[str, object]] = []
-        self.taunt_calls: list[dict[str, object]] = []
+        self.table_settle_calls: list[dict[str, Any]] = []
+        self.taunt_calls: list[dict[str, Any]] = []
 
-    async def taunt_bet(self, **kwargs: object) -> str:
+    async def taunt_bet(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Returns a deterministic opening line."""
         self.taunt_calls.append(kwargs)
         return "taunt"
 
-    async def table_settle(self, **kwargs: object) -> str:
+    async def table_settle(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Returns a deterministic settlement line and records the call."""
         self.table_settle_calls.append(kwargs)
         return "settled"
@@ -174,7 +173,7 @@ class JackpotState:
         self.balances: dict[int, int] = {}
         self._initial_balance = initial_balance
         self._replenish_seed = replenish_seed
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
 
     async def settle(  # noqa: PLR0913 -- mirrors apply_jackpot_settlement for monkeypatching
         self,
@@ -262,22 +261,23 @@ def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> G
 def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
     """Patches jackpot database calls to use an in-memory state model."""
     monkeypatch.setattr(
-        target=dragon_gate_views, name="apply_jackpot_settlement", value=state.settle
+        "discordbot.cogs._games.dragon_gate_views.apply_jackpot_settlement", state.settle
     )
     monkeypatch.setattr(
-        target=lobby, name="apply_jackpot_settlement_batch", value=state.settle_batch
+        "discordbot.cogs._games.lobby.apply_jackpot_settlement_batch", state.settle_batch
     )
 
     async def fake_get_balance(user_id: int) -> int:
         """Returns the simulated final balance for a player."""
         return state.balances.get(user_id, 0)
 
-    monkeypatch.setattr(target=dragon_gate_views, name="get_balance", value=fake_get_balance)
+    monkeypatch.setattr("discordbot.cogs._games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        target=dragon_gate_views, name="schedule_game_message_delete", value=lambda message: None
+        "discordbot.cogs._games.dragon_gate_views.schedule_game_message_delete",
+        lambda message: None,
     )
     monkeypatch.setattr(
-        target=lobby, name="schedule_game_message_delete", value=lambda message: None
+        "discordbot.cogs._games.lobby.schedule_game_message_delete", lambda message: None
     )
 
 
@@ -575,10 +575,10 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         )
 
     monkeypatch.setattr(
-        target=lobby, name="apply_jackpot_settlement_batch", value=rejected_ante_batch
+        "discordbot.cogs._games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
     )
     monkeypatch.setattr(
-        target=lobby, name="schedule_game_message_delete", value=lambda message: None
+        "discordbot.cogs._games.lobby.schedule_game_message_delete", lambda message: None
     )
 
     view = DragonGateLobbyView(
@@ -702,7 +702,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
     )
 
-    async def capped_settlement(**kwargs: object) -> JackpotSettlementResult:
+    async def capped_settlement(**kwargs: Any) -> JackpotSettlementResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Returns a lower applied delta than the rules snapshot requested."""
         assert kwargs["expected_jackpot_generation"] == 2
         return JackpotSettlementResult(
@@ -714,10 +714,11 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         )
 
     monkeypatch.setattr(
-        target=dragon_gate_views, name="apply_jackpot_settlement", value=capped_settlement
+        "discordbot.cogs._games.dragon_gate_views.apply_jackpot_settlement", capped_settlement
     )
     monkeypatch.setattr(
-        target=dragon_gate_views, name="schedule_game_message_delete", value=lambda message: None
+        "discordbot.cogs._games.dragon_gate_views.schedule_game_message_delete",
+        lambda message: None,
     )
 
     message = MessageStub()

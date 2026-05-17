@@ -9,7 +9,15 @@ import nextcord
 from nextcord import Message, Interaction
 
 from discordbot.cogs import economy
-from discordbot.cogs._games import cleanup
+from discordbot.cogs._games.cleanup import (
+    GAME_RESPONSE_TTL_SECONDS,
+    PendingGameMessage,
+    track_game_message,
+    delete_game_message_after,
+    list_pending_game_messages,
+    delete_tracked_game_messages,
+    schedule_game_message_delete,
+)
 
 if TYPE_CHECKING:
     from nextcord.ext import commands
@@ -86,16 +94,26 @@ class _FetchMessageChannelStub:
         )
 
 
+class _NonMessageableChannelStub:
+    """Channel shape without ``fetch_message`` used to exercise fallback paths."""
+
+    pass
+
+
 class _BotStub:
     """Minimal bot shape for startup cleanup."""
 
-    def __init__(self, cached_channel: object | None = None) -> None:
+    def __init__(
+        self, cached_channel: _FetchMessageChannelStub | _NonMessageableChannelStub | None = None
+    ) -> None:
         """Initializes cached-channel behavior and cleanup call records."""
         self.deleted: list[tuple[int, int]] = []
         self.cached_channel = cached_channel
         self.fetch_calls: list[int] = []
 
-    def get_channel(self, channel_id: int, /) -> object | None:
+    def get_channel(
+        self, channel_id: int, /
+    ) -> _FetchMessageChannelStub | _NonMessageableChannelStub | None:
         """Returns the configured cached channel."""
         return self.cached_channel
 
@@ -112,9 +130,15 @@ class _UnfetchableBotStub:
         """Returns no cached channel."""
         return
 
-    async def fetch_channel(self, channel_id: int, /) -> object:
+    async def fetch_channel(self, channel_id: int, /) -> _NonMessageableChannelStub:
         """Returns a non-messageable channel shape."""
-        return object()
+        return _NonMessageableChannelStub()
+
+
+class _SentFollowupMessageStub:
+    """Message shape returned by fake followup sends."""
+
+    pass
 
 
 class _FollowupStub:
@@ -122,14 +146,14 @@ class _FollowupStub:
 
     def __init__(self) -> None:
         """Initializes followup send records."""
-        self.message = object()
+        self.message = _SentFollowupMessageStub()
         self.sent_wait: bool | None = None
         self.sent_ephemeral: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
 
     async def send(
         self, embed: nextcord.Embed, wait: bool = False, ephemeral: bool = False
-    ) -> object:
+    ) -> _SentFollowupMessageStub:
         """Records the embed send and returns the message object."""
         self.sent_embed = embed
         self.sent_wait = wait
@@ -149,7 +173,8 @@ class _InteractionStub:
 def isolated_cleanup_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keeps cleanup DB writes out of the real data directory."""
     monkeypatch.setattr(
-        target=cleanup, name="_PENDING_GAME_MESSAGE_DB_PATH", value=tmp_path / "game_cleanup.db"
+        "discordbot.cogs._games.cleanup._PENDING_GAME_MESSAGE_DB_PATH",
+        tmp_path / "game_cleanup.db",
     )
 
 
@@ -157,7 +182,7 @@ async def test_delete_game_message_after_waits_then_deletes() -> None:
     """Game response cleanup deletes the message after the configured delay."""
     message = _DeletableMessageStub()
 
-    await cleanup.delete_game_message_after(message=cast("Message", message), delay=0)
+    await delete_game_message_after(message=cast("Message", message), delay=0)
 
     assert message.delete_calls == 1
 
@@ -166,70 +191,68 @@ async def test_track_game_message_persists_message_identity() -> None:
     """Game response tracking stores the channel/message pair needed for restart cleanup."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
 
-    record = await cleanup.track_game_message(message=cast("Message", message))
+    record = await track_game_message(message=cast("Message", message))
 
-    assert record == cleanup.PendingGameMessage(channel_id=20, message_id=10)
-    assert await cleanup.list_pending_game_messages() == [
-        cleanup.PendingGameMessage(channel_id=20, message_id=10)
-    ]
+    assert record == PendingGameMessage(channel_id=20, message_id=10)
+    assert await list_pending_game_messages() == [PendingGameMessage(channel_id=20, message_id=10)]
 
 
 async def test_delete_game_message_after_forgets_successful_cleanup() -> None:
     """Successful TTL cleanup removes the persisted restart record."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await cleanup.track_game_message(message=cast("Message", message))
+    await track_game_message(message=cast("Message", message))
 
-    await cleanup.delete_game_message_after(message=cast("Message", message), delay=0)
+    await delete_game_message_after(message=cast("Message", message), delay=0)
 
     assert message.delete_calls == 1
-    assert await cleanup.list_pending_game_messages() == []
+    assert await list_pending_game_messages() == []
 
 
 async def test_delete_tracked_game_messages_deletes_stale_restart_records() -> None:
     """Startup cleanup deletes persisted Discord messages and clears the records."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await cleanup.track_game_message(message=cast("Message", message))
+    await track_game_message(message=cast("Message", message))
     bot = _BotStub()
 
-    await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_game_messages(bot=cast("commands.Bot", bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
-    assert await cleanup.list_pending_game_messages() == []
+    assert await list_pending_game_messages() == []
 
 
 async def test_delete_tracked_game_messages_skips_non_messageable_cached_channel() -> None:
     """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await cleanup.track_game_message(message=cast("Message", message))
-    bot = _BotStub(cached_channel=object())
+    await track_game_message(message=cast("Message", message))
+    bot = _BotStub(cached_channel=_NonMessageableChannelStub())
 
-    await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_game_messages(bot=cast("commands.Bot", bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
-    assert await cleanup.list_pending_game_messages() == []
+    assert await list_pending_game_messages() == []
 
 
 async def test_delete_tracked_game_messages_keeps_unresolved_channel_records() -> None:
     """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await cleanup.track_game_message(message=cast("Message", message))
+    await track_game_message(message=cast("Message", message))
 
-    await cleanup.delete_tracked_game_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
+    await delete_tracked_game_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
 
-    assert await cleanup.list_pending_game_messages() == [
-        cleanup.PendingGameMessage(channel_id=20, message_id=10)
-    ]
+    assert await list_pending_game_messages() == [PendingGameMessage(channel_id=20, message_id=10)]
 
 
 async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Game-related economy embeds must retrieve their message before cleanup."""
-    scheduled_messages: list[object] = []
+    scheduled_messages: list[_SentFollowupMessageStub] = []
 
-    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _SentFollowupMessageStub, delay: float = 180
+    ) -> None:
         """Records the message scheduled for later deletion."""
         scheduled_messages.append(message)
 
@@ -254,9 +277,11 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Personal economy embeds should not enter the game cleanup scheduler."""
-    scheduled_messages: list[object] = []
+    scheduled_messages: list[_SentFollowupMessageStub] = []
 
-    def fake_schedule_game_message_delete(message: object, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _SentFollowupMessageStub, delay: float = 180
+    ) -> None:
         """Records any unexpected scheduler calls."""
         scheduled_messages.append(message)
 
@@ -277,9 +302,7 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
 
 async def test_delete_game_message_after_ignores_already_deleted_message() -> None:
     """Manual deletion before cleanup should not surface as a task failure."""
-    await cleanup.delete_game_message_after(
-        message=cast("Message", _AlreadyDeletedMessageStub()), delay=0
-    )
+    await delete_game_message_after(message=cast("Message", _AlreadyDeletedMessageStub()), delay=0)
 
 
 async def test_schedule_game_message_delete_uses_default_ttl(
@@ -288,16 +311,16 @@ async def test_schedule_game_message_delete_uses_default_ttl(
     """Scheduling uses the shared three-minute TTL by default."""
     scheduled_delay: float | None = None
 
-    async def fake_delete_game_message_after(message: object, delay: float) -> None:
+    async def fake_delete_game_message_after(message: Message, delay: float) -> None:
         """Records the delay requested by the scheduler."""
         nonlocal scheduled_delay
         scheduled_delay = delay
 
     monkeypatch.setattr(
-        target=cleanup, name="delete_game_message_after", value=fake_delete_game_message_after
+        "discordbot.cogs._games.cleanup.delete_game_message_after", fake_delete_game_message_after
     )
 
-    cleanup.schedule_game_message_delete(message=cast("Message", _DeletableMessageStub()))
+    schedule_game_message_delete(message=cast("Message", _DeletableMessageStub()))
     await asyncio.sleep(delay=0)
 
-    assert scheduled_delay == cleanup.GAME_RESPONSE_TTL_SECONDS
+    assert scheduled_delay == GAME_RESPONSE_TTL_SECONDS
