@@ -7,7 +7,9 @@ import asyncio
 import contextlib
 
 import logfire
-from nextcord import Embed, Message, ButtonStyle, Interaction, ui
+import nextcord
+from nextcord import Embed, Message, ButtonStyle, Interaction
+from nextcord.ui import View, Button
 
 from discordbot.typings.games import (
     Card,
@@ -501,7 +503,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         return True
 
 
-class BlackjackView(ui.View):
+class BlackjackView(View):
     """Hit / Stand / Double / Split / Surrender / Insurance controls."""
 
     def __init__(  # noqa: PLR0913 -- view needs table, dealer, and ledger identity
@@ -530,9 +532,9 @@ class BlackjackView(ui.View):
         self._dealer_line = dealer_line
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
-        self._insurance_buttons: tuple[ui.Button, ui.Button] = (
-            cast("ui.Button", self.insure_yes),
-            cast("ui.Button", self.insure_no),
+        self._insurance_buttons: tuple[Button, Button] = (
+            cast("Button", self.insure_yes),
+            cast("Button", self.insure_no),
         )
 
     async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
@@ -583,8 +585,10 @@ class BlackjackView(ui.View):
             self.round_state.stand_all_remaining()
             await self._finalize_locked(message=self.message)
 
-    @ui.button(label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0)
-    async def hit(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0
+    )
+    async def hit(self, _button: Button, interaction: Interaction) -> None:
         """Handles the active player's Hit button."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -621,8 +625,10 @@ class BlackjackView(ui.View):
                 )
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0)
-    async def stand(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0
+    )
+    async def stand(self, _button: Button, interaction: Interaction) -> None:
         """Handles the active player's Stand button."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -646,8 +652,10 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=0)
-    async def double(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=0
+    )
+    async def double(self, _button: Button, interaction: Interaction) -> None:
         """Doubles the active hand's bet and finishes it after one draw."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -671,8 +679,10 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=0)
-    async def split(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=0
+    )
+    async def split(self, _button: Button, interaction: Interaction) -> None:
         """Splits the active pair into two sibling sub-hands."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -696,8 +706,10 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=0)
-    async def surrender(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=0
+    )
+    async def surrender(self, _button: Button, interaction: Interaction) -> None:
         """Surrenders the active hand for a half-bet refund."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -721,10 +733,10 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(
+    @nextcord.ui.button(
         label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
     )
-    async def insure_yes(self, _button: ui.Button, interaction: Interaction) -> None:
+    async def insure_yes(self, _button: Button, interaction: Interaction) -> None:
         """Takes insurance for the calling player."""
         await interaction.response.defer()
         if interaction.message is None:
@@ -766,10 +778,10 @@ class BlackjackView(ui.View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
 
-    @ui.button(
+    @nextcord.ui.button(
         label="不保險", emoji="❌", style=ButtonStyle.secondary, custom_id="bj:insure_no", row=1
     )
-    async def insure_no(self, _button: ui.Button, interaction: Interaction) -> None:
+    async def insure_no(self, _button: Button, interaction: Interaction) -> None:
         """Declines insurance for the calling player."""
         await interaction.response.defer()
         if interaction.message is None:
@@ -807,7 +819,7 @@ class BlackjackView(ui.View):
                 player=active_player
             )
         for child in self.children:
-            if not isinstance(child, ui.Button):
+            if not isinstance(child, Button):
                 continue
             cid = child.custom_id or ""
             if cid in ("bj:insure_yes", "bj:insure_no"):
@@ -1043,7 +1055,7 @@ class BlackjackView(ui.View):
     def _disable_buttons(self) -> None:
         """Disables every action / insurance control after settlement."""
         self._sync_insurance_button_visibility(in_insurance=self.round_state.phase == "insurance")
-        disable_view_components(children=self.children, component_types=(ui.Button,))
+        disable_view_components(children=self.children, component_types=(Button,))
 
 
 __all__: list[str] = [

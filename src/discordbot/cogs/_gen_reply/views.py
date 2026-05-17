@@ -3,13 +3,15 @@
 from typing import TYPE_CHECKING
 import contextlib
 
-from nextcord import Message, ButtonStyle, Interaction, ui
+import nextcord
+from nextcord import Message, ButtonStyle, Interaction
+from nextcord.ui import View, Button
 
 if TYPE_CHECKING:
     from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 
 
-class RegenerateView(ui.View):
+class RegenerateView(View):
     """Single-button view that re-runs reply generation for the original user message.
 
     Attributes:
@@ -45,8 +47,8 @@ class RegenerateView(ui.View):
             return False
         return True
 
-    @ui.button(label="重新生成", emoji="🔄", style=ButtonStyle.secondary)
-    async def regenerate(self, button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(label="重新生成", emoji="🔄", style=ButtonStyle.secondary)
+    async def regenerate(self, button: Button, interaction: Interaction) -> None:
         """Deletes the old AI reply and re-runs the dispatch flow on the user's message.
 
         Args:

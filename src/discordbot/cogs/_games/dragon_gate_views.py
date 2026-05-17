@@ -8,7 +8,8 @@ import contextlib
 
 import logfire
 import nextcord
-from nextcord import Embed, Message, ButtonStyle, Interaction, ui
+from nextcord import Embed, Message, ButtonStyle, Interaction
+from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
 from discordbot.cogs._games.lobby import (
@@ -395,7 +396,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         await edit_message_with_retry(message=message, embeds=view.in_progress_embeds(), view=view)
 
 
-class DragonGateView(ui.View):
+class DragonGateView(View):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
 
     def __init__(  # noqa: PLR0913 -- view needs round, dealer, jackpot, and initial balances
@@ -463,21 +464,21 @@ class DragonGateView(ui.View):
             await self._refund_remaining_winners_locked()
             await self._finalize_locked(message=self.message, reason="逾時未操作")
 
-    @ui.button(
+    @nextcord.ui.button(
         label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher", row=0
     )
-    async def choose_higher(self, _button: ui.Button, interaction: Interaction) -> None:
+    async def choose_higher(self, _button: Button, interaction: Interaction) -> None:
         """Chooses higher for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="higher")
 
-    @ui.button(
+    @nextcord.ui.button(
         label="同點猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower", row=0
     )
-    async def choose_lower(self, _button: ui.Button, interaction: Interaction) -> None:
+    async def choose_lower(self, _button: Button, interaction: Interaction) -> None:
         """Chooses lower for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="lower")
 
-    @ui.string_select(
+    @nextcord.ui.string_select(
         placeholder="🪙 選擇下注金額",
         custom_id="dg:bet",
         min_values=1,
@@ -489,12 +490,14 @@ class DragonGateView(ui.View):
         ],
         row=1,
     )
-    async def bet_select(self, select: ui.StringSelect, interaction: Interaction) -> None:
+    async def bet_select(self, select: StringSelect, interaction: Interaction) -> None:
         """Routes the bet select choice to a fixed amount or a custom modal."""
         await self._handle_bet_choice(choice=select.values[0], interaction=interaction)
 
-    @ui.button(label="離桌", emoji="🚪", style=ButtonStyle.danger, custom_id="dg:leave", row=2)
-    async def leave_table(self, _button: ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(
+        label="離桌", emoji="🚪", style=ButtonStyle.danger, custom_id="dg:leave", row=2
+    )
+    async def leave_table(self, _button: Button, interaction: Interaction) -> None:
         """Lets any seated player withdraw mid-table without ending the round."""
         await self._handle_leave(interaction=interaction)
 
@@ -807,17 +810,17 @@ class DragonGateView(ui.View):
                 return participant
         return None
 
-    def _button(self, custom_id: str) -> ui.Button:
+    def _button(self, custom_id: str) -> Button:
         """Returns a button component by custom ID."""
         for child in self.children:
-            if isinstance(child, ui.Button) and child.custom_id == custom_id:
+            if isinstance(child, Button) and child.custom_id == custom_id:
                 return child
         raise RuntimeError(f"Missing button: {custom_id}")
 
-    def _select(self, custom_id: str) -> ui.StringSelect:
+    def _select(self, custom_id: str) -> StringSelect:
         """Returns a string select component by custom ID."""
         for child in self.children:
-            if isinstance(child, ui.StringSelect) and child.custom_id == custom_id:
+            if isinstance(child, StringSelect) and child.custom_id == custom_id:
                 return child
         raise RuntimeError(f"Missing select: {custom_id}")
 
@@ -858,7 +861,7 @@ class DragonGateView(ui.View):
             log_message="Failed to send Dragon Gate action notice",
         )
 
-    async def on_error(self, error: Exception, item: ui.Item, interaction: Interaction) -> None:
+    async def on_error(self, error: Exception, item: Item, interaction: Interaction) -> None:
         """Logs active-table component failures instead of only printing to stderr."""
         logfire.error(
             "Dragon Gate action interaction failed",
@@ -869,19 +872,17 @@ class DragonGateView(ui.View):
 
     def _disable_controls(self) -> None:
         """Disables every active-table button and select control."""
-        disable_view_components(
-            children=self.children, component_types=(ui.Button, ui.StringSelect)
-        )
+        disable_view_components(children=self.children, component_types=(Button, StringSelect))
 
 
-class DragonGateBetModal(ui.Modal):
+class DragonGateBetModal(Modal):
     """Modal for entering an exact 射龍門 bet amount."""
 
     def __init__(self, view: DragonGateView, minimum: int, maximum: int) -> None:
         """Initializes the modal with a range-aware amount input."""
         super().__init__(title="自訂下注")
         self.view = view
-        self.amount: ui.TextInput = ui.TextInput(
+        self.amount: TextInput = TextInput(
             label="下注金額",
             placeholder=f"{minimum:,} 到 {maximum:,}",
             min_length=1,
