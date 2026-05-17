@@ -20,6 +20,12 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import BlackjackDealerDecision
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.economy import (
+    AccountSnapshot,
+    JackpotSnapshot,
+    LeaderboardEntry,
+    LossLeaderboardEntry,
+)
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs.parse_threads import ThreadsCogs
@@ -671,23 +677,29 @@ async def fake_get_admin(user_id: int) -> bool:
     return True
 
 
-async def fake_top_n(
-    limit: int, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, str]]:
+async def fake_top_n(limit: int, exclude_user_ids: tuple[int, ...] = ()) -> list[LeaderboardEntry]:
     """Returns one fake leaderboard row."""
-    return [(1, "alice", 150, "https://cdn.example/alice.png")]
+    return [
+        LeaderboardEntry(
+            user_id=1, name="alice", balance=150, avatar_url="https://cdn.example/alice.png"
+        )
+    ]
 
 
 async def fake_top_losers(
     limit: int, exclude_user_ids: tuple[int, ...] = ()
-) -> list[tuple[int, str, int, str]]:
+) -> list[LossLeaderboardEntry]:
     """Returns one fake loss leaderboard row."""
-    return [(1, "alice", 500, "https://cdn.example/alice.png")]
+    return [
+        LossLeaderboardEntry(
+            user_id=1, name="alice", loss_amount=500, avatar_url="https://cdn.example/alice.png"
+        )
+    ]
 
 
-async def fake_get_account(user_id: int) -> tuple[str, int, int, int]:
+async def fake_get_account(user_id: int) -> AccountSnapshot:
     """Returns a fake house ledger account."""
-    return ("Bot", -50, 100, 150)
+    return AccountSnapshot(name="Bot", balance=-50, total_earned=100, total_spent=150)
 
 
 async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
@@ -752,9 +764,9 @@ async def _wealthy_game_balance(user_id: int) -> int:
     return 1_000_000
 
 
-async def fake_dragon_gate_jackpot_snapshot() -> tuple[int, int]:
+async def fake_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
     """Returns a stable fake Dragon Gate jackpot snapshot."""
-    return 100_000, 0
+    return JackpotSnapshot(balance=100_000)
 
 
 class FakeDealer:

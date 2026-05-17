@@ -27,7 +27,7 @@ class RegionMaps(_Base):
     """
 
     region: str
-    maps: list[str] = []
+    maps: list[str] = Field(default_factory=list)
 
 
 class AcquisitionMonster(_Base):
@@ -89,7 +89,7 @@ class CraftingRecipe(_Base):
 
     npc: str = ""
     output: str = ""
-    materials: list[CraftingMaterial] = []
+    materials: list[CraftingMaterial] = Field(default_factory=list)
 
 
 class Acquisition(_Base):
@@ -102,10 +102,10 @@ class Acquisition(_Base):
         craftings: Crafting recipe entries.
     """
 
-    monsters: list[AcquisitionMonster] = []
-    npcs: list[AcquisitionNPC] = []
-    quests: list[AcquisitionQuest] = []
-    craftings: list[CraftingRecipe] = []
+    monsters: list[AcquisitionMonster] = Field(default_factory=list)
+    npcs: list[AcquisitionNPC] = Field(default_factory=list)
+    quests: list[AcquisitionQuest] = Field(default_factory=list)
+    craftings: list[CraftingRecipe] = Field(default_factory=list)
 
 
 # ── Monster ─────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ class DropItem(_Base):
     name: str
     level: int = 0
     type: str = ""
-    jobs: list[str] = []
+    jobs: list[str] = Field(default_factory=list)
 
 
 class MonsterDrops(_Base):
@@ -218,10 +218,10 @@ class Monster(_Base):
     exp: int = 0
     def_stats: DefenseStats = Field(default_factory=DefenseStats, alias="def")
     accuracy: AccuracyStats = Field(default_factory=AccuracyStats)
-    modifiers: list[str] = []
+    modifiers: list[str] = Field(default_factory=list)
     region_to_maps_list: list[RegionMaps] = Field(default_factory=list, alias="regionToMapsList")
     drops: MonsterDrops = Field(default_factory=MonsterDrops)
-    quests: list[MonsterQuest] = []
+    quests: list[MonsterQuest] = Field(default_factory=list)
 
     @property
     def display_name(self) -> str:
@@ -374,7 +374,7 @@ class Equipment(_Base):
         default_factory=EquipmentRestriction, alias="equipmentRestriction"
     )
     stats: EquipmentStats = Field(default_factory=EquipmentStats)
-    jobs: list[str] = []
+    jobs: list[str] = Field(default_factory=list)
     attack_speed: str = Field(default="", alias="attackSpeed")
     acquisition: Acquisition = Field(default_factory=Acquisition)
     tradeable: str = ""
@@ -408,7 +408,7 @@ class Scroll(_Base):
 
     name: str
     name_zh: str = Field(default="", alias="nameZh")
-    stats: dict[str, int] = {}
+    stats: dict[str, int] = Field(default_factory=dict)
     type: str = ""
     acquisition: Acquisition = Field(default_factory=Acquisition)
 
@@ -521,8 +521,8 @@ class NPC(_Base):
     useable_items: list[NPCItem] = Field(default_factory=list, alias="useableItems")
     scrolls: list[NPCItem] = Field(default_factory=list, alias="scrolls")
     misc_items: list[NPCItem] = Field(default_factory=list, alias="miscItems")
-    quests: list[AcquisitionQuest] = []
-    recipes: list[CraftingRecipe] = []
+    quests: list[AcquisitionQuest] = Field(default_factory=list)
+    recipes: list[CraftingRecipe] = Field(default_factory=list)
 
     @property
     def display_name(self) -> str:
@@ -583,7 +583,9 @@ class QuestReward(_Base):
     exp: int = 0
     fame: int = 0
     mesos: int = 0
-    items: dict[str, list[CollectItem]] | list[dict[str, list[CollectItem]]] = {}
+    items: dict[str, list[CollectItem]] | list[dict[str, list[CollectItem]]] = Field(
+        default_factory=dict
+    )
 
 
 class QuestStep(_Base):
@@ -623,9 +625,9 @@ class Quest(_Base):
     frequency: str = ""
     lv_lower: int = Field(default=0, alias="lvLower")
     lv_upper: int | None = Field(default=None, alias="lvUpper")
-    steps: list[QuestStep] = []
+    steps: list[QuestStep] = Field(default_factory=list)
     boss: bool = False
-    prerequisites: list[str] = []
+    prerequisites: list[str] = Field(default_factory=list)
 
     @property
     def display_name(self) -> str:
@@ -688,8 +690,8 @@ class MapEntry(_Base):
     name_zh: str = Field(default="", alias="nameZh")
     x: int = 0
     y: int = 0
-    npcs: list[MapNPC] = []
-    monsters: list[MapMonster] = []
+    npcs: list[MapNPC] = Field(default_factory=list)
+    monsters: list[MapMonster] = Field(default_factory=list)
     hidden: bool = False
     from_map: str = Field(default="", alias="fromMap")
     to_map: str = Field(default="", alias="toMap")

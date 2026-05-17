@@ -3,6 +3,7 @@
 import pytest
 from scripts import manage_admin as manage_admin_script
 
+from discordbot.typings.economy import AdminAccount
 from discordbot.cogs._economy.database import get_admin, get_account, get_balance, adjust_balance
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
@@ -59,4 +60,6 @@ async def test_list_admin_accounts_filters_non_admins() -> None:
     await manage_admin_script.grant_admin(user_id=42, name="alice")
     await adjust_balance(user_id=43, name="bob", delta=100)
 
-    assert await manage_admin_script.list_admin_accounts() == [(42, "alice")]
+    assert await manage_admin_script.list_admin_accounts() == [
+        AdminAccount(user_id=42, name="alice")
+    ]

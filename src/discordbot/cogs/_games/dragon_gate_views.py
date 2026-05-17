@@ -63,6 +63,7 @@ from discordbot.cogs._economy.presentation import currency_text
 if TYPE_CHECKING:
     from random import Random
 
+    from discordbot.typings.economy import JackpotSnapshot
     from discordbot.cogs._games.dealer import DealerAI
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
@@ -899,10 +900,9 @@ async def fetch_dragon_gate_jackpot() -> int:
     return await get_jackpot_pool(game_id=GAME_ID)
 
 
-async def fetch_dragon_gate_jackpot_snapshot() -> tuple[int, int]:
+async def fetch_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
     """Reads the live 射龍門 jackpot pool balance and generation."""
-    snapshot = await get_jackpot_snapshot(game_id=GAME_ID)
-    return snapshot.balance, snapshot.generation
+    return await get_jackpot_snapshot(game_id=GAME_ID)
 
 
 __all__ = [

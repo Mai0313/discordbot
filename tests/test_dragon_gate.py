@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 import pytest
 from nextcord import Embed
 
-from discordbot.typings.games import Card, GameParticipant, DragonGatePlayerResult
+from discordbot.typings.games import (
+    Card,
+    GameParticipant,
+    DragonGatePlayerResult,
+    RefreshParticipantsResult,
+)
 from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
@@ -495,9 +500,9 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
 
     async def refresh_participants(
         participants: list[GameParticipant],
-    ) -> tuple[list[GameParticipant], list[str]]:
+    ) -> RefreshParticipantsResult:
         """Leaves all participants seated for lobby start."""
-        return participants, []
+        return RefreshParticipantsResult(participants=participants)
 
     view = DragonGateLobbyView(
         owner=owner,
@@ -557,9 +562,9 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
 
     async def refresh_participants(
         participants: list[GameParticipant],
-    ) -> tuple[list[GameParticipant], list[str]]:
+    ) -> RefreshParticipantsResult:
         """Leaves all participants seated for lobby start."""
-        return participants, []
+        return RefreshParticipantsResult(participants=participants)
 
     async def rejected_ante_batch(
         game_id: str, settlements: Sequence[JackpotSettlementRequest]

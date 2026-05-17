@@ -5,7 +5,7 @@ import asyncio
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.games import GameKind, SettleOutcome, BlackjackDealerDecision
@@ -29,7 +29,7 @@ def _fallback_blackjack_decision(dealer_total: int) -> BlackjackDealerDecision:
     return BlackjackDealerDecision(action="stand", reason="basic rule: 已達 17 點")
 
 
-class DealerAI:
+class DealerAI(BaseModel):
     """Wraps fast-model calls for game banter.
 
     Attributes:
@@ -37,15 +37,10 @@ class DealerAI:
         model: Fast-model settings used for every dealer line.
     """
 
-    def __init__(self, client: AsyncOpenAI, model: ModelSettings) -> None:
-        """Initialises the dealer with a pre-built client and model.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        Args:
-            client: The AsyncOpenAI client to reuse.
-            model: ``ModelSettings`` for the chat model that produces lines.
-        """
-        self.client = client
-        self.model = model
+    client: SkipValidation[AsyncOpenAI]
+    model: ModelSettings
 
     async def _ask(
         self, instructions: str, user_text: str, fallback: str, end_user_id: str

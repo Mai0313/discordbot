@@ -9,12 +9,14 @@ reply footer then shows ``$0.00000000`` instead of an estimate.
 """
 
 import json
-from typing import Any
+from typing import cast
 from pathlib import Path
 from functools import cache
 import contextlib
+from collections.abc import Mapping
 
 import logfire
+from pydantic import Field, BaseModel, ConfigDict, ValidationError, field_validator
 import requests
 
 _UPSTREAM_URL = (
@@ -23,17 +25,39 @@ _UPSTREAM_URL = (
 _CACHE_PATH = Path("./data/model_prices.json")
 
 
-def _fetch_upstream(timeout: int = 5) -> dict[str, dict[str, Any]]:
+class ModelPriceEntry(BaseModel):
+    """Subset of one LiteLLM price-table entry used by this bot."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    input_cost_per_token: float = 0.0
+    input_cost_per_token_priority: float | None = None
+    output_cost_per_token: float = 0.0
+    output_cost_per_token_priority: float | None = None
+    supported_modalities: list[str] = Field(default_factory=list)
+
+    @field_validator("supported_modalities", mode="before")
+    @classmethod
+    def _coerce_supported_modalities(cls, value: object) -> list[str]:
+        """Normalizes uneven upstream modality metadata into strings."""
+        if not value:
+            return []
+        if isinstance(value, list | tuple | set):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+
+def _fetch_upstream(timeout: int = 5) -> dict[str, object]:
     """Fetches the upstream price table; raises on network or parse errors."""
     response = requests.get(url=_UPSTREAM_URL, timeout=timeout)
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict) or not data:
         raise ValueError("Upstream price table is empty or malformed")
-    return data
+    return cast("dict[str, object]", data)
 
 
-def _load_disk_cache() -> dict[str, dict[str, Any]]:
+def _load_disk_cache() -> dict[str, object]:
     """Loads the previous-run snapshot, or returns ``{}`` if unavailable."""
     if not _CACHE_PATH.is_file():
         return {}
@@ -42,25 +66,41 @@ def _load_disk_cache() -> dict[str, dict[str, Any]]:
             data = json.load(fp=f)
     except (OSError, json.JSONDecodeError):
         return {}
-    return data if isinstance(data, dict) else {}
+    return cast("dict[str, object]", data) if isinstance(data, dict) else {}
 
 
-def _save_disk_cache(data: dict[str, dict[str, Any]]) -> None:
+def _save_disk_cache(data: Mapping[str, object]) -> None:
     """Best-effort write of the freshly fetched table to the on-disk cache."""
     with contextlib.suppress(OSError):
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _CACHE_PATH.write_text(data=json.dumps(obj=data), encoding="utf-8")
 
 
+def _parse_model_prices(data: Mapping[str, object]) -> dict[str, ModelPriceEntry]:
+    """Validates raw price-table data into the subset this bot reads."""
+    prices: dict[str, ModelPriceEntry] = {}
+    for model_name, raw_entry in data.items():
+        if not isinstance(raw_entry, Mapping):
+            continue
+        try:
+            prices[model_name] = ModelPriceEntry.model_validate(obj=raw_entry)
+        except ValidationError as exc:
+            logfire.warn(f"Skipping malformed model price entry {model_name}: {exc!s}")
+    return prices
+
+
 @cache
-def _load_model_prices() -> dict[str, dict[str, Any]]:
+def _load_model_prices() -> dict[str, ModelPriceEntry]:
     """Returns the price table, fetching once and falling back to disk cache."""
     try:
-        data = _fetch_upstream()
+        raw_data = _fetch_upstream()
+        data = _parse_model_prices(data=raw_data)
+        if not data:
+            raise ValueError("Upstream price table has no usable entries")
     except (requests.RequestException, ValueError) as exc:
         logfire.warn(f"Falling back to disk cache for model prices: {exc!s}")
-        return _load_disk_cache()
-    _save_disk_cache(data=data)
+        return _parse_model_prices(data=_load_disk_cache())
+    _save_disk_cache(data=raw_data)
     return data
 
 
@@ -77,11 +117,17 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
     Returns:
         Input and output token rates for the model.
     """
-    info = _load_model_prices().get(model_name) or {}
-    default_input = info.get("input_cost_per_token", 0)
-    input_rate = info.get("input_cost_per_token_priority", default_input)
-    default_output = info.get("output_cost_per_token", 0)
-    output_rate = info.get("output_cost_per_token_priority", default_output)
+    info = _load_model_prices().get(model_name)
+    if info is None:
+        return 0.0, 0.0
+    default_input = info.input_cost_per_token
+    input_rate = info.input_cost_per_token_priority
+    if input_rate is None:
+        input_rate = default_input
+    default_output = info.output_cost_per_token
+    output_rate = info.output_cost_per_token_priority
+    if output_rate is None:
+        output_rate = default_output
     return float(input_rate), float(output_rate)
 
 
@@ -100,8 +146,10 @@ def get_supported_modalities(model_name: str) -> set[str]:
     Returns:
         Set of modality strings (e.g. ``{"text", "image", "audio", "video"}``).
     """
-    info = _load_model_prices().get(model_name) or {}
-    modalities = info.get("supported_modalities") or []
+    info = _load_model_prices().get(model_name)
+    if info is None:
+        return {"text", "image"}
+    modalities = info.supported_modalities
     if not modalities:
         return {"text", "image"}
     return set(modalities)

@@ -367,18 +367,18 @@ class EconomyCogs(commands.Cog):
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        _, champion_name, champion_balance, champion_avatar_url = rows[0]
+        champion = rows[0]
 
         embed = Embed(
             title=f"🏆 {CURRENCY_NAME} Top 10",
-            description=(f"## 🥇 {champion_name}\n{bold_currency(amount=champion_balance)}"),
+            description=(f"## 🥇 {champion.name}\n{bold_currency(amount=champion.balance)}"),
             color=_LEADERBOARD_COLOR,
         )
-        embed.set_author(name="目前第一名", icon_url=champion_avatar_url or None)
-        _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
+        embed.set_author(name="目前第一名", icon_url=champion.avatar_url or None)
+        _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
         if len(rows) > 1:
             others = "\n".join(
-                _rank_line(position=position, name=row[1], balance=row[2])
+                _rank_line(position=position, name=row.name, balance=row.balance)
                 for position, row in enumerate(iterable=rows[1:], start=2)
             )
             embed.add_field(name="其他玩家", value=others, inline=False)
@@ -412,18 +412,18 @@ class EconomyCogs(commands.Cog):
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        _, champion_name, champion_loss, champion_avatar_url = rows[0]
+        champion = rows[0]
 
         embed = Embed(
             title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
-            description=f"## 🥇 {champion_name}\n輸 {bold_currency(amount=champion_loss)}",
+            description=f"## 🥇 {champion.name}\n輸 {bold_currency(amount=champion.loss_amount)}",
             color=_LOSS_LEADERBOARD_COLOR,
         )
-        embed.set_author(name="今日輸最多", icon_url=champion_avatar_url or None)
-        _set_optional_thumbnail(embed=embed, avatar_url=champion_avatar_url)
+        embed.set_author(name="今日輸最多", icon_url=champion.avatar_url or None)
+        _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
         if len(rows) > 1:
             others = "\n".join(
-                _loss_rank_line(position=position, name=row[1], loss=row[2])
+                _loss_rank_line(position=position, name=row.name, loss=row.loss_amount)
                 for position, row in enumerate(iterable=rows[1:], start=2)
             )
             embed.add_field(name="其他賠錢人", value=others, inline=False)
@@ -564,8 +564,10 @@ class EconomyCogs(commands.Cog):
         if account is None:
             balance, total_earned, total_spent = 0, 0, 0
         else:
-            _, balance, total_earned, total_spent = account
-            name = name or account[0]
+            balance = account.balance
+            total_earned = account.total_earned
+            total_spent = account.total_spent
+            name = name or account.name
 
         if balance > 0:
             verdict = f"📈 淨贏 {bold_currency(amount=balance)}"
