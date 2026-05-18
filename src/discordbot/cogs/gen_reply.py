@@ -56,30 +56,6 @@ _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 # replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count icons,
 # which never appear together in user-authored content.
 _USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
-_WEB_SEARCH_EVENT_TYPES = {
-    "response.web_search_call.in_progress",
-    "response.web_search_call.searching",
-    "response.web_search_call.completed",
-}
-_WEB_SEARCH_OUTPUT_ITEM_EVENT_TYPES = {"response.output_item.added", "response.output_item.done"}
-
-
-def _annotation_type(annotation: object | None) -> object | None:
-    if isinstance(annotation, dict):
-        return annotation.get("type")
-    return getattr(annotation, "type", None)
-
-
-def _event_uses_web_search(response: object) -> bool:
-    event_type = getattr(response, "type", None)
-    if event_type in _WEB_SEARCH_EVENT_TYPES:
-        return True
-    if event_type in _WEB_SEARCH_OUTPUT_ITEM_EVENT_TYPES:
-        item = getattr(response, "item", None)
-        return getattr(item, "type", None) == "web_search_call"
-    if event_type == "response.output_text.annotation.added":
-        return _annotation_type(annotation=getattr(response, "annotation", None)) == "url_citation"
-    return False
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -642,14 +618,13 @@ class ReplyGeneratorCogs(commands.Cog):
         used_web_search = False
 
         async for response in responses:
-            if _event_uses_web_search(response=response):
-                used_web_search = True
-
             if response.type == "response.completed":
                 model_name = response.response.model
                 if response.response.usage:
                     input_tokens = response.response.usage.input_tokens
                     output_tokens = response.response.usage.output_tokens
+            elif response.type == "response.output_text.annotation.added":
+                used_web_search = True
             elif response.type == "response.output_text.delta":
                 delta = response.delta
                 if not content_started:
