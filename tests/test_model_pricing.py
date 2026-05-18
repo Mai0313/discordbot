@@ -1,6 +1,6 @@
 """Tests for LiteLLM model pricing cache parsing."""
 
-from collections.abc import Mapping, Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -19,7 +19,7 @@ def test_model_pricing_uses_typed_priority_rates_and_modalities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Valid raw price entries are parsed into typed lookup models."""
-    raw_table: dict[str, object] = {
+    raw_table: model_pricing.JsonRecord = {
         "test-model": {
             "input_cost_per_token": 0.1,
             "input_cost_per_token_priority": 0.2,
@@ -29,14 +29,14 @@ def test_model_pricing_uses_typed_priority_rates_and_modalities(
             "ignored_upstream_field": "kept out of the typed model",
         }
     }
-    saved_tables: list[Mapping[str, object]] = []
+    saved_tables: list[model_pricing.JsonMapping] = []
 
-    def fake_fetch_upstream(timeout: int = 5) -> dict[str, object]:
+    def fake_fetch_upstream(timeout: int = 5) -> model_pricing.JsonRecord:
         """Returns a deterministic upstream table."""
         assert timeout == 5
         return raw_table
 
-    def fake_save_disk_cache(data: Mapping[str, object]) -> None:
+    def fake_save_disk_cache(data: model_pricing.JsonMapping) -> None:
         """Records the raw data that would be cached on disk."""
         saved_tables.append(data)
 
@@ -53,12 +53,12 @@ def test_model_pricing_defaults_unknown_and_missing_modalities(
 ) -> None:
     """Unknown models and incomplete modality data keep the previous fallbacks."""
 
-    def fake_fetch_upstream(timeout: int = 5) -> dict[str, object]:
+    def fake_fetch_upstream(timeout: int = 5) -> model_pricing.JsonRecord:
         """Returns one entry without modality metadata."""
         assert timeout == 5
         return {"text-model": {"input_cost_per_token": 0.1, "output_cost_per_token": 0.2}}
 
-    def fake_save_disk_cache(data: Mapping[str, object]) -> None:
+    def fake_save_disk_cache(data: model_pricing.JsonMapping) -> None:
         """Avoids writing test data into the repo data directory."""
         assert data
 
@@ -75,12 +75,12 @@ def test_model_pricing_falls_back_to_disk_cache_and_skips_malformed_entries(
 ) -> None:
     """Fetch failures use validated disk-cache entries and skip malformed rows."""
 
-    def fake_fetch_upstream(timeout: int = 5) -> dict[str, object]:
+    def fake_fetch_upstream(timeout: int = 5) -> model_pricing.JsonRecord:
         """Simulates a malformed upstream table."""
         assert timeout == 5
         raise ValueError("bad upstream")
 
-    def fake_load_disk_cache() -> dict[str, object]:
+    def fake_load_disk_cache() -> model_pricing.JsonRecord:
         """Returns mixed valid and invalid cached rows."""
         return {
             "bad-shape": "not a mapping",

@@ -14,6 +14,7 @@ from random import Random
 from unittest.mock import MagicMock
 
 import pytest
+from nextcord import Interaction
 
 from discordbot.typings.games import GameParticipant, BlackjackDealerDecision
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
@@ -311,7 +312,7 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
 
     notices: list[str] = []
 
-    async def _fake_notice(*, interaction: object, content: str, log_message: str) -> None:
+    async def _fake_notice(*, interaction: Interaction, content: str, log_message: str) -> None:
         notices.append(content)
 
     monkeypatch.setattr(
@@ -336,7 +337,9 @@ async def test_play_dealer_skips_llm_below_17() -> None:
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    async def _unreachable(**kwargs: object) -> BlackjackDealerDecision:
+    async def _unreachable(
+        *, author_name: str, table_state: str, dealer_total: int
+    ) -> BlackjackDealerDecision:
         msg = "LLM must not be called for dealer total <= 16"
         raise AssertionError(msg)
 
@@ -360,7 +363,9 @@ async def test_play_dealer_overrides_18_plus_hit_to_stand() -> None:
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    async def _aggressive_llm(**kwargs: object) -> BlackjackDealerDecision:
+    async def _aggressive_llm(
+        *, author_name: str, table_state: str, dealer_total: int
+    ) -> BlackjackDealerDecision:
         return BlackjackDealerDecision(action="hit", reason="LLM reckless suggestion")
 
     view.dealer.decide_blackjack_action = _aggressive_llm

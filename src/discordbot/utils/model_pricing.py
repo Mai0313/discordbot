@@ -24,6 +24,12 @@ _UPSTREAM_URL = (
 )
 _CACHE_PATH = Path("./data/model_prices.json")
 
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+type JsonRecord = dict[str, JsonValue]
+type JsonMapping = Mapping[str, JsonValue]
+type SupportedModalitiesInput = JsonValue | tuple[JsonValue, ...] | set[JsonScalar]
+
 
 class ModelPriceEntry(BaseModel):
     """Subset of one LiteLLM price-table entry used by this bot."""
@@ -38,7 +44,7 @@ class ModelPriceEntry(BaseModel):
 
     @field_validator("supported_modalities", mode="before")
     @classmethod
-    def _coerce_supported_modalities(cls, value: object) -> list[str]:
+    def _coerce_supported_modalities(cls, value: SupportedModalitiesInput) -> list[str]:
         """Normalizes uneven upstream modality metadata into strings."""
         if not value:
             return []
@@ -47,17 +53,17 @@ class ModelPriceEntry(BaseModel):
         return []
 
 
-def _fetch_upstream(timeout: int = 5) -> dict[str, object]:
+def _fetch_upstream(timeout: int = 5) -> JsonRecord:
     """Fetches the upstream price table; raises on network or parse errors."""
     response = requests.get(url=_UPSTREAM_URL, timeout=timeout)
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict) or not data:
         raise ValueError("Upstream price table is empty or malformed")
-    return cast("dict[str, object]", data)
+    return cast("JsonRecord", data)
 
 
-def _load_disk_cache() -> dict[str, object]:
+def _load_disk_cache() -> JsonRecord:
     """Loads the previous-run snapshot, or returns ``{}`` if unavailable."""
     if not _CACHE_PATH.is_file():
         return {}
@@ -66,17 +72,17 @@ def _load_disk_cache() -> dict[str, object]:
             data = json.load(fp=f)
     except (OSError, json.JSONDecodeError):
         return {}
-    return cast("dict[str, object]", data) if isinstance(data, dict) else {}
+    return cast("JsonRecord", data) if isinstance(data, dict) else {}
 
 
-def _save_disk_cache(data: Mapping[str, object]) -> None:
+def _save_disk_cache(data: JsonMapping) -> None:
     """Best-effort write of the freshly fetched table to the on-disk cache."""
     with contextlib.suppress(OSError):
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _CACHE_PATH.write_text(data=json.dumps(obj=data), encoding="utf-8")
 
 
-def _parse_model_prices(data: Mapping[str, object]) -> dict[str, ModelPriceEntry]:
+def _parse_model_prices(data: JsonMapping) -> dict[str, ModelPriceEntry]:
     """Validates raw price-table data into the subset this bot reads."""
     prices: dict[str, ModelPriceEntry] = {}
     for model_name, raw_entry in data.items():
