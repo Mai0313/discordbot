@@ -42,10 +42,11 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## AI Pipeline
 
-- Runtime LLM calls use `AsyncOpenAI` clients and the OpenAI Responses API.
-    Do not switch chat, routing, or captioning back to Chat Completions.
-- `OPENAI_BASE_URL` usually points at LiteLLM. Provider selection happens via
-    model strings, `ModelSettings.tools`, and `extra_body`.
+- Runtime LLM backend is LiteLLM Proxy behind `OPENAI_BASE_URL`; all runtime
+    conversations use `AsyncOpenAI` and the OpenAI Responses API. Do not switch
+    chat, routing, or captioning back to Chat Completions.
+- Provider selection happens through LiteLLM via model strings,
+    `ModelSettings.tools`, and `extra_body`.
 - Do not import provider-native SDKs such as `google-genai` or `anthropic` into
     runtime request paths. `scripts/prompt_dev.py` is the exception for local
     experimentation.
@@ -195,7 +196,9 @@ make gen-docs                    # regenerate docs/ from sources
     import time.
 - Pure shared result types, enums, and constants live under
     `src/discordbot/typings/` when they do not depend on cogs or utils.
-- Use Pydantic models for structured data. Do not introduce `dataclass`.
+- Use `pydantic.BaseModel` for structured data and type-managed payloads. Do not
+    introduce `dataclass`, and do not replace real payload types with loose
+    `object` / `Any` annotations.
 - Keep `Field(description=..., examples=...)` populated for configurable
     values.
 
@@ -203,7 +206,8 @@ make gen-docs                    # regenerate docs/ from sources
 
 - Ruff is formatter and linter. Use narrow `# noqa: <rule>` comments with a
     reason when needed.
-- mypy runs in pre-commit. `Any` is a last resort.
+- mypy runs in pre-commit. Type hints should use the real domain type; avoid
+    `object`, `Any`, or similarly loose annotations for convenience.
 - Keyword arguments are required for normal function calls, including
     single-argument calls. Do not add bare `*` to new function signatures solely
     to force keyword-only usage.
