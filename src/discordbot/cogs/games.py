@@ -78,7 +78,7 @@ class GamesCogs(commands.Cog):
         Returns:
             Fast model settings with reasoning disabled for dealer banter.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="low")
+        return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @cached_property
     def dealer(self) -> DealerAI:
