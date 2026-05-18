@@ -343,19 +343,19 @@ async def test_credit_with_repayment_full_credit_when_no_debt() -> None:
     assert result.remaining_debt == 0
 
 
-async def test_credit_with_repayment_diverts_50_percent_to_principal() -> None:
-    """With debt, 50% of income pays down principal."""
+async def test_credit_with_repayment_leaves_principal_untouched_at_zero_ratio() -> None:
+    """With auto-repay disabled (ratio=0), positive income lands fully in balance."""
     await borrow(user_id=1, name="alice", amount=1_000, credit_limit_value=10_000)
     result = await credit_with_repayment(
         user_id=1, name="alice", amount=200, kind=TransactionKind.CHAT_REWARD
     )
-    assert result.principal_repaid == 100
-    assert result.credited_amount == 100
-    assert result.remaining_debt == 900
+    assert result.principal_repaid == 0
+    assert result.credited_amount == 200
+    assert result.remaining_debt == 1_000
 
 
-async def test_credit_with_repayment_caps_at_principal_total() -> None:
-    """Repayment clamps to total debt when 50% exceeds outstanding."""
+async def test_credit_with_repayment_full_credit_even_with_outstanding_principal() -> None:
+    """Outstanding debt is not auto-deducted at ratio=0, even on a large payout."""
     await borrow(user_id=1, name="alice", amount=50, credit_limit_value=1_000)
     await apply_round_settlement(
         player_id=1,
@@ -368,20 +368,20 @@ async def test_credit_with_repayment_caps_at_principal_total() -> None:
     result = await credit_with_repayment(
         user_id=1, name="alice", amount=1_000, kind=TransactionKind.CHAT_REWARD
     )
-    assert result.principal_repaid == 50
-    assert result.credited_amount == 950
-    assert result.remaining_debt == 0
-    assert result.new_balance == 950
+    assert result.principal_repaid == 0
+    assert result.credited_amount == 1_000
+    assert result.remaining_debt == 50
+    assert result.new_balance == 1_000
 
 
-async def test_credit_with_repayment_floors_odd_amount() -> None:
-    """Floor-division of odd amount: 11 // 2 = 5 to repayment, 6 to balance."""
+async def test_credit_with_repayment_odd_amount_lands_whole_at_zero_ratio() -> None:
+    """Odd-amount income still credits fully when auto-repay ratio is 0."""
     await borrow(user_id=1, name="alice", amount=100, credit_limit_value=1_000)
     result = await credit_with_repayment(
         user_id=1, name="alice", amount=11, kind=TransactionKind.CHAT_REWARD
     )
-    assert result.principal_repaid == 5
-    assert result.credited_amount == 6
+    assert result.principal_repaid == 0
+    assert result.credited_amount == 11
 
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
@@ -522,7 +522,11 @@ async def test_repay_logs_audit_row() -> None:
 
 
 async def test_chat_reward_logs_credited_slice_with_debt_context() -> None:
-    """credit_with_repayment logs delta=credited and debt_after=post-repay debt."""
+    """credit_with_repayment logs delta=credited and debt_after=post-repay debt.
+
+    With auto-repay disabled (ratio=0), the credited slice equals the full
+    income and the principal stays unchanged.
+    """
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     await credit_with_repayment(
         user_id=1, name="alice", amount=100, kind=TransactionKind.CHAT_REWARD
@@ -530,7 +534,7 @@ async def test_chat_reward_logs_credited_slice_with_debt_context() -> None:
     rows = await _list_transactions(user_id=1)
     assert rows == [
         (TransactionKind.BORROW.value, 500, 500),
-        (TransactionKind.CHAT_REWARD.value, 50, 450),
+        (TransactionKind.CHAT_REWARD.value, 100, 500),
     ]
 
 

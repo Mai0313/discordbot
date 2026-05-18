@@ -631,13 +631,16 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
     note: str | None,
     now: datetime,
 ) -> CreditResult:
-    """Inner credit-with-50%-auto-repay pipeline; caller must commit the session.
+    """Inner credit-with-auto-repay pipeline; caller must commit the session.
 
     Pipeline (all inside the caller's transaction):
 
     1. ``_reset_expired_loan_in_session`` clears the previous day's loan.
     2. SELECT current balance + loan state.
-    3. ``to_repay = min(amount // 2, principal)``.
+    3. ``to_repay = min(amount * auto_repay_ratio_percent // 100, principal)``.
+       ``auto_repay_ratio_percent`` is currently ``0`` (auto-repay disabled);
+       bump it back to ``50`` to restore the old "half of positive income goes
+       to principal" behavior without restructuring callers.
     4. Repayment debits ``loan_principal``; remainder credits balance.
     5. Conditional UPDATE gated on the values we read; retry on conflict.
     6. ``_log_transaction_in_session`` writes one audit row with
@@ -645,6 +648,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
 
     Caller must guarantee ``amount > 0``.
     """
+    auto_repay_ratio_percent = 0  # disabled; was 50 — pipeline preserved for easy re-enable
     await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
 
     for _ in range(_CREDIT_WITH_REPAYMENT_MAX_RETRIES):
@@ -708,7 +712,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             )
 
         (starting_balance, existing_name, principal, total_earned, total_repaid) = row
-        to_repay = min(amount // 2, principal)
+        to_repay = min(amount * auto_repay_ratio_percent // 100, principal)
         credited = amount - to_repay
 
         new_balance = starting_balance + credited
@@ -988,10 +992,12 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
 ) -> tuple[int, int]:
     """Applies a jackpot player delta and returns the balance plus applied delta.
 
-    Positive deltas keep the existing casino payout path, including loan
-    auto-repayment, and count as fully applied because debt repayment is still
-    player value. Negative deltas clamp at zero so Dragon Gate losses cannot
-    drive the player account negative; the returned delta is the actual debit.
+    Positive deltas keep the existing casino payout path, including the
+    (currently disabled) loan auto-repayment slice, and count as fully
+    applied — debt repayment is still player value when the ratio ever
+    flips back on. Negative deltas clamp at zero so Dragon Gate losses
+    cannot drive the player account negative; the returned delta is the
+    actual debit.
     """
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
@@ -1029,12 +1035,15 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
     note: str | None = None,
     avatar_url: str = "",
 ) -> CreditResult:
-    """Credits ``amount`` to the user while diverting 50% to repay debt first.
+    """Credits ``amount`` to the user, optionally diverting a slice to debt.
 
-    Repayment goes entirely against principal (the interest system has been
-    removed) and is capped at the user's outstanding loan. Any portion not
-    used for repayment goes to balance and bumps ``total_earned``. Writes
-    one audit row via the helper.
+    The auto-repay ratio is currently 0 (see
+    ``_credit_with_repayment_in_session``) so every positive ``amount``
+    lands in balance and the loan is untouched. The repayment pipeline
+    itself is kept so flipping the ratio back to 50 re-enables the old
+    half-of-income behavior without callers changing. Any portion not used
+    for repayment goes to balance and bumps ``total_earned``. Writes one
+    audit row via the helper.
 
     Args:
         user_id: Discord user ID receiving the credit.
@@ -1151,9 +1160,10 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     Sharing a session (and therefore a single SQLite transaction) means a
     crash between the player and dealer writes cannot leave the dealer
     ledger drifting from the player result. Positive player deltas go through
-    ``_credit_with_repayment_in_session`` so the 50% auto-repay rule applies
-    to casino profit. Negative deltas are debited without a zero clamp so a
-    player cannot evade a bad in-memory round by moving funds before it settles.
+    ``_credit_with_repayment_in_session`` so the auto-repay rule (currently
+    disabled at 0%) applies to casino profit. Negative deltas are debited
+    without a zero clamp so a player cannot evade a bad in-memory round by
+    moving funds before it settles.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1463,8 +1473,10 @@ async def apply_jackpot_settlement_batch(
     """Atomically applies one or more player settlements against a jackpot pool.
 
     Positive player deltas (wins) are capped to the live pool balance inside
-    this transaction, then credited via the 50% auto-repayment path. Negative
-    deltas normally clamp at zero and feed the pool with the actual debit.
+    this transaction, then credited via the auto-repayment path (the
+    diversion ratio is currently 0%, so wins land fully in the player
+    balance). Negative deltas normally clamp at zero and feed the pool with
+    the actual debit.
     Required-full-debit settlements reject the whole batch instead. If a seeded
     pool is drained, the same transaction restores its on-the-house seed.
 

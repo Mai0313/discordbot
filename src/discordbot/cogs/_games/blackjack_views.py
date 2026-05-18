@@ -29,6 +29,7 @@ from discordbot.cogs._games.blackjack import (
     hand_value,
     render_hand,
     can_surrender,
+    dealer_up_card,
     committed_wagers,
 )
 from discordbot.cogs._games.settlement import (
@@ -69,6 +70,8 @@ if TYPE_CHECKING:
 MAX_BLACKJACK_PLAYERS: Final[int] = 5
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
+FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
+PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -215,11 +218,17 @@ def _footer_status(round_state: BlackjackRound) -> str:
     return f"輪到 {active.participant.display_name}"
 
 
-def build_in_progress_embed(dealer_name: str, round_state: BlackjackRound) -> Embed:
-    """Builds the shared Blackjack table embed while players are acting."""
+def build_in_progress_embed(
+    dealer_name: str, round_state: BlackjackRound, force_show_hole: bool = False
+) -> Embed:
+    """Builds the shared Blackjack table embed while players are acting.
+
+    Pass ``force_show_hole=True`` during peek-reveal animations so the dealer
+    hole card is uncovered even before the round reaches the dealer phase.
+    """
     description_parts: list[str] = [
         f"### {dealer_name}",
-        _format_dealer_block(round_state=round_state, hide_hole=True),
+        _format_dealer_block(round_state=round_state, hide_hole=not force_show_hole),
     ]
     for player_index, player in enumerate(round_state.players):
         participant = player.participant
@@ -532,6 +541,7 @@ class BlackjackView(View):
         self._dealer_line = dealer_line
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
+        self._peek_animated = False
         self._insurance_buttons: tuple[Button, Button] = (
             cast("Button", self.insure_yes),
             cast("Button", self.insure_no),
@@ -540,6 +550,11 @@ class BlackjackView(View):
     async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
         if self._settled:
+            await send_ephemeral_notice(
+                interaction=interaction,
+                content="這局已經結束, 等下一局吧",
+                log_message="Failed to send Blackjack settled notice",
+            )
             return False
         if interaction.user is None:
             return False
@@ -776,6 +791,7 @@ class BlackjackView(View):
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
+            await self._maybe_animate_insurance_close_locked(message=interaction.message)
             await self._edit_in_progress_locked(message=interaction.message)
 
     @nextcord.ui.button(
@@ -799,6 +815,7 @@ class BlackjackView(View):
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
+            await self._maybe_animate_insurance_close_locked(message=interaction.message)
             await self._edit_in_progress_locked(message=interaction.message)
 
     async def finalize(self, message: Message) -> None:
@@ -878,7 +895,14 @@ class BlackjackView(View):
         await self._edit_in_progress_locked(message=message)
 
     async def _finalize_locked(self, message: Message) -> None:
-        """Applies settlements and publishes the final table embeds once."""
+        """Applies settlements and publishes the final table embeds once.
+
+        The view is disabled and stopped before any long-running ``await``
+        (dealer LLM, DB settlement, message edit) so a stalled coroutine
+        cannot leave players staring at live-looking buttons. ``interaction_check``
+        then replies with an ephemeral notice instead of falling through to
+        Discord's "interaction failed" timeout.
+        """
         if self._settled:
             return
         self._settled = True
@@ -886,8 +910,18 @@ class BlackjackView(View):
             self.round_state.decline_insurance_for_all_unresolved()
         if not self.round_state.finished:
             self.round_state.stand_all_remaining()
+        self._disable_buttons()
+        self.stop()
+        await self._safe_edit_view_locked(message=message)
+        logfire.info("Blackjack finalize started", players=len(self.round_state.players))
+
+        if self.round_state.peeked_blackjack and not self._peek_animated:
+            self._peek_animated = True
+            await self._animate_peek_reveal_bj_locked(message=message)
+
         await self._edit_dealer_thinking_locked(message=message)
         await self._play_dealer_locked()
+        logfire.info("Blackjack dealer phase done", dealer_total=self.round_state.dealer_total())
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
@@ -903,6 +937,7 @@ class BlackjackView(View):
                 dealer_avatar_url=self.dealer_avatar_url,
             )
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
+        logfire.info("Blackjack settlement done", results=len(results))
 
         dealer_line = await self._settlement_line(results=results)
         talk_embed = build_dealer_talk_embed(
@@ -916,11 +951,91 @@ class BlackjackView(View):
             results=results,
             dealer_steps=self._dealer_steps,
         )
-        self._disable_buttons()
-        self.stop()
         with contextlib.suppress(Exception):
-            await message.edit(embeds=[talk_embed, final_embed], view=self)
+            await asyncio.wait_for(
+                message.edit(embeds=[talk_embed, final_embed], view=self),
+                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        logfire.info("Blackjack final edit done")
         schedule_game_message_delete(message=message)
+
+    async def _safe_edit_view_locked(self, message: Message) -> None:
+        """Refreshes only the view so disabled buttons are visible immediately."""
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(message.edit(view=self), timeout=FINAL_EDIT_TIMEOUT_SECONDS)
+
+    async def _animate_peek_locked(
+        self, message: Message, *, intro_line: str, reveal_line: str
+    ) -> None:
+        """Renders the dealer hole-card peek as a 2-stage reveal.
+
+        Stage 1 keeps the hole card hidden while the dealer "peeks", stage 2
+        flips it face-up. Buttons stay disabled throughout so the caller can
+        safely chain finalize / further edits after the animation returns.
+        """
+        self._disable_buttons()
+        intro_talk = build_dealer_talk_embed(
+            dealer_line=intro_line,
+            dealer_name=self.dealer_name,
+            dealer_avatar_url=self.dealer_avatar_url,
+        )
+        body_hidden = build_in_progress_embed(
+            dealer_name=self.dealer_name, round_state=self.round_state
+        )
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                message.edit(embeds=[intro_talk, body_hidden], view=self),
+                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
+
+        reveal_talk = build_dealer_talk_embed(
+            dealer_line=reveal_line,
+            dealer_name=self.dealer_name,
+            dealer_avatar_url=self.dealer_avatar_url,
+        )
+        reveal_body = build_in_progress_embed(
+            dealer_name=self.dealer_name, round_state=self.round_state, force_show_hole=True
+        )
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                message.edit(embeds=[reveal_talk, reveal_body], view=self),
+                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
+
+    async def _animate_peek_reveal_bj_locked(self, message: Message) -> None:
+        """Peek animation when the hole card revealed a Blackjack."""
+        up = dealer_up_card(dealer=self.round_state.dealer)
+        up_label = str(up) if up is not None else "明牌"
+        await self._animate_peek_locked(
+            message=message,
+            intro_line=f"莊家明牌 {up_label}, 慢慢翻開 hole card 看一眼...",
+            reveal_line="Boom, 莊家 21 點, 本局直接結算",
+        )
+
+    async def _animate_peek_no_bj_locked(self, message: Message) -> None:
+        """Peek animation after insurance closes without a dealer Blackjack."""
+        up = dealer_up_card(dealer=self.round_state.dealer)
+        up_label = str(up) if up is not None else "明牌"
+        await self._animate_peek_locked(
+            message=message,
+            intro_line=f"莊家明牌 {up_label}, 翻開 hole card 看一眼...",
+            reveal_line="嘖, hole card 不到位, 遊戲繼續",
+        )
+
+    async def _maybe_animate_insurance_close_locked(self, message: Message) -> None:
+        """Plays the no-BJ peek reveal once when insurance phase ends without BJ."""
+        if self._peek_animated:
+            return
+        if not self.round_state.insurance_offered:
+            return
+        if self.round_state.peeked_blackjack:
+            return
+        if self.round_state.phase != "player_actions":
+            return
+        self._peek_animated = True
+        await self._animate_peek_no_bj_locked(message=message)
 
     async def _edit_dealer_thinking_locked(self, message: Message) -> None:
         """Shows that the dealer is choosing hit / stand before the AI call."""
@@ -938,7 +1053,10 @@ class BlackjackView(View):
         )
         main_embed.set_footer(text="莊家正在思考 hit / stand, 請稍等")
         with contextlib.suppress(Exception):
-            await message.edit(embeds=[talk_embed, main_embed], view=self)
+            await asyncio.wait_for(
+                message.edit(embeds=[talk_embed, main_embed], view=self),
+                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+            )
 
     async def _play_dealer_locked(self) -> None:
         """Runs the AI dealer phase before settlement."""
@@ -964,9 +1082,9 @@ class BlackjackView(View):
                 return
 
             action: BlackjackDealerAction
-            if total_before <= 11:
+            if total_before <= 16:
                 action = "hit"
-                reason = "guard: 11 點以下不會爆"
+                reason = "guard: 16 點以下必 hit"
                 fallback = False
                 forced = True
             elif use_basic_rule:
@@ -986,6 +1104,15 @@ class BlackjackView(View):
                 forced = False
                 if fallback:
                     use_basic_rule = True
+                if total_before >= 18 and action == "hit":
+                    logfire.warn(
+                        "Dealer LLM suggested hit at >=18; overriding to stand",
+                        dealer_total=total_before,
+                        original_reason=reason,
+                    )
+                    action = "stand"
+                    reason = "override: 18+ 必停 (原 LLM 回 hit)"
+                    forced = True
 
             drawn_card: Card | None = None
             total_after: int | None = None

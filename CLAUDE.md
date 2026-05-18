@@ -103,7 +103,11 @@ make gen-docs                    # regenerate docs/ from sources
 - Every balance mutation should write a `PointTransaction` row unless the helper
     intentionally skips `delta == 0`.
 - `credit_with_repayment` is the income path for message reward, chat reward,
-    and casino payout. It auto-applies 50% of positive income to loan principal.
+    and casino payout. The auto-repay slice is controlled by the
+    `auto_repay_ratio_percent` inline constant in
+    `_credit_with_repayment_in_session`; it is currently `0` (no diversion),
+    and bumping it back to `50` restores the half-of-income-to-principal
+    behavior without restructuring callers.
     `/give` recipients are not auto-repaid.
 - Loan helpers reset stale principal lazily at Asia/Taipei midnight. Borrowing
     over the remaining daily cap clamps to the remaining cap; only zero remaining
@@ -129,8 +133,19 @@ make gen-docs                    # regenerate docs/ from sources
     clamp bets up front, then settle through the game settlement helpers.
 - Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and
     peek. No Double after Split. Split-hand 21 is not natural Blackjack.
-- Blackjack dealer decisions call `DealerAI.decide_blackjack_action` after all
-    player hands finish. Keep deterministic fallback rules so rounds never stall.
+- Blackjack dealer decisions skip the LLM at deterministic totals: ≤16 forces
+    hit, =21 forces stand, and LLM `hit` replies at ≥18 are overridden to stand.
+    Only 17 (and 18-20 for flavor text) actually round-trip through
+    `DealerAI.decide_blackjack_action`. Keep deterministic guards so rounds
+    never stall.
+- Blackjack peek runs as a two-stage view animation when the dealer up-card
+    is A or 10/J/Q/K, gated by `BlackjackView._peek_animated`. Do not collapse
+    `_animate_peek_reveal_bj_locked` / `_animate_peek_no_bj_locked` into a single
+    edit; players need the "莊家偷看 → 翻牌" beats.
+- `BlackjackView._finalize_locked` disables buttons and calls `self.stop()`
+    before any long-running await (dealer LLM, DB settlement, message edit). A
+    stalled settlement therefore cannot leave live-looking buttons behind, and
+    `interaction_check` replies with an ephemeral notice once `_settled=True`.
 - Blackjack player settlements mirror `-player_delta` into the bot's house
     ledger through `apply_round_settlement`.
 - Dragon Gate is backed by the shared `jackpot_pool` row

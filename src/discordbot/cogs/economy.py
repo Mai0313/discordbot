@@ -323,7 +323,7 @@ class EconomyCogs(commands.Cog):
                 name="今日欠款",
                 value=(
                     f"本金 {amount_code(amount=loan.principal)}\n"
-                    "-# 收入 50% 自動還款 | 每天 0:00 自動清零"
+                    "-# 每天 0:00 自動清零, 請主動 /repay 還款"
                 ),
                 inline=False,
             )

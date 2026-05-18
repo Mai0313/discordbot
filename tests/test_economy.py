@@ -661,8 +661,9 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     assert await get_balance(user_id=1) == 150
     assert await get_balance(user_id=99) == -50
     assert dealer.settle_calls == 1
-    assert message.edit_calls == 2
-    thinking_embeds = cast("list[Any]", message.edits[0]["embeds"])
+    assert message.edit_calls == 3
+    assert "embeds" not in message.edits[0]
+    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
     thinking_line = cast("str", thinking_embeds[0].description)
     assert "莊家正在思考 hit / stand" in thinking_line
     assert cleanup_messages == [message]
@@ -707,8 +708,9 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert await get_balance(user_id=1) == 50
     assert await get_balance(user_id=99) == 50
     assert dealer.settle_calls == 1
-    assert message.edit_calls == 2
-    thinking_embeds = cast("list[Any]", message.edits[0]["embeds"])
+    assert message.edit_calls == 3
+    assert "embeds" not in message.edits[0]
+    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
     thinking_line = cast("str", thinking_embeds[0].description)
     assert "莊家正在思考 hit / stand" in thinking_line
     assert cleanup_messages == [message]
@@ -760,15 +762,17 @@ async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.Monke
 
     assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
     assert view.round_state.dealer_played is True
-    assert dealer.decision_calls == 2
+    assert dealer.decision_calls == 1
     assert await get_balance(user_id=1) == 50
     assert await get_balance(user_id=99) == 50
-    thinking_embeds = cast("list[Any]", message.edits[0]["embeds"])
+    assert "embeds" not in message.edits[0]
+    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
     thinking_line = cast("str", thinking_embeds[0].description)
     assert "莊家正在思考 hit / stand" in thinking_line
-    final_embeds = cast("list[Any]", message.edits[1]["embeds"])
+    final_embeds = cast("list[Any]", message.edits[2]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "AI決策: 13 hit 抽 5♣ → 18；18 stand" in description
+    assert "13 hit 抽 5♣ → 18 (guard)" in description
+    assert "18 stand" in description
     assert cleanup_messages == [message]
 
 
@@ -855,12 +859,13 @@ async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
     assert dealer.decision_calls == 1
     assert view.round_state.dealer_total() == 18
     assert len(view.round_state.dealer) == 3
-    thinking_embeds = cast("list[Any]", message.edits[0]["embeds"])
+    assert "embeds" not in message.edits[0]
+    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
     thinking_line = cast("str", thinking_embeds[0].description)
     assert "莊家正在思考 hit / stand" in thinking_line
-    final_embeds = cast("list[Any]", message.edits[1]["embeds"])
+    final_embeds = cast("list[Any]", message.edits[2]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "fallback basic rule" in description
+    assert "fallback basic rule" in description or "override" in description
     assert cleanup_messages == [message]
 
 
@@ -937,8 +942,9 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     assert len(view.round_state.players[0].hands[0].cards) == 2
     assert dealer.settle_calls == 1
     assert dealer.hint_calls == 0
-    assert message.edit_calls == 2
-    thinking_embeds = cast("list[Any]", message.edits[0]["embeds"])
+    assert message.edit_calls == 3
+    assert "embeds" not in message.edits[0]
+    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
     thinking_line = cast("str", thinking_embeds[0].description)
     assert "莊家正在思考 hit / stand" in thinking_line
     assert cleanup_messages == [message]
