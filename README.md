@@ -42,7 +42,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/checkin`                                        | Claims the daily check-in reward.                                                         |
 | `/vip`                                            | Buys permanent VIP perks.                                                                 |
 | `/leaderboard`                                    | Shows the global top balances.                                                            |
-| `/loss_leaderboard`                               | Shows today's biggest casino losses.                                                      |
+| `/loss_leaderboard`                               | Shows today's accumulated casino losses.                                                  |
 | `/borrow <amount>`                                | Borrows 虛擬歡樂豆 until the next Asia/Taipei daily reset.                                |
 | `/repay <amount>`                                 | Repays outstanding loan principal from your balance.                                      |
 | `/give <member> <amount>`                         | Transfers 虛擬歡樂豆 to another member.                                                   |
@@ -109,7 +109,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 This bot stores runtime data locally under `data/`.
 
 - `messages.db`: human messages and this bot's replies, used for chat history and summaries.
-- `economy.db`: 虛擬歡樂豆 balances, VIP flags, loans, check-ins, casino transactions, and jackpot state.
+- `economy.db`: 虛擬歡樂豆 balances, VIP flags, loans, check-ins, casino daily counters, casino transactions, and jackpot state.
 - `game_cleanup.db`: Discord channel and message IDs for public game or economy responses that should be cleaned up after restart.
 - `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.
 - `downloads/` and `threads/`: temporary media scratch folders.

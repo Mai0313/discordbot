@@ -42,7 +42,7 @@
 | `/checkin`                                        | 领取每日签到奖励。                                         |
 | `/vip`                                            | 购买永久 VIP 权益。                                        |
 | `/leaderboard`                                    | 显示全域余额排行榜。                                       |
-| `/loss_leaderboard`                               | 显示今日赌场输钱排行榜。                                   |
+| `/loss_leaderboard`                               | 显示今日赌场输钱累计排行榜。                               |
 | `/borrow <amount>`                                | 借虚拟欢乐豆，到下一次 Asia/Taipei 每日重置为止。          |
 | `/repay <amount>`                                 | 用余额偿还未还本金。                                       |
 | `/give <member> <amount>`                         | 转账虚拟欢乐豆给其他成员。                                 |
@@ -109,7 +109,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 这个 bot 会把 runtime data 存在本地 `data/` 底下。
 
 - `messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
-- `economy.db`：虚拟欢乐豆余额、VIP flag、借款、签到、赌场交易与 jackpot state。
+- `economy.db`：虚拟欢乐豆余额、VIP flag、借款、签到、赌场每日统计、赌场交易与 jackpot state。
 - `game_cleanup.db`：公开 game 或 economy response 的 Discord channel ID 与 message ID，用于 bot 重启后的清理。
 - `model_prices.json`：缓存的 LiteLLM pricing metadata，用于 AI 回复费用估算。
 - `downloads/` 与 `threads/`：临时 media scratch folders。

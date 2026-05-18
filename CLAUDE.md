@@ -114,6 +114,13 @@ make gen-docs                    # regenerate docs/ from sources
     credit rejects.
 - Admin adjustments use `adjust_balance(..., allow_negative=..., note=...)` and
     `MANUAL_ADJUSTMENT`, not casino transaction kinds.
+- Daily casino counters live on `user_account` as
+    `casino_day_started_at`, `daily_casino_loss`, `daily_casino_win`, and
+    `daily_casino_net`. Player-side Blackjack and Dragon Gate settlements
+    update them from the actual applied delta; house ledger rows, push rounds,
+    manual adjustments, transfers, loans, rewards, check-ins, and VIP purchases
+    do not. `/loss_leaderboard` reads gross `daily_casino_loss`, so wins do not
+    offset the displayed ranking.
 - `credit_limit(user, *, is_vip)` is pure and tiered by Discord account age.
     Keep the tier table inline in that function.
 - `/balance`, `/borrow`, `/repay`, `/checkin`, `/vip`, and admin error replies

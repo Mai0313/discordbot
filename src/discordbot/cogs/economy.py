@@ -87,7 +87,7 @@ def _loss_rank_line(position: int, name: str, loss: int) -> str:
     """Formats one loss-leaderboard row."""
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     rank = medals.get(position, f"`#{position}`")
-    return f"{rank} **{name}**  輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
+    return f"{rank} **{name}**  累計輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
 
 
 async def _send_expiring_followup(interaction: Interaction, embed: Embed) -> None:
@@ -386,16 +386,16 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="loss_leaderboard",
-        description=f"Show today's biggest {CURRENCY_NAME} losers in the casino.",
+        description=f"Show today's accumulated {CURRENCY_NAME} casino losses.",
         name_localizations={Locale.zh_TW: "輸錢榜", Locale.ja: "負け額ランキング"},
         description_localizations={
-            Locale.zh_TW: f"顯示今日輸最多{CURRENCY_NAME}的前 10 名 (每天 0:00 重置)",
-            Locale.ja: f"本日{CURRENCY_NAME}を最も失った上位10名 (毎日 0:00 リセット)。",
+            Locale.zh_TW: f"顯示今日累計輸掉{CURRENCY_NAME}的前 10 名 (每天 0:00 重置)",
+            Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位10名 (毎日 0:00 リセット)。",
         },
         nsfw=False,
     )
     async def loss_leaderboard(self, interaction: Interaction) -> None:
-        """Replies with the top 10 net casino losers for the current day.
+        """Replies with the top 10 gross casino losses for the current day.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -405,7 +405,7 @@ class EconomyCogs(commands.Cog):
         rows = await top_losers(limit=10, exclude_user_ids=exclude_user_ids)
         if not rows:
             embed = Embed(
-                title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
+                title=f"💸 今日輸局累計 {CURRENCY_NAME}",
                 description="### 今天還沒有人輸錢\n/blackjack 或 /dragon_gate 開局就可能進榜",
                 color=_LOSS_LEADERBOARD_COLOR,
             )
@@ -415,19 +415,21 @@ class EconomyCogs(commands.Cog):
         champion = rows[0]
 
         embed = Embed(
-            title=f"💸 今日輸錢榜 {CURRENCY_NAME}",
-            description=f"## 🥇 {champion.name}\n輸 {bold_currency(amount=champion.loss_amount)}",
+            title=f"💸 今日輸局累計 {CURRENCY_NAME}",
+            description=(
+                f"## 🥇 {champion.name}\n累計輸 {bold_currency(amount=champion.loss_amount)}"
+            ),
             color=_LOSS_LEADERBOARD_COLOR,
         )
-        embed.set_author(name="今日輸最多", icon_url=champion.avatar_url or None)
+        embed.set_author(name="今日累計輸最多", icon_url=champion.avatar_url or None)
         _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
         if len(rows) > 1:
             others = "\n".join(
                 _loss_rank_line(position=position, name=row.name, loss=row.loss_amount)
                 for position, row in enumerate(iterable=rows[1:], start=2)
             )
-            embed.add_field(name="其他賠錢人", value=others, inline=False)
-        embed.set_footer(text="每天 0:00 (Asia/Taipei) 重置")
+            embed.add_field(name="其他玩家", value=others, inline=False)
+        embed.set_footer(text="今日實際輸掉累計 | 贏回來不抵扣 | 每天 0:00 (Asia/Taipei) 重置")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(

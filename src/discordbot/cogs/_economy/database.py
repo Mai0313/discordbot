@@ -39,26 +39,16 @@ writes into via ``_log_transaction_in_session``.
 VIP and admin status are boolean columns on ``user_account``. VIP bumps daily
 check-in rewards, the borrow cap, and the player's winning payout from games.
 The flag is permanent once set. Admin status gates maintenance-only economy
-commands and is managed out-of-band by scripts.
+commands and is managed out-of-band by scripts. Daily casino counters also live
+on ``user_account`` so `/loss_leaderboard` can read current-day gross losses
+without scanning the audit log.
 """
 
 from typing import TYPE_CHECKING, Any, Final, cast
 from datetime import UTC, datetime, timezone, timedelta
 from collections.abc import Sequence
 
-from sqlalchemy import (
-    Index,
-    String,
-    Boolean,
-    Integer,
-    DateTime,
-    desc,
-    func,
-    text,
-    event,
-    select,
-    update,
-)
+from sqlalchemy import Index, String, Boolean, Integer, DateTime, desc, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -179,6 +169,10 @@ class UserAccount(Base):
         checkin_streak: Consecutive-day streak (1..``CHECKIN_STREAK_CYCLE``),
             persisted after the latest ``/checkin``. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
+        casino_day_started_at: Asia/Taipei midnight for the stored daily casino counters.
+        daily_casino_loss: Current-day gross loss from player-side casino settlements.
+        daily_casino_win: Current-day gross win from player-side casino settlements.
+        daily_casino_net: Current-day signed net casino result.
     """
 
     __tablename__ = "user_account"
@@ -187,6 +181,9 @@ class UserAccount(Base):
         # full scan into a bounded walk. SQLite can use an ASC index to satisfy
         # ORDER BY DESC by reading it backwards, so no DESC index is needed.
         Index("ix_user_account_balance", "balance"),
+        # /loss_leaderboard filters to one Taipei day and orders by gross loss.
+        # SQLite can read the daily loss suffix backwards for DESC ordering.
+        Index("ix_user_account_casino_day_loss", "casino_day_started_at", "daily_casino_loss"),
     )
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -208,6 +205,12 @@ class UserAccount(Base):
     )
     checkin_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    casino_day_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    daily_casino_loss: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_casino_win: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_casino_net: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class PointTransaction(Base):
@@ -216,8 +219,7 @@ class PointTransaction(Base):
     One row per balance-mutating event. ``balance_after`` and ``debt_after``
     reflect the user's state *after* the row's write, so consecutive rows
     for the same user can be diffed to reconstruct every income / spend.
-    ``occurred_at`` carries the Asia/Taipei wall clock so daily windows
-    (e.g. the loss leaderboard) can simply filter on the column.
+    ``occurred_at`` carries the Asia/Taipei wall clock for daily audit slices.
 
     Attributes:
         id: Autoincrementing primary key.
@@ -233,8 +235,8 @@ class PointTransaction(Base):
     __tablename__ = "point_transaction"
     __table_args__ = (
         Index("ix_point_transaction_user_time", "user_id", "occurred_at"),
-        # /loss_leaderboard filters by (occurred_at, kind); the composite
-        # index keeps the daily window scan cheap as the audit log grows.
+        # Audit/debug views often filter by (occurred_at, kind); the composite
+        # index keeps daily-window scans cheap as the log grows.
         Index("ix_point_transaction_time_kind", "occurred_at", "kind"),
     )
 
@@ -310,14 +312,16 @@ def _jackpot_seed_amount(game_id: str) -> int:
 _schema_ready_for: AsyncEngine | None = None
 
 
-async def _ensure_schema() -> None:  # noqa: C901 -- idempotent SQLite migrations are safest kept inline
+async def _ensure_schema() -> None:  # noqa: C901, PLR0912 -- idempotent SQLite migrations are safest kept inline
     """Bootstraps the schema once per ``_engine`` value.
 
     Idempotent migrations:
 
     * Adds ``avatar_url`` to legacy DBs that predated the avatar cache.
     * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` /
-      ``is_admin`` so newer account flags keep working on older DBs.
+      ``is_admin`` and daily casino counters so newer account flags keep
+      working on older DBs.
+    * Adds ``debt_after`` to legacy audit logs that predated loan context.
     * Drops legacy ``loan_interest`` / ``loan_last_accrual_at`` columns
       so the new model can INSERT fresh rows without violating their old
       ``NOT NULL`` constraints. Requires SQLite 3.35+ (`DROP COLUMN`),
@@ -358,6 +362,30 @@ async def _ensure_schema() -> None:  # noqa: C901 -- idempotent SQLite migration
                     text="ALTER TABLE user_account ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+        if "casino_day_started_at" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN casino_day_started_at DATETIME"
+                )
+            )
+        if "daily_casino_loss" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN daily_casino_loss INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "daily_casino_win" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN daily_casino_win INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+        if "daily_casino_net" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE user_account ADD COLUMN daily_casino_net INTEGER NOT NULL DEFAULT 0"
+                )
+            )
         if "loan_interest" in existing_columns:
             await conn.execute(
                 statement=text(text="ALTER TABLE user_account DROP COLUMN loan_interest")
@@ -365,6 +393,22 @@ async def _ensure_schema() -> None:  # noqa: C901 -- idempotent SQLite migration
         if "loan_last_accrual_at" in existing_columns:
             await conn.execute(
                 statement=text(text="ALTER TABLE user_account DROP COLUMN loan_last_accrual_at")
+            )
+        await conn.execute(
+            statement=text(
+                text=(
+                    "CREATE INDEX IF NOT EXISTS ix_user_account_casino_day_loss "
+                    "ON user_account (casino_day_started_at, daily_casino_loss)"
+                )
+            )
+        )
+        result = await conn.execute(statement=text(text="PRAGMA table_info(point_transaction)"))
+        transaction_columns = {row[1] for row in result.all()}
+        if "debt_after" not in transaction_columns:
+            await conn.execute(
+                statement=text(
+                    text="ALTER TABLE point_transaction ADD COLUMN debt_after INTEGER NOT NULL DEFAULT 0"
+                )
             )
         result = await conn.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
         jackpot_columns = {row[1] for row in result.all()}
@@ -581,6 +625,43 @@ async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on 
             debt_after=debt_after,
             note=note,
             occurred_at=now,
+        )
+    )
+
+
+async def _apply_daily_casino_delta_in_session(
+    session: AsyncSession, user_id: int, delta: int, now: datetime
+) -> None:
+    """Accumulates current-day gross casino counters on the player account."""
+    if delta == 0:
+        return
+    today_midnight = _taipei_midnight(now=now)
+    stale_day = (UserAccount.casino_day_started_at.is_(None)) | (
+        UserAccount.casino_day_started_at != today_midnight
+    )
+    await session.execute(
+        statement=update(UserAccount)
+        .where(UserAccount.user_id == user_id, stale_day)
+        .values(
+            casino_day_started_at=today_midnight,
+            daily_casino_loss=0,
+            daily_casino_win=0,
+            daily_casino_net=0,
+            updated_at=now,
+        )
+    )
+
+    loss_delta = max(-delta, 0)
+    win_delta = max(delta, 0)
+    await session.execute(
+        statement=update(UserAccount)
+        .where(UserAccount.user_id == user_id)
+        .values(
+            casino_day_started_at=today_midnight,
+            daily_casino_loss=UserAccount.daily_casino_loss + loss_delta,
+            daily_casino_win=UserAccount.daily_casino_win + win_delta,
+            daily_casino_net=UserAccount.daily_casino_net + delta,
+            updated_at=now,
         )
     )
 
@@ -970,9 +1051,12 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             note=None,
             now=now,
         )
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=user_id, delta=delta, now=now
+        )
         return credit_result.new_balance
     if delta < 0:
-        return await _apply_signed_delta_in_session(
+        new_balance = await _apply_signed_delta_in_session(
             session=session,
             user_id=user_id,
             name=name,
@@ -981,6 +1065,10 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             kind=TransactionKind.CASINO_BET,
             now=now,
         )
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=user_id, delta=delta, now=now
+        )
+        return new_balance
     read_result = await session.execute(
         statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
     )
@@ -1010,9 +1098,12 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             note=None,
             now=now,
         )
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=user_id, delta=delta, now=now
+        )
         return credit_result.new_balance, delta
     if delta < 0:
-        return await _apply_clamped_delta_in_session(
+        new_balance, applied_delta = await _apply_clamped_delta_in_session(
             session=session,
             user_id=user_id,
             name=name,
@@ -1021,6 +1112,10 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             kind=TransactionKind.CASINO_BET,
             now=now,
         )
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=user_id, delta=applied_delta, now=now
+        )
+        return new_balance, applied_delta
     read_result = await session.execute(
         statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
     )
@@ -2514,16 +2609,13 @@ async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list
 async def top_losers(
     limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
 ) -> list[LossLeaderboardEntry]:
-    """Returns the biggest net casino losers since today's Taipei midnight.
+    """Returns the biggest gross casino losers for the current Taipei day.
 
-    Loss sums every ``CASINO_BET`` and ``CASINO_PAYOUT`` delta written to
-    the audit log within the current Asia/Taipei day. A user with a net-
-    negative casino position is on the leaderboard; net-positive users are
-    filtered out. The reported loss is the absolute value of the net so the
-    `/loss_leaderboard` embed reads naturally.
-
-    The audit log is the only source of truth: the daily window resets
-    automatically when the date rolls over, no background task required.
+    The leaderboard reads persisted ``user_account`` daily counters instead
+    of aggregating ``point_transaction`` rows. Writes lazily reset stale
+    counters at the first casino settlement after Taipei midnight, while this
+    query filters by today's ``casino_day_started_at`` so yesterday's counters
+    never leak into a new day.
 
     Args:
         limit: Maximum number of accounts to return.
@@ -2538,31 +2630,30 @@ async def top_losers(
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
-    net_delta = func.sum(PointTransaction.delta).label("net_delta")
 
     async with open_session() as session:
         stmt = (
-            select(PointTransaction.user_id, UserAccount.name, UserAccount.avatar_url, net_delta)
-            .join(UserAccount, UserAccount.user_id == PointTransaction.user_id, isouter=True)
-            .where(
-                PointTransaction.occurred_at >= today_midnight,
-                PointTransaction.kind.in_(
-                    other=(TransactionKind.CASINO_BET.value, TransactionKind.CASINO_PAYOUT.value)
-                ),
+            select(
+                UserAccount.user_id,
+                UserAccount.name,
+                UserAccount.avatar_url,
+                UserAccount.daily_casino_loss,
             )
-            .group_by(PointTransaction.user_id, UserAccount.name, UserAccount.avatar_url)
-            .having(net_delta < 0)
-            .order_by(net_delta)
+            .where(
+                UserAccount.casino_day_started_at == today_midnight,
+                UserAccount.daily_casino_loss > 0,
+            )
+            .order_by(desc(UserAccount.daily_casino_loss))
             .limit(limit=limit)
         )
         if exclude_user_ids:
-            stmt = stmt.where(PointTransaction.user_id.notin_(other=exclude_user_ids))
+            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)
         return [
             LossLeaderboardEntry(
                 user_id=row[0],
                 name=row[1] or str(row[0]),
-                loss_amount=int(-row[3]),
+                loss_amount=row[3],
                 avatar_url=row[2] or "",
             )
             for row in result.all()

@@ -47,6 +47,7 @@ from discordbot.cogs._economy.database import (
     transfer,
     get_admin,
     set_admin,
+    _as_taipei,
     top_losers,
     get_account,
     get_balance,
@@ -56,6 +57,7 @@ from discordbot.cogs._economy.database import (
     _ensure_schema,
     adjust_balance,
     checkin_reward,
+    _taipei_midnight,
     get_jackpot_pool,
     _build_credit_upsert,
     get_jackpot_snapshot,
@@ -219,6 +221,23 @@ async def _stored_avatar_url(user_id: int) -> str:
             statement=select(UserAccount.avatar_url).where(UserAccount.user_id == user_id)
         )
         return result.scalar_one()
+
+
+async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | None]:
+    """Reads daily casino ``(loss, win, net, day_started_at)`` counters."""
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(
+                UserAccount.daily_casino_loss,
+                UserAccount.daily_casino_win,
+                UserAccount.daily_casino_net,
+                UserAccount.casino_day_started_at,
+            ).where(UserAccount.user_id == user_id)
+        )
+        row = result.one_or_none()
+    if row is None:
+        return 0, 0, 0, None
+    return row[0], row[1], row[2], row[3]
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
@@ -429,6 +448,21 @@ async def test_existing_economy_db_gets_schema_migrations(
                 """
             )
         )
+        await conn.execute(
+            statement=text(
+                text="""
+                CREATE TABLE point_transaction (
+                    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    kind VARCHAR(32) NOT NULL,
+                    delta INTEGER NOT NULL,
+                    balance_after INTEGER NOT NULL,
+                    note VARCHAR(256),
+                    occurred_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
 
     await _add_balance(
@@ -439,7 +473,22 @@ async def test_existing_economy_db_gets_schema_migrations(
     async with open_session() as session:
         result = await session.execute(statement=text(text="PRAGMA table_info(user_account)"))
         columns = {row[1] for row in result.all()}
-    assert {"is_vip", "last_checkin_at", "checkin_streak", "is_admin"} <= columns
+        result = await session.execute(statement=text(text="PRAGMA table_info(point_transaction)"))
+        transaction_columns = {row[1] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(user_account)"))
+        index_names = {row[1] for row in result.all()}
+    assert {
+        "is_vip",
+        "last_checkin_at",
+        "checkin_streak",
+        "is_admin",
+        "casino_day_started_at",
+        "daily_casino_loss",
+        "daily_casino_win",
+        "daily_casino_net",
+    } <= columns
+    assert "debt_after" in transaction_columns
+    assert "ix_user_account_casino_day_loss" in index_names
     assert "loan_interest" not in columns
     assert "loan_last_accrual_at" not in columns
 
@@ -1197,6 +1246,58 @@ async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
     assert house_balance == 40
 
 
+async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
+    """Blackjack-style player settlements persist gross loss, gross win, and net."""
+    await _add_balance(user_id=1, name="alice", amount=1_000)
+
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-300,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=300,
+    )
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-500,
+    )
+
+    loss, win, net, day_started_at = await _daily_casino_stats(user_id=1)
+    assert (loss, win, net) == (300, 500, 200)
+    assert day_started_at is not None
+    assert _as_taipei(dt=day_started_at) == _taipei_midnight(now=_database_now())
+
+
+async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
+    """Zero deltas and dealer ledger mirrors do not enter player loss counters."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=0,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=0,
+    )
+    assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
+
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-40,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=40,
+    )
+    assert await _daily_casino_stats(user_id=99) == (0, 0, 0, None)
+
+
 # Daily check-in ------------------------------------------------------------
 
 
@@ -1374,10 +1475,11 @@ async def test_get_vip_unknown_user_returns_false() -> None:
 # Loss leaderboard ----------------------------------------------------------
 
 
-async def test_top_losers_only_lists_net_negative_players() -> None:
-    """A player with a positive casino net does not appear on the loss board."""
+async def test_top_losers_uses_gross_loss_not_net() -> None:
+    """Winning later does not erase a player's gross loss leaderboard amount."""
     await _add_balance(user_id=1, name="alice", amount=1_000)
     await _add_balance(user_id=2, name="bob", amount=1_000)
+    await _add_balance(user_id=3, name="carol", amount=1_000)
     await apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -1394,8 +1496,27 @@ async def test_top_losers_only_lists_net_negative_players() -> None:
         dealer_name="house",
         dealer_delta=-200,
     )
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=-500,
+    )
+    await apply_round_settlement(
+        player_id=3,
+        player_account_name="carol",
+        player_delta=-200,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=200,
+    )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert rows == [LossLeaderboardEntry(user_id=1, name="alice", loss_amount=300, avatar_url="")]
+    assert rows == [
+        LossLeaderboardEntry(user_id=1, name="alice", loss_amount=300, avatar_url=""),
+        LossLeaderboardEntry(user_id=3, name="carol", loss_amount=200, avatar_url=""),
+    ]
 
 
 async def test_top_losers_orders_by_loss_magnitude() -> None:
@@ -1429,8 +1550,8 @@ async def test_top_losers_excludes_specified_users() -> None:
     assert all(row.user_id != 99 for row in rows)
 
 
-async def test_top_losers_ignores_events_before_today() -> None:
-    """Audit rows older than today's Taipei midnight do not count."""
+async def test_top_losers_ignores_counters_before_today() -> None:
+    """Stale account counters from an older Taipei day do not count."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
         player_id=1,
@@ -1442,13 +1563,17 @@ async def test_top_losers_ignores_events_before_today() -> None:
     )
     past = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=2)
     async with open_session() as session:
-        await session.execute(statement=update(PointTransaction).values(occurred_at=past))
+        await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == 1)
+            .values(casino_day_started_at=_taipei_midnight(now=past))
+        )
         await session.commit()
     assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
 
 
 async def test_top_losers_empty_when_no_casino_activity() -> None:
-    """Without any CASINO_BET / CASINO_PAYOUT rows the leaderboard is empty."""
+    """Without any daily casino loss counters the leaderboard is empty."""
     await _add_balance(user_id=1, name="alice", amount=100)
     assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
 
@@ -1729,6 +1854,8 @@ async def test_apply_jackpot_settlement_credits_player_and_drains_pool() -> None
     assert settlement.applied_player_delta == 20_000
     assert settlement.jackpot_depleted is False
     assert await get_jackpot_pool(game_id="dragon_gate") == 80_000
+    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
+    assert (loss, win, net) == (0, 20_000, 20_000)
 
 
 async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
@@ -1774,6 +1901,8 @@ async def test_apply_jackpot_settlement_clamps_loss_and_grows_pool_by_actual_deb
     assert kind == TransactionKind.CASINO_BET.value
     assert delta == -15_000
     assert balance_after == 0
+    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
+    assert (loss, win, net) == (15_000, 0, -15_000)
 
 
 async def test_apply_jackpot_settlement_concurrent_clamped_losses_log_actual_debit() -> None:
@@ -1801,6 +1930,8 @@ async def test_apply_jackpot_settlement_concurrent_clamped_losses_log_actual_deb
             )
         )
         assert result.scalar_one() == -100
+    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
+    assert (loss, win, net) == (100, 0, -100)
 
 
 async def test_apply_jackpot_settlement_caps_win_to_live_pool() -> None:

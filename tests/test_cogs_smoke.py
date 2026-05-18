@@ -659,6 +659,64 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     assert "權限不足" in interaction.followup.sent[0]["embed"].title
 
 
+async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loss leaderboard embed describes gross daily loss, not net P&L."""
+    scheduled: list[FakeDiscordMessage] = []
+
+    async def daily_losses(
+        limit: int, exclude_user_ids: tuple[int, ...] = ()
+    ) -> list[LossLeaderboardEntry]:
+        """Returns fake daily gross loss rows."""
+        return [
+            LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url=""),
+            LossLeaderboardEntry(user_id=2, name="bob", loss_amount=200, avatar_url=""),
+        ]
+
+    def record_scheduled(message: FakeDiscordMessage) -> None:
+        """Records cleanup scheduling."""
+        scheduled.append(message)
+
+    monkeypatch.setattr(economy, "top_losers", daily_losses)
+    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await EconomyCogs.loss_leaderboard.callback(cog, interaction)
+
+    embed = interaction.followup.sent[0]["embed"]
+    assert "今日輸局累計" in embed.title
+    assert "累計輸" in embed.description
+    assert "贏回來不抵扣" in embed.footer.text
+    assert len(scheduled) == 1
+
+
+async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loss leaderboard empty state stays explicit about today's loss rows."""
+    scheduled: list[FakeDiscordMessage] = []
+
+    async def no_daily_losses(
+        limit: int, exclude_user_ids: tuple[int, ...] = ()
+    ) -> list[LossLeaderboardEntry]:
+        """Returns an empty daily loss board."""
+        return []
+
+    def record_scheduled(message: FakeDiscordMessage) -> None:
+        """Records cleanup scheduling."""
+        scheduled.append(message)
+
+    monkeypatch.setattr(economy, "top_losers", no_daily_losses)
+    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await EconomyCogs.loss_leaderboard.callback(cog, interaction)
+
+    embed = interaction.followup.sent[0]["embed"]
+    assert "今日輸局累計" in embed.title
+    assert "今天還沒有人輸錢" in embed.description
+    assert len(scheduled) == 1
+
+
 async def fake_get_balance(user_id: int) -> int:
     """Returns a stable fake balance."""
     return 150
