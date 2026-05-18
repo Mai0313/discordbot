@@ -312,6 +312,27 @@ async def _stream_events() -> AsyncIterator[SimpleNamespace]:
     )
 
 
+async def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:
+    """Yields the provided fake streaming events in order."""
+    for event in events:
+        yield event
+
+
+def _stub_streaming_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skips pricing and DB writes in streaming behavior tests."""
+
+    def fake_calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
+        del model_name, input_tokens, output_tokens
+        return 0.0
+
+    async def fake_award(user_id: int, name: str, avatar_url: str, amount: int) -> None:
+        del user_id, name, avatar_url, amount
+        pass
+
+    monkeypatch.setattr(ReplyGeneratorCogs, "_calculate_cost", staticmethod(fake_calculate_cost))
+    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", staticmethod(fake_award))
+
+
 async def test_handle_streaming_allows_missing_output_token_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -342,6 +363,68 @@ async def test_handle_streaming_allows_missing_output_token_details(
     )
     assert result == expected
     assert message.replies[0].content == result
+
+
+async def test_handle_streaming_marks_web_search_from_url_citation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies URL citations from provider search trigger the web reaction."""
+    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage()
+
+    await cog._handle_streaming(
+        responses=_stream_events_from(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="searched answer"),
+                SimpleNamespace(
+                    type="response.output_text.annotation.added",
+                    annotation={"type": "url_citation"},
+                ),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model="gemini-pro-latest",
+                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
+                    ),
+                ),
+            ]
+        ),
+        message=message,
+    )
+
+    assert message.added_reactions == ["🌐"]
+
+
+async def test_handle_streaming_ignores_non_url_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies file annotations are not treated as web search."""
+    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage()
+
+    await cog._handle_streaming(
+        responses=_stream_events_from(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="file answer"),
+                SimpleNamespace(
+                    type="response.output_text.annotation.added",
+                    annotation={"type": "file_citation"},
+                ),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model="gemini-pro-latest",
+                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
+                    ),
+                ),
+            ]
+        ),
+        message=message,
+    )
+
+    assert message.added_reactions == []
 
 
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:
