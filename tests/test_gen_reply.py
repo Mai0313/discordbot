@@ -365,10 +365,10 @@ async def test_handle_streaming_allows_missing_output_token_details(
     assert message.replies[0].content == result
 
 
-async def test_handle_streaming_marks_web_search_from_url_citation(
+async def test_handle_streaming_marks_web_search_from_call_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies URL citations from provider search trigger the web reaction."""
+    """Verifies native web_search_call events trigger the web reaction."""
     _stub_streaming_accounting(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage()
@@ -376,10 +376,42 @@ async def test_handle_streaming_marks_web_search_from_url_citation(
     await cog._handle_streaming(
         responses=_stream_events_from(
             events=[
-                SimpleNamespace(type="response.output_text.delta", delta="searched answer"),
+                SimpleNamespace(type="response.output_text.delta", delta="answer"),
+                SimpleNamespace(type="response.web_search_call.completed"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model="gpt-5.4", usage=SimpleNamespace(input_tokens=12, output_tokens=34)
+                    ),
+                ),
+            ]
+        ),
+        message=message,
+    )
+
+    assert message.added_reactions == ["🌐"]
+
+
+async def test_handle_streaming_marks_web_search_from_annotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies any annotation event also triggers the web reaction.
+
+    LiteLLM-proxied Gemini grounds via url_citation annotations without
+    emitting web_search_call.* events, so annotation alone is treated as
+    a search signal.
+    """
+    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage()
+
+    await cog._handle_streaming(
+        responses=_stream_events_from(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="grounded answer"),
                 SimpleNamespace(
                     type="response.output_text.annotation.added",
-                    annotation={"type": "url_citation"},
+                    annotation={"type": "url_citation", "url": "https://example.com/article"},
                 ),
                 SimpleNamespace(
                     type="response.completed",
@@ -394,37 +426,6 @@ async def test_handle_streaming_marks_web_search_from_url_citation(
     )
 
     assert message.added_reactions == ["🌐"]
-
-
-async def test_handle_streaming_ignores_non_url_annotations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verifies file annotations are not treated as web search."""
-    _stub_streaming_accounting(monkeypatch=monkeypatch)
-    cog = _cog()
-    message = FakeMessage()
-
-    await cog._handle_streaming(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta="file answer"),
-                SimpleNamespace(
-                    type="response.output_text.annotation.added",
-                    annotation={"type": "file_citation"},
-                ),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model="gemini-pro-latest",
-                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
-                    ),
-                ),
-            ]
-        ),
-        message=message,
-    )
-
-    assert message.added_reactions == []
 
 
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:

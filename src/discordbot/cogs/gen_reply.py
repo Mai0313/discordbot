@@ -623,7 +623,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 if response.response.usage:
                     input_tokens = response.response.usage.input_tokens
                     output_tokens = response.response.usage.output_tokens
-            elif response.type == "response.output_text.annotation.added":
+            elif response.type in {
+                "response.web_search_call.in_progress",
+                "response.web_search_call.searching",
+                "response.web_search_call.completed",
+                "response.output_text.annotation.added",
+            }:
                 used_web_search = True
             elif response.type == "response.output_text.delta":
                 delta = response.delta
