@@ -140,20 +140,24 @@ make gen-docs                    # regenerate docs/ from sources
 - Casino settlement is one atomic step after the round resolves. Validate or
     clamp bets up front, then settle through the game settlement helpers.
 - Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and
-    peek. No Double after Split. Split-hand 21 is not natural Blackjack.
-- Blackjack dealer decisions skip the LLM at deterministic totals: ≤16 forces
-    hit, =21 forces stand, and LLM `hit` replies at ≥18 are overridden to stand.
-    Only 17 (and 18-20 for flavor text) actually round-trip through
-    `DealerAI.decide_blackjack_action`. Keep deterministic guards so rounds
-    never stall.
+    peek. Split uses same Blackjack value, so 10/J/Q/K can split with each
+    other. No Double after Split. Split-hand 21 is not natural Blackjack.
+- Blackjack dealer play is deterministic only below 17: ≤16 hits. At 17+
+    the interactive dealer phase calls `DealerAI.decide_blackjack_action` and
+    applies the returned hit / stand action.
+- Blackjack action buttons are presence-based: invalid controls are removed
+    from the view instead of being left visible and disabled.
+- Blackjack Hit hints and final settlement banter are background refreshes.
+    Player interactions and final result publication must not wait on LLM
+    latency.
 - Blackjack peek runs as a two-stage view animation when the dealer up-card
     is A or 10/J/Q/K, gated by `BlackjackView._peek_animated`. Do not collapse
     `_animate_peek_reveal_bj_locked` / `_animate_peek_no_bj_locked` into a single
     edit; players need the "莊家偷看 → 翻牌" beats.
-- `BlackjackView._finalize_locked` disables buttons and calls `self.stop()`
-    before any long-running await (dealer LLM, DB settlement, message edit). A
-    stalled settlement therefore cannot leave live-looking buttons behind, and
-    `interaction_check` replies with an ephemeral notice once `_settled=True`.
+- `BlackjackView._finalize_locked` disables current visible buttons and calls
+    `self.stop()` before settlement. The final edit removes controls with
+    `view=None`, and `interaction_check` replies with an ephemeral notice once
+    `_settled=True`.
 - Blackjack player settlements mirror `-player_delta` into the bot's house
     ledger through `apply_round_settlement`.
 - Dragon Gate is backed by the shared `jackpot_pool` row

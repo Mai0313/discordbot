@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 import contextlib
 
@@ -13,6 +13,7 @@ from nextcord.ui import View, Button
 
 from discordbot.typings.games import (
     Card,
+    SettleOutcome,
     GameParticipant,
     BlackjackDealerStep,
     BlackjackDealerAction,
@@ -64,6 +65,7 @@ from discordbot.cogs._economy.presentation import currency_text
 
 if TYPE_CHECKING:
     from random import Random
+    from collections.abc import Coroutine
 
     from discordbot.cogs._games.dealer import DealerAI
 
@@ -72,6 +74,16 @@ BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
+HintRefreshContext = tuple[int, str, str, int, int]
+BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
+    "win": "算你今天運氣好, 下一把不會這麼順",
+    "lose": "下次再來送錢吧",
+    "push": "白忙一場, 賭場最開心的就是這種局",
+    "blackjack": "Blackjack? 算你會玩, 下一把見真章",
+    "player_bust": "爆了爆了, 沒事多算算數字好嗎",
+    "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
+    "surrender": "投降也算會止血, 下一把再說",
+}
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -94,7 +106,7 @@ def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
 
 
 def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
-    """Formats compact AI dealer decisions for the final embed."""
+    """Formats compact dealer actions for the final embed."""
     if not steps:
         return ""
     parts: list[str] = []
@@ -372,7 +384,7 @@ def build_final_embed(
         _format_dealer_block(round_state=round_state, hide_hole=False),
     ]
     if dealer_decision_path:
-        description_parts.append(metadata_line(text=f"AI決策: {dealer_decision_path}"))
+        description_parts.append(metadata_line(text=f"莊家動作: {dealer_decision_path}"))
     for result in results:
         participant = result.participant
         player = next(
@@ -542,10 +554,20 @@ class BlackjackView(View):
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
         self._peek_animated = False
+        self._state_revision = 0
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._action_buttons: dict[str, Button] = {
+            "bj:hit": cast("Button", self.hit),
+            "bj:stand": cast("Button", self.stand),
+            "bj:double": cast("Button", self.double),
+            "bj:split": cast("Button", self.split),
+            "bj:surrender": cast("Button", self.surrender),
+        }
         self._insurance_buttons: tuple[Button, Button] = (
             cast("Button", self.insure_yes),
             cast("Button", self.insure_no),
         )
+        self.sync_buttons()
 
     async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
@@ -615,6 +637,7 @@ class BlackjackView(View):
             if active is None:
                 await self._finalize_locked(message=interaction.message)
                 return
+            hand_before_hit = self.round_state.active_hand()
             try:
                 self.round_state.hit(user_id=interaction.user.id)
             except ValueError:
@@ -622,23 +645,33 @@ class BlackjackView(View):
                     interaction=interaction, message=interaction.message
                 )
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
             active_after_hit = self.round_state.active_player()
             active_hand = self.round_state.active_hand()
+            hint_context: tuple[int, str, str, int, int] | None = None
             if (
                 active_after_hit is not None
                 and active_after_hit.participant.user_id == interaction.user.id
                 and active_hand is not None
+                and active_hand is hand_before_hit
             ):
-                self._dealer_line = await self.dealer.hint(
-                    author_name=active_after_hit.participant.account_name,
-                    player_name=active_after_hit.participant.display_name,
-                    player_total=active_hand.total(),
-                    dealer_visible=self.round_state.dealer_visible_value(),
+                hint_context = (
+                    self._state_revision,
+                    active_after_hit.participant.account_name,
+                    active_after_hit.participant.display_name,
+                    active_hand.total(),
+                    self.round_state.dealer_visible_value(),
                 )
             await self._edit_in_progress_locked(message=interaction.message)
+            if hint_context is not None:
+                self._track_background_task(
+                    self._refresh_hint_later(
+                        message=interaction.message, hint_context=hint_context
+                    )
+                )
 
     @nextcord.ui.button(
         label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0
@@ -662,6 +695,7 @@ class BlackjackView(View):
                     interaction=interaction, message=interaction.message
                 )
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -689,6 +723,7 @@ class BlackjackView(View):
                     interaction=interaction, message=interaction.message
                 )
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -716,6 +751,7 @@ class BlackjackView(View):
                     interaction=interaction, message=interaction.message
                 )
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -743,6 +779,7 @@ class BlackjackView(View):
                     interaction=interaction, message=interaction.message
                 )
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -788,6 +825,7 @@ class BlackjackView(View):
                 )
                 await self._edit_in_progress_locked(message=interaction.message)
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -812,6 +850,7 @@ class BlackjackView(View):
             except ValueError:
                 await self._edit_in_progress_locked(message=interaction.message)
                 return
+            self._state_revision += 1
             if self.round_state.finished:
                 await self._finalize_locked(message=interaction.message)
                 return
@@ -823,52 +862,50 @@ class BlackjackView(View):
         async with self._round_lock:
             await self._finalize_locked(message=message)
 
-    def sync_buttons(self) -> None:  # noqa: C901 -- single switch over six button kinds; splitting hurts readability
-        """Recomputes ``disabled`` on every action / insurance button."""
-        in_insurance = self.round_state.phase == "insurance"
-        in_actions = self.round_state.phase == "player_actions"
-        self._sync_insurance_button_visibility(in_insurance=in_insurance)
-        active_player = self.round_state.active_player() if in_actions else None
-        active_hand = self.round_state.active_hand() if in_actions else None
-        balance_remaining = 0
-        if active_player is not None:
-            balance_remaining = active_player.participant.balance_at_start - committed_wagers(
-                player=active_player
-            )
-        for child in self.children:
-            if not isinstance(child, Button):
-                continue
-            cid = child.custom_id or ""
-            if cid in ("bj:insure_yes", "bj:insure_no"):
-                child.disabled = not in_insurance
-                continue
-            if not in_actions or active_hand is None:
-                child.disabled = True
-                continue
-            if cid == "bj:hit":
-                child.disabled = active_hand.finished or active_hand.is_split_aces
-            elif cid == "bj:stand":
-                child.disabled = active_hand.finished
-            elif cid == "bj:double":
-                child.disabled = not can_double(
-                    hand=active_hand, balance_remaining=balance_remaining
-                )
-            elif cid == "bj:split":
-                child.disabled = not can_split(
-                    hand=active_hand, balance_remaining=balance_remaining
-                )
-            elif cid == "bj:surrender":
-                child.disabled = not can_surrender(
-                    hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
-                )
-
-    def _sync_insurance_button_visibility(self, in_insurance: bool) -> None:
-        """Adds insurance controls only while the table is in insurance phase."""
+    def sync_buttons(self) -> None:
+        """Shows only the controls that are currently actionable."""
+        for button in self._action_buttons.values():
+            self._set_button_visible(button=button, visible=False)
         for button in self._insurance_buttons:
-            if in_insurance and button not in self.children:
-                self.add_item(item=button)
-            elif not in_insurance and button in self.children:
-                self.remove_item(item=button)
+            self._set_button_visible(button=button, visible=False)
+
+        if self._settled or self.round_state.finished:
+            return
+        if self.round_state.phase == "insurance":
+            for button in self._insurance_buttons:
+                button.disabled = False
+                self._set_button_visible(button=button, visible=True)
+            return
+        if self.round_state.phase != "player_actions":
+            return
+
+        active_player = self.round_state.active_player()
+        active_hand = self.round_state.active_hand()
+        if active_player is None or active_hand is None:
+            return
+
+        balance_remaining = active_player.participant.balance_at_start - committed_wagers(
+            player=active_player
+        )
+        visible: dict[str, bool] = {
+            "bj:hit": not active_hand.finished and not active_hand.is_split_aces,
+            "bj:stand": not active_hand.finished and not active_hand.is_split_aces,
+            "bj:double": can_double(hand=active_hand, balance_remaining=balance_remaining),
+            "bj:split": can_split(hand=active_hand, balance_remaining=balance_remaining),
+            "bj:surrender": can_surrender(
+                hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
+            ),
+        }
+        for custom_id, button in self._action_buttons.items():
+            button.disabled = False
+            self._set_button_visible(button=button, visible=visible[custom_id])
+
+    def _set_button_visible(self, button: Button, visible: bool) -> None:
+        """Adds or removes a button from the shared view."""
+        if visible and button not in self.children:
+            self.add_item(item=button)
+        elif not visible and button in self.children:
+            self.remove_item(item=button)
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes dealer talk and table embeds while holding the round lock."""
@@ -897,15 +934,15 @@ class BlackjackView(View):
     async def _finalize_locked(self, message: Message) -> None:
         """Applies settlements and publishes the final table embeds once.
 
-        The view is disabled and stopped before any long-running ``await``
-        (dealer LLM, DB settlement, message edit) so a stalled coroutine
-        cannot leave players staring at live-looking buttons. ``interaction_check``
-        then replies with an ephemeral notice instead of falling through to
-        Discord's "interaction failed" timeout.
+        The visible controls are disabled and stopped before settlement work,
+        then the final table is sent with a deterministic dealer line. LLM
+        settlement banter runs as a background refresh so players see the
+        result without waiting on model latency.
         """
         if self._settled:
             return
         self._settled = True
+        self._state_revision += 1
         if self.round_state.phase == "insurance":
             self.round_state.decline_insurance_for_all_unresolved()
         if not self.round_state.finished:
@@ -919,7 +956,6 @@ class BlackjackView(View):
             self._peek_animated = True
             await self._animate_peek_reveal_bj_locked(message=message)
 
-        await self._edit_dealer_thinking_locked(message=message)
         await self._play_dealer_locked()
         logfire.info("Blackjack dealer phase done", dealer_total=self.round_state.dealer_total())
 
@@ -939,7 +975,7 @@ class BlackjackView(View):
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.info("Blackjack settlement done", results=len(results))
 
-        dealer_line = await self._settlement_line(results=results)
+        dealer_line = self._fallback_settlement_line(results=results)
         talk_embed = build_dealer_talk_embed(
             dealer_line=dealer_line,
             dealer_name=self.dealer_name,
@@ -951,12 +987,18 @@ class BlackjackView(View):
             results=results,
             dealer_steps=self._dealer_steps,
         )
+        self.clear_items()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(embeds=[talk_embed, final_embed], view=self),
+                message.edit(embeds=[talk_embed, final_embed], view=None),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
         logfire.info("Blackjack final edit done")
+        self._track_background_task(
+            self._refresh_settlement_line_later(
+                message=message, results=results, final_embed=final_embed
+            )
+        )
         schedule_game_message_delete(message=message)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
@@ -1037,85 +1079,32 @@ class BlackjackView(View):
         self._peek_animated = True
         await self._animate_peek_no_bj_locked(message=message)
 
-    async def _edit_dealer_thinking_locked(self, message: Message) -> None:
-        """Shows that the dealer is choosing hit / stand before the AI call."""
-        if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
-            return
-        self.sync_buttons()
-        self._disable_buttons()
-        talk_embed = build_dealer_talk_embed(
-            dealer_line="莊家正在思考 hit / stand, 請稍等",
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
-        )
-        main_embed = build_in_progress_embed(
-            dealer_name=self.dealer_name, round_state=self.round_state
-        )
-        main_embed.set_footer(text="莊家正在思考 hit / stand, 請稍等")
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(
-                message.edit(embeds=[talk_embed, main_embed], view=self),
-                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
-            )
-
     async def _play_dealer_locked(self) -> None:
-        """Runs the AI dealer phase before settlement."""
+        """Runs the dealer phase before settlement."""
         if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
             return
 
-        use_basic_rule = False
         for _step_index in range(MAX_DEALER_DECISION_STEPS):
             total_before = self.round_state.dealer_total()
             if total_before > 21:
                 self.round_state.mark_dealer_played()
                 return
-            if total_before == 21:
-                self._dealer_steps.append(
-                    BlackjackDealerStep(
-                        total_before=total_before,
-                        action="stand",
-                        reason="guard: 21 點必停",
-                        forced=True,
-                    )
-                )
-                self.round_state.mark_dealer_played()
-                return
-
-            action: BlackjackDealerAction
-            if total_before <= 16:
-                action = "hit"
-                reason = "guard: 16 點以下必 hit"
-                fallback = False
-                forced = True
-            elif use_basic_rule:
-                action = "hit" if total_before < 17 else "stand"
-                reason = "fallback basic rule"
-                fallback = True
-                forced = False
-            else:
+            if total_before >= 17:
                 decision = await self.dealer.decide_blackjack_action(
                     author_name=self.author_name,
                     table_state=_dealer_decision_table_state(round_state=self.round_state),
                     dealer_total=total_before,
                 )
-                action = decision.action
+                action: BlackjackDealerAction = decision.action
                 reason = decision.reason
                 fallback = reason.startswith("basic rule:")
                 forced = False
-                if fallback:
-                    use_basic_rule = True
-                if total_before >= 18 and action == "hit":
-                    logfire.warn(
-                        "Dealer LLM suggested hit at >=18; overriding to stand",
-                        dealer_total=total_before,
-                        original_reason=reason,
-                    )
-                    action = "stand"
-                    reason = "override: 18+ 必停 (原 LLM 回 hit)"
-                    forced = True
+            else:
+                action = "hit"
+                reason = "guard: 16 點以下必 hit"
+                fallback = False
+                forced = True
 
-            drawn_card: Card | None = None
-            total_after: int | None = None
             if action == "stand":
                 self._dealer_steps.append(
                     BlackjackDealerStep(
@@ -1143,7 +1132,7 @@ class BlackjackView(View):
                 )
             )
         logfire.warn(
-            "Dealer Blackjack decision loop reached maximum steps; forcing stand",
+            "Dealer Blackjack play loop reached maximum steps; forcing stand",
             max_steps=MAX_DEALER_DECISION_STEPS,
         )
         self._dealer_steps.append(
@@ -1155,6 +1144,61 @@ class BlackjackView(View):
             )
         )
         self.round_state.mark_dealer_played()
+
+    def _fallback_settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
+        """Returns the immediate non-LLM dealer line for a final table."""
+        if len(results) == 1:
+            return BLACKJACK_SETTLEMENT_FALLBACK_LINES[results[0].settlement.outcome]
+        net_delta = sum(result.settlement.delta for result in results)
+        if net_delta > 0:
+            return "今天這桌有點旺, 但賭場不會天天讓你們舒服"
+        if net_delta < 0:
+            return "一桌人一起送, 我收得都不好意思了"
+        return "忙了半天打平, 這桌也算會拖時間"
+
+    async def _refresh_hint_later(
+        self, *, message: Message, hint_context: HintRefreshContext
+    ) -> None:
+        """Refreshes the in-progress dealer hint if the table did not advance."""
+        revision, author_name, player_name, player_total, dealer_visible = hint_context
+        try:
+            dealer_line = await self.dealer.hint(
+                author_name=author_name,
+                player_name=player_name,
+                player_total=player_total,
+                dealer_visible=dealer_visible,
+            )
+        except Exception:
+            logfire.warn("Blackjack dealer hint refresh failed", _exc_info=True)
+            return
+        async with self._round_lock:
+            if self._settled or self._state_revision != revision:
+                return
+            self._dealer_line = dealer_line
+            await self._edit_in_progress_locked(message=message)
+
+    async def _refresh_settlement_line_later(
+        self, *, message: Message, results: list[BlackjackPlayerResult], final_embed: Embed
+    ) -> None:
+        """Refreshes the final dealer line with LLM banter after results are visible."""
+        try:
+            dealer_line = await self._settlement_line(results=results)
+        except Exception:
+            logfire.warn("Blackjack settlement banter refresh failed", _exc_info=True)
+            return
+        async with self._round_lock:
+            if not self._settled:
+                return
+            talk_embed = build_dealer_talk_embed(
+                dealer_line=dealer_line,
+                dealer_name=self.dealer_name,
+                dealer_avatar_url=self.dealer_avatar_url,
+            )
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    message.edit(embeds=[talk_embed, final_embed], view=None),
+                    timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+                )
 
     async def _settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
         """Builds single-player or table-level dealer settlement banter."""
@@ -1179,9 +1223,23 @@ class BlackjackView(View):
             detail=_table_result_detail(results=results),
         )
 
+    def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        """Tracks a background UI refresh task until it finishes."""
+        task = asyncio.create_task(coro=coroutine)
+        self._background_tasks.add(task)
+
+        def _discard_task(done_task: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done_task)
+
+        task.add_done_callback(_discard_task)
+
+    async def wait_for_background_tasks(self) -> None:
+        """Waits for currently scheduled background UI refreshes."""
+        while self._background_tasks:
+            await asyncio.gather(*tuple(self._background_tasks))
+
     def _disable_buttons(self) -> None:
-        """Disables every action / insurance control after settlement."""
-        self._sync_insurance_button_visibility(in_insurance=self.round_state.phase == "insurance")
+        """Disables every currently visible action / insurance control."""
         disable_view_components(children=self.children, component_types=(Button,))
 
 

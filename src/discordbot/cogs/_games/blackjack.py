@@ -61,6 +61,15 @@ def hand_value(cards: list[Card]) -> int:
     return total
 
 
+def _card_blackjack_value(card: Card) -> int:
+    """Returns the Blackjack value used for pair and up-card checks."""
+    if card.rank == "A":
+        return 11
+    if card.rank in ("J", "Q", "K"):
+        return 10
+    return int(card.rank)
+
+
 def is_blackjack(cards: list[Card]) -> bool:
     """Returns whether a hand is a natural Blackjack.
 
@@ -86,18 +95,21 @@ def is_bust(cards: list[Card]) -> bool:
 
 
 def is_pair(cards: list[Card]) -> bool:
-    """Returns whether two cards form a strict same-rank pair.
+    """Returns whether two cards form a same-value pair.
 
-    The strict-rank rule means 10/J/Q/K are NOT cross-splittable (a 10 + K
-    cannot be split). This matches the stricter common house rules.
+    Face cards and 10 are all 10-value cards, so 10/J/Q/K can be split with
+    each other. A + 10 remains non-splittable because Ace uses its Blackjack
+    value of 11 here.
 
     Args:
         cards: Cards to evaluate; only meaningful on exactly two cards.
 
     Returns:
-        True only when there are exactly two cards with identical rank.
+        True only when exactly two cards share the same Blackjack value.
     """
-    return len(cards) == 2 and cards[0].rank == cards[1].rank
+    return len(cards) == 2 and _card_blackjack_value(card=cards[0]) == _card_blackjack_value(
+        card=cards[1]
+    )
 
 
 def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
@@ -357,7 +369,7 @@ def can_split(hand: BlackjackHandState, balance_remaining: int) -> bool:
         balance_remaining: Points still available after current commitments.
 
     Returns:
-        True only when the hand has exactly two cards of the same rank, has
+        True only when the hand has exactly two cards of the same value, has
         not been split or otherwise acted on yet, and the player can still
         afford to mirror the original wager on the second sub-hand.
     """
@@ -384,7 +396,10 @@ def can_insure(player: "BlackjackPlayerHand", balance_remaining: int) -> bool:
     """
     if player.insurance_resolved or player.insurance_bet != 0:
         return False
-    return balance_remaining >= player.participant.bet // 2
+    insurance_amount = player.participant.bet // 2
+    if insurance_amount <= 0:
+        return False
+    return balance_remaining >= insurance_amount
 
 
 def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
@@ -427,7 +442,7 @@ def settle_hand(
         this single hand.
     """
     if hand.surrendered:
-        return "surrender", -(hand.base_bet // 2)
+        return "surrender", -((hand.base_bet + 1) // 2)
     if hand.is_split_hand and is_blackjack(cards=hand.cards):
         dealer_total = hand_value(cards=dealer)
         if is_blackjack(cards=dealer):
@@ -546,6 +561,8 @@ class BlackjackRound(BaseModel):
         if player.insurance_resolved:
             raise ValueError("Insurance already decided")
         expected = player.participant.bet // 2
+        if expected <= 0 or amount <= 0:
+            raise ValueError("Insurance side bet must be positive")
         if amount != expected:
             raise ValueError("Insurance amount must equal half of the original bet")
         balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)

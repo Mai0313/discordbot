@@ -1,11 +1,10 @@
 """Button-state matrix and finalize-flow tests for ``BlackjackView``.
 
 Each test instantiates the view with a stubbed ``DealerAI`` and a
-deterministic ``BlackjackRound``, then asserts the ``disabled`` flag and
-presence of every action / insurance button across the round lifecycle.
-The finalize-flow tests cover the regression fixes: early view stop,
-ephemeral notice on settled clicks, dealer LLM skip below 17, and 18+
-override safety.
+deterministic ``BlackjackRound``, then asserts which action / insurance
+buttons are attached across the round lifecycle. The finalize-flow tests
+cover the regression fixes: early view stop, ephemeral notice on settled
+clicks, deterministic hits below 17, and AI dealer decisions at 17+.
 """
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
@@ -91,18 +90,18 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:hit"] is False
-    assert states["bj:stand"] is False
-    assert states["bj:double"] is False
-    assert states["bj:split"] is False
-    assert states["bj:surrender"] is False
-    assert "bj:insure_yes" not in states
-    assert "bj:insure_no" not in states
+    assert _button_ids(view=view) == {
+        "bj:hit",
+        "bj:stand",
+        "bj:double",
+        "bj:split",
+        "bj:surrender",
+    }
+    assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
-async def test_player_actions_different_rank_disables_split_only() -> None:
-    """10 + K cannot be split (strict rank rule); double / surrender stay open."""
+async def test_player_actions_ten_value_pair_shows_split() -> None:
+    """10 + K can be split because both cards have Blackjack value 10."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -110,12 +109,24 @@ async def test_player_actions_different_rank_disables_split_only() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:hit"] is False
-    assert states["bj:stand"] is False
-    assert states["bj:double"] is False
-    assert states["bj:split"] is True
-    assert states["bj:surrender"] is False
+    assert "bj:split" in _button_ids(view=view)
+
+
+async def test_player_actions_ace_ten_hides_split() -> None:
+    """A + 10 is not a same-value pair."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+    view.sync_buttons()
+
+    ids = _button_ids(view=view)
+    assert "bj:hit" in ids
+    assert "bj:stand" in ids
+    assert "bj:double" in ids
+    assert "bj:split" not in ids
+    assert "bj:surrender" in ids
 
 
 async def test_player_actions_after_hit_disables_double_split_surrender() -> None:
@@ -129,12 +140,8 @@ async def test_player_actions_after_hit_disables_double_split_surrender() -> Non
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:hit"] is False
-    assert states["bj:stand"] is False
-    assert states["bj:double"] is True
-    assert states["bj:split"] is True
-    assert states["bj:surrender"] is True
+    assert _button_ids(view=view) == {"bj:hit", "bj:stand"}
+    assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
 async def test_player_actions_is_split_hand_disables_double_split_surrender() -> None:
@@ -147,12 +154,8 @@ async def test_player_actions_is_split_hand_disables_double_split_surrender() ->
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:hit"] is False
-    assert states["bj:stand"] is False
-    assert states["bj:double"] is True
-    assert states["bj:split"] is True
-    assert states["bj:surrender"] is True
+    assert _button_ids(view=view) == {"bj:hit", "bj:stand"}
+    assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
 async def test_split_aces_subhand_disables_hit_and_stand() -> None:
@@ -175,9 +178,7 @@ async def test_split_aces_subhand_disables_hit_and_stand() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:hit"] is True
-    assert states["bj:stand"] is False
+    assert _button_ids(view=view) == set()
 
 
 async def test_player_actions_low_balance_disables_double_and_split() -> None:
@@ -201,10 +202,12 @@ async def test_player_actions_low_balance_disables_double_and_split() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:double"] is True
-    assert states["bj:split"] is True
-    assert states["bj:surrender"] is False
+    ids = _button_ids(view=view)
+    assert "bj:hit" in ids
+    assert "bj:stand" in ids
+    assert "bj:double" not in ids
+    assert "bj:split" not in ids
+    assert "bj:surrender" in ids
 
 
 async def test_player_actions_peeked_blackjack_disables_surrender() -> None:
@@ -217,8 +220,7 @@ async def test_player_actions_peeked_blackjack_disables_surrender() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    assert states["bj:surrender"] is True
+    assert "bj:surrender" not in _button_ids(view=view)
 
 
 async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> None:
@@ -233,19 +235,13 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
     view.sync_buttons()
 
     states = _button_states(view=view)
-    assert states["bj:hit"] is True
-    assert states["bj:stand"] is True
-    assert states["bj:double"] is True
-    assert states["bj:split"] is True
-    assert states["bj:surrender"] is True
-    assert "bj:insure_yes" in states
-    assert "bj:insure_no" in states
+    assert _button_ids(view=view) == {"bj:insure_yes", "bj:insure_no"}
     assert states["bj:insure_yes"] is False
     assert states["bj:insure_no"] is False
 
 
-async def test_settled_phase_disables_every_button() -> None:
-    """After settlement no button should accept further clicks."""
+async def test_settled_phase_removes_every_button() -> None:
+    """After settlement no controls remain attached to the view."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="7", suit="♦")],
@@ -255,9 +251,7 @@ async def test_settled_phase_disables_every_button() -> None:
     view = _make_view(round_state=round_state)
     view.sync_buttons()
 
-    states = _button_states(view=view)
-    for cid in ("bj:hit", "bj:stand", "bj:double", "bj:split", "bj:surrender"):
-        assert states[cid] is True
+    assert _button_ids(view=view) == set()
 
 
 async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None:
@@ -327,8 +321,10 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
     assert notices == ["這局已經結束, 等下一局吧"]
 
 
-async def test_play_dealer_skips_llm_below_17() -> None:
-    """Dealer totals ≤ 16 must hit deterministically without invoking the LLM."""
+async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dealer hits ≤16 deterministically, then asks the LLM once it reaches 17+."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -337,24 +333,77 @@ async def test_play_dealer_skips_llm_below_17() -> None:
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    async def _unreachable(
+    decisions: list[int] = []
+
+    async def _stand(
         *, author_name: str, table_state: str, dealer_total: int
     ) -> BlackjackDealerDecision:
-        msg = "LLM must not be called for dealer total <= 16"
-        raise AssertionError(msg)
+        decisions.append(dealer_total)
+        return BlackjackDealerDecision(action="stand", reason="AI stands at threshold")
 
-    view.dealer.decide_blackjack_action = _unreachable
+    view.dealer.decide_blackjack_action = _stand
 
-    seeded_rng = Random(x=42)
-    round_state.rng = seeded_rng
+    def _draw_six(rng: Random) -> Card:
+        return Card(rank="6", suit="♠")
+
+    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_six)
     await view._play_dealer_locked()
 
     assert round_state.dealer_played is True
-    assert any(step.forced for step in view._dealer_steps)
+    assert decisions == [17]
+    first_step = view._dealer_steps[0]
+    assert first_step.action == "hit"
+    assert first_step.forced is True
+    assert first_step.total_before == 11
+    assert first_step.total_after == 17
+    final_step = view._dealer_steps[-1]
+    assert final_step.action == "stand"
+    assert final_step.forced is False
+    assert final_step.reason == "AI stands at threshold"
 
 
-async def test_play_dealer_overrides_18_plus_hit_to_stand() -> None:
-    """When the LLM suggests hit at 18+, the view must force stand for safety."""
+@pytest.mark.parametrize(
+    argnames=("dealer_cards", "expected_total"),
+    argvalues=[
+        ([Card(rank="K", suit="♣"), Card(rank="7", suit="♦")], 17),
+        ([Card(rank="A", suit="♣"), Card(rank="6", suit="♦")], 17),
+        ([Card(rank="K", suit="♣"), Card(rank="8", suit="♦")], 18),
+    ],
+)
+async def test_play_dealer_calls_llm_on_17_plus(
+    dealer_cards: list[Card], expected_total: int
+) -> None:
+    """Dealer lets the LLM decide on every 17+ total."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+        dealer_cards=dealer_cards,
+    )
+    round_state.players[0].hands[0].finished = True
+    round_state.phase = "dealer"
+    view = _make_view(round_state=round_state)
+    decisions: list[int] = []
+
+    async def _stand(
+        *, author_name: str, table_state: str, dealer_total: int
+    ) -> BlackjackDealerDecision:
+        decisions.append(dealer_total)
+        return BlackjackDealerDecision(action="stand", reason="AI chooses stand")
+
+    view.dealer.decide_blackjack_action = _stand
+
+    await view._play_dealer_locked()
+
+    assert decisions == [expected_total]
+    assert round_state.dealer_played is True
+    assert round_state.dealer_total() == expected_total
+    step = view._dealer_steps[-1]
+    assert step.action == "stand"
+    assert step.forced is False
+    assert step.reason == "AI chooses stand"
+
+
+async def test_play_dealer_obeys_llm_hit_on_17_plus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When DealerAI says hit at 17+, the dealer really draws."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="8", suit="♦")],
@@ -363,18 +412,21 @@ async def test_play_dealer_overrides_18_plus_hit_to_stand() -> None:
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    async def _aggressive_llm(
+    def _draw_queen(rng: Random) -> Card:
+        return Card(rank="Q", suit="♠")
+
+    async def _hit(
         *, author_name: str, table_state: str, dealer_total: int
     ) -> BlackjackDealerDecision:
-        return BlackjackDealerDecision(action="hit", reason="LLM reckless suggestion")
+        return BlackjackDealerDecision(action="hit", reason="AI chooses hit")
 
-    view.dealer.decide_blackjack_action = _aggressive_llm
+    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_queen)
+    view.dealer.decide_blackjack_action = _hit
 
     await view._play_dealer_locked()
 
-    assert round_state.dealer_played is True
-    assert round_state.dealer_total() == 18
-    step = view._dealer_steps[-1]
-    assert step.action == "stand"
-    assert step.forced is True
-    assert "override" in step.reason
+    assert [str(card) for card in round_state.dealer] == ["K♣", "8♦", "Q♠"]
+    first_step = view._dealer_steps[0]
+    assert first_step.action == "hit"
+    assert first_step.reason == "AI chooses hit"
+    assert first_step.forced is False

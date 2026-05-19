@@ -18,6 +18,7 @@ from discordbot.cogs._games.blackjack import (
     is_pair,
     can_split,
     can_double,
+    can_insure,
     hand_value,
     is_soft_17,
     render_hand,
@@ -243,6 +244,22 @@ def test_dealer_keeps_drawing_below_17() -> None:
     assert final >= 17 or is_bust(cards=hand.dealer)
 
 
+def test_legacy_hand_dealer_stops_on_hard_and_soft_seventeen() -> None:
+    """The legacy pure helper stops drawing at hard and soft 17."""
+    hard = BlackjackHand(rng=Random(x=12345), bet=100)
+    hard.player = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
+    hard.dealer = [Card(rank="10", suit="♣"), Card(rank="7", suit="♦")]
+    hard.stand()
+
+    soft = BlackjackHand(rng=Random(x=12345), bet=100)
+    soft.player = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
+    soft.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
+    soft.stand()
+
+    assert [str(card) for card in hard.dealer] == ["10♣", "7♦"]
+    assert [str(card) for card in soft.dealer] == ["A♣", "6♦"]
+
+
 def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
     """The multiplayer round advances in join order and resolves dealer play once."""
     round_state = BlackjackRound.from_participants(
@@ -368,11 +385,13 @@ def test_blackjack_in_progress_embed_single_dealer_card_is_visible() -> None:
 # Helper predicates ---------------------------------------------------------
 
 
-def test_is_pair_same_rank_only() -> None:
-    """Pair detection uses strict rank equality (10 and K do not pair)."""
+def test_is_pair_same_blackjack_value() -> None:
+    """Pair detection treats 10/J/Q/K as splittable 10-value cards."""
     assert is_pair(cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]) is True
     assert is_pair(cards=[Card(rank="A", suit="♠"), Card(rank="A", suit="♥")]) is True
-    assert is_pair(cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")]) is False
+    assert is_pair(cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")]) is True
+    assert is_pair(cards=[Card(rank="Q", suit="♠"), Card(rank="J", suit="♥")]) is True
+    assert is_pair(cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")]) is False
     assert is_pair(cards=[Card(rank="8", suit="♠")]) is False
 
 
@@ -422,11 +441,13 @@ def test_can_double_after_split_disabled_by_default() -> None:
     assert can_double(hand=split_hand, balance_remaining=200, allow_after_split=True) is True
 
 
-def test_can_split_only_on_strict_pairs() -> None:
-    """Split is offered only on same-rank pairs with enough balance."""
+def test_can_split_only_on_same_value_pairs() -> None:
+    """Split is offered on same-value pairs with enough balance."""
     pair = _make_hand(cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")])
     assert can_split(hand=pair, balance_remaining=200) is True
-    non_pair = _make_hand(cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")])
+    face_pair = _make_hand(cards=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")])
+    assert can_split(hand=face_pair, balance_remaining=200) is True
+    non_pair = _make_hand(cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")])
     assert can_split(hand=non_pair, balance_remaining=200) is False
     assert can_split(hand=pair, balance_remaining=50) is False
 
@@ -503,6 +524,22 @@ def test_split_creates_two_hands_with_fresh_draws() -> None:
     assert len(alice.hands[1].cards) == 2
     assert alice.hands[0].bet == 100
     assert alice.hands[1].bet == 100
+
+
+def test_split_accepts_ten_value_pairs() -> None:
+    """Split accepts any two 10-value cards, not just identical ranks."""
+    round_state = _two_player_round(
+        cards_a=[Card(rank="10", suit="♠"), Card(rank="K", suit="♥")],
+        cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
+        dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+
+    round_state.split(user_id=1)
+
+    alice = round_state.players[0]
+    assert len(alice.hands) == 2
+    assert alice.hands[0].cards[0] == Card(rank="10", suit="♠")
+    assert alice.hands[1].cards[0] == Card(rank="K", suit="♥")
 
 
 def test_split_aces_locks_each_hand_after_one_draw() -> None:
@@ -595,6 +632,25 @@ def test_surrender_marks_hand_with_half_bet_refund() -> None:
     assert delta == -50
 
 
+@pytest.mark.parametrize(argnames=("bet", "expected_delta"), argvalues=[(1, -1), (101, -51)])
+def test_surrender_uses_ceil_half_loss_for_integer_chips(bet: int, expected_delta: int) -> None:
+    """Surrender loses ceil(half bet), so a 1-point bet is not free."""
+    hand = BlackjackHandState(
+        cards=[Card(rank="10", suit="♠"), Card(rank="6", suit="♥")],
+        bet=bet,
+        base_bet=bet,
+        surrendered=True,
+        finished=True,
+    )
+
+    outcome, delta = settle_hand(
+        hand=hand, dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")], rng=Random(x=0)
+    )
+
+    assert outcome == "surrender"
+    assert delta == expected_delta
+
+
 def test_take_insurance_requires_ace_phase() -> None:
     """Insurance can only be placed during the dedicated insurance phase."""
     round_state = BlackjackRound.from_participants(
@@ -619,6 +675,24 @@ def test_take_insurance_requires_uncommitted_balance() -> None:
         round_state.take_insurance(user_id=1, amount=50)
 
     player = round_state.players[0]
+    assert player.insurance_bet == 0
+    assert player.insurance_resolved is False
+
+
+def test_take_insurance_rejects_zero_chip_half_bet() -> None:
+    """A 1-point original bet cannot buy 0-cost insurance."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[_participant(user_id=1, display_name="Alice", bet=1, balance_at_start=10)],
+    )
+    round_state.phase = "insurance"
+    round_state.insurance_offered = True
+    player = round_state.players[0]
+
+    assert can_insure(player=player, balance_remaining=9) is False
+    with pytest.raises(expected_exception=ValueError, match="positive"):
+        round_state.take_insurance(user_id=1, amount=0)
+
     assert player.insurance_bet == 0
     assert player.insurance_resolved is False
 

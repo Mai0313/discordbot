@@ -137,6 +137,7 @@ class DealerAI(BaseModel):
             "blackjack": "玩家直接 Blackjack 21 點 (賠 1.5x)",
             "player_bust": "玩家爆牌, 莊家自動贏",
             "dealer_bust": "莊家爆牌, 玩家贏",
+            "surrender": "玩家投降, 退回一半本金",
         }
         fallback_lines: dict[SettleOutcome, str] = {
             "win": "算你今天運氣好, 下一把不會這麼順",
@@ -145,6 +146,7 @@ class DealerAI(BaseModel):
             "blackjack": "Blackjack? 算你會玩, 下一把見真章",
             "player_bust": "爆了爆了, 沒事多算算數字好嗎",
             "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
+            "surrender": "投降也算會止血, 下一把再說",
         }
         user_text = (
             f"遊戲: {game_labels[game]}\n"

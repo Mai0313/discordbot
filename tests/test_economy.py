@@ -110,6 +110,23 @@ class _DealerStub:
         return BlackjackDealerDecision(action="stand", reason="stub stand")
 
 
+class _SlowSettleDealerStub(_DealerStub):
+    """Dealer stub whose settlement banter blocks until released."""
+
+    def __init__(self) -> None:
+        """Initializes gate events around the settlement line."""
+        super().__init__()
+        self.settle_started = asyncio.Event()
+        self.release_settle = asyncio.Event()
+
+    async def settle(self, **_kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Blocks settlement banter so tests can inspect the immediate final edit."""
+        self.settle_calls += 1
+        self.settle_started.set()
+        await self.release_settle.wait()
+        return "settled"
+
+
 def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     """Default Blackjack hand settlement lists are isolated per model instance."""
     first = BlackjackPlayerSettlement(
@@ -709,12 +726,11 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
 
     assert await get_balance(user_id=1) == 150
     assert await get_balance(user_id=99) == -50
+    assert "embeds" not in message.edits[0]
+    await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert message.edit_calls == 3
-    assert "embeds" not in message.edits[0]
-    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
-    thinking_line = cast("str", thinking_embeds[0].description)
-    assert "莊家正在思考 hit / stand" in thinking_line
+    assert message.edits[1]["view"] is None
     assert cleanup_messages == [message]
 
 
@@ -756,17 +772,66 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     assert view.round_state.finished is True
     assert await get_balance(user_id=1) == 50
     assert await get_balance(user_id=99) == 50
+    assert "embeds" not in message.edits[0]
+    await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert message.edit_calls == 3
-    assert "embeds" not in message.edits[0]
-    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
-    thinking_line = cast("str", thinking_embeds[0].description)
-    assert "莊家正在思考 hit / stand" in thinking_line
+    assert message.edits[1]["view"] is None
     assert cleanup_messages == [message]
 
 
-async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dealer AI can hit once, stand, and settle with the updated dealer hand."""
+async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final results are visible before slow DealerAI settlement banter returns."""
+    cleanup_messages: list[_MessageStub] = []
+
+    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+        """Records the final message scheduled for cleanup."""
+        cleanup_messages.append(message)
+
+    monkeypatch.setattr(
+        "discordbot.cogs._games.blackjack_views.schedule_game_message_delete",
+        fake_schedule_game_message_delete,
+    )
+    await _add_balance(user_id=1, name="alice", amount=100)
+
+    hand = BlackjackHand(rng=SystemRandom(), bet=50)
+    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
+    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
+    hand.finished = True
+
+    dealer = _SlowSettleDealerStub()
+    message = _MessageStub()
+    participant = _participant()
+    view = BlackjackView(
+        dealer=dealer,
+        round_state=_round_from_hand(hand=hand, participant=participant),
+        starter_id=1,
+        author_name="alice",
+        dealer_id=99,
+        dealer_name="house",
+    )
+
+    await view.finalize(message=message)
+
+    assert message.edit_calls == 2
+    assert message.edits[1]["view"] is None
+    await asyncio.wait_for(fut=dealer.settle_started.wait(), timeout=1)
+    assert message.edit_calls == 2
+
+    dealer.release_settle.set()
+    await view.wait_for_background_tasks()
+
+    assert dealer.settle_calls == 1
+    assert message.edit_calls == 3
+    assert cleanup_messages == [message]
+
+
+async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dealer hits below 17, then lets DealerAI decide once total reaches 17+."""
     cleanup_messages: list[_MessageStub] = []
 
     def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
@@ -793,10 +858,7 @@ async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.Monke
     round_state.phase = "player_actions"
 
     dealer = _DealerStub()
-    dealer.decisions = [
-        BlackjackDealerDecision(action="hit", reason="追過玩家"),
-        BlackjackDealerDecision(action="stand", reason="18 點夠了"),
-    ]
+    dealer.decisions = [BlackjackDealerDecision(action="stand", reason="18 點收手")]
     message = _MessageStub()
     view = BlackjackView(
         dealer=dealer,
@@ -815,13 +877,12 @@ async def test_blackjack_view_uses_ai_dealer_decisions(monkeypatch: pytest.Monke
     assert await get_balance(user_id=1) == 50
     assert await get_balance(user_id=99) == 50
     assert "embeds" not in message.edits[0]
-    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
-    thinking_line = cast("str", thinking_embeds[0].description)
-    assert "莊家正在思考 hit / stand" in thinking_line
-    final_embeds = cast("list[Any]", message.edits[2]["embeds"])
+    final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
     assert "13 hit 抽 5♣ → 18 (guard)" in description
     assert "18 stand" in description
+    await view.wait_for_background_tasks()
+    assert dealer.settle_calls == 1
     assert cleanup_messages == [message]
 
 
@@ -861,26 +922,18 @@ async def test_blackjack_view_insurance_buttons_only_during_insurance_phase() ->
     assert "bj:insure_no" not in custom_ids
 
 
-async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A DealerAI fallback decision switches the rest of the dealer phase to basic rule."""
+async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Soft 17 is handed to DealerAI like every other 17+ total."""
     cleanup_messages: list[_MessageStub] = []
-    draws = [Card(rank="5", suit="♣")]
 
     def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
-    def draw_fixed_card(rng: Random) -> Card:
-        """Returns deterministic dealer draws."""
-        return draws.pop(0)
-
     monkeypatch.setattr(
         "discordbot.cogs._games.blackjack_views.schedule_game_message_delete",
         fake_schedule_game_message_delete,
     )
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", draw_fixed_card)
     await _add_balance(user_id=1, name="alice", amount=100)
 
     participant = _participant()
@@ -888,11 +941,11 @@ async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
         rng=SystemRandom(), participants=[participant], auto_play_dealer=False
     )
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
-    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
+    round_state.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
     round_state.phase = "player_actions"
 
     dealer = _DealerStub()
-    dealer.decisions = [BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")]
+    dealer.decisions = [BlackjackDealerDecision(action="stand", reason="soft 17 收手")]
     message = _MessageStub()
     view = BlackjackView(
         dealer=dealer,
@@ -906,15 +959,14 @@ async def test_blackjack_view_basic_rule_fallback_finishes_dealer_phase(
     await view.finalize(message=message)
 
     assert dealer.decision_calls == 1
-    assert view.round_state.dealer_total() == 18
-    assert len(view.round_state.dealer) == 3
+    assert view.round_state.dealer_total() == 17
+    assert len(view.round_state.dealer) == 2
     assert "embeds" not in message.edits[0]
-    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
-    thinking_line = cast("str", thinking_embeds[0].description)
-    assert "莊家正在思考 hit / stand" in thinking_line
-    final_embeds = cast("list[Any]", message.edits[2]["embeds"])
+    final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "fallback basic rule" in description or "override" in description
+    assert "17 stand" in description
+    await view.wait_for_background_tasks()
+    assert dealer.settle_calls == 1
     assert cleanup_messages == [message]
 
 
@@ -981,6 +1033,10 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     stand_task = asyncio.create_task(coro=stand_button.callback(_InteractionStub(message=message)))
     await settlement_started.wait()
 
+    assert message.edit_calls == 1
+    in_flight_view = cast("BlackjackView", message.edits[0]["view"])
+    assert all(child.disabled for child in in_flight_view.children)
+
     hit_task = asyncio.create_task(coro=hit_button.callback(_InteractionStub(message=message)))
     await asyncio.sleep(delay=0)
 
@@ -989,13 +1045,12 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     await asyncio.gather(stand_task, hit_task)
 
     assert len(view.round_state.players[0].hands[0].cards) == 2
-    assert dealer.settle_calls == 1
     assert dealer.hint_calls == 0
-    assert message.edit_calls == 3
     assert "embeds" not in message.edits[0]
-    thinking_embeds = cast("list[Any]", message.edits[1]["embeds"])
-    thinking_line = cast("str", thinking_embeds[0].description)
-    assert "莊家正在思考 hit / stand" in thinking_line
+    await view.wait_for_background_tasks()
+    assert dealer.settle_calls == 1
+    assert message.edit_calls == 3
+    assert message.edits[1]["view"] is None
     assert cleanup_messages == [message]
 
 
@@ -1133,9 +1188,14 @@ async def test_blackjack_view_hit_hint_uses_active_split_hand_total(
     await hit_button.callback(_InteractionStub(message=message, user_id=1))
 
     assert [str(card) for card in player.hands[1].cards] == ["9♣", "2♦", "5♣"]
+    assert dealer.hint_calls == 0
+    assert message.edit_calls == 1
+
+    await view.wait_for_background_tasks()
+
     assert dealer.hint_calls == 1
     assert dealer.hints[0]["player_total"] == 16
-    assert message.edit_calls == 1
+    assert message.edit_calls == 2
 
 
 async def test_add_balance_concurrent_credits_accumulate() -> None:
