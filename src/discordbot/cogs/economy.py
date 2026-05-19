@@ -536,16 +536,16 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="house",
-        description="Show the dealer's running win/loss across every game.",
+        description="Show the Blackjack dealer ledger profit and loss.",
         name_localizations={Locale.zh_TW: "莊家戰績", Locale.ja: "ディーラー戦績"},
         description_localizations={
-            Locale.zh_TW: "顯示莊家在所有遊戲累積的輸贏 (跨伺服器)",
-            Locale.ja: "ディーラーの全サーバー累計の勝敗を表示します。",
+            Locale.zh_TW: "顯示 Blackjack 莊家 ledger 累積 P&L (跨伺服器)",
+            Locale.ja: "Blackjack dealer ledger の累計 P&L を表示します。",
         },
         nsfw=False,
     )
     async def house(self, interaction: Interaction) -> None:
-        """Shows the bot's accumulated dealer P&L across casino games.
+        """Shows the bot's accumulated Blackjack dealer P&L.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -697,7 +697,7 @@ class EconomyCogs(commands.Cog):
             )
         embed.set_footer(
             text=(
-                f"每天 0:00 (Asia/Taipei) 自動清零 | 收入 50% 自動還款 | "
+                f"每天 0:00 (Asia/Taipei) 自動清零 | 請用 /repay 手動還款 | "
                 f"上限 {currency_text(amount=limit)}"
             )
         )

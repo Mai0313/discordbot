@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 import logfire
 from nextcord import Message, Interaction
-from nextcord.ui import Item
+from nextcord.ui import Item, View
 from nextcord.errors import DiscordServerError
 
 
@@ -28,6 +28,14 @@ def disable_view_components(
     for child in children:
         if isinstance(child, component_types):
             child.disabled = True
+
+
+def set_view_item_visible(view: View, item: Item, visible: bool) -> None:
+    """Adds or removes one view item without recreating the component."""
+    if visible and item not in view.children:
+        view.add_item(item=item)
+    elif not visible and item in view.children:
+        view.remove_item(item=item)
 
 
 async def edit_message_with_retry(

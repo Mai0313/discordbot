@@ -5,10 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from random import Random
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+import asyncio
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
 from nextcord import Embed
+from nextcord.ui import Button, StringSelect
 
 from discordbot.typings.games import (
     Card,
@@ -134,6 +136,23 @@ class DealerStub:
         """Returns a deterministic settlement line and records the call."""
         self.table_settle_calls.append(kwargs)
         return "settled"
+
+
+class BlockingDealerStub(DealerStub):
+    """Dealer stub that blocks settlement banter until the test releases it."""
+
+    def __init__(self) -> None:
+        """Initializes synchronization events for the blocking call."""
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def table_settle(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
+        """Blocks until the test allows the background refresh to finish."""
+        self.table_settle_calls.append(kwargs)
+        self.started.set()
+        await self.release.wait()
+        return "background settled"
 
 
 _RIGGED_FILLER: tuple[str, ...] = ("2", "♠") * 32
@@ -284,6 +303,32 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
     monkeypatch.setattr(
         "discordbot.cogs._games.lobby.schedule_game_message_delete", lambda message: None
     )
+
+
+def _component_ids(view: DragonGateView) -> set[str]:
+    """Returns custom IDs for currently attached view components."""
+    custom_ids: set[str] = set()
+    for child in view.children:
+        custom_id = getattr(child, "custom_id", None)
+        if isinstance(custom_id, str):
+            custom_ids.add(custom_id)
+    return custom_ids
+
+
+def _attached_button(view: DragonGateView, custom_id: str) -> Button:
+    """Returns an attached button by custom ID."""
+    for child in view.children:
+        if isinstance(child, Button) and child.custom_id == custom_id:
+            return child
+    raise AssertionError(f"Missing attached button: {custom_id}")
+
+
+def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect:
+    """Returns an attached select menu by custom ID."""
+    for child in view.children:
+        if isinstance(child, StringSelect) and child.custom_id == custom_id:
+            return child
+    raise AssertionError(f"Missing attached select: {custom_id}")
 
 
 def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
@@ -482,6 +527,47 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     assert final.title
 
 
+async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
+    """Active controls are removed instead of left visible but disabled."""
+    owner = _participant(user_id=1, display_name="Alice")
+
+    normal_round = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
+    )
+    normal_view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=normal_round,
+        owner=owner,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=100_000,
+        final_balances={1: 1_000_000},
+    )
+    normal_view.sync_controls()
+    assert _component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
+    assert _attached_select(view=normal_view, custom_id="dg:bet").disabled is False
+
+    pair_round = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
+    )
+    pair_view = DragonGateView(
+        dealer=DealerStub(),
+        round_state=pair_round,
+        owner=owner,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=100_000,
+        final_balances={1: 1_000_000},
+    )
+    pair_view.sync_controls()
+    assert _component_ids(view=pair_view) == {"dg:higher", "dg:lower", "dg:leave"}
+
+    pair_round.choose_pair_direction(user_id=1, direction="higher")
+    pair_view.sync_controls()
+    assert _component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
+    assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
+
+
 async def test_dragon_gate_lobby_join_leave_and_owner_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -636,16 +722,17 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     )
     view.message = message
     view.sync_controls()
-    assert view._button(custom_id="dg:higher").disabled is False
-    assert view._select(custom_id="dg:bet").disabled is True
+    assert _component_ids(view=view) == {"dg:higher", "dg:lower", "dg:leave"}
+    assert _attached_button(view=view, custom_id="dg:higher").disabled is False
 
-    choose_higher = view._button(custom_id="dg:higher")
+    choose_higher = _attached_button(view=view, custom_id="dg:higher")
     await choose_higher.callback(
         InteractionStub(user_id=1, message=message, custom_id="dg:higher")
     )
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
-    assert view._select(custom_id="dg:bet").disabled is False
+    assert _component_ids(view=view) == {"dg:bet", "dg:leave"}
+    assert _attached_select(view=view, custom_id="dg:bet").disabled is False
 
     await view._handle_bet_choice(
         choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
@@ -696,6 +783,61 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert isinstance(embeds[1], Embed)
     assert isinstance(embeds[1].description, str)
     assert "系統已自動補池" in embeds[1].description
+    await view.wait_for_background_tasks()
+
+
+async def test_dragon_gate_final_settlement_does_not_wait_for_dealer_banter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final result is edited immediately while dealer table_settle refreshes later."""
+    owner = _participant(user_id=1, display_name="Alice")
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
+    )
+
+    state = JackpotState(initial_jackpot=10_000, initial_balance=500_000)
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    message = MessageStub()
+    dealer = BlockingDealerStub()
+    view = DragonGateView(
+        dealer=dealer,
+        round_state=round_state,
+        owner=owner,
+        dealer_name="Dealer",
+        dealer_line="taunt",
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 500_000},
+    )
+    view.message = message
+
+    await asyncio.wait_for(
+        view._handle_bet_choice(
+            choice="max",
+            interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet"),
+        ),
+        timeout=0.2,
+    )
+
+    assert view._settled is True
+    assert message.edits[-1]["view"] is None
+    embeds = message.edits[-1]["embeds"]
+    assert isinstance(embeds, list)
+    assert isinstance(embeds[0], Embed)
+    assert isinstance(embeds[0].description, str)
+    assert "background settled" not in embeds[0].description
+
+    await asyncio.wait_for(dealer.started.wait(), timeout=0.2)
+    dealer.release.set()
+    await view.wait_for_background_tasks()
+
+    assert len(dealer.table_settle_calls) == 1
+    assert message.edits[-1]["view"] is None
+    refreshed_embeds = message.edits[-1]["embeds"]
+    assert isinstance(refreshed_embeds, list)
+    assert isinstance(refreshed_embeds[0], Embed)
+    assert isinstance(refreshed_embeds[0].description, str)
+    assert "background settled" in refreshed_embeds[0].description
 
 
 async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
@@ -754,6 +896,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
     assert "+7,000" in final_embed.description
     assert "+10,000" not in final_embed.description
     assert view._jackpot_generation == 3
+    await view.wait_for_background_tasks()
 
 
 async def test_dragon_gate_view_single_player_zero_balance_finalizes(
@@ -801,6 +944,7 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     assert isinstance(history_embed.description, str)
     assert "-8,000" in history_embed.description
     assert "-20,000" not in history_embed.description
+    await view.wait_for_background_tasks()
 
 
 async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
@@ -878,7 +1022,7 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     )
     assert round_state.player_delta(user_id=1) == 10_000
 
-    leave_button = view._button(custom_id="dg:leave")
+    leave_button = _attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
 
     # Bet settled +10k into Alice. Leave refunds 10k back into the pool.
@@ -922,7 +1066,7 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     )
     assert round_state.player_delta(user_id=1) == -10_000
 
-    leave_button = view._button(custom_id="dg:leave")
+    leave_button = _attached_button(view=view, custom_id="dg:leave")
     await leave_button.callback(InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
 
     # Single bet settled -10k; leave path does not append another settlement.
@@ -1022,6 +1166,7 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert all(isinstance(embed, Embed) for embed in embeds)
+    await view.wait_for_background_tasks()
 
 
 def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:

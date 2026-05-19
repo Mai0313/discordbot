@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 import contextlib
 
@@ -20,7 +20,6 @@ from discordbot.cogs._games.lobby import (
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
-    get_jackpot_pool,
     get_jackpot_snapshot,
     apply_jackpot_settlement,
 )
@@ -42,7 +41,7 @@ from discordbot.cogs._games.dragon_gate import (
 )
 from discordbot.cogs._games.interactions import (
     send_ephemeral_notice,
-    disable_view_components,
+    set_view_item_visible,
     edit_message_with_retry,
 )
 from discordbot.cogs._games.presentation import (
@@ -63,12 +62,14 @@ from discordbot.cogs._economy.presentation import currency_text
 
 if TYPE_CHECKING:
     from random import Random
+    from collections.abc import Coroutine
 
     from discordbot.typings.economy import JackpotSnapshot
     from discordbot.cogs._games.dealer import DealerAI
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
+DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -169,6 +170,16 @@ def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
         delta = currency_text(amount=result.delta, signed=True)
         lines.append(f"{result.participant.display_name}: {delta}")
     return ";".join(lines)
+
+
+def _fallback_table_settlement_line(results: list[DragonGatePlayerResult]) -> str:
+    """Returns deterministic final table banter while LLM text refreshes later."""
+    total_delta = sum(result.delta for result in results)
+    if total_delta > 0:
+        return "這桌先讓你們贏，彩金池會記著"
+    if total_delta < 0:
+        return "這桌收工，彩金池又厚了一點"
+    return "這桌打平，不賺不賠"
 
 
 def _table_color(results: list[DragonGatePlayerResult]) -> int:
@@ -427,6 +438,14 @@ class DragonGateView(View):
         self._jackpot_generation = jackpot_generation
         self._final_balances: dict[int, int] = dict(final_balances)
         self._refunded_to_pool: dict[int, int] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._buttons: dict[str, Button] = {
+            "dg:higher": cast("Button", self.choose_higher),
+            "dg:lower": cast("Button", self.choose_lower),
+            "dg:leave": cast("Button", self.leave_table),
+        }
+        self._selects: dict[str, StringSelect] = {"dg:bet": cast("StringSelect", self.bet_select)}
+        self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         """Restricts bet/direction to the active player; leave is open to all seated."""
@@ -534,30 +553,28 @@ class DragonGateView(View):
 
     def sync_controls(self) -> None:
         """Updates button labels and select options from the current table state."""
-        needs_pair_choice = self.round_state.needs_pair_choice()
-        can_bet = (
-            not self._settled
-            and self.round_state.active_turn is not None
-            and not needs_pair_choice
-        )
+        active = self.round_state.active_turn
+        needs_pair_choice = not self._settled and self.round_state.needs_pair_choice()
+        can_bet = not self._settled and active is not None and not needs_pair_choice
         minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
         maximum = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
 
-        higher_button = self._button(custom_id="dg:higher")
-        lower_button = self._button(custom_id="dg:lower")
-        higher_button.disabled = not needs_pair_choice
-        lower_button.disabled = not needs_pair_choice
+        higher_button = self._buttons["dg:higher"]
+        lower_button = self._buttons["dg:lower"]
+        higher_button.disabled = False
+        lower_button.disabled = False
 
-        active = self.round_state.active_turn
         if active is not None and active.is_pair and active.direction is not None:
             higher_button.label = "同點猜大 ✓" if active.direction == "higher" else "同點猜大"
             lower_button.label = "同點猜小 ✓" if active.direction == "lower" else "同點猜小"
         else:
             higher_button.label = "同點猜大"
             lower_button.label = "同點猜小"
+        set_view_item_visible(view=self, item=higher_button, visible=needs_pair_choice)
+        set_view_item_visible(view=self, item=lower_button, visible=needs_pair_choice)
 
-        bet_select = self._select(custom_id="dg:bet")
-        bet_select.disabled = not can_bet
+        bet_select = self._selects["dg:bet"]
+        bet_select.disabled = False
         if needs_pair_choice:
             bet_select.placeholder = "⚠️ 請先選擇猜大或猜小"
         else:
@@ -576,8 +593,14 @@ class DragonGateView(View):
                 label="自訂", value="custom", emoji="✏️", description="彈出視窗輸入精確金額"
             ),
         ]
-        leave_button = self._button(custom_id="dg:leave")
-        leave_button.disabled = self._settled
+        set_view_item_visible(view=self, item=bet_select, visible=can_bet)
+
+        leave_button = self._buttons["dg:leave"]
+        leave_button.disabled = False
+        has_active_participant = bool(self.round_state.active_participants())
+        set_view_item_visible(
+            view=self, item=leave_button, visible=not self._settled and has_active_participant
+        )
 
     async def _choose_direction(
         self, interaction: Interaction, direction: DragonGateDirection
@@ -772,16 +795,8 @@ class DragonGateView(View):
                 )
             )
 
-        dealer_line = await self.dealer.table_settle(
-            author_name=self.owner.account_name,
-            table_name="射龍門",
-            player_count=len(results),
-            net_delta=sum(result.delta for result in results),
-            game="dragon_gate",
-            detail=_table_result_detail(results=results),
-        )
         talk_embed = build_dealer_talk_embed(
-            dealer_line=dealer_line,
+            dealer_line=_fallback_table_settlement_line(results=results),
             dealer_name=self.dealer_name,
             dealer_avatar_url=self.dealer_avatar_url,
         )
@@ -797,11 +812,61 @@ class DragonGateView(View):
         )
         if history_embed is not None:
             embeds.append(history_embed)
-        self._disable_controls()
+        self.clear_items()
         self.stop()
         with contextlib.suppress(Exception):
-            await message.edit(embeds=embeds, view=self)
+            await asyncio.wait_for(
+                message.edit(embeds=embeds, view=None),
+                timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        self._track_background_task(
+            coroutine=self._refresh_settlement_line_later(
+                message=message,
+                results=results,
+                final_embed=final_embed,
+                history_embed=history_embed,
+            )
+        )
         schedule_game_message_delete(message=message)
+
+    async def _refresh_settlement_line_later(
+        self,
+        message: Message,
+        results: list[DragonGatePlayerResult],
+        final_embed: Embed,
+        history_embed: Embed | None,
+    ) -> None:
+        """Refreshes the final dealer line after the table result is already visible."""
+        try:
+            dealer_line = await self.dealer.table_settle(
+                author_name=self.owner.account_name,
+                table_name="射龍門",
+                player_count=len(results),
+                net_delta=sum(result.delta for result in results),
+                game="dragon_gate",
+                detail=_table_result_detail(results=results),
+            )
+        except Exception:
+            logfire.warn("Dragon Gate settlement banter refresh failed", _exc_info=True)
+            return
+        async with self._round_lock:
+            if not self._settled:
+                return
+            embeds: list[Embed] = [
+                build_dealer_talk_embed(
+                    dealer_line=dealer_line,
+                    dealer_name=self.dealer_name,
+                    dealer_avatar_url=self.dealer_avatar_url,
+                ),
+                final_embed,
+            ]
+            if history_embed is not None:
+                embeds.append(history_embed)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    message.edit(embeds=embeds, view=None),
+                    timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
+                )
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
         """Returns the participant matching a Discord user ID."""
@@ -812,17 +877,11 @@ class DragonGateView(View):
 
     def _button(self, custom_id: str) -> Button:
         """Returns a button component by custom ID."""
-        for child in self.children:
-            if isinstance(child, Button) and child.custom_id == custom_id:
-                return child
-        raise RuntimeError(f"Missing button: {custom_id}")
+        return self._buttons[custom_id]
 
     def _select(self, custom_id: str) -> StringSelect:
         """Returns a string select component by custom ID."""
-        for child in self.children:
-            if isinstance(child, StringSelect) and child.custom_id == custom_id:
-                return child
-        raise RuntimeError(f"Missing select: {custom_id}")
+        return self._selects[custom_id]
 
     def _current_turn_notice(self) -> str:
         """Returns the ephemeral notice for users acting out of turn."""
@@ -870,9 +929,20 @@ class DragonGateView(View):
             _exc_info=(type(error), error, error.__traceback__),
         )
 
-    def _disable_controls(self) -> None:
-        """Disables every active-table button and select control."""
-        disable_view_components(children=self.children, component_types=(Button, StringSelect))
+    def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        """Tracks a background UI refresh task until it finishes."""
+        task = asyncio.create_task(coro=coroutine)
+        self._background_tasks.add(task)
+
+        def _discard_task(done_task: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done_task)
+
+        task.add_done_callback(_discard_task)
+
+    async def wait_for_background_tasks(self) -> None:
+        """Waits for currently scheduled background UI refreshes."""
+        while self._background_tasks:
+            await asyncio.gather(*tuple(self._background_tasks))
 
 
 class DragonGateBetModal(Modal):
@@ -896,11 +966,6 @@ class DragonGateBetModal(Modal):
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
 
 
-async def fetch_dragon_gate_jackpot() -> int:
-    """Reads the live 射龍門 jackpot pool balance."""
-    return await get_jackpot_pool(game_id=GAME_ID)
-
-
 async def fetch_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
     """Reads the live 射龍門 jackpot pool balance and generation."""
     return await get_jackpot_snapshot(game_id=GAME_ID)
@@ -914,6 +979,5 @@ __all__ = [
     "build_dragon_gate_final_embed",
     "build_dragon_gate_in_progress_embed",
     "build_dragon_gate_lobby_embed",
-    "fetch_dragon_gate_jackpot",
     "fetch_dragon_gate_jackpot_snapshot",
 ]

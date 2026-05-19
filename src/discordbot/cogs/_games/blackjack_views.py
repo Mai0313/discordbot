@@ -39,6 +39,7 @@ from discordbot.cogs._games.settlement import (
 )
 from discordbot.cogs._games.interactions import (
     send_ephemeral_notice,
+    set_view_item_visible,
     disable_view_components,
     edit_message_with_retry,
 )
@@ -867,16 +868,16 @@ class BlackjackView(View):
     def sync_buttons(self) -> None:
         """Shows only the controls that are currently actionable."""
         for button in self._action_buttons.values():
-            self._set_button_visible(button=button, visible=False)
+            set_view_item_visible(view=self, item=button, visible=False)
         for button in self._insurance_buttons:
-            self._set_button_visible(button=button, visible=False)
+            set_view_item_visible(view=self, item=button, visible=False)
 
         if self._settled or self.round_state.finished:
             return
         if self.round_state.phase == "insurance":
             for button in self._insurance_buttons:
                 button.disabled = False
-                self._set_button_visible(button=button, visible=True)
+                set_view_item_visible(view=self, item=button, visible=True)
             return
         if self.round_state.phase != "player_actions":
             return
@@ -900,14 +901,7 @@ class BlackjackView(View):
         }
         for custom_id, button in self._action_buttons.items():
             button.disabled = False
-            self._set_button_visible(button=button, visible=visible[custom_id])
-
-    def _set_button_visible(self, button: Button, visible: bool) -> None:
-        """Adds or removes a button from the shared view."""
-        if visible and button not in self.children:
-            self.add_item(item=button)
-        elif not visible and button in self.children:
-            self.remove_item(item=button)
+            set_view_item_visible(view=self, item=button, visible=visible[custom_id])
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes dealer talk and table embeds while holding the round lock."""

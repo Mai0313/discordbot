@@ -1,4 +1,4 @@
-"""Tests for the loan layer: credit limit, borrow / repay flows, auto-repay, daily reset, audit log."""
+"""Tests for the loan layer: credit limit, borrow / repay flows, daily reset, audit log."""
 
 from __future__ import annotations
 
@@ -459,7 +459,7 @@ async def test_expired_loan_does_not_reduce_balance() -> None:
 
 
 async def test_credit_with_repayment_after_expiry_credits_full_amount() -> None:
-    """After the daily reset the 50% auto-repay no longer applies."""
+    """After the daily reset, expired debt is gone and the full credit lands."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     await _backdate_loan_opened_at(user_id=1, days_ago=2)
     result = await credit_with_repayment(

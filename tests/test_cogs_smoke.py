@@ -623,6 +623,9 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     assert interaction.followup.sent[8].get("ephemeral") is True
     assert interaction.followup.sent[9].get("ephemeral") is True
     assert interaction.followup.sent[10].get("ephemeral") is True
+    borrow_embed = interaction.followup.sent[7]["embed"]
+    assert "50%" not in (borrow_embed.footer.text or "")
+    assert "/repay" in (borrow_embed.footer.text or "")
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
