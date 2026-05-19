@@ -827,7 +827,7 @@ class DragonGateView(View):
                 history_embed=history_embed,
             )
         )
-        schedule_game_message_delete(message=message)
+        schedule_game_message_delete(message=message, user_name=self.owner.account_name)
 
     async def _refresh_settlement_line_later(
         self,

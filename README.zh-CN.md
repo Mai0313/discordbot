@@ -110,7 +110,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 - `messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
 - `economy.db`：虚拟欢乐豆余额、VIP flag、借款、签到、赌场每日统计、赌场交易与 jackpot state。
-- `game_cleanup.db`：公开 game 或 economy response 的 Discord channel ID 与 message ID，用于 bot 重启后的清理。
+- `game_cleanup.db`：公开 game 或 economy response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，用于 bot 重启后的清理。
 - `model_prices.json`：缓存的 LiteLLM pricing metadata，用于 AI 回复费用估算。
 - `downloads/` 与 `threads/`：临时 media scratch folders。
 

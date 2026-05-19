@@ -20,20 +20,38 @@ _CREATE_PENDING_GAME_MESSAGES_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS pending_game_message (
     message_id INTEGER PRIMARY KEY,
     channel_id INTEGER NOT NULL,
+    guild_name TEXT,
+    channel_name TEXT,
+    user_name TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
 """
+_LIST_PENDING_GAME_MESSAGE_COLUMNS_SQL: Final[str] = """
+PRAGMA table_info(pending_game_message)
+"""
+_ADD_PENDING_GAME_MESSAGE_GUILD_NAME_SQL: Final[str] = """
+ALTER TABLE pending_game_message ADD COLUMN guild_name TEXT
+"""
+_ADD_PENDING_GAME_MESSAGE_CHANNEL_NAME_SQL: Final[str] = """
+ALTER TABLE pending_game_message ADD COLUMN channel_name TEXT
+"""
+_ADD_PENDING_GAME_MESSAGE_USER_NAME_SQL: Final[str] = """
+ALTER TABLE pending_game_message ADD COLUMN user_name TEXT
+"""
 _UPSERT_PENDING_GAME_MESSAGE_SQL: Final[str] = """
-INSERT INTO pending_game_message (message_id, channel_id)
-VALUES (:message_id, :channel_id)
+INSERT INTO pending_game_message (message_id, channel_id, guild_name, channel_name, user_name)
+VALUES (:message_id, :channel_id, :guild_name, :channel_name, :user_name)
 ON CONFLICT(message_id) DO UPDATE SET
-    channel_id = excluded.channel_id
+    channel_id = excluded.channel_id,
+    guild_name = excluded.guild_name,
+    channel_name = excluded.channel_name,
+    user_name = COALESCE(excluded.user_name, pending_game_message.user_name)
 """
 _DELETE_PENDING_GAME_MESSAGE_SQL: Final[str] = """
 DELETE FROM pending_game_message WHERE message_id = :message_id
 """
 _LIST_PENDING_GAME_MESSAGES_SQL: Final[str] = """
-SELECT channel_id, message_id
+SELECT channel_id, message_id, guild_name, channel_name, user_name
 FROM pending_game_message
 ORDER BY created_at ASC, message_id ASC
 """
@@ -44,6 +62,9 @@ class PendingGameMessage(BaseModel):
 
     channel_id: int
     message_id: int
+    guild_name: str | None = None
+    channel_name: str | None = None
+    user_name: str | None = None
 
 
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
@@ -75,16 +96,35 @@ def _pending_db_engine() -> Engine:
 def _ensure_pending_table(conn: Connection) -> None:
     """Ensures the cleanup table exists before a read or write."""
     conn.execute(statement=text(text=_CREATE_PENDING_GAME_MESSAGES_SQL))
+    columns = {
+        str(row[1])
+        for row in conn.execute(statement=text(text=_LIST_PENDING_GAME_MESSAGE_COLUMNS_SQL))
+    }
+    if "guild_name" not in columns:
+        conn.execute(statement=text(text=_ADD_PENDING_GAME_MESSAGE_GUILD_NAME_SQL))
+    if "channel_name" not in columns:
+        conn.execute(statement=text(text=_ADD_PENDING_GAME_MESSAGE_CHANNEL_NAME_SQL))
+    if "user_name" not in columns:
+        conn.execute(statement=text(text=_ADD_PENDING_GAME_MESSAGE_USER_NAME_SQL))
 
 
-def _message_record(message: Message) -> PendingGameMessage | None:
+def _message_record(message: Message, user_name: str | None = None) -> PendingGameMessage | None:
     """Extracts the persistent cleanup identity from a Discord message."""
     channel = getattr(message, "channel", None)
     channel_id = getattr(channel, "id", None)
     message_id = getattr(message, "id", None)
     if not isinstance(channel_id, int) or not isinstance(message_id, int):
         return None
-    return PendingGameMessage(channel_id=channel_id, message_id=message_id)
+    guild = getattr(message, "guild", None) or getattr(channel, "guild", None)
+    guild_name = getattr(guild, "name", None)
+    channel_name = getattr(channel, "name", None)
+    return PendingGameMessage(
+        channel_id=channel_id,
+        message_id=message_id,
+        guild_name=guild_name if isinstance(guild_name, str) else None,
+        channel_name=channel_name if isinstance(channel_name, str) else None,
+        user_name=user_name,
+    )
 
 
 def _track_game_message_sync(record: PendingGameMessage) -> None:
@@ -93,7 +133,13 @@ def _track_game_message_sync(record: PendingGameMessage) -> None:
         _ensure_pending_table(conn=conn)
         conn.execute(
             statement=text(text=_UPSERT_PENDING_GAME_MESSAGE_SQL),
-            parameters={"message_id": record.message_id, "channel_id": record.channel_id},
+            parameters={
+                "message_id": record.message_id,
+                "channel_id": record.channel_id,
+                "guild_name": record.guild_name,
+                "channel_name": record.channel_name,
+                "user_name": record.user_name,
+            },
         )
 
 
@@ -112,20 +158,32 @@ def _list_pending_game_messages_sync() -> list[PendingGameMessage]:
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
         rows = conn.execute(statement=text(text=_LIST_PENDING_GAME_MESSAGES_SQL)).fetchall()
-        return [PendingGameMessage(channel_id=int(row[0]), message_id=int(row[1])) for row in rows]
+        return [
+            PendingGameMessage(
+                channel_id=int(row[0]),
+                message_id=int(row[1]),
+                guild_name=str(row[2]) if row[2] is not None else None,
+                channel_name=str(row[3]) if row[3] is not None else None,
+                user_name=str(row[4]) if row[4] is not None else None,
+            )
+            for row in rows
+        ]
 
 
-async def track_game_message(message: Message) -> PendingGameMessage | None:
+async def track_game_message(
+    message: Message, user_name: str | None = None
+) -> PendingGameMessage | None:
     """Records a public response so a restart can delete it later.
 
     Args:
         message: Discord message created for a game round or related expiring response.
+        user_name: Optional Discord account name of the user who triggered the response.
 
     Returns:
         The persisted record, or `None` when the message object has no usable
         ``channel.id`` / ``id`` pair.
     """
-    record = _message_record(message=message)
+    record = _message_record(message=message, user_name=user_name)
     if record is None:
         return None
     try:
@@ -201,15 +259,16 @@ async def delete_tracked_game_messages(bot: commands.Bot) -> None:
 
 
 async def delete_game_message_after(
-    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
+    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS, user_name: str | None = None
 ) -> None:
     """Deletes a public response after a delay.
 
     Args:
         message: Discord message to delete.
         delay: Seconds to wait before deletion.
+        user_name: Optional Discord account name of the user who triggered the response.
     """
-    record = await track_game_message(message=message)
+    record = await track_game_message(message=message, user_name=user_name)
     await asyncio.sleep(delay=delay)
     try:
         await message.delete()
@@ -223,9 +282,10 @@ async def delete_game_message_after(
 
 
 def schedule_game_message_delete(
-    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS
+    message: Message, delay: float = GAME_RESPONSE_TTL_SECONDS, user_name: str | None = None
 ) -> None:
     """Schedules delayed deletion for a public game/economy response."""
     asyncio.create_task(  # noqa: RUF006 -- fire-and-forget cleanup cannot block commands.
-        coro=delete_game_message_after(message=message, delay=delay), name="delete-game-response"
+        coro=delete_game_message_after(message=message, delay=delay, user_name=user_name),
+        name="delete-game-response",
     )

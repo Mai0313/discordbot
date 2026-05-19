@@ -253,7 +253,7 @@ class GamesCogs(commands.Cog):
                 embed=self._insufficient_balance_embed(balance=participant_result.balance),
                 wait=True,
             )
-            schedule_game_message_delete(message=message)
+            schedule_game_message_delete(message=message, user_name=interaction.user.name)
             return
 
         table_bet = owner.bet
@@ -283,7 +283,7 @@ class GamesCogs(commands.Cog):
             max_players=MAX_BLACKJACK_PLAYERS,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
-        await track_game_message(message=message)
+        await track_game_message(message=message, user_name=owner.account_name)
         view.message = message
 
     @nextcord.slash_command(
@@ -317,7 +317,7 @@ class GamesCogs(commands.Cog):
                 ),
                 wait=True,
             )
-            schedule_game_message_delete(message=message)
+            schedule_game_message_delete(message=message, user_name=interaction.user.name)
             return
 
         dealer_identity = self._dealer_identity()
@@ -342,7 +342,7 @@ class GamesCogs(commands.Cog):
             owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
-        await track_game_message(message=message)
+        await track_game_message(message=message, user_name=owner.account_name)
         view.message = message
 
 

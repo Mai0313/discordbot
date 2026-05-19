@@ -575,7 +575,9 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     """Verifies economy slash commands call the database facade and send embeds."""
     scheduled: list[FakeDiscordMessage] = []
 
-    def record_scheduled(message: FakeDiscordMessage) -> None:
+    def record_scheduled(
+        message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records game cleanup scheduling from economy commands."""
         scheduled.append(message)
 
@@ -675,7 +677,9 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
             LossLeaderboardEntry(user_id=2, name="bob", loss_amount=200, avatar_url=""),
         ]
 
-    def record_scheduled(message: FakeDiscordMessage) -> None:
+    def record_scheduled(
+        message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records cleanup scheduling."""
         scheduled.append(message)
 
@@ -703,7 +707,9 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
         """Returns an empty daily loss board."""
         return []
 
-    def record_scheduled(message: FakeDiscordMessage) -> None:
+    def record_scheduled(
+        message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records cleanup scheduling."""
         scheduled.append(message)
 
@@ -811,7 +817,9 @@ async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseR
     return VipPurchaseResult(new_balance=500_000, cost=VIP_PURCHASE_COST)
 
 
-def ignore_scheduled_game_message(message: FakeDiscordMessage) -> None:
+def ignore_scheduled_game_message(
+    message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+) -> None:
     """Ignores cleanup scheduling in command smoke tests."""
     return
 

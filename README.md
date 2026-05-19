@@ -110,7 +110,7 @@ This bot stores runtime data locally under `data/`.
 
 - `messages.db`: human messages and this bot's replies, used for chat history and summaries.
 - `economy.db`: 虛擬歡樂豆 balances, VIP flags, loans, check-ins, casino daily counters, casino transactions, and jackpot state.
-- `game_cleanup.db`: Discord channel and message IDs for public game or economy responses that should be cleaned up after restart.
+- `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public game or economy responses that should be cleaned up after restart.
 - `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.
 - `downloads/` and `threads/`: temporary media scratch folders.
 

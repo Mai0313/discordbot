@@ -93,7 +93,8 @@ def _loss_rank_line(position: int, name: str, loss: int) -> str:
 async def _send_expiring_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
     message = await interaction.followup.send(embed=embed, wait=True)
-    schedule_game_message_delete(message=message)
+    user_name = interaction.user.name if interaction.user is not None else None
+    schedule_game_message_delete(message=message, user_name=user_name)
 
 
 async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:

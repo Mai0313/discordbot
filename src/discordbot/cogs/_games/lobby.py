@@ -97,7 +97,7 @@ class BaseGameLobbyView(View):
         embed = self._build_lobby_embed(status="Lobby 已逾時")
         with contextlib.suppress(Exception):
             await self.message.edit(embed=embed, view=self)
-        schedule_game_message_delete(message=self.message)
+        schedule_game_message_delete(message=self.message, user_name=self.owner.account_name)
 
     @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
     async def join(self, _button: Button, interaction: Interaction) -> None:

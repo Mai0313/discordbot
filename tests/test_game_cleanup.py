@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import sqlite3
 
 import pytest
 import nextcord
@@ -33,10 +34,18 @@ class _ResponseStub:
 class _DeletableMessageStub:
     """Minimal message stub that records deletion."""
 
-    def __init__(self, message_id: int = 123, channel_id: int = 456) -> None:
+    def __init__(
+        self,
+        message_id: int = 123,
+        channel_id: int = 456,
+        guild_name: str | None = None,
+        channel_name: str | None = None,
+    ) -> None:
         """Initializes message and channel IDs for cleanup tracking."""
         self.id = message_id
-        self.channel = _ChannelStub(channel_id=channel_id)
+        guild = _GuildStub(name=guild_name) if guild_name is not None else None
+        self.guild = guild
+        self.channel = _ChannelStub(channel_id=channel_id, name=channel_name, guild=guild)
         self.delete_calls = 0
 
     async def delete(self) -> None:
@@ -60,9 +69,21 @@ class _AlreadyDeletedMessageStub:
 class _ChannelStub:
     """Minimal channel shape for persistent cleanup identity."""
 
-    def __init__(self, channel_id: int) -> None:
-        """Stores the Discord channel ID."""
+    def __init__(
+        self, channel_id: int, name: str | None = None, guild: "_GuildStub | None" = None
+    ) -> None:
+        """Stores the Discord channel identity."""
         self.id = channel_id
+        self.name = name
+        self.guild = guild
+
+
+class _GuildStub:
+    """Minimal guild shape for persistent cleanup readability."""
+
+    def __init__(self, name: str) -> None:
+        """Stores the Discord guild name."""
+        self.name = name
 
 
 class _FetchedMessageStub:
@@ -166,7 +187,16 @@ class _InteractionStub:
 
     def __init__(self) -> None:
         """Initializes the followup stub used by the helper under test."""
+        self.user = _UserStub(name="alice")
         self.followup = _FollowupStub()
+
+
+class _UserStub:
+    """Minimal interaction user shape for cleanup readability."""
+
+    def __init__(self, name: str) -> None:
+        """Stores the Discord account name."""
+        self.name = name
 
 
 @pytest.fixture(autouse=True)
@@ -188,13 +218,55 @@ async def test_delete_game_message_after_waits_then_deletes() -> None:
 
 
 async def test_track_game_message_persists_message_identity() -> None:
-    """Game response tracking stores the channel/message pair needed for restart cleanup."""
-    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    """Game response tracking stores IDs plus readable guild/channel names."""
+    message = _DeletableMessageStub(
+        message_id=10, channel_id=20, guild_name="Mai Server", channel_name="casino"
+    )
+    expected = PendingGameMessage(
+        channel_id=20,
+        message_id=10,
+        guild_name="Mai Server",
+        channel_name="casino",
+        user_name="alice",
+    )
 
-    record = await track_game_message(message=cast("Message", message))
+    record = await track_game_message(message=cast("Message", message), user_name="alice")
 
-    assert record == PendingGameMessage(channel_id=20, message_id=10)
-    assert await list_pending_game_messages() == [PendingGameMessage(channel_id=20, message_id=10)]
+    assert record == expected
+    assert await list_pending_game_messages() == [expected]
+    await track_game_message(message=cast("Message", message))
+    assert await list_pending_game_messages() == [expected]
+
+
+async def test_track_game_message_migrates_existing_cleanup_table(tmp_path: Path) -> None:
+    """Existing cleanup databases gain readable metadata columns on first write."""
+    db_path = tmp_path / "game_cleanup.db"
+    with sqlite3.connect(database=db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE pending_game_message (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    message = _DeletableMessageStub(
+        message_id=30, channel_id=40, guild_name="Mai Server", channel_name="casino"
+    )
+
+    await track_game_message(message=cast("Message", message), user_name="alice")
+
+    with sqlite3.connect(database=db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_game_message)")}
+        rows = conn.execute(
+            """
+            SELECT message_id, channel_id, guild_name, channel_name, user_name
+            FROM pending_game_message
+            """
+        ).fetchall()
+    assert {"guild_name", "channel_name", "user_name"} <= columns
+    assert rows == [(30, 40, "Mai Server", "casino", "alice")]
 
 
 async def test_delete_game_message_after_forgets_successful_cleanup() -> None:
@@ -249,12 +321,14 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
 ) -> None:
     """Game-related economy embeds must retrieve their message before cleanup."""
     scheduled_messages: list[_SentFollowupMessageStub] = []
+    scheduled_user_names: list[str | None] = []
 
     def fake_schedule_game_message_delete(
-        message: _SentFollowupMessageStub, delay: float = 180
+        message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
     ) -> None:
         """Records the message scheduled for later deletion."""
         scheduled_messages.append(message)
+        scheduled_user_names.append(user_name)
 
     monkeypatch.setattr(
         target=economy,
@@ -271,6 +345,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     assert interaction.followup.sent_wait is True
     assert interaction.followup.sent_embed is embed
     assert scheduled_messages == [interaction.followup.message]
+    assert scheduled_user_names == ["alice"]
 
 
 async def test_send_private_followup_is_ephemeral_and_not_scheduled(
@@ -280,7 +355,7 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     scheduled_messages: list[_SentFollowupMessageStub] = []
 
     def fake_schedule_game_message_delete(
-        message: _SentFollowupMessageStub, delay: float = 180
+        message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
     ) -> None:
         """Records any unexpected scheduler calls."""
         scheduled_messages.append(message)
@@ -311,7 +386,9 @@ async def test_schedule_game_message_delete_uses_default_ttl(
     """Scheduling uses the shared three-minute TTL by default."""
     scheduled_delay: float | None = None
 
-    async def fake_delete_game_message_after(message: Message, delay: float) -> None:
+    async def fake_delete_game_message_after(
+        message: Message, delay: float, user_name: str | None = None
+    ) -> None:
         """Records the delay requested by the scheduler."""
         nonlocal scheduled_delay
         scheduled_delay = delay

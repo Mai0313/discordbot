@@ -695,7 +695,9 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     """Concurrent finalization attempts must not pay out one Blackjack hand twice."""
     cleanup_messages: list[_MessageStub] = []
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
@@ -740,7 +742,9 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     """A player who walks away is treated as standing and the wager resolves."""
     cleanup_messages: list[_MessageStub] = []
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
@@ -786,7 +790,9 @@ async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
     """Final results are visible before slow DealerAI settlement banter returns."""
     cleanup_messages: list[_MessageStub] = []
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
@@ -834,7 +840,9 @@ async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
     """Dealer hits below 17, then lets DealerAI decide once total reaches 17+."""
     cleanup_messages: list[_MessageStub] = []
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
@@ -926,7 +934,9 @@ async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.Monk
     """Soft 17 is handed to DealerAI like every other 17+ total."""
     cleanup_messages: list[_MessageStub] = []
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
@@ -978,7 +988,9 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     settlement_started = asyncio.Event()
     continue_settlement = asyncio.Event()
 
-    def fake_schedule_game_message_delete(message: _MessageStub, delay: float = 180) -> None:
+    def fake_schedule_game_message_delete(
+        message: _MessageStub, delay: float = 180, user_name: str | None = None
+    ) -> None:
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 

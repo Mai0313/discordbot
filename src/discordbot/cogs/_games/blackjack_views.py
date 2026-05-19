@@ -995,7 +995,7 @@ class BlackjackView(View):
                 message=message, results=results, final_embed=final_embed
             )
         )
-        schedule_game_message_delete(message=message)
+        schedule_game_message_delete(message=message, user_name=self.author_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""
