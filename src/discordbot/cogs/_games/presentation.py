@@ -51,6 +51,7 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
         "lose": ("你輸了", LOSE_COLOR),
         "push": ("平手", PUSH_COLOR),
         "blackjack": ("Blackjack!", WIN_COLOR),
+        "five_card_twenty_one": ("過五關", WIN_COLOR),
         "player_bust": ("你爆牌了", LOSE_COLOR),
         "dealer_bust": ("莊家爆牌, 你贏了", WIN_COLOR),
         "surrender": ("投降 · 退一半", LOSE_COLOR),
@@ -140,8 +141,13 @@ def lobby_participant_line(
     return f"**{index}. {display_name}**{bet_suffix}"
 
 
-def settlement_metadata(
-    delta: int, new_balance: int, is_allin: bool, base_delta: int | None = None, vip_bonus: int = 0
+def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several optional bonus facets
+    delta: int,
+    new_balance: int,
+    is_allin: bool,
+    base_delta: int | None = None,
+    vip_bonus: int = 0,
+    five_card_bonus: int = 0,
 ) -> str:
     """Renders the small-text settlement metadata line.
 
@@ -149,8 +155,9 @@ def settlement_metadata(
         delta: Player net point change for the round.
         new_balance: Player balance after settlement.
         is_allin: Whether the wager consumed the full balance.
-        base_delta: Player net point change before the VIP payout bonus.
+        base_delta: Player net point change before player-facing bonuses.
         vip_bonus: Extra points added by the VIP payout bonus.
+        five_card_bonus: System-funded bonus from five-card 21.
 
     Returns:
         ``-# 本局 +X · 餘額 Y`` style metadata, with an ``· all-in`` suffix
@@ -158,7 +165,9 @@ def settlement_metadata(
     """
     segments = [f"本局 `{delta:+,}`"]
     if vip_bonus > 0 and base_delta is not None:
-        segments.append(f"VIP加成 `{base_delta:+,}` → `{delta:+,}`")
+        segments.append(f"VIP加成 `+{vip_bonus:,}`")
+    if five_card_bonus > 0:
+        segments.append(f"過五關 bonus `+{five_card_bonus:,}`")
     if is_allin:
         segments.append("all-in")
     segments.append(f"餘額 `{new_balance:,}`")
@@ -183,6 +192,8 @@ def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total
     """Single-line result label without heading prefix, for embed titles."""
     if outcome == "blackjack":
         return f"{NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
+    if outcome == "five_card_twenty_one":
+        return f"{NATURAL_RESULT_EMOJI} 過五關 · {player_total}"
     if outcome == "dealer_bust":
         return f"{DEALER_BUST_RESULT_EMOJI} 莊家爆牌, 你贏了 · {dealer_total}"
     if outcome == "player_bust":

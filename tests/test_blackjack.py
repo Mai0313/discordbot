@@ -27,6 +27,7 @@ from discordbot.cogs._games.blackjack import (
     can_surrender,
     is_soft_total,
     dealer_visible_value,
+    is_five_card_twenty_one,
 )
 from discordbot.cogs._games.settlement import (
     blackjack_early_finish_note,
@@ -67,6 +68,34 @@ def test_is_blackjack_only_for_two_card_21() -> None:
     assert is_blackjack(cards=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")]) is True
     triple_seven = [Card(rank="7", suit="♠"), Card(rank="7", suit="♥"), Card(rank="7", suit="♣")]
     assert is_blackjack(cards=triple_seven) is False
+
+
+def test_is_five_card_twenty_one_requires_exactly_five_cards_and_total_21() -> None:
+    """過五關 only applies to exactly five cards totaling 21."""
+    five_card_21 = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank="7", suit="♠"),
+    ]
+    four_card_21 = [
+        Card(rank="2", suit="♠"),
+        Card(rank="4", suit="♥"),
+        Card(rank="5", suit="♣"),
+        Card(rank="10", suit="♦"),
+    ]
+    five_card_20 = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank="6", suit="♠"),
+    ]
+
+    assert is_five_card_twenty_one(cards=five_card_21) is True
+    assert is_five_card_twenty_one(cards=four_card_21) is False
+    assert is_five_card_twenty_one(cards=five_card_20) is False
 
 
 def test_is_bust_above_21() -> None:
@@ -117,7 +146,7 @@ def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
         delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
     )
 
-    assert metadata == "-# 本局 `+150` · VIP加成 `+100` → `+150` · 餘額 `1,150`"
+    assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
 
 
 def test_settle_double_blackjack_is_push() -> None:
@@ -223,6 +252,26 @@ def test_settle_equal_total_is_push() -> None:
     )
     outcome, delta = settle(hand=hand)
     assert outcome == "push"
+    assert delta == 0
+
+
+def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() -> None:
+    """Five-card 21 uses its own outcome while the main hand can still push."""
+    hand = _hand_with(
+        player=[
+            Card(rank="2", suit="♠"),
+            Card(rank="3", suit="♥"),
+            Card(rank="4", suit="♣"),
+            Card(rank="5", suit="♦"),
+            Card(rank="7", suit="♠"),
+        ],
+        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♥")],
+        bet=50,
+    )
+
+    outcome, delta = settle(hand=hand)
+
+    assert outcome == "five_card_twenty_one"
     assert delta == 0
 
 
@@ -485,6 +534,114 @@ def _two_player_round(
     round_state.players[1].hands[0].cards = cards_b
     round_state.dealer = dealer
     return round_state
+
+
+def test_legacy_hit_finishes_on_fifth_card_twenty_one() -> None:
+    """A single-player hand auto-finishes when the fifth card makes 21."""
+    hand = BlackjackHand(rng=Random(x=0), bet=100)
+    hand.player = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+    ]
+
+    with patch(
+        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
+    ):
+        hand.hit()
+
+    assert hand.finished is True
+
+
+def test_hit_does_not_finish_on_fifth_card_non_21() -> None:
+    """Five cards that do not total 21 stay actionable when they have not busted."""
+    round_state = _two_player_round(
+        cards_a=[
+            Card(rank="2", suit="♠"),
+            Card(rank="3", suit="♥"),
+            Card(rank="4", suit="♣"),
+            Card(rank="5", suit="♦"),
+        ],
+        cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
+        dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+
+    with patch(
+        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="6", suit="♠")
+    ):
+        round_state.hit(user_id=1)
+
+    alice = round_state.players[0].hands[0]
+    assert alice.total() == 20
+    assert alice.finished is False
+    assert round_state.active_player() == round_state.players[0]
+
+
+def test_hit_auto_stands_on_fifth_card_twenty_one() -> None:
+    """A multiplayer hand advances after the fifth card makes 21."""
+    round_state = _two_player_round(
+        cards_a=[
+            Card(rank="2", suit="♠"),
+            Card(rank="3", suit="♥"),
+            Card(rank="4", suit="♣"),
+            Card(rank="5", suit="♦"),
+        ],
+        cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
+        dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+
+    with patch(
+        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
+    ):
+        round_state.hit(user_id=1)
+
+    alice = round_state.players[0].hands[0]
+    assert alice.total() == 21
+    assert alice.finished is True
+    assert round_state.active_player() == round_state.players[1]
+
+
+def test_split_hand_can_auto_stand_on_fifth_card_twenty_one() -> None:
+    """Non-Ace split hands are evaluated independently for five-card 21."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[_participant(user_id=1, display_name="Alice")],
+        auto_play_dealer=False,
+    )
+    player = round_state.players[0]
+    player.hands = [
+        BlackjackHandState(
+            cards=[Card(rank="8", suit="♠"), Card(rank="10", suit="♥")],
+            bet=100,
+            base_bet=100,
+            is_split_hand=True,
+            finished=True,
+        ),
+        BlackjackHandState(
+            cards=[
+                Card(rank="2", suit="♠"),
+                Card(rank="3", suit="♥"),
+                Card(rank="4", suit="♣"),
+                Card(rank="5", suit="♦"),
+            ],
+            bet=100,
+            base_bet=100,
+            is_split_hand=True,
+        ),
+    ]
+    round_state.current_hand_index = 1
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+
+    with patch(
+        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
+    ):
+        round_state.hit(user_id=1)
+
+    assert is_five_card_twenty_one(cards=player.hands[1].cards) is True
+    assert player.hands[1].total() == 21
+    assert player.hands[1].finished is True
+    assert round_state.finished is True
 
 
 def test_double_down_doubles_bet_and_finishes_hand() -> None:

@@ -22,11 +22,13 @@ from discordbot.cogs._games.blackjack import (
     settle_hand,
     is_blackjack,
     dealer_up_card,
+    is_five_card_twenty_one,
 )
 from discordbot.cogs._economy.database import (
     get_vip,
     apply_round_settlement,
     apply_vip_blackjack_bonus,
+    apply_blackjack_settlement,
 )
 
 
@@ -42,16 +44,50 @@ def blackjack_detail(hand: BlackjackHand) -> str:
     player_blackjack = is_blackjack(cards=hand.player)
     dealer_blackjack = is_blackjack(cards=hand.dealer)
     if player_blackjack and dealer_blackjack:
-        return "雙方都是 Blackjack, 平手"
-    if player_blackjack:
-        return f"玩家 21 點 Blackjack, 莊家 {hand.dealer_total()} 點"
-    if dealer_blackjack:
-        return f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
-    if is_bust(cards=hand.player):
-        return f"玩家爆牌 {hand.player_total()} 點"
-    if is_bust(cards=hand.dealer):
-        return f"莊家爆牌 {hand.dealer_total()} 點, 玩家 {hand.player_total()} 點"
-    return f"玩家 {hand.player_total()} 點 vs 莊家 {hand.dealer_total()} 點"
+        detail = "雙方都是 Blackjack, 平手"
+    elif player_blackjack:
+        detail = f"玩家 21 點 Blackjack, 莊家 {hand.dealer_total()} 點"
+    elif is_five_card_twenty_one(cards=hand.player):
+        if hand.dealer_total() == 21:
+            detail = "玩家過五關 21 點, 莊家 21 點, 主局平手"
+        else:
+            detail = f"玩家過五關 21 點, 莊家 {hand.dealer_total()} 點"
+    elif dealer_blackjack:
+        detail = f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
+    elif is_bust(cards=hand.player):
+        detail = f"玩家爆牌 {hand.player_total()} 點"
+    elif is_bust(cards=hand.dealer):
+        detail = f"莊家爆牌 {hand.dealer_total()} 點, 玩家 {hand.player_total()} 點"
+    else:
+        detail = f"玩家 {hand.player_total()} 點 vs 莊家 {hand.dealer_total()} 點"
+    return detail
+
+
+def _blackjack_hand_detail_part(
+    index: int, settlement: BlackjackHandSettlement, dealer_total: int
+) -> str:
+    """Formats one settled Blackjack sub-hand for dealer banter detail."""
+    hand_total = hand_value(cards=settlement.cards)
+    prefix = f"手{index}"
+    if settlement.surrendered:
+        detail = f"{prefix} 投降 (-{abs(settlement.delta)})"
+    elif settlement.five_card_twenty_one:
+        bonus = f", 過五關 bonus +{settlement.five_card_bonus}"
+        if settlement.delta == 0:
+            detail = f"{prefix} 過五關 21 (主局平手{bonus})"
+        else:
+            detail = f"{prefix} 過五關 21 ({settlement.delta:+d}{bonus})"
+    elif settlement.outcome == "blackjack":
+        detail = f"{prefix} Blackjack ({settlement.delta:+d})"
+    elif settlement.outcome == "player_bust":
+        detail = f"{prefix} 爆牌 {hand_total} ({settlement.delta:+d})"
+    elif settlement.outcome == "dealer_bust":
+        detail = f"{prefix} {hand_total} 莊家爆牌 ({settlement.delta:+d})"
+    elif settlement.outcome == "push":
+        detail = f"{prefix} {hand_total} 平手"
+    else:
+        detail = f"{prefix} {hand_total} vs 莊家 {dealer_total} ({settlement.delta:+d})"
+    return detail
 
 
 def blackjack_detail_player(
@@ -85,22 +121,11 @@ def blackjack_detail_player(
     dealer_total = hand_value(cards=dealer)
     hand_parts: list[str] = []
     for index, settlement in enumerate(hand_settlements, start=1):
-        hand_total = hand_value(cards=settlement.cards)
-        prefix = f"手{index}"
-        if settlement.surrendered:
-            hand_parts.append(f"{prefix} 投降 (-{abs(settlement.delta)})")
-        elif settlement.outcome == "blackjack":
-            hand_parts.append(f"{prefix} Blackjack ({settlement.delta:+d})")
-        elif settlement.outcome == "player_bust":
-            hand_parts.append(f"{prefix} 爆牌 {hand_total} ({settlement.delta:+d})")
-        elif settlement.outcome == "dealer_bust":
-            hand_parts.append(f"{prefix} {hand_total} 莊家爆牌 ({settlement.delta:+d})")
-        elif settlement.outcome == "push":
-            hand_parts.append(f"{prefix} {hand_total} 平手")
-        else:
-            hand_parts.append(
-                f"{prefix} {hand_total} vs 莊家 {dealer_total} ({settlement.delta:+d})"
+        hand_parts.append(
+            _blackjack_hand_detail_part(
+                index=index, settlement=settlement, dealer_total=dealer_total
             )
+        )
     summary = "; ".join(hand_parts)
     if insurance is not None:
         if insurance.won:
@@ -301,11 +326,14 @@ def _hand_settlement_from_state(
 ) -> BlackjackHandSettlement:
     """Wraps `settle_hand` into a `BlackjackHandSettlement` row."""
     outcome, delta = settle_hand(hand=hand, dealer=dealer, rng=rng)
+    five_card_twenty_one = outcome == "five_card_twenty_one"
     return BlackjackHandSettlement(
         cards=list(hand.cards),
         bet=hand.bet,
         outcome=outcome,
         delta=delta,
+        five_card_bonus=hand.bet if five_card_twenty_one else 0,
+        five_card_twenty_one=five_card_twenty_one,
         doubled=hand.doubled,
         surrendered=hand.surrendered,
         is_split_hand=hand.is_split_hand,
@@ -337,10 +365,11 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 
-    The aggregate delta (sum of per-hand deltas plus insurance) is passed
-    through the existing VIP bonus rule once at the player level, then
-    written through a single `apply_round_settlement` call so the player
-    and house ledgers always move together.
+    The aggregate dealer-paid delta (sum of per-hand deltas plus insurance)
+    is passed through the existing VIP bonus rule once at the player level.
+    Five-card 21 adds a system-funded bonus to the player-side delta without
+    moving the house ledger. Both player and dealer rows are still written
+    through one DB transaction.
 
     Args:
         round_state: Round providing the dealer cards, RNG, and peek state.
@@ -363,11 +392,15 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
     base_delta = sum(settlement.delta for settlement in hand_settlements)
     if insurance is not None:
         base_delta += insurance.delta
+    five_card_bonus = sum(settlement.five_card_bonus for settlement in hand_settlements)
 
     is_vip = await get_vip(user_id=player_id)
-    effective_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
-    vip_bonus = effective_delta - base_delta
-    new_balance, house_balance = await apply_round_settlement(
+    dealer_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
+    dealer_paid_vip_bonus = dealer_paid_delta - base_delta
+    five_card_vip_delta = apply_vip_blackjack_bonus(delta=five_card_bonus, is_vip=is_vip)
+    vip_bonus = max(dealer_paid_vip_bonus, five_card_vip_delta - five_card_bonus)
+    effective_delta = base_delta + vip_bonus + five_card_bonus
+    new_balance, house_balance = await apply_blackjack_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
@@ -375,7 +408,7 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         dealer_id=dealer_id,
         dealer_name=dealer_name,
         dealer_avatar_url=dealer_avatar_url,
-        dealer_delta=-effective_delta,
+        dealer_delta=-dealer_paid_delta,
     )
     return BlackjackPlayerSettlement(
         outcome=_aggregate_outcome(
@@ -396,4 +429,5 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         is_vip=is_vip,
         hands=hand_settlements,
         insurance=insurance,
+        five_card_bonus=five_card_bonus,
     )

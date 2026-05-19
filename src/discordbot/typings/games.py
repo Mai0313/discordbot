@@ -12,7 +12,14 @@ from typing import Literal
 from pydantic import Field, BaseModel, ConfigDict
 
 SettleOutcome = Literal[
-    "win", "lose", "push", "blackjack", "player_bust", "dealer_bust", "surrender"
+    "win",
+    "lose",
+    "push",
+    "blackjack",
+    "five_card_twenty_one",
+    "player_bust",
+    "dealer_bust",
+    "surrender",
 ]
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
@@ -106,7 +113,7 @@ class WagerSettlement(BaseModel):
         delta: Net point change for the round.
         payout: Positive player credit from the round, excluding losses and pushes.
         new_balance: Player balance after applying the signed round delta.
-        house_balance: Dealer ledger balance after mirroring the player's net change.
+        house_balance: Dealer ledger balance after applying the dealer-side settlement.
         base_delta: Net point change before any VIP payout bonus. ``None`` for
             legacy/manual test settlements that do not carry bonus details.
         vip_bonus: Extra points added by the VIP payout bonus.
@@ -147,7 +154,11 @@ class BlackjackHandSettlement(BaseModel):
         cards: Cards held by this sub-hand at settlement time.
         bet: Effective wager for this hand (doubled bets land here as 2x).
         outcome: Player-facing outcome label for this sub-hand.
-        delta: Signed point change for this single hand before VIP bonus.
+        delta: Dealer-paid signed point change for this single hand before
+            VIP and five-card bonuses.
+        five_card_bonus: System-funded bonus for a five-card 21.
+        five_card_twenty_one: True when this hand made exactly five cards
+            totaling 21.
         doubled: True if this hand was doubled.
         surrendered: True if this hand was surrendered.
         is_split_hand: True if this hand came out of a Split.
@@ -159,6 +170,8 @@ class BlackjackHandSettlement(BaseModel):
     bet: int
     outcome: SettleOutcome
     delta: int
+    five_card_bonus: int = 0
+    five_card_twenty_one: bool = False
     doubled: bool = False
     surrendered: bool = False
     is_split_hand: bool = False
@@ -196,12 +209,14 @@ class BlackjackPlayerSettlement(WagerSettlement):
         insurance: Insurance side-bet result, or ``None`` when the player
             never took insurance.
         detail: Short game-state summary for the dealer AI prompt.
+        five_card_bonus: Aggregate system-funded five-card 21 bonus.
     """
 
     outcome: SettleOutcome
     detail: str
     hands: list[BlackjackHandSettlement] = Field(default_factory=list)
     insurance: BlackjackInsuranceSettlement | None = None
+    five_card_bonus: int = 0
 
 
 class BlackjackPlayerResult(BaseModel):

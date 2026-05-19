@@ -1305,6 +1305,35 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
         return player_balance, dealer_balance
 
 
+async def apply_blackjack_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
+    player_id: int,
+    player_account_name: str,
+    player_delta: int,
+    dealer_id: int,
+    dealer_name: str,
+    dealer_delta: int,
+    player_avatar_url: str = "",
+    dealer_avatar_url: str = "",
+) -> tuple[int, int]:
+    """Applies Blackjack player payout and dealer ledger deltas atomically.
+
+    Blackjack can include system-funded bonuses that should credit the
+    player and count as casino payout, but must not move the `/house`
+    ledger. This wrapper keeps the one-transaction write path while making
+    the independent dealer-side delta explicit at the call site.
+    """
+    return await apply_round_settlement(
+        player_id=player_id,
+        player_account_name=player_account_name,
+        player_avatar_url=player_avatar_url,
+        player_delta=player_delta,
+        dealer_id=dealer_id,
+        dealer_name=dealer_name,
+        dealer_avatar_url=dealer_avatar_url,
+        dealer_delta=dealer_delta,
+    )
+
+
 async def get_jackpot_pool(game_id: str) -> int:
     """Returns the current ``pool_balance`` for a game's shared jackpot.
 

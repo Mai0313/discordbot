@@ -80,6 +80,7 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
     "lose": "下次再來送錢吧",
     "push": "白忙一場, 賭場最開心的就是這種局",
     "blackjack": "Blackjack? 算你會玩, 下一把見真章",
+    "five_card_twenty_one": "過五關也給你摸到, 這把算你有耐心",
     "player_bust": "爆了爆了, 沒事多算算數字好嗎",
     "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
     "surrender": "投降也算會止血, 下一把再說",
@@ -418,6 +419,7 @@ def build_final_embed(
             is_allin=participant.is_allin,
             base_delta=result.settlement.base_delta,
             vip_bonus=result.settlement.vip_bonus,
+            five_card_bonus=result.settlement.five_card_bonus,
         )
         description_parts.append(metadata)
         note = blackjack_player_early_finish_note(

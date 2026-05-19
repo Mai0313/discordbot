@@ -82,6 +82,18 @@ def is_blackjack(cards: list[Card]) -> bool:
     return len(cards) == 2 and hand_value(cards=cards) == 21
 
 
+def is_five_card_twenty_one(cards: list[Card]) -> bool:
+    """Returns whether a hand is exactly five cards totaling 21.
+
+    Args:
+        cards: Cards to evaluate.
+
+    Returns:
+        True only when the hand has exactly five cards and totals 21.
+    """
+    return len(cards) == 5 and hand_value(cards=cards) == 21
+
+
 def is_bust(cards: list[Card]) -> bool:
     """Returns whether a hand is over 21.
 
@@ -205,14 +217,14 @@ class BlackjackHand(BaseModel):
     def hit(self) -> Card:
         """Draws one card for the player.
 
-        Ends the round if the player's hand busts.
+        Ends the round if the player's hand busts or makes five-card 21.
 
         Returns:
             The card drawn for the player.
         """
         card = draw_card(rng=self.rng)
         self.player.append(card)
-        if is_bust(cards=self.player):
+        if is_bust(cards=self.player) or is_five_card_twenty_one(cards=self.player):
             self.finished = True
         return card
 
@@ -427,10 +439,11 @@ def settle_hand(
 ) -> tuple[SettleOutcome, int]:
     """Resolves one finished sub-hand into an outcome label and net delta.
 
-    Surrender short-circuits to a half-bet refund. Split-derived two-card 21
-    is handled before the legacy ``settle`` wrapper so it never counts as a
-    natural Blackjack; every other sub-hand uses the standard settlement
-    logic.
+    Surrender short-circuits to a half-bet refund. Five-card 21 is flagged
+    before split-derived two-card 21 so split hands can still earn the
+    five-card bonus. Split-derived two-card 21 is handled before the legacy
+    ``settle`` wrapper so it never counts as a natural Blackjack; every
+    other sub-hand uses the standard settlement logic.
 
     Args:
         hand: Finished sub-hand to settle.
@@ -443,6 +456,10 @@ def settle_hand(
     """
     if hand.surrendered:
         return "surrender", -((hand.base_bet + 1) // 2)
+    if not hand.doubled and is_five_card_twenty_one(cards=hand.cards):
+        dealer_total = hand_value(cards=dealer)
+        delta = 0 if dealer_total == 21 else hand.bet
+        return "five_card_twenty_one", delta
     if hand.is_split_hand and is_blackjack(cards=hand.cards):
         dealer_total = hand_value(cards=dealer)
         if is_blackjack(cards=dealer):
@@ -643,7 +660,7 @@ class BlackjackRound(BaseModel):
         card = draw_card(rng=self.rng)
         hand.cards.append(card)
         hand.actions_taken += 1
-        if hand.is_bust():
+        if hand.is_bust() or is_five_card_twenty_one(cards=hand.cards):
             hand.finished = True
             self._advance_or_finish()
         return card
@@ -902,12 +919,16 @@ def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
     bet = hand.bet
     player_total = hand.player_total()
     dealer_total = hand.dealer_total()
+    player_five_card_twenty_one = is_five_card_twenty_one(cards=hand.player)
     player_bj = is_blackjack(cards=hand.player)
     dealer_bj = is_blackjack(cards=hand.dealer)
 
     if player_bj and dealer_bj:
         outcome: SettleOutcome = "push"
         delta = 0
+    elif player_five_card_twenty_one:
+        outcome = "five_card_twenty_one"
+        delta = 0 if dealer_total == 21 else bet
     elif player_bj:
         outcome, delta = "blackjack", int(bet * 3 // 2)
     elif dealer_bj:

@@ -120,8 +120,10 @@ make gen-docs                    # regenerate docs/ from sources
     `daily_casino_net`. Player-side Blackjack and Dragon Gate settlements
     update them from the actual applied delta; house ledger rows, push rounds,
     manual adjustments, transfers, loans, rewards, check-ins, and VIP purchases
-    do not. `/loss_leaderboard` reads gross `daily_casino_loss`, so wins do not
-    offset the displayed ranking.
+    do not. Blackjack five-card 21 system bonuses count as player-side casino
+    payout and daily win/net, but do not move `/house`. `/loss_leaderboard`
+    reads gross `daily_casino_loss`, so wins do not offset the displayed
+    ranking.
 - `credit_limit(user, *, is_vip)` is pure and tiered by Discord account age.
     Keep the tier table inline in that function.
 - `/balance`, `/borrow`, `/repay`, `/checkin`, `/vip`, and admin error replies
@@ -142,6 +144,10 @@ make gen-docs                    # regenerate docs/ from sources
 - Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and
     peek. Split uses same Blackjack value, so 10/J/Q/K can split with each
     other. No Double after Split. Split-hand 21 is not natural Blackjack.
+- A Blackjack hand that reaches exactly five cards totaling 21 auto-stands as
+    five-card 21. The main hand still settles against the dealer normally, and
+    the extra 1x bet bonus is system-funded. VIP adds one 0.5x bonus for that
+    qualifying hand, but `/house` only mirrors dealer-paid normal settlement.
 - Blackjack dealer play is deterministic only below 17: ≤16 hits. At 17+
     the interactive dealer phase calls `DealerAI.decide_blackjack_action` and
     applies the returned hit / stand action.
