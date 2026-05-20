@@ -419,7 +419,7 @@ def build_final_embed(
         _format_dealer_block(round_state=round_state, hide_hole=False),
     ]
     if dealer_decision_path:
-        description_parts.append(metadata_line(text=f"莊家流程: {dealer_decision_path}"))
+        description_parts.append(metadata_line(text=f"{dealer_decision_path}"))
     for result in results:
         participant = result.participant
         player = next(
