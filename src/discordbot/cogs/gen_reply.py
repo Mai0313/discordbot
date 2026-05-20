@@ -542,10 +542,9 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> int | None:
         """Persists chat-reward points and returns the new balance, or None on DB failure.
 
-        Routed through ``credit_with_repayment`` so loan repayment policy
-        stays centralized. Auto-repay is currently disabled, so chat rewards
-        land fully in the user's wallet while the audit row still records the
-        outstanding debt context.
+        Routed through ``credit_with_repayment`` so all income events share
+        one balance-credit path. Long-term loans are repaid explicitly, so chat
+        rewards land fully in the user's wallet.
         """
         try:
             result = await credit_with_repayment(

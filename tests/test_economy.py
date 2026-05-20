@@ -448,8 +448,12 @@ async def test_ensure_schema_bootstraps_current_databases(
         casino_index_names = {row[1] for row in result.all()}
         column_queries = {
             "user_account": "PRAGMA table_info(user_account)",
-            "loan_account": "PRAGMA table_info(loan_account)",
+            "loan_proposal": "PRAGMA table_info(loan_proposal)",
+            "loan_contract": "PRAGMA table_info(loan_contract)",
             "casino_account": "PRAGMA table_info(casino_account)",
+            "stock_profile": "PRAGMA table_info(stock_profile)",
+            "stock_holding": "PRAGMA table_info(stock_holding)",
+            "stock_event": "PRAGMA table_info(stock_event)",
         }
         table_columns: dict[str, set[str]] = {}
         for table_name, query in column_queries.items():
@@ -472,9 +476,23 @@ async def test_ensure_schema_bootstraps_current_databases(
             ).where(JackpotPool.game_id == "dragon_gate")
         )
         jackpot_row = result.one()
-    assert economy_tables == {"user_account", "loan_account", "casino_account"}
+    assert economy_tables == {
+        "user_account",
+        "loan_proposal",
+        "loan_contract",
+        "casino_account",
+        "stock_profile",
+        "stock_holding",
+        "stock_event",
+    }
     assert global_state_tables == {"jackpot_pool"}
-    assert all({"user_id", "name"} <= columns for columns in table_columns.values())
+    assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
+    assert {"borrower_id", "borrower_name", "lender_id", "lender_name"} <= table_columns[
+        "loan_proposal"
+    ]
+    assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
+    assert {"issuer_id", "issuer_name"} <= table_columns["stock_profile"]
+    assert {"issuer_id", "holder_id", "holder_name"} <= table_columns["stock_holding"]
     assert "ix_user_account_balance" in index_names
     assert "ix_casino_account_day_loss" in casino_index_names
     assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)
@@ -485,6 +503,39 @@ async def test_ensure_schema_bootstraps_current_databases(
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/avatar.png"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
+    await engine.dispose()
+    await global_state_engine.dispose()
+
+
+async def test_ensure_schema_serializes_concurrent_first_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
+    db_path = tmp_path / "concurrent-economy.db"
+    global_state_db_path = tmp_path / "concurrent-global-state.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
+    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    monkeypatch.setattr(
+        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
+    )
+    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
+
+    await asyncio.gather(*(_ensure_schema() for _ in range(20)))
+
+    async with open_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'loan_proposal'"
+            )
+        )
+        assert result.scalar_one_or_none() == "loan_proposal"
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == "dragon_gate")
+        )
+        assert result.scalar_one() == 100_000
     await engine.dispose()
     await global_state_engine.dispose()
 

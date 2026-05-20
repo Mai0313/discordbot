@@ -21,18 +21,29 @@ from discordbot.typings.games import BlackjackDealerDecision
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
+    PortfolioView,
+    DividendResult,
+    LoanLenderType,
     AccountSnapshot,
     JackpotSnapshot,
     LeaderboardEntry,
+    LoanContractView,
+    LoanProposalKind,
+    LoanProposalView,
+    StockProfileView,
+    CentralBankStatus,
+    LoanPaymentResult,
+    LoanContractStatus,
+    LoanProposalStatus,
+    StockPurchaseResult,
     LossLeaderboardEntry,
+    LoanProposalAcceptResult,
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
-    RepayResult,
-    BorrowResult,
     CreditResult,
     CheckinResult,
     TransferResult,
@@ -61,7 +72,7 @@ class DiscordPayload(TypedDict, total=False):
     embeds: list[Embed]
     file: File
     files: list[File]
-    view: View
+    view: View | None
     wait: bool
     ephemeral: bool
     suppress: bool
@@ -88,6 +99,7 @@ class FakeResponse:
         self.deferred = False
         self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
+        self.edited: list[DiscordPayload] = []
 
     async def defer(self, ephemeral: bool = False) -> None:
         """Records that the interaction response was deferred."""
@@ -97,6 +109,10 @@ class FakeResponse:
     async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         """Records an interaction response message."""
         self.sent.append(kwargs)
+
+    async def edit_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
+        """Records an interaction response edit."""
+        self.edited.append(kwargs)
 
     def is_done(self) -> bool:
         """Returns whether the fake response has already been used."""
@@ -145,9 +161,8 @@ class FakeUser:
         self.bot = bot
         self.mention = f"<@{user_id}>"
         self.display_avatar = SimpleNamespace(url="https://example.test/avatar.png")
-        # /balance and /borrow read user.created_at via the snowflake-derived
-        # timestamp; pin it well into the past so the credit_limit tier lookup
-        # exercises the high-tier branch.
+        # /balance displays the snowflake-derived account age; pin it well into
+        # the past so freezegun does not make the value surprising.
         self.created_at = datetime.now(tz=UTC) - timedelta(days=365 * 5)
 
 
@@ -573,7 +588,9 @@ async def _async_none() -> None:
     """Async no-op used by fake callbacks."""
 
 
-async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command smoke exercises one facade surface
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verifies economy slash commands call the database facade and send embeds."""
     scheduled: list[FakeDiscordMessage] = []
 
@@ -592,9 +609,25 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(economy, "get_account", fake_get_account)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
-    monkeypatch.setattr(economy, "get_loan_view", fake_get_loan_view)
-    monkeypatch.setattr(economy, "borrow", fake_borrow)
-    monkeypatch.setattr(economy, "repay", fake_repay)
+    monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
+    monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
+    monkeypatch.setattr(economy, "repay_personal_loans", fake_loan_payment)
+    monkeypatch.setattr(economy, "call_personal_loans", fake_call_personal_loans)
+    monkeypatch.setattr(
+        economy, "create_central_bank_loan_request", fake_create_central_bank_request
+    )
+    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_loan_proposal)
+    monkeypatch.setattr(economy, "reject_loan_proposal", fake_reject_loan_proposal)
+    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_loan_proposal)
+    monkeypatch.setattr(economy, "list_loan_contracts", fake_list_loan_contracts)
+    monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
+    monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
+    monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
+    monkeypatch.setattr(economy, "issue_stock", fake_issue_stock)
+    monkeypatch.setattr(economy, "buy_stock", fake_buy_stock)
+    monkeypatch.setattr(economy, "pay_stock_dividend", fake_pay_stock_dividend)
+    monkeypatch.setattr(economy, "get_stock_profile", fake_get_stock_profile)
     monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
@@ -613,29 +646,202 @@ async def test_economy_commands_use_database_facade(monkeypatch: pytest.MonkeyPa
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
     )
-    await EconomyCogs.borrow_loan.callback(cog, interaction, amount=100)
-    await EconomyCogs.repay_loan.callback(cog, interaction, amount=50)
+    await EconomyCogs.credit_borrow.callback(
+        cog,
+        interaction,
+        member=FakeUser(user_id=2, name="bob"),
+        amount=100,
+        monthly_rate_percent=3.0,
+    )
+    await EconomyCogs.credit_repay.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=50
+    )
+    await EconomyCogs.credit_call.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
+    )
+    await EconomyCogs.credit_status.callback(cog, interaction)
+    await EconomyCogs.central_bank_borrow.callback(
+        cog, interaction, amount=100, monthly_rate_percent=3.0
+    )
+    await EconomyCogs.central_bank_repay.callback(cog, interaction, amount=50)
+    await EconomyCogs.central_bank_call.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
+    )
+    await EconomyCogs.central_bank_status.callback(cog, interaction)
+    await EconomyCogs.stock_issue.callback(cog, interaction, shares=100, price=10)
+    await EconomyCogs.stock_buy.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), shares=5
+    )
+    await EconomyCogs.stock_dividend.callback(cog, interaction, amount=50)
+    await EconomyCogs.stock_info.callback(cog, interaction, member=FakeUser(user_id=2, name="bob"))
+    await EconomyCogs.portfolio.callback(cog, interaction, member=None)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 11
-    assert len(scheduled) == 6
+    assert len(interaction.followup.sent) == 22
+    assert len(scheduled) == 8
     assert interaction.followup.sent[0].get("ephemeral") is True
+    assert "view" not in interaction.followup.sent[1]
+    assert "view" not in interaction.followup.sent[3]
     assert interaction.followup.sent[4].get("ephemeral") is not True
     assert interaction.followup.sent[5].get("ephemeral") is not True
     assert interaction.followup.sent[6].get("ephemeral") is not True
-    assert interaction.followup.sent[7].get("ephemeral") is True
+    assert interaction.followup.sent[7].get("ephemeral") is not True
     assert interaction.followup.sent[8].get("ephemeral") is True
-    assert interaction.followup.sent[9].get("ephemeral") is True
-    assert interaction.followup.sent[10].get("ephemeral") is True
+    assert interaction.followup.sent[-1].get("ephemeral") is True
     borrow_embed = interaction.followup.sent[7]["embed"]
-    assert "50%" not in (borrow_embed.footer.text or "")
-    assert "/repay" in (borrow_embed.footer.text or "")
+    assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消"
+    assert isinstance(interaction.followup.sent[7]["view"], economy.CreditLoanDecisionView)
+    central_bank_payload = interaction.followup.sent[11]
+    assert isinstance(central_bank_payload["view"], economy.CentralBankLoanDecisionView)
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
         cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount=1
     )
     assert "不能" in bot_receiver.followup.sent[0]["embed"].description
+
+
+async def test_central_bank_decision_buttons_require_banker_and_allow_self_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Central bank request buttons are banker-gated and pass the self-approval flag."""
+    captured_accept_kwargs: dict[str, Any] = {}
+    captured_cancel_kwargs: dict[str, int] = {}
+
+    async def fake_get_central_banker_for_button(user_id: int) -> bool:
+        """Only user 1 is a central banker."""
+        return user_id == 1
+
+    async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
+        """Records approval arguments and returns a fake accepted proposal."""
+        captured_accept_kwargs.update(kwargs)
+        return await fake_accept_loan_proposal()
+
+    async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
+        """Records cancellation arguments and returns a fake canceled proposal."""
+        captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
+        return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
+
+    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker_for_button)
+    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_for_button)
+    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_for_button)
+    view = economy.CentralBankLoanDecisionView(
+        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        proposal_id=42,
+        creator_id=1,
+    )
+    approve_button = next(
+        child
+        for child in view.children
+        if getattr(child, "custom_id", "") == "central_bank:approve"
+    )
+
+    denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    await approve_button.callback(denied)
+    assert denied.response.sent[0]["ephemeral"] is True
+    assert captured_accept_kwargs == {}
+
+    allowed = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    await approve_button.callback(allowed)
+    assert captured_accept_kwargs["proposal_id"] == 42
+    assert captured_accept_kwargs["actor_id"] == 1
+    assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
+    assert allowed.response.edited[0]["view"] is None
+
+    cancel_view = economy.CentralBankLoanDecisionView(
+        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        proposal_id=43,
+        creator_id=1,
+    )
+    cancel_button = next(
+        child
+        for child in cancel_view.children
+        if getattr(child, "custom_id", "") == "central_bank:cancel"
+    )
+    denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    await cancel_button.callback(denied_cancel)
+    assert denied_cancel.response.sent[0]["ephemeral"] is True
+    assert captured_cancel_kwargs == {}
+
+    allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    await cancel_button.callback(allowed_cancel)
+    assert captured_cancel_kwargs == {"proposal_id": 43, "actor_id": 1}
+    assert allowed_cancel.response.edited[0]["view"] is None
+
+
+async def test_credit_decision_buttons_gate_lender_and_creator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Personal credit request buttons are lender-gated, while cancel is creator-gated."""
+    captured_accept_kwargs: dict[str, Any] = {}
+    captured_reject_kwargs: dict[str, int] = {}
+    captured_cancel_kwargs: dict[str, int] = {}
+
+    async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
+        """Records approval arguments and returns a fake accepted proposal."""
+        captured_accept_kwargs.update(kwargs)
+        return await fake_accept_loan_proposal()
+
+    async def fake_reject_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
+        """Records rejection arguments and returns a fake rejected proposal."""
+        captured_reject_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
+        return await fake_reject_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
+
+    async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
+        """Records cancellation arguments and returns a fake canceled proposal."""
+        captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
+        return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
+
+    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_for_button)
+    monkeypatch.setattr(economy, "reject_loan_proposal", fake_reject_for_button)
+    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_for_button)
+    view = economy.CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    approve_button = next(
+        child for child in view.children if getattr(child, "custom_id", "") == "credit:approve"
+    )
+
+    denied_approve = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
+    await approve_button.callback(denied_approve)
+    assert denied_approve.response.sent[0]["ephemeral"] is True
+    assert captured_accept_kwargs == {}
+
+    allowed_approve = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    await approve_button.callback(allowed_approve)
+    assert captured_accept_kwargs["proposal_id"] == 42
+    assert captured_accept_kwargs["actor_id"] == 2
+    assert allowed_approve.response.edited[0]["view"] is None
+
+    reject_view = economy.CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
+    reject_button = next(
+        child
+        for child in reject_view.children
+        if getattr(child, "custom_id", "") == "credit:reject"
+    )
+    denied_reject = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
+    await reject_button.callback(denied_reject)
+    assert denied_reject.response.sent[0]["ephemeral"] is True
+    assert captured_reject_kwargs == {}
+
+    allowed_reject = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    await reject_button.callback(allowed_reject)
+    assert captured_reject_kwargs == {"proposal_id": 43, "actor_id": 2}
+    assert allowed_reject.response.edited[0]["view"] is None
+
+    cancel_view = economy.CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
+    cancel_button = next(
+        child
+        for child in cancel_view.children
+        if getattr(child, "custom_id", "") == "credit:cancel"
+    )
+    denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    await cancel_button.callback(denied_cancel)
+    assert denied_cancel.response.sent[0]["ephemeral"] is True
+    assert captured_cancel_kwargs == {}
+
+    allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    await cancel_button.callback(allowed_cancel)
+    assert captured_cancel_kwargs == {"proposal_id": 44, "actor_id": 1}
+    assert allowed_cancel.response.edited[0]["view"] is None
 
 
 async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -779,8 +985,17 @@ async def fake_get_balance(user_id: int) -> int:
     return 150
 
 
-async def fake_get_loan_view(user_id: int) -> None:
-    """Returns no active loan state."""
+async def fake_get_portfolio(user_id: int) -> PortfolioView:
+    """Returns a stable fake portfolio."""
+    return PortfolioView(
+        user_id=user_id,
+        name="alice",
+        balance=150,
+        stock_value=20,
+        debt_principal=30,
+        debt_interest=5,
+        net_worth=135,
+    )
 
 
 async def fake_get_vip(user_id: int) -> bool:
@@ -843,16 +1058,165 @@ async def fake_adjust_balance(  # noqa: PLR0913 -- mirrors adjust_balance signat
     return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
 
 
-async def fake_borrow(
-    user_id: int, name: str, amount: int, credit_limit_value: int, avatar_url: str = ""
-) -> BorrowResult:
-    """Returns a successful fake borrow result."""
-    return BorrowResult(new_balance=250, principal=amount, borrowed_amount=amount)
+def _fake_loan_proposal(kind: LoanProposalKind) -> LoanProposalView:
+    """Builds a fake loan proposal view."""
+    return LoanProposalView(
+        proposal_id=1,
+        kind=kind,
+        status=LoanProposalStatus.PENDING,
+        lender_type=LoanLenderType.CENTRAL_BANK
+        if kind == LoanProposalKind.CENTRAL_BANK_REQUEST
+        else LoanLenderType.USER,
+        borrower_id=1,
+        borrower_name="alice",
+        lender_id=None if kind == LoanProposalKind.CENTRAL_BANK_REQUEST else 2,
+        lender_name="bob",
+        amount=100,
+        monthly_rate_bps=300,
+        escrow_amount=0,
+        created_at=datetime.now(tz=UTC),
+    )
 
 
-async def fake_repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> RepayResult:
-    """Returns a successful fake repay result."""
-    return RepayResult(new_balance=100, principal_repaid=amount, remaining_debt=0)
+async def fake_create_loan_request(**_kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+    """Returns a fake personal request."""
+    return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST)
+
+
+async def fake_create_central_bank_request(**_kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+    """Returns a fake central-bank request."""
+    return _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
+
+
+async def fake_get_central_banker(user_id: int) -> bool:
+    """Returns central banker status."""
+    return True
+
+
+async def fake_reject_loan_proposal(
+    proposal_id: int, actor_id: int, is_central_banker: bool = False
+) -> LoanProposalView:
+    """Returns a rejected fake proposal."""
+    proposal = _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
+    return proposal.model_copy(update={"status": LoanProposalStatus.REJECTED})
+
+
+async def fake_cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView:
+    """Returns a canceled fake proposal."""
+    proposal = _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST)
+    return proposal.model_copy(update={"status": LoanProposalStatus.CANCELED})
+
+
+async def fake_accept_loan_proposal(**_kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake accepted proposal result."""
+    contract = LoanContractView(
+        contract_id=1,
+        lender_type=LoanLenderType.USER,
+        lender_id=2,
+        lender_name="bob",
+        borrower_id=1,
+        borrower_name="alice",
+        principal_remaining=100,
+        interest_due=0,
+        monthly_rate_bps=300,
+        opened_at=datetime.now(tz=UTC),
+        last_interest_accrued_at=datetime.now(tz=UTC),
+        status=LoanContractStatus.ACTIVE,
+    )
+    return LoanProposalAcceptResult(
+        contract=contract,
+        borrower_balance=250,
+        lender_balance=100,
+        central_bank_available_credit=1_000,
+    )
+
+
+async def fake_list_loan_contracts(user_id: int) -> list[LoanContractView]:
+    """Returns one active loan contract."""
+    return [
+        LoanContractView(
+            contract_id=1,
+            lender_type=LoanLenderType.USER,
+            lender_id=2,
+            lender_name="bob",
+            borrower_id=user_id,
+            borrower_name="alice",
+            principal_remaining=100,
+            interest_due=3,
+            monthly_rate_bps=300,
+            opened_at=datetime.now(tz=UTC),
+            last_interest_accrued_at=datetime.now(tz=UTC),
+            status=LoanContractStatus.ACTIVE,
+        )
+    ]
+
+
+async def fake_loan_payment(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake repayment result."""
+    return LoanPaymentResult(
+        paid_amount=50,
+        interest_paid=5,
+        principal_paid=45,
+        borrower_balance=100,
+        lender_balance=200,
+        remaining_principal=55,
+        remaining_interest=0,
+    )
+
+
+async def fake_call_personal_loans(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake personal collection result."""
+    return await fake_loan_payment()
+
+
+async def fake_call_central_bank_loans(**_kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake central-bank collection result."""
+    return await fake_loan_payment()
+
+
+async def fake_get_central_bank_status(
+    exclude_user_ids: tuple[int, ...] = (),
+) -> CentralBankStatus:
+    """Returns fake central-bank capacity."""
+    return CentralBankStatus(
+        total_positive_user_balance=1_000, outstanding_principal=100, available_credit=900
+    )
+
+
+async def fake_issue_stock(**_kwargs: Any) -> StockProfileView:  # noqa: ANN401 -- command facade double
+    """Returns a fake stock profile."""
+    return StockProfileView(
+        issuer_id=1,
+        issuer_name="alice",
+        total_shares=100,
+        treasury_shares=100,
+        issue_price=10,
+        sold_shares=0,
+    )
+
+
+async def fake_buy_stock(**_kwargs: Any) -> StockPurchaseResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake stock purchase result."""
+    return StockPurchaseResult(
+        buyer_balance=100, issuer_balance=200, shares_bought=5, total_cost=50, treasury_shares=95
+    )
+
+
+async def fake_pay_stock_dividend(**_kwargs: Any) -> DividendResult:  # noqa: ANN401 -- command facade double
+    """Returns a fake dividend result."""
+    return DividendResult(distributed_amount=50, issuer_balance=100, recipient_count=1)
+
+
+async def fake_get_stock_profile(issuer_id: int) -> StockProfileView:
+    """Returns a fake stock profile."""
+    return StockProfileView(
+        issuer_id=issuer_id,
+        issuer_name="bob",
+        total_shares=100,
+        treasury_shares=95,
+        issue_price=10,
+        sold_shares=5,
+    )
 
 
 async def fake_checkin(user_id: int, name: str, avatar_url: str) -> CheckinResult:

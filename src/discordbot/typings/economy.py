@@ -14,6 +14,10 @@ from pydantic import BaseModel, ConfigDict
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 5_000
 BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 100_000
 VIP_PURCHASE_COST: Final[int] = 10_000_000
+STOCK_ISSUE_MIN_NET_WORTH: Final[int] = 10_000_000
+DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
+MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
+MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Daily check-in streak cycles through 1..7 then loops back to 1.
 CHECKIN_STREAK_CYCLE: Final[int] = 7
 
@@ -54,27 +58,42 @@ class TransactionKind(StrEnum):
     MANUAL_ADJUSTMENT = "manual_adjustment"
 
 
-class LoanView(BaseModel):
-    """Read-only snapshot of a user's loan state.
+class LoanLenderType(StrEnum):
+    """Kinds of lender backing a long-term loan contract."""
 
-    Loan principal is wiped at the Taipei daily midnight reset; ``opened_at``
-    is therefore always today's borrow timestamp (or ``None`` after the
-    nightly reset has cleared it).
+    USER = "user"
+    CENTRAL_BANK = "central_bank"
 
-    Attributes:
-        principal: Outstanding loan principal that has not yet expired.
-        opened_at: Timestamp the user first borrowed today; ``None`` once
-            the daily reset has cleared the loan.
-        total_borrowed: Lifetime gross borrowed amount.
-        total_repaid: Lifetime gross repaid amount.
-    """
 
-    model_config = ConfigDict(frozen=True)
+class LoanProposalKind(StrEnum):
+    """Pending loan proposal flow types."""
 
-    principal: int
-    opened_at: datetime | None
-    total_borrowed: int
-    total_repaid: int
+    PERSONAL_REQUEST = "personal_request"
+    CENTRAL_BANK_REQUEST = "central_bank_request"
+
+
+class LoanProposalStatus(StrEnum):
+    """Lifecycle states for a pending loan proposal."""
+
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELED = "canceled"
+
+
+class LoanContractStatus(StrEnum):
+    """Lifecycle states for a long-term loan contract."""
+
+    ACTIVE = "active"
+    CLOSED = "closed"
+
+
+class StockEventKind(StrEnum):
+    """Stock ledger event kinds."""
+
+    ISSUE = "issue"
+    BUY = "buy"
+    DIVIDEND = "dividend"
 
 
 class AccountSnapshot(BaseModel):
@@ -97,6 +116,15 @@ class AccountSnapshot(BaseModel):
 
 class AdminAccount(BaseModel):
     """Read-only economy admin account row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    name: str
+
+
+class CentralBankerAccount(BaseModel):
+    """Read-only central banker account row."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -127,51 +155,19 @@ class LossLeaderboardEntry(BaseModel):
 
 
 class CreditResult(BaseModel):
-    """Outcome of an income event that may auto-repay outstanding debt.
+    """Outcome of an income event.
 
     Attributes:
         new_balance: User balance after the credit.
-        credited_amount: Amount that landed in balance; ``amount - to_repay``.
-        principal_repaid: Amount that paid down loan principal.
-        remaining_debt: Loan principal after the operation.
+        credited_amount: Amount that landed in balance.
+        principal_repaid: Always zero; long-term loans are repaid explicitly.
+        remaining_debt: Always zero; use portfolio / loan views for active debt.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int
     credited_amount: int
-    principal_repaid: int
-    remaining_debt: int
-
-
-class BorrowResult(BaseModel):
-    """Outcome of a successful borrow.
-
-    Attributes:
-        new_balance: User balance after the disbursement.
-        principal: Outstanding principal after this borrow.
-        borrowed_amount: Amount actually disbursed for this borrow request.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    new_balance: int
-    principal: int
-    borrowed_amount: int = 0
-
-
-class RepayResult(BaseModel):
-    """Outcome of a successful repay.
-
-    Attributes:
-        new_balance: User balance after the deduction.
-        principal_repaid: Amount that paid down loan principal.
-        remaining_debt: Loan principal after the operation.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    new_balance: int
     principal_repaid: int
     remaining_debt: int
 
@@ -312,25 +308,180 @@ class VipPurchaseResult(BaseModel):
     cost: int
 
 
+class LoanProposalView(BaseModel):
+    """Read-only loan proposal projected for command responses."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proposal_id: int
+    kind: LoanProposalKind
+    status: LoanProposalStatus
+    lender_type: LoanLenderType
+    borrower_id: int
+    borrower_name: str
+    lender_id: int | None
+    lender_name: str
+    amount: int
+    monthly_rate_bps: int
+    escrow_amount: int
+    created_at: datetime
+
+
+class LoanContractView(BaseModel):
+    """Read-only long-term loan contract snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    contract_id: int
+    lender_type: LoanLenderType
+    lender_id: int | None
+    lender_name: str
+    borrower_id: int
+    borrower_name: str
+    principal_remaining: int
+    interest_due: int
+    monthly_rate_bps: int
+    opened_at: datetime
+    last_interest_accrued_at: datetime
+    status: LoanContractStatus
+
+
+class LoanProposalAcceptResult(BaseModel):
+    """Outcome of accepting a loan proposal."""
+
+    model_config = ConfigDict(frozen=True)
+
+    contract: LoanContractView
+    borrower_balance: int
+    lender_balance: int | None = None
+    central_bank_available_credit: int | None = None
+
+
+class LoanPaymentResult(BaseModel):
+    """Outcome of one loan repayment or forced collection command."""
+
+    model_config = ConfigDict(frozen=True)
+
+    paid_amount: int
+    interest_paid: int
+    principal_paid: int
+    borrower_balance: int
+    lender_balance: int | None = None
+    remaining_principal: int
+    remaining_interest: int
+    closed_contract_ids: tuple[int, ...] = ()
+
+
+class CentralBankStatus(BaseModel):
+    """Aggregated central bank lending capacity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_positive_user_balance: int
+    outstanding_principal: int
+    available_credit: int
+
+
+class StockProfileView(BaseModel):
+    """Read-only stock profile for one issuer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    issuer_id: int
+    issuer_name: str
+    total_shares: int
+    treasury_shares: int
+    issue_price: int
+    sold_shares: int
+
+
+class StockHoldingView(BaseModel):
+    """Read-only stock holding row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    issuer_id: int
+    issuer_name: str
+    holder_id: int
+    holder_name: str
+    shares: int
+    issue_price: int
+    estimated_value: int
+
+
+class StockPurchaseResult(BaseModel):
+    """Outcome of buying issuer treasury shares."""
+
+    model_config = ConfigDict(frozen=True)
+
+    buyer_balance: int
+    issuer_balance: int
+    shares_bought: int
+    total_cost: int
+    treasury_shares: int
+
+
+class DividendResult(BaseModel):
+    """Outcome of a manual stock dividend."""
+
+    model_config = ConfigDict(frozen=True)
+
+    distributed_amount: int
+    issuer_balance: int
+    recipient_count: int
+
+
+class PortfolioView(BaseModel):
+    """Aggregated wallet, debt, and stock view."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    name: str
+    balance: int
+    stock_value: int
+    debt_principal: int
+    debt_interest: int
+    net_worth: int
+    holdings: tuple[StockHoldingView, ...] = ()
+
+
 __all__ = [
     "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
     "CHECKIN_STREAK_CYCLE",
+    "DEFAULT_LOAN_MONTHLY_RATE_BPS",
+    "MAX_LOAN_MONTHLY_RATE_BPS",
+    "MIN_LOAN_MONTHLY_RATE_BPS",
+    "STOCK_ISSUE_MIN_NET_WORTH",
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
     "AdminAccount",
     "BalanceAdjustmentResult",
-    "BorrowResult",
+    "CentralBankStatus",
+    "CentralBankerAccount",
     "CheckinResult",
     "CreditResult",
+    "DividendResult",
     "JackpotSettlementBatchResult",
     "JackpotSettlementRequest",
     "JackpotSettlementResult",
     "JackpotSnapshot",
     "LeaderboardEntry",
-    "LoanView",
+    "LoanContractStatus",
+    "LoanContractView",
+    "LoanLenderType",
+    "LoanPaymentResult",
+    "LoanProposalAcceptResult",
+    "LoanProposalKind",
+    "LoanProposalStatus",
+    "LoanProposalView",
     "LossLeaderboardEntry",
-    "RepayResult",
+    "PortfolioView",
+    "StockEventKind",
+    "StockHoldingView",
+    "StockProfileView",
+    "StockPurchaseResult",
     "TransactionKind",
     "TransferResult",
     "VipPurchaseResult",
