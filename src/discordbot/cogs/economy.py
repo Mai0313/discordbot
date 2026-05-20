@@ -573,10 +573,10 @@ class EconomyCogs(commands.Cog):
             name = name or account.name
 
         if balance > 0:
-            verdict = f"+ {bold_currency(amount=balance)}"
+            verdict = f"\+ {bold_currency(amount=balance)}"
             color = _BALANCE_COLOR
         elif balance < 0:
-            verdict = f"- {bold_currency(amount=abs(balance))}"
+            verdict = f"\- {bold_currency(amount=abs(balance))}"
             color = _ERROR_COLOR
         else:
             verdict = "⚖️ 打平"
