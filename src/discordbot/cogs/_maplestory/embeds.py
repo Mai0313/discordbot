@@ -553,5 +553,5 @@ def build_stats_embed(stats: MapleStats) -> Embed:
         popular_text = "\n".join(f"• {item}" for item in stats.popular_items[:15])
         embed.add_field(name="\U0001f525 熱門掉落物品", value=popular_text, inline=False)
 
-    embed.set_footer(text="資料來源：Artale | 使用 /maple_monster 或 /maple_item 搜尋")
+    embed.set_footer(text="資料來源：Artale | 使用 /maplestory monster 或 /maplestory item 搜尋")
     return embed

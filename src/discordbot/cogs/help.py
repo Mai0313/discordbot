@@ -38,11 +38,11 @@ _HELP_CONTENT = {
             "Use the optional quality setting; oversized files retry once at low quality."
         ),
         "maplestory": (
-            "**MapleStory Artale** — `/maple_*`\n"
+            "**MapleStory Artale** — `/maplestory`\n"
             "Search game data:\n"
-            "`/maple_monster` · `/maple_equip` · `/maple_scroll` · "
-            "`/maple_npc` · `/maple_quest` · `/maple_map` · "
-            "`/maple_item` · `/maple_stats`"
+            "`/maplestory monster` · `/maplestory equip` · `/maplestory scroll` · "
+            "`/maplestory npc` · `/maplestory quest` · `/maplestory map` · "
+            "`/maplestory item` · `/maplestory stats`"
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
@@ -75,8 +75,8 @@ _HELP_CONTENT = {
             "VIP-boosted number; Blackjack final results show the VIP bonus when it applies."
         ),
         "games": (
-            "**Games**\n"
-            "`/blackjack` opens a 21 lobby. Other players can join before the owner starts, "
+            "**Games** — `/games`\n"
+            "`/games blackjack` opens a 21 lobby. Other players can join before the owner starts, "
             "single-player starts are still allowed, the table stake follows the owner's "
             "effective wager, and idle hands auto-stand after 180 seconds.\n"
             "Player actions: **Hit / Stand / Double Down / Split / Surrender**. Double doubles "
@@ -98,7 +98,7 @@ _HELP_CONTENT = {
             "After every hand stands / busts, the dealer hits on 16 or below; at 17+ "
             "the AI dealer decides hit / stand, and the final embed labels automatic draws "
             "and AI decisions in the dealer action path.\n"
-            "`/dragon_gate` opens an In-Between table over a **global jackpot pool** "
+            "`/games dragon_gate` opens an In-Between table over a **global jackpot pool** "
             "shared across every table. The ante is fixed at 5,000 (into the pool), the "
             "minimum bet is 10,000, the maximum bet is the entire pool, and every bet "
             "settles into the player row and the pool the instant it lands. Adjacent "
@@ -138,11 +138,11 @@ _HELP_CONTENT = {
             "可以選 quality；檔案太大時會自動 retry 一次低畫質"
         ),
         "maplestory": (
-            "**MapleStory Artale** — `/maple_*`\n"
+            "**MapleStory Artale** — `/maplestory`（`/楓之谷`）\n"
             "查詢遊戲資料：\n"
-            "`/maple_monster` · `/maple_equip` · `/maple_scroll` · "
-            "`/maple_npc` · `/maple_quest` · `/maple_map` · "
-            "`/maple_item` · `/maple_stats`"
+            "`/maplestory monster` 怪物 · `/maplestory equip` 裝備 · `/maplestory scroll` 卷軸 · "
+            "`/maplestory npc` · `/maplestory quest` 任務 · `/maplestory map` 地圖 · "
+            "`/maplestory item` 物品 · `/maplestory stats` 統計"
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
@@ -171,8 +171,8 @@ _HELP_CONTENT = {
             "Blackjack final result 也會在套用時顯示 VIP加成"
         ),
         "games": (
-            "**小遊戲**\n"
-            "`/blackjack` 會開一個 21 點 lobby，其他玩家可以先加入，只有房主能開始，"
+            "**小遊戲** — `/games`（`/小遊戲`）\n"
+            "`/games blackjack` 會開一個 21 點 lobby，其他玩家可以先加入，只有房主能開始，"
             "單人也可以直接開始，房主超過餘額的 bet 會用實際餘額當 table stake，"
             "後續玩家預設跟這個金額，"
             "不操作 180 秒會自動 stand\n"
@@ -192,7 +192,7 @@ _HELP_CONTENT = {
             "或 peek 確認 Blackjack 時攤開\n"
             "所有玩家結束後莊家 16 點以下固定 hit；17 點以上交給 AI 莊家決定 hit / stand；"
             "final result 的 dealer action path 會標出自動抽牌與 AI 決定\n"
-            "`/dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
+            "`/games dragon_gate` 開一桌射龍門, 共用一個**全域累計彩金池**, 所有桌都看到同一池"
             "入場費固定 5,000 點(進彩金池), 最低下注 10,000, 上限就是當下彩金池\n"
             "每次下注後玩家餘額與彩金池同步即時結算, 不再等桌結束\n"
             "輸錢最多只會扣到餘額 0, 歸零玩家會自動離桌, 其他玩家繼續玩\n"
@@ -231,11 +231,11 @@ _HELP_CONTENT = {
             "quality を選択でき、ファイルが大きすぎる場合は一度 low quality で retry します。"
         ),
         "maplestory": (
-            "**MapleStory Artale** — `/maple_*`\n"
+            "**MapleStory Artale** — `/maplestory`\n"
             "ゲームデータ検索：\n"
-            "`/maple_monster` · `/maple_equip` · `/maple_scroll` · "
-            "`/maple_npc` · `/maple_quest` · `/maple_map` · "
-            "`/maple_item` · `/maple_stats`"
+            "`/maplestory monster` · `/maplestory equip` · `/maplestory scroll` · "
+            "`/maplestory npc` · `/maplestory quest` · `/maplestory map` · "
+            "`/maplestory item` · `/maplestory stats`"
         ),
         "points": (
             f"**{CURRENCY_NAME}**\n"
@@ -265,8 +265,8 @@ _HELP_CONTENT = {
             "Blackjack final result も適用時に VIP bonus を表示します。"
         ),
         "games": (
-            "**ゲーム**\n"
-            "`/blackjack` 21の lobby を開きます。他のプレイヤーは owner が開始する前に参加でき、"
+            "**ゲーム** — `/games`\n"
+            "`/games blackjack` 21の lobby を開きます。他のプレイヤーは owner が開始する前に参加でき、"
             "1人でも開始できます。owner の有効ベットが table stake になり、"
             "参加者はその金額を既定で賭けます。"
             "180秒操作がない場合は自動 stand。\n"
@@ -288,7 +288,7 @@ _HELP_CONTENT = {
             "final settlement または peek で Blackjack 確認時だけ reveal されます。\n"
             "全 action 後、dealer は 16 以下で hit、17 以上は AI dealer が hit / stand を決め、"
             "final result の dealer action path は自動 draw と AI decision を区別して表示します。\n"
-            "`/dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
+            "`/games dragon_gate` は全 table で共有する**グローバルジャックポット**を巡る "
             "In-Between table を開きます。anteは固定 5,000 (pool へ)、最低 bet は 10,000、"
             "上限は pool の全額、各 bet は player 残高と pool に即時反映されます。\n"
             "loss は残高 0 までに clamp され、0 になった player は自動で退場します。"

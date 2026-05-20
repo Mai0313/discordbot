@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict
 
 import pytest
-from nextcord import Embed, SelectOption
+from nextcord import Embed, Locale, SelectOption
 
 from discordbot.cogs import maplestory
 from discordbot.cogs.maplestory import MapleStoryCogs
@@ -604,6 +604,30 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
 def maple_cog(maple_data_dir: Path) -> MapleStoryCogs:
     """Returns a MapleStory cog backed by the generated fixture data."""
     return MapleStoryCogs(bot=SimpleNamespace(), data_dir=maple_data_dir)
+
+
+def test_maplestory_commands_are_grouped_under_maplestory() -> None:
+    """Verifies MapleStory lookups are registered as /maplestory subcommands."""
+    assert MapleStoryCogs.maplestory.name == "maplestory"
+    assert MapleStoryCogs.maplestory.name_localizations[Locale.zh_TW] == "楓之谷"
+    assert set(MapleStoryCogs.maplestory.children) == {
+        "equip",
+        "item",
+        "map",
+        "monster",
+        "npc",
+        "quest",
+        "scroll",
+        "stats",
+    }
+    assert MapleStoryCogs.maple_quest.name_localizations[Locale.zh_TW] == "任務"
+    assert MapleStoryCogs.maple_map.name_localizations[Locale.zh_TW] == "地圖"
+    assert MapleStoryCogs.maple_monster.name_localizations[Locale.zh_TW] == "怪物"
+    assert MapleStoryCogs.maple_item.name_localizations[Locale.zh_TW] == "物品"
+    assert MapleStoryCogs.maple_scroll.name_localizations[Locale.zh_TW] == "卷軸"
+    assert MapleStoryCogs.maple_stats.name_localizations[Locale.zh_TW] == "統計"
+    assert MapleStoryCogs.maple_equip.name_localizations[Locale.zh_TW] == "裝備"
+    assert MapleStoryCogs.maple_npc.name_localizations[Locale.zh_TW] == "npc"
 
 
 @pytest.mark.parametrize(

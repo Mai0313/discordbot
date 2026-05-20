@@ -735,7 +735,7 @@ class MiscItem(_Base):
         return self.name_zh or self.name
 
 
-# ── Stats (for /maple_stats command) ────────────────────────────────
+# ── Stats (for /maplestory stats command) ───────────────────────────
 
 
 class MapleStats(BaseModel):

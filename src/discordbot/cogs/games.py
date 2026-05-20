@@ -1,4 +1,4 @@
-"""Casino-style games (`/blackjack`, `/dragon_gate`) wagering economy points."""
+"""Casino-style games (`/games blackjack`, `/games dragon_gate`) wagering economy points."""
 
 from random import SystemRandom
 from functools import partial, cached_property
@@ -216,6 +216,16 @@ class GamesCogs(commands.Cog):
         )
 
     @nextcord.slash_command(
+        name="games",
+        description="Game commands.",
+        name_localizations={Locale.zh_TW: "小遊戲", Locale.ja: "ゲーム"},
+        description_localizations={Locale.zh_TW: "小遊戲指令", Locale.ja: "ゲームコマンド。"},
+        nsfw=False,
+    )
+    async def games(self, interaction: Interaction) -> None:
+        """Slash command group for casino games."""
+
+    @games.subcommand(
         name="blackjack",
         description="Open a 21 lobby against the dealer.",
         name_localizations={Locale.zh_TW: "二十一點", Locale.ja: "ブラックジャック"},
@@ -223,7 +233,6 @@ class GamesCogs(commands.Cog):
             Locale.zh_TW: "開一桌 21 點 lobby",
             Locale.ja: "21（ブラックジャック）の lobby を開きます。",
         },
-        nsfw=False,
     )
     async def blackjack(
         self,
@@ -295,7 +304,7 @@ class GamesCogs(commands.Cog):
         await track_game_message(message=message, user_name=owner.account_name)
         view.message = message
 
-    @nextcord.slash_command(
+    @games.subcommand(
         name="dragon_gate",
         description="Open an In-Between table with a shared jackpot pool.",
         name_localizations={Locale.zh_TW: "射龍門", Locale.ja: "インビトウィーン"},
@@ -303,7 +312,6 @@ class GamesCogs(commands.Cog):
             Locale.zh_TW: "開一桌共享全域彩金池的射龍門",
             Locale.ja: "共有ジャックポットのインビトウィーン table を開きます。",
         },
-        nsfw=False,
     )
     async def dragon_gate(self, interaction: Interaction) -> None:
         """Opens a 射龍門 lobby. The owner starts the table from the lobby.
