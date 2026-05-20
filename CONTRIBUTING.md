@@ -150,6 +150,10 @@ sync.
     the engine object.
 - 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account
     model.
+- `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths
+    should pass `guild_avatar_url(...)` with guild context so guild avatars are
+    stored when available, then fall back to the global `display_avatar`.
+    Existing rows are not migrated; they refresh naturally on later writes.
 - `credit_with_repayment` is the income path for message reward, chat reward,
     and casino payout. Gifts do not auto-repay loans.
 - Casino settlement is atomic. Validate or clamp bets before play, then apply

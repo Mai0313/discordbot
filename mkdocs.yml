@@ -23,14 +23,16 @@ nav:
                   - presentation: Reference/discordbot/cogs/_economy/presentation.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
+                  - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
                   - cleanup: Reference/discordbot/cogs/_games/cleanup.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
+                  - interactions: Reference/discordbot/cogs/_games/interactions.md
+                  - lobby: Reference/discordbot/cogs/_games/lobby.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md
-                  - views: Reference/discordbot/cogs/_games/views.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
@@ -59,6 +61,7 @@ nav:
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
           - utils:
+              - avatars: Reference/discordbot/utils/avatars.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
@@ -68,8 +71,8 @@ nav:
       - agents_dev: Scripts/agents_dev.md
       - artale_data: Scripts/artale_data.md
       - gen_docs: Scripts/gen_docs.md
-      - gpt: Scripts/gpt.md
       - image_dev: Scripts/image_dev.md
+      - manage_admin: Scripts/manage_admin.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md

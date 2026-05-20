@@ -99,6 +99,10 @@ make gen-docs                    # regenerate docs/ from sources
     helpers to bind sessions directly from the current object.
 - `UserAccount` has no `guild_id`. Balances, VIP, loans, check-ins, admin flags,
     and leaderboards are cross-server by design.
+- `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths use
+    `utils.avatars.guild_avatar_url(...)` with guild context so guild avatars are
+    stored when available, falling back to global `display_avatar`. Do not add a
+    migration for existing avatar URLs; they refresh naturally on later writes.
 - Every balance mutation should write a `PointTransaction` row unless the helper
     intentionally skips `delta == 0`.
 - `credit_with_repayment` is the income path for message reward, chat reward,

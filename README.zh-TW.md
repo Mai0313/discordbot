@@ -109,7 +109,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 這個 bot 會把 runtime data 存在本機 `data/` 底下。
 
 - `messages.db`：human messages 與 bot 自己的回覆，用於聊天歷史與摘要。
-- `economy.db`：虛擬歡樂豆餘額、VIP flag、借款、簽到、賭場每日統計、賭場交易與 jackpot state。
+- `economy.db`：虛擬歡樂豆餘額、VIP flag、借款、簽到、賭場每日統計、賭場交易、jackpot state，以及 cached Discord account name / avatar URL。
 - `game_cleanup.db`：公開 game 或 economy response 的 Discord guild/channel 名稱、user name、channel ID 與 message ID，用於 bot 重啟後的清理。
 - `model_prices.json`：快取的 LiteLLM pricing metadata，用於 AI 回覆費用估算。
 - `downloads/` 與 `threads/`：臨時 media scratch folders。
