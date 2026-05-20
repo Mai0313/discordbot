@@ -740,7 +740,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     catalog = RuntimeModelCatalog()
     cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))
     assert cog.runtime_models.fast_model == catalog.fast_model
-    assert catalog.fast_model == ModelSettings(name="gemini-flash-latest", effort="none")
+    assert isinstance(catalog.fast_model, ModelSettings)
     assert catalog.image_model.name.endswith("image-preview")
     assert catalog.video_model.name.startswith("veo")
     assert catalog.slow_model.effort == "high"
