@@ -3,7 +3,7 @@
 from typing import Literal
 from datetime import UTC, datetime
 
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, computed_field
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
@@ -48,11 +48,27 @@ class ModelSettings(BaseModel):
 
 
 class RuntimeModelCatalog(BaseModel):
-    """Runtime model settings used by Discord bot LLM paths."""
+    """Runtime model settings used by Discord bot LLM paths.
+
+    Keep caller lists in sync when moving runtime model usage.
+    """
+
+    @computed_field
+    @property
+    def is_peak(self) -> bool:
+        """Whether runtime model selection is in the peak-hour window.
+
+        Returns:
+            True during UTC weekdays from 08:00 to 17:00, otherwise False.
+        """
+        now = datetime.now(UTC)
+        return now.weekday() < 5 and 8 <= now.hour < 17
 
     @property
     def image_model(self) -> ModelSettings:
         """The model settings for image generation and editing.
+
+        Callers: `_handle_image_reply`.
 
         Returns:
             Model settings used with `images.generate` and `images.edit`.
@@ -64,6 +80,8 @@ class RuntimeModelCatalog(BaseModel):
     def video_model(self) -> ModelSettings:
         """The model settings for video generation.
 
+        Callers: `_handle_video_generation`.
+
         Returns:
             Model settings used with `videos.create`.
         """
@@ -73,6 +91,8 @@ class RuntimeModelCatalog(BaseModel):
     @property
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
+
+        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`, `dealer`.
 
         Returns:
             Fast model settings used for routing, image captions, and short
@@ -88,12 +108,12 @@ class RuntimeModelCatalog(BaseModel):
         Uses the flash model during UTC weekday 08:00 to 17:00 peak hours and
         the pro model outside that peak window.
 
+        Callers: `_get_attachment_parts`, `_handle_message_reply`.
+
         Returns:
             Slow-path model settings for reply and summary generation.
         """
-        now = datetime.now(UTC)
-        is_peak = now.weekday() < 5 and 8 <= now.hour < 17
-        if is_peak:
+        if self.is_peak:
             return ModelSettings(name="gemini-3-flash-preview", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 

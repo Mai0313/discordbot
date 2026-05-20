@@ -754,8 +754,8 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
 ) -> None:
     """Verifies slow-model peak-hour and off-peak dispatch."""
 
-    def slow_model_at(now: datetime) -> ModelSettings:
-        """Returns slow model settings with the catalog clock pinned to ``now``."""
+    def model_snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
+        """Returns peak-sensitive model settings with the catalog clock pinned to ``now``."""
 
         def fixed_now(tz: object) -> datetime:
             """Returns the pinned timestamp."""
@@ -763,15 +763,21 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
             return now
 
         monkeypatch.setattr("discordbot.typings.models.datetime", SimpleNamespace(now=fixed_now))
-        return RuntimeModelCatalog().slow_model
+        catalog = RuntimeModelCatalog()
+        return catalog.slow_model, catalog.is_peak, catalog.model_dump()["is_peak"] is True
 
-    peak_start = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
-    peak_end = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
-    before_peak = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
-    after_peak = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
-    weekend = slow_model_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
+    peak_start = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
+    peak_end = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
+    before_peak = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
+    after_peak = model_snapshot_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
+    weekend = model_snapshot_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
 
-    assert peak_start == peak_end
-    assert before_peak == after_peak == weekend
-    assert peak_start != after_peak
-    assert {peak_start.effort, after_peak.effort} == {"high"}
+    assert peak_start[1:] == (True, True)
+    assert peak_end[1:] == (True, True)
+    assert before_peak[1:] == (False, False)
+    assert after_peak[1:] == (False, False)
+    assert weekend[1:] == (False, False)
+    assert peak_start[0] == peak_end[0]
+    assert before_peak[0] == after_peak[0] == weekend[0]
+    assert peak_start[0] != after_peak[0]
+    assert {peak_start[0].effort, after_peak[0].effort} == {"high"}
