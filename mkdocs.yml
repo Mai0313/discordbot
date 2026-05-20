@@ -73,6 +73,7 @@ nav:
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
+      - manage_central_banker: Scripts/manage_central_banker.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md
