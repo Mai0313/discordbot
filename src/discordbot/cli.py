@@ -13,6 +13,7 @@ from nextcord import Game, Embed, Guild, Intents, Message
 from nextcord.ext import tasks, commands
 
 from discordbot import setup_logging
+from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, TransactionKind
 from discordbot.cogs._economy.database import credit_with_repayment
@@ -117,10 +118,13 @@ class DiscordBot(commands.Bot):
     async def _award_base_message_points(message: Message) -> None:
         """Awards the global per-message base reward."""
         try:
+            avatar_url = await guild_avatar_url(
+                user=message.author, guild=getattr(message, "guild", None)
+            )
             await credit_with_repayment(
                 user_id=message.author.id,
                 name=message.author.name,
-                avatar_url=message.author.display_avatar.url,
+                avatar_url=avatar_url,
                 amount=BASE_MESSAGE_REWARD_AMOUNT,
                 kind=TransactionKind.MESSAGE_REWARD,
             )

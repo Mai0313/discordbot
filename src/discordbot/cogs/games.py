@@ -17,6 +17,7 @@ from discordbot.typings.games import (
     RefreshParticipantsResult,
     ParticipantPreparationResult,
 )
+from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
@@ -81,7 +82,7 @@ class GamesCogs(commands.Cog):
         """
         return DealerAI(client=self.client, model=self.runtime_models.fast_model)
 
-    def _dealer_identity(self) -> DealerIdentity:
+    async def _dealer_identity(self, guild: nextcord.Guild | None = None) -> DealerIdentity:
         """Returns the dealer identity from the bot user.
 
         Slash commands only fire after the gateway has connected, so
@@ -92,10 +93,11 @@ class GamesCogs(commands.Cog):
         """
         if self.bot.user is None:
             return DealerIdentity(dealer_id=0, dealer_name="莊家", dealer_avatar_url="")
+        avatar_url = await guild_avatar_url(user=self.bot.user, guild=guild)
         return DealerIdentity(
             dealer_id=self.bot.user.id,
             dealer_name=self.bot.user.display_name,
-            dealer_avatar_url=self.bot.user.display_avatar.url,
+            dealer_avatar_url=avatar_url,
         )
 
     @commands.Cog.listener()
@@ -107,23 +109,30 @@ class GamesCogs(commands.Cog):
         await delete_tracked_game_messages(bot=self.bot)
 
     @staticmethod
-    def _identity_from_user(user: nextcord.User | nextcord.Member) -> GameParticipantIdentity:
+    async def _identity_from_user(
+        user: nextcord.User | nextcord.Member, guild: nextcord.Guild | None = None
+    ) -> GameParticipantIdentity:
         """Builds the shared game identity for a Discord user."""
+        avatar_url = await guild_avatar_url(user=user, guild=guild)
         return GameParticipantIdentity(
             user_id=user.id,
             account_name=user.name,
             display_name=user.display_name,
-            avatar_url=user.display_avatar.url,
+            avatar_url=avatar_url,
         )
 
     async def _participant_from_user(
-        self, user: nextcord.User | nextcord.Member, wager: int, mode: WagerMode
+        self,
+        user: nextcord.User | nextcord.Member,
+        wager: int,
+        mode: WagerMode,
+        guild: nextcord.Guild | None = None,
     ) -> ParticipantPreparationResult:
         """Builds a lobby participant under the requested wager and mode."""
         balance = await get_balance(user_id=user.id)
         return ParticipantPreparationResult(
             participant=build_wager_participant(
-                identity=self._identity_from_user(user=user),
+                identity=await self._identity_from_user(user=user, guild=guild),
                 balance=balance,
                 wager=wager,
                 mode=mode,
@@ -145,7 +154,12 @@ class GamesCogs(commands.Cog):
         """
         if interaction.user is None:
             return None
-        result = await self._participant_from_user(user=interaction.user, wager=wager, mode=mode)
+        result = await self._participant_from_user(
+            user=interaction.user,
+            wager=wager,
+            mode=mode,
+            guild=getattr(interaction, "guild", None),
+        )
         if result.participant is None:
             await interaction.followup.send(
                 embed=insufficient_embed_builder(result.balance), ephemeral=True
@@ -237,7 +251,10 @@ class GamesCogs(commands.Cog):
             return
 
         participant_result = await self._participant_from_user(
-            user=interaction.user, wager=bet, mode="clamp"
+            user=interaction.user,
+            wager=bet,
+            mode="clamp",
+            guild=getattr(interaction, "guild", None),
         )
         owner = participant_result.participant
         if owner is None:
@@ -249,7 +266,7 @@ class GamesCogs(commands.Cog):
             return
 
         table_bet = owner.bet
-        dealer_identity = self._dealer_identity()
+        dealer_identity = await self._dealer_identity(guild=getattr(interaction, "guild", None))
         view = BlackjackLobbyView(
             owner=owner,
             requested_bet=table_bet,
@@ -299,7 +316,10 @@ class GamesCogs(commands.Cog):
             return
 
         participant_result = await self._participant_from_user(
-            user=interaction.user, wager=ANTE, mode="exact"
+            user=interaction.user,
+            wager=ANTE,
+            mode="exact",
+            guild=getattr(interaction, "guild", None),
         )
         owner = participant_result.participant
         if owner is None:
@@ -312,7 +332,7 @@ class GamesCogs(commands.Cog):
             schedule_game_message_delete(message=message, user_name=interaction.user.name)
             return
 
-        dealer_identity = self._dealer_identity()
+        dealer_identity = await self._dealer_identity(guild=getattr(interaction, "guild", None))
         initial_jackpot = await fetch_dragon_gate_jackpot_snapshot()
         view = DragonGateLobbyView(
             owner=owner,

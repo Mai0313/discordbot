@@ -666,6 +666,52 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     assert "權限不足" in interaction.followup.sent[0]["embed"].title
 
 
+async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transfer writes should cache guild avatars instead of only global avatars."""
+    captured_sender_avatar_url = ""
+    captured_receiver_avatar_url = ""
+
+    async def record_transfer(  # noqa: PLR0913 -- mirrors transfer signature
+        sender_id: int,
+        sender_name: str,
+        receiver_id: int,
+        receiver_name: str,
+        amount: int,
+        sender_avatar_url: str = "",
+        receiver_avatar_url: str = "",
+    ) -> TransferResult:
+        """Records transfer identity payloads."""
+        nonlocal captured_sender_avatar_url, captured_receiver_avatar_url
+        del sender_id, sender_name, receiver_id, receiver_name, amount
+        captured_sender_avatar_url = sender_avatar_url
+        captured_receiver_avatar_url = receiver_avatar_url
+        return TransferResult(sender_balance=50, receiver_balance=100)
+
+    sender = FakeUser(user_id=1, name="alice")
+    receiver = FakeUser(user_id=2, name="bob")
+    cached_sender = FakeUser(user_id=1, name="alice")
+    cached_sender.guild_avatar = SimpleNamespace(url="https://example.test/alice-server.png")
+    cached_receiver = FakeUser(user_id=2, name="bob")
+    cached_receiver.guild_avatar = SimpleNamespace(url="https://example.test/bob-server.png")
+    members = {cached_sender.id: cached_sender, cached_receiver.id: cached_receiver}
+
+    async def fail_fetch_member(user_id: int) -> FakeUser:
+        """Fails if the helper ignores the cached member path."""
+        raise AssertionError(f"unexpected fetch_member({user_id})")
+
+    guild = SimpleNamespace(get_member=members.get, fetch_member=fail_fetch_member)
+    interaction = FakeInteraction(user=sender)
+    interaction.guild = guild
+    monkeypatch.setattr(economy, "transfer", record_transfer)
+    monkeypatch.setattr(economy, "schedule_game_message_delete", ignore_scheduled_game_message)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+
+    await EconomyCogs.give.callback(cog, interaction, member=receiver, amount=100)
+
+    assert captured_sender_avatar_url == "https://example.test/alice-server.png"
+    assert captured_receiver_avatar_url == "https://example.test/bob-server.png"
+
+
 async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Loss leaderboard embed describes gross daily loss, not net P&L."""
     scheduled: list[FakeDiscordMessage] = []

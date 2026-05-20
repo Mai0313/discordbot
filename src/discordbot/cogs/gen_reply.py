@@ -25,6 +25,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
+from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.typings.economy import TransactionKind
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
@@ -559,6 +560,20 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn("Failed to award chat points", _exc_info=True)
             return None
 
+    async def _award_chat_points_for_message(self, message: Message, amount: int) -> int | None:
+        """Persists chat reward points for a Discord message author."""
+        if amount <= 0:
+            return None
+        avatar_url = await guild_avatar_url(
+            user=message.author, guild=getattr(message, "guild", None)
+        )
+        return await self._award_chat_points(
+            user_id=message.author.id,
+            name=message.author.name,
+            avatar_url=avatar_url,
+            amount=amount,
+        )
+
     async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
         self,
         responses: AsyncStream[ResponseStreamEvent],
@@ -614,14 +629,9 @@ class ReplyGeneratorCogs(commands.Cog):
         # footer; on DB failure _award_chat_points returns None and the
         # footer falls back to the delta-only format.
         total_tokens = input_tokens + output_tokens
-        new_balance: int | None = None
-        if total_tokens > 0:
-            new_balance = await self._award_chat_points(
-                user_id=message.author.id,
-                name=message.author.name,
-                avatar_url=message.author.display_avatar.url,
-                amount=total_tokens,
-            )
+        new_balance = await self._award_chat_points_for_message(
+            message=message, amount=total_tokens
+        )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         if new_balance is not None:

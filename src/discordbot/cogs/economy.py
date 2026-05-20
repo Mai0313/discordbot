@@ -6,6 +6,7 @@ import nextcord
 from nextcord import Embed, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import VIP_PURCHASE_COST, BASE_CHECKIN_REWARD_AMOUNT
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import (
@@ -236,6 +237,8 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         actor = interaction.user
+        guild = getattr(interaction, "guild", None)
+        actor_avatar_url = await guild_avatar_url(user=actor, guild=guild)
         if not await get_admin(user_id=actor.id):
             await interaction.response.defer(ephemeral=True)
             embed = Embed(
@@ -243,7 +246,7 @@ class EconomyCogs(commands.Cog):
                 description="### 只有 economy admin 可以執行這個操作",
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
+            embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
         if member.bot:
@@ -253,17 +256,18 @@ class EconomyCogs(commands.Cog):
                 description="### 不能對 bot 操作\n請選一般成員",
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
+            embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         await interaction.response.defer()
+        member_avatar_url = await guild_avatar_url(user=member, guild=guild)
         result = await adjust_balance(
             user_id=member.id,
             name=member.name,
             delta=delta,
             allow_negative=False,
-            avatar_url=member.display_avatar.url,
+            avatar_url=member_avatar_url,
             note=_admin_note(action=action, actor=actor),
         )
         embed = Embed(
@@ -271,8 +275,8 @@ class EconomyCogs(commands.Cog):
             description=f"### {member.mention}\n{currency_text(amount=result.applied_delta, signed=True)}",
             color=_ADMIN_COLOR,
         )
-        embed.set_author(name=actor.display_name, icon_url=actor.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=member.display_avatar.url)
+        embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=member_avatar_url)
         embed.add_field(
             name="操作結果",
             value=(
@@ -480,27 +484,30 @@ class EconomyCogs(commands.Cog):
             return
 
         sender = interaction.user
+        guild = getattr(interaction, "guild", None)
+        sender_avatar_url = await guild_avatar_url(user=sender, guild=guild)
 
         if member.bot:
             embed = Embed(
                 title="轉帳失敗", description="### 不能轉給 bot\n請選一般成員", color=_ERROR_COLOR
             )
-            embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
+            embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
         if member.id == sender.id:
             embed = Embed(title="轉帳失敗", description="### 不能轉給自己", color=_ERROR_COLOR)
-            embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
+            embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
+        receiver_avatar_url = await guild_avatar_url(user=member, guild=guild)
         transfer_result = await transfer(
             sender_id=sender.id,
             sender_name=sender.name,
-            sender_avatar_url=sender.display_avatar.url,
+            sender_avatar_url=sender_avatar_url,
             receiver_id=member.id,
             receiver_name=member.name,
-            receiver_avatar_url=member.display_avatar.url,
+            receiver_avatar_url=receiver_avatar_url,
             amount=amount,
         )
         if transfer_result is None:
@@ -514,7 +521,7 @@ class EconomyCogs(commands.Cog):
                 ),
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
+            embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
             await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
@@ -523,8 +530,8 @@ class EconomyCogs(commands.Cog):
             description=f"### {currency_text(amount=amount)}\n{sender.mention} → {member.mention}",
             color=_TRANSFER_COLOR,
         )
-        embed.set_author(name=sender.display_name, icon_url=sender.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=member.display_avatar.url)
+        embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=receiver_avatar_url)
         embed.add_field(
             name="轉帳後餘額",
             value=(
@@ -573,10 +580,10 @@ class EconomyCogs(commands.Cog):
             name = name or account.name
 
         if balance > 0:
-            verdict = f"\+ {bold_currency(amount=balance)}"
+            verdict = rf"\+ {bold_currency(amount=balance)}"
             color = _BALANCE_COLOR
         elif balance < 0:
-            verdict = f"\- {bold_currency(amount=abs(balance))}"
+            verdict = rf"\- {bold_currency(amount=abs(balance))}"
             color = _ERROR_COLOR
         else:
             verdict = "⚖️ 打平"
@@ -634,6 +641,9 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
         is_vip = await get_vip(user_id=user.id)
         limit = credit_limit(user=user, is_vip=is_vip)
         loan_before = await get_loan_view(user_id=user.id)
@@ -641,7 +651,7 @@ class EconomyCogs(commands.Cog):
         result = await borrow(
             user_id=user.id,
             name=user.name,
-            avatar_url=user.display_avatar.url,
+            avatar_url=user_avatar_url,
             amount=amount,
             credit_limit_value=limit,
         )
@@ -657,8 +667,8 @@ class EconomyCogs(commands.Cog):
                 ),
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-            _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+            _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
             embed.add_field(name="目前欠款", value=amount_code(amount=current_debt), inline=False)
             if is_vip:
                 embed.add_field(
@@ -673,8 +683,8 @@ class EconomyCogs(commands.Cog):
             description=f"### {currency_text(amount=borrowed_amount, signed=True)} 入帳",
             color=_BORROW_COLOR,
         )
-        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         if borrowed_amount != amount:
             embed.add_field(
                 name="自動調整",
@@ -739,9 +749,12 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
 
         result = await repay(
-            user_id=user.id, name=user.name, avatar_url=user.display_avatar.url, amount=amount
+            user_id=user.id, name=user.name, avatar_url=user_avatar_url, amount=amount
         )
         if result is None:
             balance_now = await get_balance(user_id=user.id)
@@ -754,8 +767,8 @@ class EconomyCogs(commands.Cog):
             else:
                 reason = "還款失敗, 請稍後再試"
             embed = Embed(title="還款失敗", description=f"### {reason}", color=_ERROR_COLOR)
-            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-            _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+            _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
@@ -764,8 +777,8 @@ class EconomyCogs(commands.Cog):
             description=f"### {currency_text(amount=-result.principal_repaid, signed=True)} 扣款",
             color=_REPAY_COLOR,
         )
-        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(
             name="本次還款",
             value=f"本金 {amount_code(amount=result.principal_repaid)}",
@@ -803,14 +816,17 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
-        result = await checkin(user_id=user.id, name=user.name, avatar_url=user.display_avatar.url)
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        result = await checkin(user_id=user.id, name=user.name, avatar_url=user_avatar_url)
         if result is None:
             embed = Embed(
                 title="今天已經簽到過了",
                 description="### 0:00 (Asia/Taipei) 後再回來簽吧",
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
@@ -820,8 +836,8 @@ class EconomyCogs(commands.Cog):
             description=f"## {currency_text(amount=result.amount, signed=True)} 入帳",
             color=_CHECKIN_COLOR,
         )
-        embed.set_author(name=f"{user.display_name} 的簽到", icon_url=user.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.set_author(name=f"{user.display_name} 的簽到", icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(name="連續簽到", value=f"第 {result.streak} / 7 天", inline=True)
         embed.add_field(name="目前餘額", value=amount_code(amount=result.new_balance), inline=True)
         if result.is_vip:
@@ -860,6 +876,9 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
         already_vip = await get_vip(user_id=user.id)
         if already_vip:
             embed = Embed(
@@ -867,12 +886,12 @@ class EconomyCogs(commands.Cog):
                 description="### 你已經擁有永久 VIP 了, 不用再買一次",
                 color=_VIP_COLOR,
             )
-            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
             embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
-        result = await buy_vip(user_id=user.id, name=user.name, avatar_url=user.display_avatar.url)
+        result = await buy_vip(user_id=user.id, name=user.name, avatar_url=user_avatar_url)
         if result is None:
             balance_now = await get_balance(user_id=user.id)
             embed = Embed(
@@ -884,7 +903,7 @@ class EconomyCogs(commands.Cog):
                 ),
                 color=_ERROR_COLOR,
             )
-            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
             embed.add_field(name="👑 VIP權益", value=_vip_perk_lines(user=user), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
@@ -897,8 +916,8 @@ class EconomyCogs(commands.Cog):
             ),
             color=_VIP_COLOR,
         )
-        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
         embed.add_field(
             name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
