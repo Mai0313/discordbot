@@ -888,8 +888,10 @@ async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
     assert "embeds" not in message.edits[0]
     final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "13 hit 抽 5♣ → 18 (guard)" in description
-    assert "18 stand" in description
+    assert "莊家流程:" in description
+    assert "莊家動作:" not in description
+    assert "自動抽牌: 13 hit 抽 5♣ → 18" in description
+    assert "AI: 18 stand" in description
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert cleanup_messages == [message]
@@ -975,7 +977,7 @@ async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.Monk
     assert "embeds" not in message.edits[0]
     final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "17 stand" in description
+    assert "AI: 17 stand" in description
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert cleanup_messages == [message]

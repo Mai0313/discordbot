@@ -23,6 +23,7 @@ SettleOutcome = Literal[
 ]
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
+BlackjackDealerStepSource = Literal["ai", "auto", "fallback", "guard"]
 
 
 class Card(BaseModel):
@@ -250,6 +251,7 @@ class BlackjackDealerStep(BaseModel):
     total_before: int
     action: BlackjackDealerAction
     reason: str
+    source: BlackjackDealerStepSource = "ai"
     drawn_card: Card | None = None
     total_after: int | None = None
     fallback: bool = False

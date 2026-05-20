@@ -56,7 +56,7 @@ DEALER_BLACKJACK_DECISION_PROMPT = """
 - 只能輸出 action 與 reason 的 structured result
 - action 只能是 hit 或 stand
 - reason 用繁體中文, 30 字以內
-- 你可以看莊家完整手牌、是否為 soft 17、所有玩家手牌總點數、下注與狀態
+- 你可以看莊家完整手牌、是否為 soft 17、所有玩家手牌總點數、下注、狀態、抽牌次數與保險狀態
 - 不要猜測下一張牌, 只能根據目前局面決定
 - 一般規則:
     - 點數 ≤ 16 必須 hit

@@ -17,7 +17,11 @@ from nextcord import Interaction
 
 from discordbot.typings.games import GameParticipant, BlackjackDealerDecision
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embed
+from discordbot.cogs._games.blackjack_views import (
+    BlackjackView,
+    build_in_progress_embed,
+    _dealer_decision_table_state,
+)
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
@@ -371,11 +375,13 @@ async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
     assert decisions == [17]
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
+    assert first_step.source == "auto"
     assert first_step.forced is True
     assert first_step.total_before == 11
     assert first_step.total_after == 17
     final_step = view._dealer_steps[-1]
     assert final_step.action == "stand"
+    assert final_step.source == "ai"
     assert final_step.forced is False
     assert final_step.reason == "AI stands at threshold"
 
@@ -416,6 +422,7 @@ async def test_play_dealer_calls_llm_on_17_plus(
     assert round_state.dealer_total() == expected_total
     step = view._dealer_steps[-1]
     assert step.action == "stand"
+    assert step.source == "ai"
     assert step.forced is False
     assert step.reason == "AI chooses stand"
 
@@ -446,5 +453,49 @@ async def test_play_dealer_obeys_llm_hit_on_17_plus(monkeypatch: pytest.MonkeyPa
     assert [str(card) for card in round_state.dealer] == ["K♣", "8♦", "Q♠"]
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
+    assert first_step.source == "ai"
     assert first_step.reason == "AI chooses hit"
     assert first_step.forced is False
+
+
+def test_dealer_decision_table_state_includes_player_actions_and_insurance() -> None:
+    """DealerAI receives player totals, action context, and insurance state."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[
+            _participant(user_id=1, display_name="Alice", bet=100),
+            _participant(user_id=2, display_name="Bob", bet=100),
+        ],
+        auto_play_dealer=False,
+    )
+    alice_hand = round_state.players[0].hands[0]
+    alice_hand.cards = [
+        Card(rank="7", suit="♠"),
+        Card(rank="5", suit="♥"),
+        Card(rank="5", suit="♣"),
+    ]
+    alice_hand.actions_taken = 1
+    alice_hand.finished = True
+    round_state.players[0].insurance_bet = 50
+    round_state.players[0].insurance_resolved = True
+    bob_hand = round_state.players[1].hands[0]
+    bob_hand.cards = [Card(rank="10", suit="♦"), Card(rank="8", suit="♣")]
+    bob_hand.finished = True
+    round_state.players[1].insurance_resolved = True
+    round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="A", suit="♦")]
+    round_state.insurance_offered = True
+    round_state.phase = "dealer"
+
+    table_state = _dealer_decision_table_state(round_state=round_state)
+
+    assert "莊家總點數: 20" in table_state
+    assert "保險是否提供: 是" in table_state
+    assert "Alice" in table_state
+    assert "total=17" in table_state
+    assert "status=stand" in table_state
+    assert "player_draws_after_initial=1" in table_state
+    assert "actions_taken=1" in table_state
+    assert "insurance=taken, bet=50" in table_state
+    assert "Bob" in table_state
+    assert "total=18" in table_state
+    assert "insurance=declined" in table_state

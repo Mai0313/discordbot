@@ -18,6 +18,7 @@ from discordbot.typings.games import (
     BlackjackDealerStep,
     BlackjackDealerAction,
     BlackjackPlayerResult,
+    BlackjackDealerStepSource,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
@@ -32,6 +33,7 @@ from discordbot.cogs._games.blackjack import (
     can_surrender,
     dealer_up_card,
     committed_wagers,
+    is_five_card_twenty_one,
 )
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
@@ -111,17 +113,19 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats compact dealer actions for the final embed."""
     if not steps:
         return ""
+    source_labels: dict[BlackjackDealerStepSource, str] = {
+        "ai": "AI",
+        "auto": "自動抽牌",
+        "fallback": "fallback basic rule",
+        "guard": "guard",
+    }
     parts: list[str] = []
     for step in steps:
-        part = f"{step.total_before} {step.action}"
+        part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
         if step.drawn_card is not None:
             part += f" 抽 {step.drawn_card}"
             if step.total_after is not None:
                 part += f" → {step.total_after}"
-        if step.fallback:
-            part += " (fallback basic rule)"
-        elif step.forced:
-            part += " (guard)"
         parts.append(part)
     return "；".join(parts)
 
@@ -305,6 +309,17 @@ def _dealer_hand_status(hand: BlackjackHandState) -> str:
     return "acting"
 
 
+def _dealer_insurance_status(round_state: BlackjackRound, player: BlackjackPlayerHand) -> str:
+    """Returns the player's insurance state for the AI dealer prompt."""
+    if not round_state.insurance_offered:
+        return "not offered"
+    if player.insurance_bet > 0:
+        return f"taken, bet={player.insurance_bet}"
+    if player.insurance_resolved:
+        return "declined"
+    return "pending"
+
+
 def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
     """Builds the full table state sent to the AI dealer."""
     soft, total = round_state.dealer_is_soft_total()
@@ -314,20 +329,38 @@ def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
         f"莊家總點數: {total}",
         f"莊家是否 soft total: {'是' if soft else '否'}",
         f"莊家是否 soft 17: {'是' if round_state.dealer_is_soft_17() else '否'}",
+        f"保險是否提供: {'是' if round_state.insurance_offered else '否'}",
+        f"莊家 peek 是否 Blackjack: {'是' if round_state.peeked_blackjack else '否'}",
         "玩家:",
     ]
     for player in round_state.players:
         participant = player.participant
+        insurance = _dealer_insurance_status(round_state=round_state, player=player)
         for index, hand in enumerate(player.hands):
             label = (
                 participant.display_name
                 if len(player.hands) == 1
                 else f"{participant.display_name} (手{index + 1})"
             )
+            hand_soft, hand_total = hand.soft_total()
+            player_draws = max(len(hand.cards) - 2, 0)
+            split_label = (
+                "split A" if hand.is_split_aces else "split" if hand.is_split_hand else "no"
+            )
+            five_card = is_five_card_twenty_one(cards=hand.cards)
             lines.append(
                 f"- {label}: "
-                f"{render_hand(cards=hand.cards)} = {hand.total()}, "
-                f"bet={hand.bet}, status={_dealer_hand_status(hand=hand)}"
+                f"cards={render_hand(cards=hand.cards)}, "
+                f"total={hand_total}, "
+                f"soft={'yes' if hand_soft else 'no'}, "
+                f"bet={hand.bet}, "
+                f"base_bet={hand.base_bet}, "
+                f"status={_dealer_hand_status(hand=hand)}, "
+                f"player_draws_after_initial={player_draws}, "
+                f"actions_taken={hand.actions_taken}, "
+                f"split={split_label}, "
+                f"five_card_twenty_one={'yes' if five_card else 'no'}, "
+                f"insurance={insurance}"
             )
     return "\n".join(lines)
 
@@ -386,7 +419,7 @@ def build_final_embed(
         _format_dealer_block(round_state=round_state, hide_hole=False),
     ]
     if dealer_decision_path:
-        description_parts.append(metadata_line(text=f"莊家動作: {dealer_decision_path}"))
+        description_parts.append(metadata_line(text=f"莊家流程: {dealer_decision_path}"))
     for result in results:
         participant = result.participant
         player = next(
@@ -1107,6 +1140,7 @@ class BlackjackView(View):
                         total_before=total_before,
                         action="stand",
                         reason=reason,
+                        source="fallback" if fallback else "ai",
                         fallback=fallback,
                         forced=forced,
                     )
@@ -1121,6 +1155,7 @@ class BlackjackView(View):
                     total_before=total_before,
                     action="hit",
                     reason=reason,
+                    source="fallback" if fallback else "auto" if forced else "ai",
                     drawn_card=drawn_card,
                     total_after=total_after,
                     fallback=fallback,
@@ -1136,6 +1171,7 @@ class BlackjackView(View):
                 total_before=self.round_state.dealer_total(),
                 action="stand",
                 reason="guard: decision limit",
+                source="guard",
                 forced=True,
             )
         )
