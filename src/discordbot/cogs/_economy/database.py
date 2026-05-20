@@ -6,17 +6,14 @@ connection pool, dialect cache, and inspector cache for every Discord
 interaction (the same lesson `cogs/log_msg.py` captures for the sync engine
 it still uses for pandas `to_sql`).
 
-Every balance-mutating write path is an **atomic** SQL statement — either a
-SQLite UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a conditional
-`UPDATE ... WHERE ... RETURNING`. The previous implementation read the row
-in Python, mutated `account.balance`, and committed; two coroutines racing
-on the same user would lose updates, and two coroutines racing on a
-brand-new user would both `INSERT` and one would raise `IntegrityError`.
-The UPSERT pattern fixes both. `borrow`, `repay` and the inner
-`_credit_with_repayment_in_session` keep SELECT-then-conditional-UPDATE
-retry loops because they need to inspect the current value to compute the
-next state, but each retry is bounded and the WHERE clause guarantees no
-double-spend.
+Every balance-mutating write path is atomic at the SQLite transaction level.
+Most paths are a single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a
+conditional `UPDATE ... WHERE ... RETURNING`; loan-aware paths may touch both
+``user_account`` and ``loan_account`` but still roll back and retry as one unit
+when a conditional write loses a race. The previous implementation read the row
+in Python, mutated `account.balance`, and committed; two coroutines racing on
+the same user would lose updates, and two coroutines racing on a brand-new user
+would both `INSERT` and one would raise `IntegrityError`.
 
 PRAGMA setup at connect-time enables WAL (so reads don't block on writes),
 sets a tolerant `busy_timeout`, and picks `synchronous=NORMAL` (the right
@@ -28,27 +25,33 @@ We use `aiosqlite` so every DB call stays on the event loop: no
 opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
-Loan support is integrated into the same ``user_account`` row (no separate
-``loan_account`` table) so chat reward and casino payout can pay down debt
-inside the same single-row UPDATE. Loans expire every Asia/Taipei midnight:
-the lazy ``_reset_expired_loan_in_session`` helper wipes ``loan_principal``
-when ``loan_opened_at`` is older than today's local midnight. The audit log
-lives in a separate ``point_transaction`` table that every mutating helper
-writes into via ``_log_transaction_in_session``.
+Loan support lives in ``loan_account``. Borrow, repay, and income auto-repay
+still share one SQLite transaction with the account balance write, but the
+debt-only state no longer widens the main account row. Loans expire every
+Asia/Taipei midnight: the lazy ``_reset_expired_loan_in_session`` helper wipes
+``loan_account.principal`` when ``opened_at`` is older than today's local
+midnight.
 
 VIP, admin status, and leaderboard visibility are boolean columns on
 ``user_account``. VIP bumps daily check-in rewards, the borrow cap, and the
 player's winning payout from games. The flag is permanent once set. Admin status
 gates maintenance-only economy commands and is managed out-of-band by scripts.
-Daily casino counters also live on ``user_account`` so `/loss_leaderboard` can
-read current-day gross losses without scanning the audit log.
+Daily casino counters live on ``casino_account`` so `/loss_leaderboard` can
+read current-day gross losses without scanning an audit log.
+
+Shared jackpot pools live in ``data/global_state.db`` because they are bot-wide
+state, not per-user economy rows. Runtime jackpot settlement coordinates writes
+across the economy and global-state DB sessions and rolls both back on ordinary
+errors before either commit; SQLite still cannot make a hard crash between two
+database-file commits fully atomic.
 """
 
 from typing import TYPE_CHECKING, Any, Final, cast
 from datetime import UTC, datetime, timezone, timedelta
 from collections.abc import Sequence
 
-from sqlalchemy import Index, String, Boolean, Integer, DateTime, desc, text, event, select, update
+from nextcord import User, Member
+from sqlalchemy import Index, String, Boolean, Integer, DateTime, case, desc, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -95,9 +98,12 @@ _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
 TAIWAN_TIMEZONE: Final[timezone] = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
-_BorrowState = tuple[int, str, int, datetime | None]
+_BorrowState = tuple[int, str, int, datetime | None, bool]
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
+_global_state_engine: AsyncEngine = create_async_engine(
+    url="sqlite+aiosqlite:///data/global_state.db"
+)
 
 
 def _database_now() -> datetime:
@@ -119,6 +125,7 @@ def _taipei_midnight(now: datetime) -> datetime:
 
 
 @event.listens_for(_engine.sync_engine, "connect")
+@event.listens_for(_global_state_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
     """Sets WAL mode + a tolerant busy_timeout on every new connection.
 
@@ -142,12 +149,20 @@ class Base(DeclarativeBase):
     pass
 
 
-class UserAccount(Base):
-    """Persistent balance, loan, VIP, and check-in state for a Discord user.
+class GlobalStateBase(DeclarativeBase):
+    """Base class for bot-wide global state ORM models."""
 
-    Loan and check-in columns live on the same row as the balance so single
-    UPDATEs can settle multiple effects atomically. ``loan_opened_at`` is
-    nullable because a user that has never borrowed has no opening date;
+    pass
+
+
+class UserAccount(Base):
+    """Persistent balance, VIP, admin, and check-in state for a Discord user.
+
+    The row owns the spendable balance and lifetime gross totals. For every
+    completed balance mutation, positive applied deltas increase
+    ``total_earned`` and negative applied deltas increase ``total_spent`` so
+    ``total_earned - total_spent`` matches ``balance``. Debt state lives in
+    ``loan_account`` and daily casino counters live in ``casino_account``.
     ``last_checkin_at`` is nullable for users who have never checked in.
 
     Attributes:
@@ -155,14 +170,9 @@ class UserAccount(Base):
         name: Last-seen Discord username (refreshed on every write).
         avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
         balance: Current spendable point balance.
-        total_earned: Lifetime points earned (chat rewards, game wins, transfers in).
-        total_spent: Lifetime points removed (game losses, transfers out).
+        total_earned: Lifetime positive balance deltas.
+        total_spent: Lifetime negative balance deltas stored as positive amounts.
         updated_at: Taiwan-local timestamp of the last write.
-        loan_principal: Currently outstanding loan principal (wiped daily at midnight).
-        loan_total_borrowed: Lifetime gross borrowed amount.
-        loan_total_repaid: Lifetime gross repaid amount.
-        loan_opened_at: Timestamp the user borrowed for the current daily window;
-            ``None`` while the user has never borrowed or after the nightly reset.
         is_vip: Permanent VIP flag toggled by a successful ``/vip`` purchase.
         last_checkin_at: Timestamp of the latest ``/checkin`` payout; ``None``
             for users who have never checked in.
@@ -171,10 +181,6 @@ class UserAccount(Base):
         is_admin: Whether the user can run Discord-side economy admin commands.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
-        casino_day_started_at: Asia/Taipei midnight for the stored daily casino counters.
-        daily_casino_loss: Current-day gross loss from player-side casino settlements.
-        daily_casino_win: Current-day gross win from player-side casino settlements.
-        daily_casino_net: Current-day signed net casino result.
     """
 
     __tablename__ = "user_account"
@@ -183,9 +189,6 @@ class UserAccount(Base):
         # full scan into a bounded walk. SQLite can use an ASC index to satisfy
         # ORDER BY DESC by reading it backwards, so no DESC index is needed.
         Index("ix_user_account_balance", "balance"),
-        # /loss_leaderboard filters to one Taipei day and orders by gross loss.
-        # SQLite can read the daily loss suffix backwards for DESC ordering.
-        Index("ix_user_account_casino_day_loss", "casino_day_started_at", "daily_casino_loss"),
     )
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -197,10 +200,6 @@ class UserAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
-    loan_principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    loan_total_borrowed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    loan_total_repaid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    loan_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_checkin_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -210,52 +209,66 @@ class UserAccount(Base):
     hide_from_leaderboard: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
-    casino_day_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    daily_casino_loss: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    daily_casino_win: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    daily_casino_net: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
-class PointTransaction(Base):
-    """Append-only audit log of every persistent balance change.
-
-    One row per balance-mutating event. ``balance_after`` and ``debt_after``
-    reflect the user's state *after* the row's write, so consecutive rows
-    for the same user can be diffed to reconstruct every income / spend.
-    ``occurred_at`` carries the Asia/Taipei wall clock for daily audit slices.
+class LoanAccount(Base):
+    """Persistent per-user debt state split out from ``user_account``.
 
     Attributes:
-        id: Autoincrementing primary key.
-        user_id: Discord user ID this row belongs to.
-        kind: ``TransactionKind`` enum value as string.
-        delta: Signed change applied to balance by this transaction.
-        balance_after: Balance after this transaction.
-        debt_after: ``loan_principal`` after this transaction.
-        note: Optional free-text annotation (e.g. counterparty for transfers).
-        occurred_at: Taiwan-local timestamp of the event.
+        user_id: Discord user ID; primary key.
+        name: Last-seen Discord username for quick inspection.
+        principal: Outstanding loan principal for the current Taipei day.
+        total_borrowed: Lifetime gross borrowed amount.
+        total_repaid: Lifetime gross manually or automatically repaid amount.
+        opened_at: Timestamp the user first borrowed in the current daily window.
+        updated_at: Taiwan-local timestamp of the last loan write.
     """
 
-    __tablename__ = "point_transaction"
-    __table_args__ = (
-        Index("ix_point_transaction_user_time", "user_id", "occurred_at"),
-        # Audit/debug views often filter by (occurred_at, kind); the composite
-        # index keeps daily-window scans cheap as the log grows.
-        Index("ix_point_transaction_time_kind", "occurred_at", "kind"),
+    __tablename__ = "loan_account"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
+    principal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_borrowed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_repaid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    kind: Mapped[str] = mapped_column(String(length=32), nullable=False)
-    delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
-    debt_after: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    note: Mapped[str | None] = mapped_column(String(length=256), nullable=True)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+class CasinoAccount(Base):
+    """Daily per-user casino counters for loss leaderboard queries.
+
+    Attributes:
+        user_id: Discord user ID; primary key.
+        name: Last-seen Discord username for quick inspection.
+        day_started_at: Asia/Taipei midnight for the stored counters.
+        daily_loss: Current-day gross loss from player-side casino settlements.
+        daily_win: Current-day gross win from player-side casino settlements.
+        daily_net: Current-day signed net casino result.
+        updated_at: Taiwan-local timestamp of the last casino counter write.
+    """
+
+    __tablename__ = "casino_account"
+    __table_args__ = (
+        # /loss_leaderboard filters to one Taipei day and orders by gross loss.
+        # SQLite can read the daily loss suffix backwards for DESC ordering.
+        Index("ix_casino_account_day_loss", "day_started_at", "daily_loss"),
+    )
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
+    day_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    daily_loss: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_win: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_net: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
 
 
-class JackpotPool(Base):
+class JackpotPool(GlobalStateBase):
     """Per-game cumulative jackpot shared across every table of that game.
 
     One row per game (keyed by ``game_id``). Wager flows update
@@ -315,123 +328,16 @@ def _jackpot_seed_amount(game_id: str) -> int:
 # is idempotent (CREATE TABLE IF NOT EXISTS), so a benign double-create on
 # initial races is fine.
 _schema_ready_for: AsyncEngine | None = None
+_global_state_schema_ready_for: AsyncEngine | None = None
 
 
-async def _ensure_schema() -> None:  # noqa: C901, PLR0912 -- idempotent SQLite migrations are safest kept inline
-    """Bootstraps the schema once per ``_engine`` value.
-
-    Idempotent migrations:
-
-    * Adds ``avatar_url`` to legacy DBs that predated the avatar cache.
-    * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` /
-      ``is_admin`` / ``hide_from_leaderboard`` and daily casino counters so
-      newer account flags keep working on older DBs.
-    * Adds ``debt_after`` to legacy audit logs that predated loan context.
-    * Drops legacy ``loan_interest`` / ``loan_last_accrual_at`` columns
-      so the new model can INSERT fresh rows without violating their old
-      ``NOT NULL`` constraints. Requires SQLite 3.35+ (`DROP COLUMN`),
-      which is bundled with every Python ≥ 3.11.
-    """
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    if _schema_ready_for is _engine:
+async def _ensure_global_state_schema() -> None:
+    """Bootstraps bot-wide state in ``data/global_state.db``."""
+    global _global_state_schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    if _global_state_schema_ready_for is _global_state_engine:
         return
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        result = await conn.execute(statement=text(text="PRAGMA table_info(user_account)"))
-        existing_columns = {row[1] for row in result.all()}
-        if "avatar_url" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN avatar_url VARCHAR(2048) NOT NULL DEFAULT ''"
-                )
-            )
-        if "is_vip" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN is_vip BOOLEAN NOT NULL DEFAULT 0"
-                )
-            )
-        if "last_checkin_at" not in existing_columns:
-            await conn.execute(
-                statement=text(text="ALTER TABLE user_account ADD COLUMN last_checkin_at DATETIME")
-            )
-        if "checkin_streak" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN checkin_streak INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "is_admin" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
-                )
-            )
-        if "hide_from_leaderboard" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text=(
-                        "ALTER TABLE user_account "
-                        "ADD COLUMN hide_from_leaderboard BOOLEAN NOT NULL DEFAULT 0"
-                    )
-                )
-            )
-        if "casino_day_started_at" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN casino_day_started_at DATETIME"
-                )
-            )
-        if "daily_casino_loss" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN daily_casino_loss INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "daily_casino_win" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN daily_casino_win INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "daily_casino_net" not in existing_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE user_account ADD COLUMN daily_casino_net INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        if "loan_interest" in existing_columns:
-            await conn.execute(
-                statement=text(text="ALTER TABLE user_account DROP COLUMN loan_interest")
-            )
-        if "loan_last_accrual_at" in existing_columns:
-            await conn.execute(
-                statement=text(text="ALTER TABLE user_account DROP COLUMN loan_last_accrual_at")
-            )
-        await conn.execute(
-            statement=text(
-                text=(
-                    "CREATE INDEX IF NOT EXISTS ix_user_account_casino_day_loss "
-                    "ON user_account (casino_day_started_at, daily_casino_loss)"
-                )
-            )
-        )
-        result = await conn.execute(statement=text(text="PRAGMA table_info(point_transaction)"))
-        transaction_columns = {row[1] for row in result.all()}
-        if "debt_after" not in transaction_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE point_transaction ADD COLUMN debt_after INTEGER NOT NULL DEFAULT 0"
-                )
-            )
-        result = await conn.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
-        jackpot_columns = {row[1] for row in result.all()}
-        if "generation" not in jackpot_columns:
-            await conn.execute(
-                statement=text(
-                    text="ALTER TABLE jackpot_pool ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
-                )
-            )
+    async with _global_state_engine.begin() as conn:
+        await conn.run_sync(GlobalStateBase.metadata.create_all)
         for seed_game_id, seed_amount in _JACKPOT_SEEDS:
             await conn.execute(
                 statement=insert(JackpotPool)
@@ -446,6 +352,17 @@ async def _ensure_schema() -> None:  # noqa: C901, PLR0912 -- idempotent SQLite 
                 )
                 .on_conflict_do_nothing(index_elements=["game_id"])
             )
+    _global_state_schema_ready_for = _global_state_engine
+
+
+async def _ensure_schema() -> None:
+    """Bootstraps current economy and bot-wide state schemas once per engine."""
+    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    if _schema_ready_for is _engine:
+        return
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await _ensure_global_state_schema()
     _schema_ready_for = _engine
 
 
@@ -458,7 +375,12 @@ def open_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
-def credit_limit(user: Any, is_vip: bool = False) -> int:  # noqa: ANN401 -- accepts nextcord.User | nextcord.Member; both expose `created_at`
+def open_global_state_session() -> AsyncSession:
+    """Creates an async session bound to the bot-wide global state DB."""
+    return AsyncSession(bind=_global_state_engine, expire_on_commit=False)
+
+
+def credit_limit(user: User | Member, is_vip: bool = False) -> int:
     """Returns the borrowing cap for a Discord account based on its age.
 
     Computed entirely from ``user.created_at`` (which Discord reconstructs
@@ -605,77 +527,41 @@ def _build_signed_delta_upsert(
     )
 
 
-async def _log_transaction_in_session(  # noqa: PLR0913 -- audit row is wide on purpose
-    session: AsyncSession,
-    user_id: int,
-    kind: TransactionKind,
-    delta: int,
-    balance_after: int,
-    note: str | None,
-    now: datetime,
-    debt_after: int | None = None,
-) -> None:
-    """Appends one row to ``point_transaction`` from inside the caller's session.
-
-    Skips the write when ``delta == 0`` so push-style settlements (where the
-    house ledger doesn't actually move) don't clutter the audit log. When
-    ``debt_after`` is not supplied, a single SELECT reads the user's current
-    principal to keep the row self-contained; callers that have just computed
-    the new debt locally should pass it in to skip the read.
-    """
-    if delta == 0:
-        return
-    if debt_after is None:
-        debt_result = await session.execute(
-            statement=select(UserAccount.loan_principal).where(UserAccount.user_id == user_id)
-        )
-        debt_after = debt_result.scalar_one_or_none() or 0
-    await session.execute(
-        statement=insert(PointTransaction).values(
-            user_id=user_id,
-            kind=kind.value,
-            delta=delta,
-            balance_after=balance_after,
-            debt_after=debt_after,
-            note=note,
-            occurred_at=now,
-        )
-    )
-
-
 async def _apply_daily_casino_delta_in_session(
-    session: AsyncSession, user_id: int, delta: int, now: datetime
+    session: AsyncSession, user_id: int, name: str, delta: int, now: datetime
 ) -> None:
-    """Accumulates current-day gross casino counters on the player account."""
+    """Accumulates current-day gross casino counters in ``casino_account``."""
     if delta == 0:
         return
     today_midnight = _taipei_midnight(now=now)
-    stale_day = (UserAccount.casino_day_started_at.is_(None)) | (
-        UserAccount.casino_day_started_at != today_midnight
-    )
-    await session.execute(
-        statement=update(UserAccount)
-        .where(UserAccount.user_id == user_id, stale_day)
-        .values(
-            casino_day_started_at=today_midnight,
-            daily_casino_loss=0,
-            daily_casino_win=0,
-            daily_casino_net=0,
-            updated_at=now,
-        )
-    )
-
     loss_delta = max(-delta, 0)
     win_delta = max(delta, 0)
+    same_day = CasinoAccount.day_started_at == today_midnight
     await session.execute(
-        statement=update(UserAccount)
-        .where(UserAccount.user_id == user_id)
+        statement=insert(CasinoAccount)
         .values(
-            casino_day_started_at=today_midnight,
-            daily_casino_loss=UserAccount.daily_casino_loss + loss_delta,
-            daily_casino_win=UserAccount.daily_casino_win + win_delta,
-            daily_casino_net=UserAccount.daily_casino_net + delta,
+            user_id=user_id,
+            name=name or str(user_id),
+            day_started_at=today_midnight,
+            daily_loss=loss_delta,
+            daily_win=win_delta,
+            daily_net=delta,
             updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={
+                "name": name or str(user_id),
+                "day_started_at": today_midnight,
+                "daily_loss": case(
+                    (same_day, CasinoAccount.daily_loss + loss_delta), else_=loss_delta
+                ),
+                "daily_win": case(
+                    (same_day, CasinoAccount.daily_win + win_delta), else_=win_delta
+                ),
+                "daily_net": case((same_day, CasinoAccount.daily_net + delta), else_=delta),
+                "updated_at": now,
+            },
         )
     )
 
@@ -683,21 +569,19 @@ async def _apply_daily_casino_delta_in_session(
 async def _reset_expired_loan_in_session(
     session: AsyncSession, user_id: int, now: datetime
 ) -> None:
-    """Wipes ``loan_principal`` when the loan was opened before today's midnight.
+    """Wipes ``loan_account.principal`` when opened before today's midnight.
 
     Loans live for the rest of the calendar day in Asia/Taipei. The next
-    write or read after midnight zeroes the principal and clears
-    ``loan_opened_at`` so subsequent ``/borrow`` calls re-arm the daily
+    write or read after midnight zeroes the principal and clears ``opened_at``
+    so subsequent ``/borrow`` calls re-arm the daily
     window. The reset is unconditional (a forgiveness, not a clawback) so
     we do not touch ``balance``: users keep whatever they did with the
-    borrowed funds. We deliberately do NOT emit an audit row for the
-    reset: it is a deterministic system event and clutters the per-user
-    history without adding information.
+    borrowed funds.
     """
     today_midnight = _taipei_midnight(now=now)
     read_result = await session.execute(
-        statement=select(UserAccount.loan_principal, UserAccount.loan_opened_at).where(
-            UserAccount.user_id == user_id
+        statement=select(LoanAccount.principal, LoanAccount.opened_at).where(
+            LoanAccount.user_id == user_id
         )
     )
     row = read_result.one_or_none()
@@ -710,13 +594,13 @@ async def _reset_expired_loan_in_session(
     if opened_at >= today_midnight:
         return
     await session.execute(
-        statement=update(UserAccount)
-        .where(UserAccount.user_id == user_id)
-        .values(loan_principal=0, loan_opened_at=None, updated_at=now)
+        statement=update(LoanAccount)
+        .where(LoanAccount.user_id == user_id)
+        .values(principal=0, opened_at=None, updated_at=now)
     )
 
 
-async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row income pipeline kept linear for readability
+async def _credit_with_repayment_in_session(  # noqa: C901, PLR0913 -- two-table income + optional auto-repay retry path is kept linear
     session: AsyncSession,
     user_id: int,
     name: str,
@@ -731,18 +615,18 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
     Pipeline (all inside the caller's transaction):
 
     1. ``_reset_expired_loan_in_session`` clears the previous day's loan.
-    2. SELECT current balance + loan state.
+    2. SELECT current balance plus optional ``loan_account`` state.
     3. ``to_repay = min(amount * auto_repay_ratio_percent // 100, principal)``.
        ``auto_repay_ratio_percent`` is currently ``0`` (auto-repay disabled);
        bump it back to ``50`` to restore the old "half of positive income goes
        to principal" behavior without restructuring callers.
-    4. Repayment debits ``loan_principal``; remainder credits balance.
-    5. Conditional UPDATE gated on the values we read; retry on conflict.
-    6. ``_log_transaction_in_session`` writes one audit row with
-       ``delta = credited_amount`` and the post-state debt.
+    4. The full income bumps ``total_earned``; any auto-repaid slice also bumps
+       ``total_spent`` so the balance invariant remains true.
+    5. Conditional UPDATEs are gated on the values we read; retry on conflict.
 
     Caller must guarantee ``amount > 0``.
     """
+    _ = (kind, note)
     auto_repay_ratio_percent = 0  # disabled; was 50 — pipeline preserved for easy re-enable
     await _reset_expired_loan_in_session(session=session, user_id=user_id, now=now)
 
@@ -751,10 +635,15 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             statement=select(
                 UserAccount.balance,
                 UserAccount.name,
-                UserAccount.loan_principal,
                 UserAccount.total_earned,
-                UserAccount.loan_total_repaid,
-            ).where(UserAccount.user_id == user_id)
+                UserAccount.total_spent,
+                LoanAccount.user_id,
+                LoanAccount.principal,
+                LoanAccount.total_repaid,
+            )
+            .select_from(UserAccount)
+            .outerjoin(LoanAccount, LoanAccount.user_id == UserAccount.user_id)
+            .where(UserAccount.user_id == user_id)
         )
         row = read_result.one_or_none()
 
@@ -769,10 +658,6 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 balance=amount,
                 total_earned=amount,
                 total_spent=0,
-                loan_principal=0,
-                loan_total_borrowed=0,
-                loan_total_repaid=0,
-                loan_opened_at=None,
                 updated_at=now,
             )
             set_values: dict[str, Any] = {
@@ -786,19 +671,13 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 set_values["avatar_url"] = avatar_url
             upsert_stmt = base_stmt.on_conflict_do_update(
                 index_elements=["user_id"], set_=set_values
-            ).returning(UserAccount.balance, UserAccount.loan_principal)
+            ).returning(UserAccount.balance)
             insert_result = await session.execute(statement=upsert_stmt)
-            balance_after, principal_after = insert_result.one()
-            await _log_transaction_in_session(
-                session=session,
-                user_id=user_id,
-                kind=kind,
-                delta=amount,
-                balance_after=balance_after,
-                debt_after=principal_after,
-                note=note,
-                now=now,
+            balance_after = insert_result.scalar_one()
+            principal_result = await session.execute(
+                statement=select(LoanAccount.principal).where(LoanAccount.user_id == user_id)
             )
+            principal_after = principal_result.scalar_one_or_none() or 0
             return CreditResult(
                 new_balance=balance_after,
                 credited_amount=amount,
@@ -806,20 +685,30 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
                 remaining_debt=principal_after,
             )
 
-        (starting_balance, existing_name, principal, total_earned, total_repaid) = row
+        (
+            starting_balance,
+            existing_name,
+            total_earned,
+            total_spent,
+            loan_user_id,
+            principal_value,
+            total_repaid_value,
+        ) = row
+        principal = principal_value or 0
+        total_repaid = total_repaid_value or 0
         to_repay = min(amount * auto_repay_ratio_percent // 100, principal)
         credited = amount - to_repay
 
         new_balance = starting_balance + credited
         new_principal = principal - to_repay
-        new_total_earned = total_earned + credited
+        new_total_earned = total_earned + amount
+        new_total_spent = total_spent + to_repay
         new_total_repaid = total_repaid + to_repay
 
         update_values: dict[str, Any] = {
             "balance": new_balance,
             "total_earned": new_total_earned,
-            "loan_principal": new_principal,
-            "loan_total_repaid": new_total_repaid,
+            "total_spent": new_total_spent,
             "updated_at": now,
         }
         if name and name != existing_name:
@@ -829,11 +718,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
 
         stmt = (
             update(UserAccount)
-            .where(
-                UserAccount.user_id == user_id,
-                UserAccount.balance == starting_balance,
-                UserAccount.loan_principal == principal,
-            )
+            .where(UserAccount.user_id == user_id, UserAccount.balance == starting_balance)
             .values(**update_values)
             .returning(UserAccount.balance)
         )
@@ -843,16 +728,26 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- single-row inco
             # been committed in this helper yet, so re-read and try again.
             continue
 
-        await _log_transaction_in_session(
-            session=session,
-            user_id=user_id,
-            kind=kind,
-            delta=credited,
-            balance_after=new_balance,
-            debt_after=new_principal,
-            note=note,
-            now=now,
-        )
+        if to_repay > 0:
+            if loan_user_id is None:
+                await session.rollback()
+                continue
+            loan_values: dict[str, Any] = {
+                "principal": new_principal,
+                "total_repaid": new_total_repaid,
+                "updated_at": now,
+            }
+            if name:
+                loan_values["name"] = name
+            loan_result = await session.execute(
+                statement=update(LoanAccount)
+                .where(LoanAccount.user_id == user_id, LoanAccount.principal == principal)
+                .values(**loan_values)
+                .returning(LoanAccount.principal)
+            )
+            if loan_result.one_or_none() is None:
+                await session.rollback()
+                continue
         return CreditResult(
             new_balance=new_balance,
             credited_amount=credited,
@@ -873,7 +768,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     now: datetime,
     note: str | None = None,
 ) -> tuple[int, int]:
-    """Applies a clamped signed delta and logs any resulting audit row.
+    """Applies a clamped signed delta and returns the balance plus applied delta.
 
     The observed balance is pinned in the UPDATE predicate, so concurrent
     clamped debits cannot both compute their applied delta from the same stale
@@ -942,6 +837,7 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts to create a missing account for a positive clamped delta."""
+    _ = (kind, note)
     insert_stmt = (
         insert(UserAccount)
         .values(
@@ -960,15 +856,6 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
     inserted_balance = insert_result.scalar_one_or_none()
     if inserted_balance is None:
         return None
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=kind,
-        delta=delta,
-        balance_after=inserted_balance,
-        note=note,
-        now=now,
-    )
     return inserted_balance, delta
 
 
@@ -985,6 +872,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
+    _ = (kind, note)
     if delta < 0 and current_balance <= 0:
         new_balance = current_balance
     elif delta < 0:
@@ -1010,15 +898,6 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     )
     if update_result.scalar_one_or_none() is None:
         return None
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=kind,
-        delta=applied,
-        balance_after=new_balance,
-        note=note,
-        now=now,
-    )
     return new_balance, applied
 
 
@@ -1032,26 +911,17 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     now: datetime,
     note: str | None = None,
 ) -> int:
-    """Applies a signed delta without clamping and logs the audit row.
+    """Applies a signed delta without clamping.
 
     Used for dealer-side mirrors (``HOUSE_SETTLE``), which may run cumulative
     negative P&L. Player-side losses use the clamped path instead.
     """
+    _ = (kind, note)
     stmt = _build_signed_delta_upsert(
         user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
     )
     result = await session.execute(statement=stmt)
-    new_balance = result.scalar_one()
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=kind,
-        delta=delta,
-        balance_after=new_balance,
-        note=note,
-        now=now,
-    )
-    return new_balance
+    return result.scalar_one()
 
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
@@ -1070,7 +940,7 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, delta=delta, now=now
+            session=session, user_id=user_id, name=name, delta=delta, now=now
         )
         return credit_result.new_balance, delta
     if delta < 0:
@@ -1084,7 +954,7 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, delta=applied_delta, now=now
+            session=session, user_id=user_id, name=name, delta=applied_delta, now=now
         )
         return new_balance, applied_delta
     read_result = await session.execute(
@@ -1117,7 +987,7 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, delta=delta, now=now
+            session=session, user_id=user_id, name=name, delta=delta, now=now
         )
         return credit_result.new_balance, delta
     if delta < 0:
@@ -1131,7 +1001,7 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, delta=applied_delta, now=now
+            session=session, user_id=user_id, name=name, delta=applied_delta, now=now
         )
         return new_balance, applied_delta
     read_result = await session.execute(
@@ -1155,17 +1025,16 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
     lands in balance and the loan is untouched. The repayment pipeline
     itself is kept so flipping the ratio back to 50 re-enables the old
     half-of-income behavior without callers changing. Any portion not used
-    for repayment goes to balance and bumps ``total_earned``. Writes one
-    audit row via the helper.
+    for repayment goes to balance. The gross income bumps ``total_earned``;
+    a future auto-repaid slice would also bump ``total_spent``.
 
     Args:
         user_id: Discord user ID receiving the credit.
         name: Last-seen Discord username to store on the account.
         amount: Gross income amount; must be positive for the repayment
             path to run.
-        kind: Audit-log category for this credit (e.g. ``CHAT_REWARD``,
-            ``CASINO_PAYOUT``).
-        note: Optional free-text annotation for the audit row.
+        kind: Source category retained for call-site clarity.
+        note: Optional annotation retained for maintenance call-site clarity.
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
@@ -1196,7 +1065,7 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
         return result
 
 
-async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, delta, clamp policy, and audit metadata
+async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, delta, clamp policy, and note
     user_id: int,
     name: str,
     delta: int,
@@ -1207,9 +1076,8 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
     """Applies an explicit manual balance adjustment.
 
     This is the public maintenance API for scripts and admin tooling. It does
-    not trigger loan auto-repayment and it logs ``MANUAL_ADJUSTMENT`` rather
-    than pretending to be casino activity, so leaderboards and house P&L remain
-    clean.
+    not trigger loan auto-repayment and does not touch daily casino counters, so
+    leaderboards and house P&L remain clean.
 
     Args:
         user_id: Discord user ID whose balance should be adjusted.
@@ -1217,7 +1085,7 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
         delta: Signed amount to apply.
         allow_negative: Whether the resulting balance may go below zero.
         avatar_url: Last-seen Discord avatar URL to store when available.
-        note: Optional audit-log annotation.
+        note: Optional annotation retained for command call-site clarity.
 
     Returns:
         The post-adjustment balance and the applied delta after any clamp.
@@ -1377,8 +1245,8 @@ async def get_jackpot_pool(game_id: str) -> int:
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
     """Returns the current jackpot balance and generation for a shared pool."""
-    await _ensure_schema()
-    async with open_session() as session:
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=_database_now()
         )
@@ -1425,7 +1293,7 @@ async def _apply_jackpot_delta_in_session(
     the returned balance is always ready for the next table.
 
     Args:
-        session: Active SQLAlchemy session bound to ``_engine``.
+        session: Active SQLAlchemy session bound to ``_global_state_engine``.
         game_id: Game identifier (jackpot row primary key).
         delta: Signed point adjustment to apply to ``pool_balance``.
         now: ``_database_now()`` value pinned for this transaction.
@@ -1616,7 +1484,7 @@ async def _full_debit_rejections_in_session(
 async def apply_jackpot_settlement_batch(
     game_id: str, settlements: Sequence[JackpotSettlementRequest]
 ) -> JackpotSettlementBatchResult:
-    """Atomically applies one or more player settlements against a jackpot pool.
+    """Coordinates one or more player settlements against a jackpot pool.
 
     Positive player deltas (wins) are capped to the live pool balance inside
     this transaction, then credited via the auto-repayment path (the
@@ -1624,7 +1492,10 @@ async def apply_jackpot_settlement_batch(
     balance). Negative deltas normally clamp at zero and feed the pool with
     the actual debit.
     Required-full-debit settlements reject the whole batch instead. If a seeded
-    pool is drained, the same transaction restores its on-the-house seed.
+    pool is drained, the same global-state transaction restores its
+    on-the-house seed. Economy and jackpot writes now live in separate SQLite
+    files, so ordinary exceptions roll both sessions back before either commit,
+    but a hard crash between the two final commits is not cross-file atomic.
 
     Args:
         game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
@@ -1635,91 +1506,109 @@ async def apply_jackpot_settlement_batch(
         and the final jackpot balance after the final settlement and any reseed.
     """
     await _ensure_schema()
+    await _ensure_global_state_schema()
     now = _database_now()
-    async with open_session() as session:
+    async with open_session() as economy_session, open_global_state_session() as global_session:
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
         jackpot_snapshot: JackpotSnapshot | None = None
         jackpot_depleted = False
 
-        rejected_player_ids = await _full_debit_rejections_in_session(
-            session=session, settlements=settlements
-        )
-        if rejected_player_ids:
-            jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                session=session, game_id=game_id, now=now
+        try:
+            rejected_player_ids = await _full_debit_rejections_in_session(
+                session=economy_session, settlements=settlements
             )
-            await session.commit()
-            return JackpotSettlementBatchResult(
-                player_balances={},
-                applied_player_deltas={},
-                jackpot_balance=jackpot_snapshot.balance,
-                jackpot_generation=jackpot_snapshot.generation,
-                rejected_player_ids=rejected_player_ids,
-            )
-
-        for settlement in settlements:
-            effective_player_delta = settlement.player_delta
-            if effective_player_delta > 0:
-                claim, jackpot_snapshot, depleted = await _claim_jackpot_payout_in_session(
-                    session=session,
-                    game_id=game_id,
-                    amount=effective_player_delta,
-                    expected_generation=settlement.expected_jackpot_generation,
-                    now=now,
-                )
-                effective_player_delta = claim
-                jackpot_depleted = jackpot_depleted or depleted
-
-            player_balance, applied_player_delta = await _apply_jackpot_player_delta_in_session(
-                session=session,
-                user_id=settlement.player_id,
-                name=settlement.player_account_name,
-                avatar_url=settlement.player_avatar_url,
-                delta=effective_player_delta,
-                now=now,
-            )
-            if settlement.require_full_debit and applied_player_delta != effective_player_delta:
-                await session.rollback()
+            if rejected_player_ids:
                 jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                    session=session, game_id=game_id, now=now
+                    session=global_session, game_id=game_id, now=now
                 )
-                await session.commit()
+                await global_session.commit()
+                await economy_session.commit()
                 return JackpotSettlementBatchResult(
                     player_balances={},
                     applied_player_deltas={},
                     jackpot_balance=jackpot_snapshot.balance,
                     jackpot_generation=jackpot_snapshot.generation,
-                    rejected_player_ids=(settlement.player_id,),
+                    rejected_player_ids=rejected_player_ids,
                 )
-            player_balances[settlement.player_id] = player_balance
-            applied_player_deltas[settlement.player_id] = applied_player_delta
 
-            if applied_player_delta == 0:
+            for settlement in settlements:
+                effective_player_delta = settlement.player_delta
+                if effective_player_delta > 0:
+                    claim, jackpot_snapshot, depleted = await _claim_jackpot_payout_in_session(
+                        session=global_session,
+                        game_id=game_id,
+                        amount=effective_player_delta,
+                        expected_generation=settlement.expected_jackpot_generation,
+                        now=now,
+                    )
+                    effective_player_delta = claim
+                    jackpot_depleted = jackpot_depleted or depleted
+
+                (
+                    player_balance,
+                    applied_player_delta,
+                ) = await _apply_jackpot_player_delta_in_session(
+                    session=economy_session,
+                    user_id=settlement.player_id,
+                    name=settlement.player_account_name,
+                    avatar_url=settlement.player_avatar_url,
+                    delta=effective_player_delta,
+                    now=now,
+                )
+                if (
+                    settlement.require_full_debit
+                    and applied_player_delta != effective_player_delta
+                ):
+                    await economy_session.rollback()
+                    await global_session.rollback()
+                    jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+                        session=global_session, game_id=game_id, now=now
+                    )
+                    await global_session.commit()
+                    return JackpotSettlementBatchResult(
+                        player_balances={},
+                        applied_player_deltas={},
+                        jackpot_balance=jackpot_snapshot.balance,
+                        jackpot_generation=jackpot_snapshot.generation,
+                        rejected_player_ids=(settlement.player_id,),
+                    )
+                player_balances[settlement.player_id] = player_balance
+                applied_player_deltas[settlement.player_id] = applied_player_delta
+
+                if applied_player_delta == 0:
+                    jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+                        session=global_session, game_id=game_id, now=now
+                    )
+                    continue
+
+                if applied_player_delta < 0:
+                    jackpot_snapshot, depleted = await _apply_jackpot_delta_in_session(
+                        session=global_session,
+                        game_id=game_id,
+                        delta=-applied_player_delta,
+                        now=now,
+                    )
+                    jackpot_depleted = jackpot_depleted or depleted
+
+            if jackpot_snapshot is None:
                 jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                    session=session, game_id=game_id, now=now
+                    session=global_session, game_id=game_id, now=now
                 )
-                continue
 
-            if applied_player_delta < 0:
-                jackpot_snapshot, depleted = await _apply_jackpot_delta_in_session(
-                    session=session, game_id=game_id, delta=-applied_player_delta, now=now
-                )
-                jackpot_depleted = jackpot_depleted or depleted
-
-        if jackpot_snapshot is None:
-            jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                session=session, game_id=game_id, now=now
+            await global_session.commit()
+            await economy_session.commit()
+            return JackpotSettlementBatchResult(
+                player_balances=player_balances,
+                applied_player_deltas=applied_player_deltas,
+                jackpot_balance=jackpot_snapshot.balance,
+                jackpot_generation=jackpot_snapshot.generation,
+                jackpot_depleted=jackpot_depleted,
             )
-
-        await session.commit()
-        return JackpotSettlementBatchResult(
-            player_balances=player_balances,
-            applied_player_deltas=applied_player_deltas,
-            jackpot_balance=jackpot_snapshot.balance,
-            jackpot_generation=jackpot_snapshot.generation,
-            jackpot_depleted=jackpot_depleted,
-        )
+        except Exception:
+            await economy_session.rollback()
+            await global_session.rollback()
+            raise
 
 
 async def _read_borrow_state_in_session(
@@ -1730,14 +1619,18 @@ async def _read_borrow_state_in_session(
         statement=select(
             UserAccount.balance,
             UserAccount.name,
-            UserAccount.loan_principal,
-            UserAccount.loan_opened_at,
-        ).where(UserAccount.user_id == user_id)
+            LoanAccount.user_id,
+            LoanAccount.principal,
+            LoanAccount.opened_at,
+        )
+        .select_from(UserAccount)
+        .outerjoin(LoanAccount, LoanAccount.user_id == UserAccount.user_id)
+        .where(UserAccount.user_id == user_id)
     )
     row = result.one_or_none()
     if row is None:
         return None
-    return row[0], row[1], row[2], row[3]
+    return row[0], row[1], row[3] or 0, row[4], row[2] is not None
 
 
 async def _try_insert_borrow_in_session(  # noqa: PLR0913 -- borrow insert needs account identity and cap
@@ -1761,32 +1654,34 @@ async def _try_insert_borrow_in_session(  # noqa: PLR0913 -- borrow insert needs
             name=insert_name,
             avatar_url=avatar_url,
             balance=effective_amount,
-            total_earned=0,
+            total_earned=effective_amount,
             total_spent=0,
-            loan_principal=effective_amount,
-            loan_total_borrowed=effective_amount,
-            loan_total_repaid=0,
-            loan_opened_at=now,
             updated_at=now,
         )
         .on_conflict_do_nothing(index_elements=["user_id"])
-        .returning(UserAccount.balance, UserAccount.loan_principal)
+        .returning(UserAccount.balance)
     )
     insert_result = await session.execute(statement=insert_stmt)
-    inserted_row = insert_result.one_or_none()
-    if inserted_row is None:
+    balance_after = insert_result.scalar_one_or_none()
+    if balance_after is None:
         return None, True
-    balance_after, principal_after = inserted_row
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=TransactionKind.BORROW,
-        delta=effective_amount,
-        balance_after=balance_after,
-        debt_after=principal_after,
-        note=None,
-        now=now,
+    loan_result = await session.execute(
+        statement=insert(LoanAccount)
+        .values(
+            user_id=user_id,
+            name=insert_name,
+            principal=effective_amount,
+            total_borrowed=effective_amount,
+            total_repaid=0,
+            opened_at=now,
+            updated_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["user_id"])
+        .returning(LoanAccount.principal)
     )
+    principal_after = loan_result.scalar_one_or_none()
+    if principal_after is None:
+        return None, True
     return (
         BorrowResult(
             new_balance=balance_after, principal=principal_after, borrowed_amount=effective_amount
@@ -1806,7 +1701,7 @@ async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs
     state: _BorrowState,
 ) -> tuple[BorrowResult | None, bool]:
     """Attempts conditional borrow UPDATE; returns ``(result, retry_needed)``."""
-    current_balance, existing_name, current_principal, loan_opened_at = state
+    current_balance, existing_name, current_principal, loan_opened_at, loan_exists = state
     effective_amount = min(amount, credit_limit_value - current_principal)
     if effective_amount <= 0:
         return None, False
@@ -1815,9 +1710,7 @@ async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs
     new_principal = current_principal + effective_amount
     update_values: dict[str, Any] = {
         "balance": new_balance,
-        "loan_principal": new_principal,
-        "loan_total_borrowed": UserAccount.loan_total_borrowed + effective_amount,
-        "loan_opened_at": loan_opened_at or now,
+        "total_earned": UserAccount.total_earned + effective_amount,
         "updated_at": now,
     }
     if name and name != existing_name:
@@ -1825,39 +1718,60 @@ async def _try_update_borrow_in_session(  # noqa: PLR0913 -- borrow update needs
     if avatar_url:
         update_values["avatar_url"] = avatar_url
 
-    loan_opened_gate: ColumnElement[bool]
-    if loan_opened_at is None:
-        loan_opened_gate = UserAccount.loan_opened_at.is_(None)
-    else:
-        loan_opened_gate = UserAccount.loan_opened_at == loan_opened_at
-
     update_stmt = (
         update(UserAccount)
-        .where(
-            UserAccount.user_id == user_id,
-            UserAccount.balance == current_balance,
-            UserAccount.loan_principal == current_principal,
-            loan_opened_gate,
-        )
+        .where(UserAccount.user_id == user_id, UserAccount.balance == current_balance)
         .values(**update_values)
-        .returning(UserAccount.balance, UserAccount.loan_principal)
+        .returning(UserAccount.balance)
     )
     update_result = await session.execute(statement=update_stmt)
-    updated_row = update_result.one_or_none()
-    if updated_row is None:
+    balance_after = update_result.scalar_one_or_none()
+    if balance_after is None:
         return None, True
 
-    balance_after, principal_after = updated_row
-    await _log_transaction_in_session(
-        session=session,
-        user_id=user_id,
-        kind=TransactionKind.BORROW,
-        delta=effective_amount,
-        balance_after=balance_after,
-        debt_after=principal_after,
-        note=None,
-        now=now,
-    )
+    loan_name = name or existing_name or str(user_id)
+    if loan_exists:
+        loan_values: dict[str, Any] = {
+            "name": loan_name,
+            "principal": new_principal,
+            "total_borrowed": LoanAccount.total_borrowed + effective_amount,
+            "opened_at": loan_opened_at or now,
+            "updated_at": now,
+        }
+        loan_opened_gate: ColumnElement[bool]
+        if loan_opened_at is None:
+            loan_opened_gate = LoanAccount.opened_at.is_(None)
+        else:
+            loan_opened_gate = LoanAccount.opened_at == loan_opened_at
+        loan_result = await session.execute(
+            statement=update(LoanAccount)
+            .where(
+                LoanAccount.user_id == user_id,
+                LoanAccount.principal == current_principal,
+                loan_opened_gate,
+            )
+            .values(**loan_values)
+            .returning(LoanAccount.principal)
+        )
+        principal_after = loan_result.scalar_one_or_none()
+    else:
+        loan_result = await session.execute(
+            statement=insert(LoanAccount)
+            .values(
+                user_id=user_id,
+                name=loan_name,
+                principal=effective_amount,
+                total_borrowed=effective_amount,
+                total_repaid=0,
+                opened_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
+            .returning(LoanAccount.principal)
+        )
+        principal_after = loan_result.scalar_one_or_none()
+    if principal_after is None:
+        return None, True
     return (
         BorrowResult(
             new_balance=balance_after, principal=principal_after, borrowed_amount=effective_amount
@@ -1875,7 +1789,8 @@ async def borrow(
     user has no remaining credit. Requests above the remaining daily credit
     are clamped to that remaining amount. Loans expire at the next Asia/Taipei
     midnight, so the daily cap matches the daily reset window. Borrowed funds
-    do **not** bump ``total_earned`` — debt isn't earnings.
+    increase balance, so they also bump ``total_earned`` to preserve
+    ``total_earned - total_spent == balance``.
 
     Args:
         user_id: Discord user ID for the borrower.
@@ -1934,10 +1849,9 @@ async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> R
     """Pays down principal, debited from the user's balance.
 
     Effective repayment is clamped to ``min(amount, balance, principal)``
-    so over-requests automatically reduce to the largest legal value. The
-    user's ``total_spent`` is intentionally **not** bumped because repaying
-    a loan isn't spending in the gameplay sense; the ``loan_total_repaid``
-    column is the right place to track the repayment.
+    so over-requests automatically reduce to the largest legal value. Repayment
+    reduces balance, so it bumps ``total_spent`` while ``loan_account`` tracks
+    the debt-specific repayment total.
 
     Args:
         user_id: Discord user ID for the borrower.
@@ -1962,9 +1876,12 @@ async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> R
                 statement=select(
                     UserAccount.balance,
                     UserAccount.name,
-                    UserAccount.loan_principal,
-                    UserAccount.loan_total_repaid,
-                ).where(UserAccount.user_id == user_id)
+                    LoanAccount.principal,
+                    LoanAccount.total_repaid,
+                )
+                .select_from(UserAccount)
+                .join(LoanAccount, LoanAccount.user_id == UserAccount.user_id)
+                .where(UserAccount.user_id == user_id)
             )
             row = read_result.one_or_none()
             if row is None:
@@ -1980,8 +1897,7 @@ async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> R
 
             update_values: dict[str, Any] = {
                 "balance": new_balance,
-                "loan_principal": new_principal,
-                "loan_total_repaid": new_total_repaid,
+                "total_spent": UserAccount.total_spent + effective,
                 "updated_at": now,
             }
             if name and name != existing_name:
@@ -1991,11 +1907,7 @@ async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> R
 
             stmt = (
                 update(UserAccount)
-                .where(
-                    UserAccount.user_id == user_id,
-                    UserAccount.balance == current_balance,
-                    UserAccount.loan_principal == principal,
-                )
+                .where(UserAccount.user_id == user_id, UserAccount.balance == current_balance)
                 .values(**update_values)
                 .returning(UserAccount.balance)
             )
@@ -2004,16 +1916,22 @@ async def repay(user_id: int, name: str, amount: int, avatar_url: str = "") -> R
                 await session.rollback()
                 continue
 
-            await _log_transaction_in_session(
-                session=session,
-                user_id=user_id,
-                kind=TransactionKind.REPAY,
-                delta=-effective,
-                balance_after=new_balance,
-                debt_after=new_principal,
-                note=None,
-                now=now,
+            loan_values: dict[str, Any] = {
+                "principal": new_principal,
+                "total_repaid": new_total_repaid,
+                "updated_at": now,
+            }
+            if name:
+                loan_values["name"] = name
+            loan_result = await session.execute(
+                statement=update(LoanAccount)
+                .where(LoanAccount.user_id == user_id, LoanAccount.principal == principal)
+                .values(**loan_values)
+                .returning(LoanAccount.principal)
             )
+            if loan_result.one_or_none() is None:
+                await session.rollback()
+                continue
             await session.commit()
             return RepayResult(
                 new_balance=new_balance, principal_repaid=effective, remaining_debt=new_principal
@@ -2085,10 +2003,6 @@ async def _insert_first_checkin_in_session(
             balance=reward,
             total_earned=reward,
             total_spent=0,
-            loan_principal=0,
-            loan_total_borrowed=0,
-            loan_total_repaid=0,
-            loan_opened_at=None,
             is_vip=False,
             last_checkin_at=now,
             checkin_streak=new_streak,
@@ -2244,15 +2158,6 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
                 continue
 
             reward, balance_after, streak_after, vip_after = outcome
-            await _log_transaction_in_session(
-                session=session,
-                user_id=user_id,
-                kind=TransactionKind.CHECKIN_REWARD,
-                delta=reward,
-                balance_after=balance_after,
-                note=f"streak {streak_after}",
-                now=now,
-            )
             await session.commit()
             return CheckinResult(
                 new_balance=balance_after, amount=reward, streak=streak_after, is_vip=vip_after
@@ -2324,15 +2229,6 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 await session.rollback()
                 continue
 
-            await _log_transaction_in_session(
-                session=session,
-                user_id=user_id,
-                kind=TransactionKind.VIP_PURCHASE,
-                delta=-cost,
-                balance_after=updated_row[0],
-                note=None,
-                now=now,
-            )
             await session.commit()
             return VipPurchaseResult(new_balance=updated_row[0], cost=cost)
 
@@ -2421,10 +2317,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
                 total_earned=0,
                 total_spent=0,
                 updated_at=now,
-                loan_principal=0,
-                loan_total_borrowed=0,
-                loan_total_repaid=0,
-                loan_opened_at=None,
                 is_vip=False,
                 last_checkin_at=None,
                 checkin_streak=0,
@@ -2518,17 +2410,24 @@ async def get_loan_view(user_id: int) -> LoanView | None:
         await session.commit()
         result = await session.execute(
             statement=select(
-                UserAccount.loan_principal,
-                UserAccount.loan_opened_at,
-                UserAccount.loan_total_borrowed,
-                UserAccount.loan_total_repaid,
-            ).where(UserAccount.user_id == user_id)
+                UserAccount.user_id,
+                LoanAccount.principal,
+                LoanAccount.opened_at,
+                LoanAccount.total_borrowed,
+                LoanAccount.total_repaid,
+            )
+            .select_from(UserAccount)
+            .outerjoin(LoanAccount, LoanAccount.user_id == UserAccount.user_id)
+            .where(UserAccount.user_id == user_id)
         )
         row = result.one_or_none()
         if row is None:
             return None
         return LoanView(
-            principal=row[0], opened_at=row[1], total_borrowed=row[2], total_repaid=row[3]
+            principal=row[1] or 0,
+            opened_at=row[2],
+            total_borrowed=row[3] or 0,
+            total_repaid=row[4] or 0,
         )
 
 
@@ -2602,26 +2501,6 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         credit_result = await session.execute(statement=credit_stmt)
         receiver_balance = credit_result.scalar_one()
 
-        sender_note = f"to {receiver_name or receiver_id} ({receiver_id})"
-        receiver_note = f"from {sender_name or sender_id} ({sender_id})"
-        await _log_transaction_in_session(
-            session=session,
-            user_id=sender_id,
-            kind=TransactionKind.TRANSFER_OUT,
-            delta=-amount,
-            balance_after=sender_balance,
-            note=sender_note,
-            now=now,
-        )
-        await _log_transaction_in_session(
-            session=session,
-            user_id=receiver_id,
-            kind=TransactionKind.TRANSFER_IN,
-            delta=amount,
-            balance_after=receiver_balance,
-            note=receiver_note,
-            now=now,
-        )
         await session.commit()
         return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 
@@ -2670,10 +2549,9 @@ async def top_losers(
 ) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
-    The leaderboard reads persisted ``user_account`` daily counters instead
-    of aggregating ``point_transaction`` rows. Writes lazily reset stale
+    The leaderboard reads persisted ``casino_account`` daily counters. Writes lazily reset stale
     counters at the first casino settlement after Taipei midnight, while this
-    query filters by today's ``casino_day_started_at`` so yesterday's counters
+    query filters by today's ``day_started_at`` so yesterday's counters
     never leak into a new day.
 
     Args:
@@ -2695,16 +2573,15 @@ async def top_losers(
     async with open_session() as session:
         stmt = (
             select(
-                UserAccount.user_id,
-                UserAccount.name,
+                CasinoAccount.user_id,
+                CasinoAccount.name,
                 UserAccount.avatar_url,
-                UserAccount.daily_casino_loss,
+                CasinoAccount.daily_loss,
             )
-            .where(
-                UserAccount.casino_day_started_at == today_midnight,
-                UserAccount.daily_casino_loss > 0,
-            )
-            .order_by(desc(UserAccount.daily_casino_loss))
+            .select_from(CasinoAccount)
+            .join(UserAccount, UserAccount.user_id == CasinoAccount.user_id)
+            .where(CasinoAccount.day_started_at == today_midnight, CasinoAccount.daily_loss > 0)
+            .order_by(desc(CasinoAccount.daily_loss))
             .limit(limit=limit)
         )
         if not include_hidden:

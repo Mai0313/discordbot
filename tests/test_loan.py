@@ -1,19 +1,19 @@
-"""Tests for the loan layer: credit limit, borrow / repay flows, daily reset, audit log."""
+"""Tests for the loan layer: credit limit, borrow / repay flows, and daily reset."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import update
 
 from discordbot.typings.economy import TransactionKind
 from discordbot.cogs._economy.database import (
     TAIWAN_TIMEZONE,
-    UserAccount,
-    PointTransaction,
+    LoanAccount,
     repay,
     borrow,
     transfer,
@@ -31,29 +31,21 @@ from discordbot.cogs._economy.database import (
     apply_vip_blackjack_bonus,
 )
 
+if TYPE_CHECKING:
+    from nextcord import User
+
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
-def _user_with_age(days_old: int) -> SimpleNamespace:
+def _user_with_age(days_old: int) -> User:
     """Returns a minimal stand-in for a Discord user with a known creation date."""
-    return SimpleNamespace(created_at=datetime.now(tz=UTC) - timedelta(days=days_old))
-
-
-async def _list_transactions(user_id: int) -> list[tuple[str, int, int]]:
-    """Returns ``(kind, delta, debt_after)`` rows for a user, oldest first."""
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(
-                PointTransaction.kind, PointTransaction.delta, PointTransaction.debt_after
-            )
-            .where(PointTransaction.user_id == user_id)
-            .order_by(PointTransaction.id)
-        )
-        return [(row[0], row[1], row[2]) for row in result.all()]
+    return cast(
+        "User", SimpleNamespace(created_at=datetime.now(tz=UTC) - timedelta(days=days_old))
+    )
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
-    """Seeds a positive balance without writing audit rows."""
+    """Seeds a positive balance without loan side effects."""
     await _ensure_schema()
     if amount <= 0:
         return await get_balance(user_id=user_id)
@@ -73,9 +65,9 @@ async def _backdate_loan_opened_at(user_id: int, days_ago: int) -> None:
     past = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=days_ago)
     async with open_session() as session:
         await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == user_id)
-            .values(loan_opened_at=past)
+            statement=update(LoanAccount)
+            .where(LoanAccount.user_id == user_id)
+            .values(opened_at=past)
         )
         await session.commit()
 
@@ -210,17 +202,17 @@ async def test_borrow_concurrent_requests_cannot_exceed_limit() -> None:
     assert sum(result.borrowed_amount for result in results if result is not None) == 1_000
 
 
-async def test_borrow_treats_borrowed_money_as_debt_not_earnings() -> None:
-    """Borrowed money goes into balance but does not bump total_earned."""
+async def test_borrow_counts_balance_increase_as_earnings() -> None:
+    """Borrowed money increases balance, so it also bumps total_earned."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     account = await get_account(user_id=1)
     assert account is not None
     assert account.balance == 500
-    assert account.total_earned == 0
+    assert account.total_earned == 500
 
 
-async def test_borrow_on_existing_account_preserves_total_earned() -> None:
-    """Borrowing on top of an existing balance doesn't disturb earnings history."""
+async def test_borrow_on_existing_account_extends_total_earned() -> None:
+    """Borrowing on top of an existing balance keeps totals aligned with balance."""
     await _add_balance(user_id=1, name="alice", amount=100)
     result = await borrow(user_id=1, name="alice", amount=400, credit_limit_value=1_000)
     assert result is not None
@@ -228,7 +220,7 @@ async def test_borrow_on_existing_account_preserves_total_earned() -> None:
     account = await get_account(user_id=1)
     assert account is not None
     assert account.balance == 500
-    assert account.total_earned == 100
+    assert account.total_earned == 500
 
 
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1, -1000])
@@ -306,13 +298,14 @@ async def test_repay_negative_balance_returns_none() -> None:
     assert await repay(user_id=1, name="alice", amount=100) is None
 
 
-async def test_repay_does_not_bump_total_spent() -> None:
-    """Repaying a loan must not pollute the gameplay-spent counter."""
+async def test_repay_counts_balance_decrease_as_spent() -> None:
+    """Repaying a loan decreases balance, so it bumps total_spent."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     await repay(user_id=1, name="alice", amount=200)
     account = await get_account(user_id=1)
     assert account is not None
-    assert account.total_spent == 0
+    assert account.total_spent == 200
+    assert account.total_earned - account.total_spent == account.balance
 
 
 @pytest.mark.parametrize(argnames="amount", argvalues=[0, -1])
@@ -378,15 +371,17 @@ async def test_credit_with_repayment_odd_amount_lands_whole_at_zero_ratio() -> N
 
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
-    """Zero amount returns current balance without writing or logging."""
+    """Zero amount returns current balance without mutating totals."""
     await _add_balance(user_id=1, name="alice", amount=100)
     result = await credit_with_repayment(
         user_id=1, name="alice", amount=0, kind=TransactionKind.CHAT_REWARD
     )
     assert result.new_balance == 100
     assert result.credited_amount == 0
-    rows = await _list_transactions(user_id=1)
-    assert rows == []
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert account.total_earned == 100
+    assert account.total_spent == 0
 
 
 async def test_credit_with_repayment_first_sight_creates_row() -> None:
@@ -493,69 +488,51 @@ async def test_get_loan_view_after_borrow_and_repay_tracks_totals() -> None:
     assert view.total_repaid == 200
 
 
-# Audit log ----------------------------------------------------------------
+# Account totals -------------------------------------------------------------
 
 
-async def test_borrow_logs_audit_row() -> None:
-    """Borrow writes one BORROW row with positive delta and post-state debt."""
-    await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
-    rows = await _list_transactions(user_id=1)
-    assert rows == [(TransactionKind.BORROW.value, 500, 500)]
-
-
-async def test_repay_logs_audit_row() -> None:
-    """Repay writes one REPAY row with negative delta and reduced debt."""
+async def test_borrow_and_repay_keep_account_totals_aligned() -> None:
+    """Borrow and repay maintain the account balance invariant."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     await repay(user_id=1, name="alice", amount=200)
-    rows = await _list_transactions(user_id=1)
-    assert rows == [
-        (TransactionKind.BORROW.value, 500, 500),
-        (TransactionKind.REPAY.value, -200, 300),
-    ]
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert account.balance == 300
+    assert account.total_earned == 500
+    assert account.total_spent == 200
+    assert account.total_earned - account.total_spent == account.balance
 
 
-async def test_chat_reward_logs_credited_slice_with_debt_context() -> None:
-    """credit_with_repayment logs delta=credited and debt_after=post-repay debt.
-
-    With auto-repay disabled (ratio=0), the credited slice equals the full
-    income and the principal stays unchanged.
-    """
+async def test_chat_reward_with_debt_updates_earned_only_at_zero_ratio() -> None:
+    """With auto-repay disabled, income lands fully in balance and principal stays."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
     await credit_with_repayment(
         user_id=1, name="alice", amount=100, kind=TransactionKind.CHAT_REWARD
     )
-    rows = await _list_transactions(user_id=1)
-    assert rows == [
-        (TransactionKind.BORROW.value, 500, 500),
-        (TransactionKind.CHAT_REWARD.value, 100, 500),
-    ]
+    account = await get_account(user_id=1)
+    loan = await get_loan_view(user_id=1)
+    assert account is not None
+    assert loan is not None
+    assert account.balance == 600
+    assert account.total_earned == 600
+    assert account.total_spent == 0
+    assert loan.principal == 500
 
 
-async def test_transfer_logs_both_sides() -> None:
-    """Transfer writes TRANSFER_OUT for sender and TRANSFER_IN for receiver."""
+async def test_transfer_updates_sender_and_receiver_totals() -> None:
+    """Transfer debits sender spent total and credits receiver earned total."""
     await _add_balance(user_id=1, name="alice", amount=100)
     await transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40)
-    assert await _list_transactions(user_id=1) == [(TransactionKind.TRANSFER_OUT.value, -40, 0)]
-    assert await _list_transactions(user_id=2) == [(TransactionKind.TRANSFER_IN.value, 40, 0)]
+    sender = await get_account(user_id=1)
+    receiver = await get_account(user_id=2)
+    assert sender is not None
+    assert receiver is not None
+    assert (sender.balance, sender.total_earned, sender.total_spent) == (60, 100, 40)
+    assert (receiver.balance, receiver.total_earned, receiver.total_spent) == (40, 40, 0)
 
 
-async def test_transfer_log_note_captures_counterparty() -> None:
-    """Transfer audit rows carry the counterparty identity in ``note``."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40)
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(PointTransaction.user_id, PointTransaction.note).order_by(
-                PointTransaction.id
-            )
-        )
-        notes = result.all()
-    assert (1, "to bob (2)") in notes
-    assert (2, "from alice (1)") in notes
-
-
-async def test_apply_round_settlement_logs_casino_bet() -> None:
-    """A negative player settlement writes a CASINO_BET row."""
+async def test_apply_round_settlement_updates_player_and_house_totals() -> None:
+    """Casino settlement stores actual applied deltas in account totals."""
     await _add_balance(user_id=1, name="alice", amount=100)
     await apply_round_settlement(
         player_id=1,
@@ -565,41 +542,18 @@ async def test_apply_round_settlement_logs_casino_bet() -> None:
         dealer_name="house",
         dealer_delta=40,
     )
-    assert await _list_transactions(user_id=1) == [(TransactionKind.CASINO_BET.value, -40, 0)]
+    player = await get_account(user_id=1)
+    house = await get_account(user_id=99)
+    assert player is not None
+    assert house is not None
+    assert (player.balance, player.total_earned, player.total_spent) == (60, 100, 40)
+    assert (house.balance, house.total_earned, house.total_spent) == (40, 40, 0)
 
 
-async def test_apply_round_settlement_logs_payout_and_house_settle() -> None:
-    """Player and dealer sides of a round each produce one audit row."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-40,
-    )
-    assert await _list_transactions(user_id=1) == [(TransactionKind.CASINO_PAYOUT.value, 40, 0)]
-    assert await _list_transactions(user_id=99) == [(TransactionKind.HOUSE_SETTLE.value, -40, 0)]
-
-
-async def test_apply_round_settlement_skips_zero_delta_house_log() -> None:
-    """A push (dealer_delta=0) does not produce a house audit row."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=0,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=0,
-    )
-    assert await _list_transactions(user_id=99) == []
-
-
-async def test_adjust_balance_logs_applied_delta_not_requested_delta() -> None:
-    """A clamped manual adjustment logs only the applied balance delta."""
+async def test_adjust_balance_counts_applied_delta_not_requested_delta() -> None:
+    """A clamped manual adjustment spends only the applied balance delta."""
     await _add_balance(user_id=1, name="alice", amount=10)
     await adjust_balance(user_id=1, name="alice", delta=-1000)
-    rows = await _list_transactions(user_id=1)
-    assert rows == [(TransactionKind.MANUAL_ADJUSTMENT.value, -10, 0)]
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert (account.balance, account.total_earned, account.total_spent) == (0, 10, 10)

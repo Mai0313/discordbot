@@ -19,7 +19,11 @@ CHECKIN_STREAK_CYCLE: Final[int] = 7
 
 
 class TransactionKind(StrEnum):
-    """Categorises a row in the ``point_transaction`` audit log.
+    """Labels the source of a balance credit or debit.
+
+    The economy DB no longer persists a per-mutation transaction log, but these
+    labels keep reward call sites explicit and leave room for future event
+    routing without changing the public database facade.
 
     Attributes:
         MESSAGE_REWARD: Base reward for every non-bot user message.
@@ -128,8 +132,8 @@ class CreditResult(BaseModel):
     Attributes:
         new_balance: User balance after the credit.
         credited_amount: Amount that landed in balance; ``amount - to_repay``.
-        principal_repaid: Amount that paid down ``loan_principal``.
-        remaining_debt: ``loan_principal`` after the operation.
+        principal_repaid: Amount that paid down loan principal.
+        remaining_debt: Loan principal after the operation.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -161,8 +165,8 @@ class RepayResult(BaseModel):
 
     Attributes:
         new_balance: User balance after the deduction.
-        principal_repaid: Amount that paid down ``loan_principal``.
-        remaining_debt: ``loan_principal`` after the operation.
+        principal_repaid: Amount that paid down loan principal.
+        remaining_debt: Loan principal after the operation.
     """
 
     model_config = ConfigDict(frozen=True)

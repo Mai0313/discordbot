@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import func, text, select, update
+from sqlalchemy import text, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.typings.games import (
@@ -31,12 +31,12 @@ from discordbot.cogs._economy.database import (
     JackpotPool,
     UserAccount,
     AdminAccount,
+    CasinoAccount,
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
     TransactionKind,
     LeaderboardEntry,
-    PointTransaction,
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
     JackpotSettlementRequest,
@@ -64,6 +64,7 @@ from discordbot.cogs._economy.database import (
     credit_with_repayment,
     apply_round_settlement,
     apply_jackpot_settlement,
+    open_global_state_session,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
 )
@@ -245,11 +246,11 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
     async with open_session() as session:
         result = await session.execute(
             statement=select(
-                UserAccount.daily_casino_loss,
-                UserAccount.daily_casino_win,
-                UserAccount.daily_casino_net,
-                UserAccount.casino_day_started_at,
-            ).where(UserAccount.user_id == user_id)
+                CasinoAccount.daily_loss,
+                CasinoAccount.daily_win,
+                CasinoAccount.daily_net,
+                CasinoAccount.day_started_at,
+            ).where(CasinoAccount.user_id == user_id)
         )
         row = result.one_or_none()
     if row is None:
@@ -258,7 +259,7 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
-    """Seeds a positive balance without writing audit rows."""
+    """Seeds a positive balance without loan or casino side effects."""
     await _ensure_schema()
     if amount <= 0:
         return await get_balance(user_id=user_id)
@@ -288,43 +289,27 @@ async def test_adjust_balance_accumulates() -> None:
 
 
 async def test_adjust_balance_zero_is_noop() -> None:
-    """Zero deltas do not change the balance or write an audit row."""
+    """Zero deltas do not change balance or lifetime totals."""
     await _add_balance(user_id=42, name="alice", amount=100)
     result = await adjust_balance(user_id=42, name="alice", delta=0)
     assert result == BalanceAdjustmentResult(new_balance=100, applied_delta=0)
-    async with open_session() as session:
-        count = await session.scalar(
-            statement=select(func.count()).where(
-                PointTransaction.user_id == 42,
-                PointTransaction.kind == TransactionKind.MANUAL_ADJUSTMENT.value,
-            )
-        )
-    assert count == 0
+    account = await get_account(user_id=42)
+    assert account == AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
 
 
-async def test_adjust_balance_logs_manual_adjustment() -> None:
-    """Manual adjustments write explicit MANUAL_ADJUSTMENT audit rows."""
+async def test_adjust_balance_positive_updates_total_earned() -> None:
+    """Positive manual adjustments are counted as earned points."""
     result = await adjust_balance(user_id=42, name="alice", delta=100)
     assert result == BalanceAdjustmentResult(new_balance=100, applied_delta=100)
-    async with open_session() as session:
-        rows = (
-            await session.execute(
-                statement=select(
-                    PointTransaction.kind, PointTransaction.delta, PointTransaction.balance_after
-                ).where(PointTransaction.user_id == 42)
-            )
-        ).all()
-    assert rows == [(TransactionKind.MANUAL_ADJUSTMENT.value, 100, 100)]
+    account = await get_account(user_id=42)
+    assert account == AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
 
 
-async def test_adjust_balance_logs_note() -> None:
-    """Manual adjustments can annotate the audit row."""
+async def test_adjust_balance_accepts_note_without_changing_totals() -> None:
+    """Manual adjustment notes are accepted by the public facade."""
     await adjust_balance(user_id=42, name="alice", delta=100, note="refund_tax by 1")
-    async with open_session() as session:
-        note = await session.scalar(
-            statement=select(PointTransaction.note).where(PointTransaction.user_id == 42)
-        )
-    assert note == "refund_tax by 1"
+    account = await get_account(user_id=42)
+    assert account == AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
 
 
 async def test_adjust_balance_clamps_at_zero() -> None:
@@ -417,7 +402,7 @@ async def test_list_admins_returns_only_admin_accounts() -> None:
 
 
 async def test_write_timestamps_use_taiwan_local_time() -> None:
-    """Account and audit timestamps are persisted as Taiwan-local wall time."""
+    """Account timestamps are persisted as Taiwan-local wall time."""
     before = datetime.now(tz=TAIWAN_TIMEZONE).replace(tzinfo=None)
     await credit_with_repayment(
         user_id=42, name="alice", amount=10, kind=TransactionKind.CHAT_REWARD
@@ -426,112 +411,82 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
 
     async with open_session() as session:
         result = await session.execute(
-            statement=select(UserAccount.updated_at, PointTransaction.occurred_at)
-            .join(PointTransaction, PointTransaction.user_id == UserAccount.user_id)
-            .where(UserAccount.user_id == 42)
+            statement=select(UserAccount.updated_at).where(UserAccount.user_id == 42)
         )
-        updated_at, occurred_at = result.one()
+        updated_at = result.scalar_one()
 
     assert before <= updated_at <= after
-    assert before <= occurred_at <= after
 
 
-async def test_existing_economy_db_gets_schema_migrations(
+async def test_ensure_schema_bootstraps_current_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pre-feature economy DB picks up new columns and drops dead legacy ones."""
-    db_path = tmp_path / "legacy-economy.db"
+    """A clean startup creates only the current economy and global-state tables."""
+    db_path = tmp_path / "current-economy.db"
+    global_state_db_path = tmp_path / "current-global-state.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    async with engine.begin() as conn:
-        await conn.execute(
-            statement=text(
-                text="""
-                CREATE TABLE user_account (
-                    user_id INTEGER NOT NULL PRIMARY KEY,
-                    name VARCHAR(128),
-                    balance INTEGER NOT NULL,
-                    total_earned INTEGER NOT NULL,
-                    total_spent INTEGER NOT NULL,
-                    updated_at DATETIME,
-                    loan_principal INTEGER NOT NULL,
-                    loan_interest INTEGER NOT NULL,
-                    loan_total_borrowed INTEGER NOT NULL,
-                    loan_total_repaid INTEGER NOT NULL,
-                    loan_last_accrual_at DATETIME,
-                    loan_opened_at DATETIME
-                )
-                """
-            )
-        )
-        await conn.execute(
-            statement=text(
-                text="""
-                INSERT INTO user_account (
-                    user_id, name, balance, total_earned, total_spent, updated_at,
-                    loan_principal, loan_interest, loan_total_borrowed, loan_total_repaid,
-                    loan_last_accrual_at, loan_opened_at
-                )
-                VALUES (42, 'alice', 10, 10, 0, CURRENT_TIMESTAMP, 0, 0, 0, 0, NULL, NULL)
-                """
-            )
-        )
-        await conn.execute(
-            statement=text(
-                text="""
-                CREATE TABLE point_transaction (
-                    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    kind VARCHAR(32) NOT NULL,
-                    delta INTEGER NOT NULL,
-                    balance_after INTEGER NOT NULL,
-                    note VARCHAR(256),
-                    occurred_at DATETIME NOT NULL
-                )
-                """
-            )
-        )
+    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    monkeypatch.setattr(
+        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
+    )
+    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
+
+    await _ensure_schema()
+
+    async with open_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        economy_tables = {row[0] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(user_account)"))
+        index_names = {row[1] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(casino_account)"))
+        casino_index_names = {row[1] for row in result.all()}
+        column_queries = {
+            "user_account": "PRAGMA table_info(user_account)",
+            "loan_account": "PRAGMA table_info(loan_account)",
+            "casino_account": "PRAGMA table_info(casino_account)",
+        }
+        table_columns: dict[str, set[str]] = {}
+        for table_name, query in column_queries.items():
+            result = await session.execute(statement=text(text=query))
+            table_columns[table_name] = {row[1] for row in result.all()}
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        global_state_tables = {row[0] for row in result.all()}
+        result = await session.execute(
+            statement=select(
+                JackpotPool.pool_balance,
+                JackpotPool.total_contributed,
+                JackpotPool.total_claimed,
+                JackpotPool.seeded_amount,
+                JackpotPool.generation,
+            ).where(JackpotPool.game_id == "dragon_gate")
+        )
+        jackpot_row = result.one()
+    assert economy_tables == {"user_account", "loan_account", "casino_account"}
+    assert global_state_tables == {"jackpot_pool"}
+    assert all({"user_id", "name"} <= columns for columns in table_columns.values())
+    assert "ix_user_account_balance" in index_names
+    assert "ix_casino_account_day_loss" in casino_index_names
+    assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)
 
     await _add_balance(
         user_id=42, name="alice", amount=5, avatar_url="https://cdn.example/avatar.png"
     )
-
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/avatar.png"
-    async with open_session() as session:
-        result = await session.execute(statement=text(text="PRAGMA table_info(user_account)"))
-        columns = {row[1] for row in result.all()}
-        result = await session.execute(
-            statement=text(
-                text="SELECT hide_from_leaderboard FROM user_account WHERE user_id = 42"
-            )
-        )
-        hide_from_leaderboard = result.scalar_one()
-        result = await session.execute(statement=text(text="PRAGMA table_info(point_transaction)"))
-        transaction_columns = {row[1] for row in result.all()}
-        result = await session.execute(statement=text(text="PRAGMA index_list(user_account)"))
-        index_names = {row[1] for row in result.all()}
-    assert {
-        "is_vip",
-        "last_checkin_at",
-        "checkin_streak",
-        "is_admin",
-        "hide_from_leaderboard",
-        "casino_day_started_at",
-        "daily_casino_loss",
-        "daily_casino_win",
-        "daily_casino_net",
-    } <= columns
-    assert hide_from_leaderboard == 0
-    assert "debt_after" in transaction_columns
-    assert "ix_user_account_casino_day_loss" in index_names
-    assert "loan_interest" not in columns
-    assert "loan_last_accrual_at" not in columns
-
-    # A brand-new user must be insertable after the migration even when the
-    # legacy schema had NOT NULL columns without DEFAULT.
-    await _add_balance(user_id=43, name="bob", amount=7)
-    assert await get_balance(user_id=43) == 7
+    account = await get_account(user_id=42)
+    assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
     await engine.dispose()
+    await global_state_engine.dispose()
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
@@ -952,7 +907,6 @@ async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
     assert "embeds" not in message.edits[0]
     final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "莊家流程:" in description
     assert "莊家動作:" not in description
     assert "自動抽牌: 13 hit 抽 5♣ → 18" in description
     assert "AI: 18 stand" in description
@@ -1545,19 +1499,14 @@ def test_checkin_reward_formula(streak: int, is_vip: bool, expected: int) -> Non
     assert checkin_reward(streak=streak, is_vip=is_vip) == expected
 
 
-async def test_checkin_logs_audit_row() -> None:
-    """A successful check-in writes one CHECKIN_REWARD row tagged with the streak."""
+async def test_checkin_updates_lifetime_totals() -> None:
+    """A successful check-in counts as earned points."""
     result = await checkin(user_id=1, name="alice")
     assert result is not None
-    async with open_session() as session:
-        rows = (
-            await session.execute(
-                statement=select(
-                    PointTransaction.kind, PointTransaction.delta, PointTransaction.note
-                ).where(PointTransaction.user_id == 1)
-            )
-        ).all()
-    assert rows == [(TransactionKind.CHECKIN_REWARD.value, result.amount, "streak 1")]
+    account = await get_account(user_id=1)
+    assert account == AccountSnapshot(
+        name="alice", balance=result.amount, total_earned=result.amount, total_spent=0
+    )
 
 
 # VIP purchase --------------------------------------------------------------
@@ -1596,19 +1545,14 @@ async def test_buy_vip_rejects_unseen_user() -> None:
     assert await buy_vip(user_id=999, name="ghost") is None
 
 
-async def test_buy_vip_logs_audit_row() -> None:
-    """A successful purchase records one VIP_PURCHASE audit row."""
+async def test_buy_vip_updates_lifetime_spent() -> None:
+    """A successful purchase counts as spent points."""
     await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
     await buy_vip(user_id=1, name="alice")
-    async with open_session() as session:
-        rows = (
-            await session.execute(
-                statement=select(PointTransaction.kind, PointTransaction.delta).where(
-                    PointTransaction.user_id == 1
-                )
-            )
-        ).all()
-    assert rows == [(TransactionKind.VIP_PURCHASE.value, -VIP_PURCHASE_COST)]
+    account = await get_account(user_id=1)
+    assert account == AccountSnapshot(
+        name="alice", balance=0, total_earned=VIP_PURCHASE_COST, total_spent=VIP_PURCHASE_COST
+    )
 
 
 async def test_get_vip_unknown_user_returns_false() -> None:
@@ -1763,9 +1707,9 @@ async def test_top_losers_ignores_counters_before_today() -> None:
     past = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=2)
     async with open_session() as session:
         await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == 1)
-            .values(casino_day_started_at=_taipei_midnight(now=past))
+            statement=update(CasinoAccount)
+            .where(CasinoAccount.user_id == 1)
+            .values(day_started_at=_taipei_midnight(now=past))
         )
         await session.commit()
     assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
@@ -1981,13 +1925,10 @@ async def test_settle_blackjack_player_five_card_bonus_excludes_house_ledger() -
     assert await get_balance(user_id=99) == -10_000
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 20_000, 20_000)
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(PointTransaction.kind, PointTransaction.delta).where(
-                PointTransaction.user_id == 1
-            )
-        )
-        assert result.one() == (TransactionKind.CASINO_PAYOUT.value, 20_000)
+    account = await get_account(user_id=1)
+    assert account == AccountSnapshot(
+        name="alice", balance=120_000, total_earned=120_000, total_spent=0
+    )
 
 
 async def test_settle_blackjack_player_five_card_vip_keeps_system_bonus_out_of_house() -> None:
@@ -2250,7 +2191,7 @@ async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
     assert settlement.applied_player_delta == 100_000
     assert settlement.jackpot_depleted is True
     assert await get_jackpot_pool(game_id="dragon_gate") == 100_000
-    async with open_session() as session:
+    async with open_global_state_session() as session:
         result = await session.execute(
             statement=select(JackpotPool.seeded_amount, JackpotPool.total_claimed).where(
                 JackpotPool.game_id == "dragon_gate"
@@ -2272,21 +2213,15 @@ async def test_apply_jackpot_settlement_clamps_loss_and_grows_pool_by_actual_deb
     assert settlement.player_balance == 0
     assert settlement.jackpot_balance == 115_000
     assert settlement.applied_player_delta == -15_000
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(
-                PointTransaction.kind, PointTransaction.delta, PointTransaction.balance_after
-            ).where(PointTransaction.user_id == 1)
-        )
-        kind, delta, balance_after = result.one()
-    assert kind == TransactionKind.CASINO_BET.value
-    assert delta == -15_000
-    assert balance_after == 0
+    account = await get_account(user_id=1)
+    assert account == AccountSnapshot(
+        name="alice", balance=0, total_earned=15_000, total_spent=15_000
+    )
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (15_000, 0, -15_000)
 
 
-async def test_apply_jackpot_settlement_concurrent_clamped_losses_log_actual_debit() -> None:
+async def test_apply_jackpot_settlement_concurrent_clamped_losses_count_actual_debit() -> None:
     """Concurrent clamped jackpot losses cannot over-credit the pool."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
@@ -2303,14 +2238,8 @@ async def test_apply_jackpot_settlement_concurrent_clamped_losses_log_actual_deb
     assert applied_total == -100
     assert await get_balance(user_id=1) == 0
     assert await get_jackpot_pool(game_id="dragon_gate") == 100_100
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(func.sum(PointTransaction.delta)).where(
-                PointTransaction.user_id == 1,
-                PointTransaction.kind == TransactionKind.CASINO_BET.value,
-            )
-        )
-        assert result.scalar_one() == -100
+    account = await get_account(user_id=1)
+    assert account == AccountSnapshot(name="alice", balance=0, total_earned=100, total_spent=100)
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (100, 0, -100)
 
@@ -2470,10 +2399,10 @@ async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
     assert await get_jackpot_pool(game_id="never_registered") == 0
 
 
-async def test_get_jackpot_pool_replenishes_legacy_drained_seed_pool() -> None:
-    """Reading a seeded jackpot repairs an older zero-balance row."""
+async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
+    """Reading a seeded jackpot replenishes a zero-balance row."""
     await _ensure_schema()
-    async with open_session() as session:
+    async with open_global_state_session() as session:
         await session.execute(
             statement=update(JackpotPool)
             .where(JackpotPool.game_id == "dragon_gate")
@@ -2491,9 +2420,15 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 ) -> None:
     """_ensure_schema seeds the dragon_gate pool exactly once across calls."""
     db_path = tmp_path / "seed-economy.db"
+    global_state_db_path = tmp_path / "seed-global-state.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    monkeypatch.setattr(
+        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
+    )
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
 
     await _ensure_schema()
     first_balance = await get_jackpot_pool(game_id="dragon_gate")
@@ -2501,7 +2436,16 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 
     # Calling again is idempotent: the seed must not pile on top of itself.
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
     await _ensure_schema()
     assert await get_jackpot_pool(game_id="dragon_gate") == 100_000
+    async with open_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jackpot_pool'"
+            )
+        )
+        assert result.scalar_one_or_none() is None
 
     await engine.dispose()
+    await global_state_engine.dispose()

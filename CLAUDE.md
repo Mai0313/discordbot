@@ -92,19 +92,24 @@ make gen-docs                    # regenerate docs/ from sources
 ## Economy
 
 - SQLite files are separate: `data/messages.db` for message logs,
-    `data/economy.db` for 虛擬歡樂豆, and `data/game_cleanup.db` for cleanup
-    targets.
-- `cogs/_economy/database.py` owns the module-level async engine `_engine`.
-    Do not move it to `cached_property`; tests monkeypatch `_engine` and expect
-    helpers to bind sessions directly from the current object.
-- `UserAccount` has no `guild_id`. Balances, VIP, loans, check-ins, admin flags,
-    leaderboard visibility, and leaderboards are cross-server by design.
+    `data/economy.db` for per-user 虛擬歡樂豆, `data/global_state.db` for
+    bot-wide shared state such as jackpot pools, and `data/game_cleanup.db` for
+    cleanup targets.
+- `cogs/_economy/database.py` owns the module-level async engines `_engine` and
+    `_global_state_engine`. Do not move them to `cached_property`; tests
+    monkeypatch those engines and expect helpers to bind sessions directly from
+    the current object.
+- `UserAccount` has no `guild_id`. Balances, VIP, check-ins, admin flags,
+    leaderboard visibility, and leaderboards are cross-server by design. Loans
+    live in `loan_account`; daily casino counters live in `casino_account`.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths use
     `utils.avatars.guild_avatar_url(...)` with guild context so guild avatars are
-    stored when available, falling back to global `display_avatar`. Do not add a
-    migration for existing avatar URLs; they refresh naturally on later writes.
-- Every balance mutation should write a `PointTransaction` row unless the helper
-    intentionally skips `delta == 0`.
+    stored when available, falling back to global `display_avatar`. Do not
+    backfill existing avatar URLs; they refresh naturally on later writes.
+- There is no per-mutation `point_transaction` table. Every applied positive
+    balance delta must increase `UserAccount.total_earned`; every applied
+    negative balance delta must increase `UserAccount.total_spent`. Keep
+    `total_earned - total_spent == balance`.
 - `credit_with_repayment` is the income path for message reward, chat reward,
     and casino payout. The auto-repay slice is controlled by the
     `auto_repay_ratio_percent` inline constant in
@@ -112,23 +117,23 @@ make gen-docs                    # regenerate docs/ from sources
     and bumping it back to `50` restores the half-of-income-to-principal
     behavior without restructuring callers.
     `/give` recipients are not auto-repaid.
-- Loan helpers reset stale principal lazily at Asia/Taipei midnight. Borrowing
-    over the remaining daily cap clamps to the remaining cap; only zero remaining
-    credit rejects.
+- Loan helpers store debt state in `loan_account` and reset stale principal
+    lazily at Asia/Taipei midnight. Borrowing over the remaining daily cap clamps
+    to the remaining cap; only zero remaining credit rejects. Borrow increases
+    `total_earned`; repay increases `total_spent` because both change balance.
 - Admin adjustments use `adjust_balance(..., allow_negative=..., note=...)` and
     `MANUAL_ADJUSTMENT`, not casino transaction kinds.
 - `UserAccount.hide_from_leaderboard` defaults to `False`. When set, `/leaderboard`
     and `/loss_leaderboard` omit that account; maintenance callers can still opt
     into hidden rows.
-- Daily casino counters live on `user_account` as
-    `casino_day_started_at`, `daily_casino_loss`, `daily_casino_win`, and
-    `daily_casino_net`. Player-side Blackjack and Dragon Gate settlements
+- Daily casino counters live on `casino_account` as
+    `day_started_at`, `daily_loss`, `daily_win`, and `daily_net`.
+    Player-side Blackjack and Dragon Gate settlements
     update them from the actual applied delta; house ledger rows, push rounds,
     manual adjustments, transfers, loans, rewards, check-ins, and VIP purchases
     do not. Blackjack five-card 21 system bonuses count as player-side casino
     payout and daily win/net, but do not move `/house`. `/loss_leaderboard`
-    reads gross `daily_casino_loss`, so wins do not offset the displayed
-    ranking.
+    reads gross `daily_loss`, so wins do not offset the displayed ranking.
 - `credit_limit(user, *, is_vip)` is pure and tiered by Discord account age.
     Keep the tier table inline in that function.
 - `/balance`, `/borrow`, `/repay`, `/checkin`, `/vip`, and admin error replies
@@ -172,8 +177,8 @@ make gen-docs                    # regenerate docs/ from sources
 - Blackjack player losses clamp at balance 0. `apply_round_settlement` mirrors
     only the actual collected player debit into the bot's house ledger; full
     positive payouts still mirror the dealer-paid delta.
-- Dragon Gate is backed by the shared `jackpot_pool` row
-    `game_id="dragon_gate"`. Do not route it through the house ledger.
+- Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"`
+    in `data/global_state.db`. Do not route it through the house ledger.
 - Dragon Gate ante, losses, wins, leave refunds, and timeout refunds settle
     through jackpot helpers. Losses clamp at balance 0.
 - On Dragon Gate leave or timeout, positive per-player running delta is refunded

@@ -145,7 +145,9 @@ sync.
 
 ## Economy And Games
 
-- `data/economy.db` and `data/messages.db` are separate SQLite databases.
+- `data/economy.db`, `data/global_state.db`, and `data/messages.db` are separate
+    SQLite databases. Keep `economy.db` tables user-scoped with `user_id` and
+    `name`; put bot-wide shared state such as jackpot pools in `global_state.db`.
 - Economy helpers use a module-level SQLAlchemy engine so tests can monkeypatch
     the engine object.
 - 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account
@@ -153,15 +155,18 @@ sync.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths
     should pass `guild_avatar_url(...)` with guild context so guild avatars are
     stored when available, then fall back to the global `display_avatar`.
-    Existing rows are not migrated; they refresh naturally on later writes.
+    Existing rows are not backfilled; they refresh naturally on later writes.
 - `credit_with_repayment` is the income path for message reward, chat reward,
     and casino payout. Gifts do not auto-repay loans.
 - Casino settlement is atomic. Validate or clamp bets before play, then apply
     the signed result once through the settlement helpers. Player-side casino
     losses clamp at balance 0; dealer / house ledgers may still go negative.
-- Daily casino loss leaderboards read persisted `user_account` counters, not a
-    fresh `point_transaction` aggregate. Keep those counters tied to
-    player-side casino settlement deltas only.
+- Jackpot settlements coordinate writes across `economy.db` and
+    `global_state.db`; ordinary exceptions roll both sessions back before either
+    commit, but SQLite cannot make a hard crash between two database-file
+    commits cross-file atomic.
+- Daily casino loss leaderboards read persisted `casino_account` counters. Keep
+    those counters tied to player-side casino settlement deltas only.
 - `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and
     daily loss leaderboards omit rows where it is set; maintenance code should
     opt into hidden rows when it needs a true full-account sweep.
