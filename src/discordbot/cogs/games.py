@@ -17,7 +17,7 @@ from discordbot.typings.games import (
     RefreshParticipantsResult,
     ParticipantPreparationResult,
 )
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
 from discordbot.cogs._games.cleanup import (
@@ -58,6 +58,7 @@ class GamesCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
         self.rng = SystemRandom()
         self._startup_cleanup_done = False
 
@@ -71,15 +72,6 @@ class GamesCogs(commands.Cog):
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
-    @property
-    def dealer_model(self) -> ModelSettings:
-        """The model settings used by the AI dealer.
-
-        Returns:
-            Fast model settings with reasoning disabled for dealer banter.
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="none")
-
     @cached_property
     def dealer(self) -> DealerAI:
         """The cached AI dealer reused across game commands.
@@ -87,7 +79,7 @@ class GamesCogs(commands.Cog):
         Returns:
             A DealerAI built from the cached client and dealer model settings.
         """
-        return DealerAI(client=self.client, model=self.dealer_model)
+        return DealerAI(client=self.client, model=self.runtime_models.fast_model)
 
     def _dealer_identity(self) -> DealerIdentity:
         """Returns the dealer identity from the bot user.

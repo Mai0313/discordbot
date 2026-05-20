@@ -1,6 +1,7 @@
 """Typed model settings shared by the AI routing and reply pipeline."""
 
 from typing import Literal
+from datetime import UTC, datetime
 
 from pydantic import Field, BaseModel
 from openai.types.responses.tool_param import ToolParam
@@ -44,6 +45,57 @@ class ModelSettings(BaseModel):
                 {"type": "web_fetch_20260209", "name": "web_fetch"},
             ]
         return [{"type": "web_search"}]
+
+
+class RuntimeModelCatalog(BaseModel):
+    """Runtime model settings used by Discord bot LLM paths."""
+
+    @property
+    def image_model(self) -> ModelSettings:
+        """The model settings for image generation and editing.
+
+        Returns:
+            Model settings used with `images.generate` and `images.edit`.
+        """
+        image_model = ModelSettings(name="gemini-3.1-flash-image-preview")
+        return image_model
+
+    @property
+    def video_model(self) -> ModelSettings:
+        """The model settings for video generation.
+
+        Returns:
+            Model settings used with `videos.create`.
+        """
+        video_model = ModelSettings(name="veo-3.1-fast-generate-preview")
+        return video_model
+
+    @property
+    def fast_model(self) -> ModelSettings:
+        """The model settings for lightweight reply-generation tasks.
+
+        Returns:
+            Fast model settings used for routing, image captions, and short
+            Discord replies.
+        """
+        fast_model = ModelSettings(name="gemini-flash-latest", effort="none")
+        return fast_model
+
+    @property
+    def slow_model(self) -> ModelSettings:
+        """The model settings for full text replies and summaries.
+
+        Uses the flash model during UTC weekday 08:00 to 17:00 peak hours and
+        the pro model outside that peak window.
+
+        Returns:
+            Slow-path model settings for reply and summary generation.
+        """
+        now = datetime.now(UTC)
+        is_peak = now.weekday() < 5 and 8 <= now.hour < 17
+        if is_peak:
+            return ModelSettings(name="gemini-3-flash-preview", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
 
 class RouteDecision(BaseModel):

@@ -6,13 +6,14 @@ from io import BytesIO
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Unpack, Literal, TypedDict
+from datetime import UTC, datetime
 
 from PIL import Image
 import pytest
 from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, ReplyGeneratorCogs
-from discordbot.typings.models import ModelSettings, RouteDecision
+from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -298,6 +299,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
+    cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
     return cog
 
@@ -615,7 +617,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert await cog._route_message(message=message) == "SUMMARY"
-    assert cog.client.responses.parse_models[0] == cog.fast_model.name
+    assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -735,11 +737,41 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     """Verifies model properties and provider-specific tool dispatch."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    catalog = RuntimeModelCatalog()
     cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))
-    assert cog.fast_model == ModelSettings(name="gemini-flash-latest", effort="none")
-    assert cog.image_model.name.endswith("image-preview")
-    assert cog.video_model.name.startswith("veo")
-    assert cog.slow_model.effort == "high"
+    assert cog.runtime_models.fast_model == catalog.fast_model
+    assert catalog.fast_model == ModelSettings(name="gemini-flash-latest", effort="none")
+    assert catalog.image_model.name.endswith("image-preview")
+    assert catalog.video_model.name.startswith("veo")
+    assert catalog.slow_model.effort == "high"
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
     assert ModelSettings(name="claude-test").tools[0]["name"] == "web_search"
     assert ModelSettings(name="openai-test").tools == [{"type": "web_search"}]
+
+
+def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies slow-model peak-hour and off-peak dispatch."""
+
+    def slow_model_at(now: datetime) -> ModelSettings:
+        """Returns slow model settings with the catalog clock pinned to ``now``."""
+
+        def fixed_now(tz: object) -> datetime:
+            """Returns the pinned timestamp."""
+            assert tz is UTC
+            return now
+
+        monkeypatch.setattr("discordbot.typings.models.datetime", SimpleNamespace(now=fixed_now))
+        return RuntimeModelCatalog().slow_model
+
+    peak_start = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=8, tzinfo=UTC))
+    peak_end = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=16, tzinfo=UTC))
+    before_peak = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=7, tzinfo=UTC))
+    after_peak = slow_model_at(now=datetime(year=2026, month=5, day=18, hour=17, tzinfo=UTC))
+    weekend = slow_model_at(now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC))
+
+    assert peak_start == peak_end
+    assert before_peak == after_peak == weekend
+    assert peak_start != after_peak
+    assert {peak_start.effort, after_peak.effort} == {"high"}

@@ -5,7 +5,6 @@ import re
 import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
-from datetime import UTC, datetime
 from functools import cached_property
 from mimetypes import guess_type
 import contextlib
@@ -26,7 +25,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
-from discordbot.typings.models import ModelSettings, RouteDecision
+from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.typings.economy import TransactionKind
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._gen_reply.views import RegenerateView
@@ -74,6 +73,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -84,52 +84,6 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
-
-    @property
-    def image_model(self) -> ModelSettings:
-        """The model settings for image generation and editing.
-
-        Returns:
-            Model settings used with `images.generate` and `images.edit`.
-        """
-        image_model = ModelSettings(name="gemini-3.1-flash-image-preview")
-        return image_model
-
-    @property
-    def video_model(self) -> ModelSettings:
-        """The model settings for video generation.
-
-        Returns:
-            Model settings used with `videos.create`.
-        """
-        video_model = ModelSettings(name="veo-3.1-fast-generate-preview")
-        return video_model
-
-    @property
-    def fast_model(self) -> ModelSettings:
-        """The model settings for lightweight reply-generation tasks.
-
-        Returns:
-            Fast model settings used for routing decisions and image captions.
-        """
-        fast_model = ModelSettings(name="gemini-flash-latest", effort="none")
-        return fast_model
-
-    @property
-    def slow_model(self) -> ModelSettings:
-        """The model settings for full text replies and summaries.
-
-        Uses the lite model during UTC weekday 09:00 to 17:00 and the pro
-        model outside that peak window.
-
-        Returns:
-            Slow-path model settings for reply and summary generation.
-        """
-        now = datetime.now(UTC)
-        is_peak = now.weekday() < 5 and 8 <= now.hour < 17
-        if is_peak:
-            return ModelSettings(name="gemini-3-flash-preview", effort="high")
-        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     async def _get_user_prompt(self, content: str) -> str:
         """Removes the bot mention from the content and strips whitespace."""
@@ -255,7 +209,8 @@ class ReplyGeneratorCogs(commands.Cog):
         not walked here for the same reason as in ``_get_cleaned_content``;
         revisit if forwarded media becomes a common path.
         """
-        modalities = get_supported_modalities(model_name=self.slow_model.name)
+        slow_model = self.runtime_models.slow_model
+        modalities = get_supported_modalities(model_name=slow_model.name)
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
@@ -268,7 +223,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     _content_parts.append(await self._attachment_to_part(attachment=attachment))
             else:
                 logfire.warn(
-                    f"Skipping {required} attachment for {self.slow_model.name}: {attachment.filename}"
+                    f"Skipping {required} attachment for {slow_model.name}: {attachment.filename}"
                 )
 
         if "image" in modalities:
@@ -430,8 +385,9 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, user_prompt: str, view: View | None = None
     ) -> None:
         """Handles video generation requests."""
+        video_model = self.runtime_models.video_model
         video = await self.client.videos.create(
-            model=self.video_model.name,
+            model=video_model.name,
             prompt=user_prompt,
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
@@ -454,6 +410,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, user_prompt: str, view: View | None = None
     ) -> None:
         """Handles image generation or editing requests."""
+        image_model = self.runtime_models.image_model
         if message.reference and isinstance(message.reference.resolved, Message):
             own_parts, ref_parts = await asyncio.gather(
                 self._get_attachment_parts(message=message),
@@ -476,7 +433,7 @@ class ReplyGeneratorCogs(commands.Cog):
             result = await self.client.images.edit(
                 image=image_bytes_list,
                 prompt=user_prompt,
-                model=self.image_model.name,
+                model=image_model.name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -486,7 +443,7 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             result = await self.client.images.generate(
                 prompt=user_prompt,
-                model=self.image_model.name,
+                model=image_model.name,
                 n=1,
                 response_format="b64_json",
                 quality="auto",
@@ -514,11 +471,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 ],
             )
         ]
+        fast_model = self.runtime_models.fast_model
         image_responses = await self.client.responses.create(
-            model=self.fast_model.name,
+            model=fast_model.name,
             instructions=IMAGE_PROMPT,
             input=cast("ResponseInputParam", image_description_input),
-            reasoning=self.fast_model.reasoning,
+            reasoning=fast_model.reasoning,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"mock_testing_fallbacks": False},
@@ -551,12 +509,13 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(current_message)
 
         try:
+            fast_model = self.runtime_models.fast_model
             responses = await self.client.responses.parse(
-                model=self.fast_model.name,
+                model=fast_model.name,
                 instructions=ROUTE_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=RouteDecision,
-                reasoning=self.fast_model.reasoning,
+                reasoning=fast_model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
                 extra_body={"mock_testing_fallbacks": False},
@@ -712,12 +671,13 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
+        slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
-            model=self.slow_model.name,
+            model=slow_model.name,
             instructions=system_prompt,
             input=cast("ResponseInputParam", message_list),
-            reasoning=self.slow_model.reasoning,
-            tools=self.slow_model.tools,
+            reasoning=slow_model.reasoning,
+            tools=slow_model.tools,
             stream=True,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},

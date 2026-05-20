@@ -135,11 +135,9 @@ sync.
     be expressed through model names, `ModelSettings`, tools, or `extra_body`.
 - Do not import provider-native SDKs such as `google-genai` or `anthropic` into
     request paths. Development scripts may use them.
-- Keep model strings behind `ReplyGeneratorCogs.fast_model`, `slow_model`,
-    `image_model`, and `video_model`. Update those properties instead of
-    hardcoding model names at call sites.
-- `slow_model` intentionally dispatches by time of day. Do not replace it with
-    a static return.
+- Runtime model strings for `./src` live in `RuntimeModelCatalog` in
+    `src/discordbot/typings/models.py`; update that catalog instead of
+    hardcoding names at call sites.
 - Preserve the reaction-based progress UX for AI replies and parsers. The bot
     should not send intermediate "thinking" messages.
 - Video delivery intentionally edits status text and sends the final file

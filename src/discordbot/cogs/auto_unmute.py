@@ -12,7 +12,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._auto_unmute.prompts import UNMUTE_PROMPT
 
 
@@ -37,6 +37,7 @@ class AutoUnmuteCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
         self._last_active_channel: dict[int, int] = {}
 
     @cached_property
@@ -48,15 +49,6 @@ class AutoUnmuteCogs(commands.Cog):
         """
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
-
-    @property
-    def model(self) -> ModelSettings:
-        """Model used to generate the post-timeout reaction.
-
-        Returns:
-            Fast model settings with reasoning disabled for one short message.
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -180,11 +172,12 @@ class AutoUnmuteCogs(commands.Cog):
         message_list: list[EasyInputMessageParam] = [
             EasyInputMessageParam(role="user", content=user_text)
         ]
+        fast_model = self.runtime_models.fast_model
         responses = await self.client.responses.create(
-            model=self.model.name,
+            model=fast_model.name,
             instructions=UNMUTE_PROMPT,
             input=cast("ResponseInputParam", message_list),
-            reasoning=self.model.reasoning,
+            reasoning=fast_model.reasoning,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": "auto-unmute"},
             extra_body={"mock_testing_fallbacks": False},

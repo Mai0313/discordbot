@@ -50,11 +50,9 @@ make gen-docs                    # regenerate docs/ from sources
 - Do not import provider-native SDKs such as `google-genai` or `anthropic` into
     runtime request paths. `scripts/prompt_dev.py` is the exception for local
     experimentation.
-- `ReplyGeneratorCogs.fast_model`, `slow_model`, `image_model`, and
-    `video_model` are properties because model strings change often. Update those
-    properties, not call sites.
-- `slow_model` intentionally dispatches by time of day for peak-hour fallback.
-    Do not flatten it into a static model.
+- Runtime model strings live in `RuntimeModelCatalog` in
+    `src/discordbot/typings/models.py`; update that catalog and keep
+    `slow_model`'s peak-hour dispatch.
 - Streaming SDK objects are named `responses`; loop items are named `response`.
 - AI progress is communicated with reactions on the user's message. Preserve the
     no-intermediate-message UX.
