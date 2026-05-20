@@ -162,6 +162,9 @@ sync.
 - Daily casino loss leaderboards read persisted `user_account` counters, not a
     fresh `point_transaction` aggregate. Keep those counters tied to
     player-side casino settlement deltas only.
+- `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and
+    daily loss leaderboards omit rows where it is set; maintenance code should
+    opt into hidden rows when it needs a true full-account sweep.
 - Blackjack house ledger and Dragon Gate jackpot pool are separate
     counterparties. Do not route Dragon Gate through the house ledger.
 - Interactive game and public economy responses are tracked for restart cleanup

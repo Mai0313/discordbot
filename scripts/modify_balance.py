@@ -168,7 +168,7 @@ async def modify_all_balances(
     Returns:
         A `BulkBalanceChange` summary for the requested operation.
     """
-    accounts = await top_n(limit=2_147_483_647)
+    accounts = await top_n(limit=None, include_hidden=True)
     changes: list[BalanceChange] = []
     for account in accounts:
         changes.append(

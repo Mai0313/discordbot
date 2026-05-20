@@ -374,6 +374,16 @@ async def test_admin_flag_defaults_to_false() -> None:
     assert await get_admin(user_id=42) is False
 
 
+async def test_leaderboard_hidden_flag_defaults_to_false() -> None:
+    """New accounts are visible on public leaderboards by default."""
+    await _add_balance(user_id=42, name="alice", amount=10)
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(UserAccount.hide_from_leaderboard).where(UserAccount.user_id == 42)
+        )
+    assert result.scalar_one() is False
+
+
 async def test_set_admin_creates_user() -> None:
     """Granting admin creates a zero-balance account row."""
     applied = await set_admin(user_id=42, name="alice", is_admin=True)
@@ -490,6 +500,12 @@ async def test_existing_economy_db_gets_schema_migrations(
     async with open_session() as session:
         result = await session.execute(statement=text(text="PRAGMA table_info(user_account)"))
         columns = {row[1] for row in result.all()}
+        result = await session.execute(
+            statement=text(
+                text="SELECT hide_from_leaderboard FROM user_account WHERE user_id = 42"
+            )
+        )
+        hide_from_leaderboard = result.scalar_one()
         result = await session.execute(statement=text(text="PRAGMA table_info(point_transaction)"))
         transaction_columns = {row[1] for row in result.all()}
         result = await session.execute(statement=text(text="PRAGMA index_list(user_account)"))
@@ -499,11 +515,13 @@ async def test_existing_economy_db_gets_schema_migrations(
         "last_checkin_at",
         "checkin_streak",
         "is_admin",
+        "hide_from_leaderboard",
         "casino_day_started_at",
         "daily_casino_loss",
         "daily_casino_win",
         "daily_casino_net",
     } <= columns
+    assert hide_from_leaderboard == 0
     assert "debt_after" in transaction_columns
     assert "ix_user_account_casino_day_loss" in index_names
     assert "loan_interest" not in columns
@@ -614,6 +632,52 @@ async def test_top_n_excludes_specified_users() -> None:
     rows = await top_n(limit=10, exclude_user_ids=(99,))
     assert all(row.user_id != 99 for row in rows)
     assert rows[0] == LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="")
+
+
+async def test_top_n_excludes_leaderboard_hidden_accounts_by_default() -> None:
+    """Accounts marked hidden do not appear on the public balance leaderboard."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=300)
+    await _add_balance(user_id=3, name="carol", amount=200)
+    async with open_session() as session:
+        await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == 2)
+            .values(hide_from_leaderboard=True)
+        )
+        await session.commit()
+
+    rows = await top_n(limit=2)
+    assert rows == [
+        LeaderboardEntry(user_id=3, name="carol", balance=200, avatar_url=""),
+        LeaderboardEntry(user_id=1, name="alice", balance=100, avatar_url=""),
+    ]
+
+
+async def test_top_n_can_include_leaderboard_hidden_accounts() -> None:
+    """Maintenance callers can still enumerate hidden accounts when needed."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=300)
+    async with open_session() as session:
+        await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == 2)
+            .values(hide_from_leaderboard=True)
+        )
+        await session.commit()
+
+    rows = await top_n(limit=2, include_hidden=True)
+    assert rows[0] == LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="")
+
+
+async def test_top_n_none_limit_returns_all_matching_accounts() -> None:
+    """Maintenance callers can request every matching account without a sentinel limit."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=300)
+    await _add_balance(user_id=3, name="carol", amount=200)
+
+    rows = await top_n(limit=None)
+    assert [row.user_id for row in rows] == [2, 3, 1]
 
 
 async def test_apply_round_settlement_allows_negative_house_balance() -> None:
@@ -1628,6 +1692,61 @@ async def test_top_losers_excludes_specified_users() -> None:
     )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
     assert all(row.user_id != 99 for row in rows)
+
+
+async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> None:
+    """Hidden accounts do not appear on the public daily loss leaderboard."""
+    await _add_balance(user_id=1, name="alice", amount=500)
+    await _add_balance(user_id=2, name="bob", amount=400)
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=500,
+    )
+    await apply_round_settlement(
+        player_id=2,
+        player_account_name="bob",
+        player_delta=-400,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=400,
+    )
+    async with open_session() as session:
+        await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == 1)
+            .values(hide_from_leaderboard=True)
+        )
+        await session.commit()
+
+    rows = await top_losers(limit=10, exclude_user_ids=(99,))
+    assert rows == [LossLeaderboardEntry(user_id=2, name="bob", loss_amount=400, avatar_url="")]
+
+
+async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
+    """Maintenance callers can include hidden accounts in daily loss queries."""
+    await _add_balance(user_id=1, name="alice", amount=500)
+    await apply_round_settlement(
+        player_id=1,
+        player_account_name="alice",
+        player_delta=-500,
+        dealer_id=99,
+        dealer_name="house",
+        dealer_delta=500,
+    )
+    async with open_session() as session:
+        await session.execute(
+            statement=update(UserAccount)
+            .where(UserAccount.user_id == 1)
+            .values(hide_from_leaderboard=True)
+        )
+        await session.commit()
+
+    rows = await top_losers(limit=10, exclude_user_ids=(99,), include_hidden=True)
+    assert rows == [LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url="")]
 
 
 async def test_top_losers_ignores_counters_before_today() -> None:

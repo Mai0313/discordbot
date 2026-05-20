@@ -36,12 +36,12 @@ when ``loan_opened_at`` is older than today's local midnight. The audit log
 lives in a separate ``point_transaction`` table that every mutating helper
 writes into via ``_log_transaction_in_session``.
 
-VIP and admin status are boolean columns on ``user_account``. VIP bumps daily
-check-in rewards, the borrow cap, and the player's winning payout from games.
-The flag is permanent once set. Admin status gates maintenance-only economy
-commands and is managed out-of-band by scripts. Daily casino counters also live
-on ``user_account`` so `/loss_leaderboard` can read current-day gross losses
-without scanning the audit log.
+VIP, admin status, and leaderboard visibility are boolean columns on
+``user_account``. VIP bumps daily check-in rewards, the borrow cap, and the
+player's winning payout from games. The flag is permanent once set. Admin status
+gates maintenance-only economy commands and is managed out-of-band by scripts.
+Daily casino counters also live on ``user_account`` so `/loss_leaderboard` can
+read current-day gross losses without scanning the audit log.
 """
 
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -169,6 +169,8 @@ class UserAccount(Base):
         checkin_streak: Consecutive-day streak (1..``CHECKIN_STREAK_CYCLE``),
             persisted after the latest ``/checkin``. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
+        hide_from_leaderboard: Whether the account is omitted from public balance
+            and daily casino loss leaderboards.
         casino_day_started_at: Asia/Taipei midnight for the stored daily casino counters.
         daily_casino_loss: Current-day gross loss from player-side casino settlements.
         daily_casino_win: Current-day gross win from player-side casino settlements.
@@ -205,6 +207,9 @@ class UserAccount(Base):
     )
     checkin_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    hide_from_leaderboard: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     casino_day_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -319,8 +324,8 @@ async def _ensure_schema() -> None:  # noqa: C901, PLR0912 -- idempotent SQLite 
 
     * Adds ``avatar_url`` to legacy DBs that predated the avatar cache.
     * Adds ``is_vip`` / ``last_checkin_at`` / ``checkin_streak`` /
-      ``is_admin`` and daily casino counters so newer account flags keep
-      working on older DBs.
+      ``is_admin`` / ``hide_from_leaderboard`` and daily casino counters so
+      newer account flags keep working on older DBs.
     * Adds ``debt_after`` to legacy audit logs that predated loan context.
     * Drops legacy ``loan_interest`` / ``loan_last_accrual_at`` columns
       so the new model can INSERT fresh rows without violating their old
@@ -360,6 +365,15 @@ async def _ensure_schema() -> None:  # noqa: C901, PLR0912 -- idempotent SQLite 
             await conn.execute(
                 statement=text(
                     text="ALTER TABLE user_account ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+        if "hide_from_leaderboard" not in existing_columns:
+            await conn.execute(
+                statement=text(
+                    text=(
+                        "ALTER TABLE user_account "
+                        "ADD COLUMN hide_from_leaderboard BOOLEAN NOT NULL DEFAULT 0"
+                    )
                 )
             )
         if "casino_day_started_at" not in existing_columns:
@@ -2612,7 +2626,9 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 
 
-async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list[LeaderboardEntry]:
+async def top_n(
+    limit: int | None = 10, exclude_user_ids: tuple[int, ...] = (), include_hidden: bool = False
+) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
     ``exclude_user_ids`` filters out specific accounts (notably the bot's
@@ -2621,8 +2637,11 @@ async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list
     this query cheap even as the user table grows.
 
     Args:
-        limit: Maximum number of accounts to return.
+        limit: Maximum number of accounts to return, or ``None`` to return all
+            matching accounts.
         exclude_user_ids: User IDs to filter out before applying the limit.
+        include_hidden: Whether to include accounts marked as hidden from
+            public leaderboards.
 
     Returns:
         Leaderboard entries ordered by balance descending. ``avatar_url`` is
@@ -2633,9 +2652,12 @@ async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list
         stmt = select(
             UserAccount.user_id, UserAccount.name, UserAccount.balance, UserAccount.avatar_url
         ).order_by(desc(UserAccount.balance))
+        if not include_hidden:
+            stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
         if exclude_user_ids:
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
-        stmt = stmt.limit(limit=limit)
+        if limit is not None:
+            stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
         return [
             LeaderboardEntry(user_id=row[0], name=row[1], balance=row[2], avatar_url=row[3] or "")
@@ -2644,7 +2666,7 @@ async def top_n(limit: int = 10, exclude_user_ids: tuple[int, ...] = ()) -> list
 
 
 async def top_losers(
-    limit: int = 10, exclude_user_ids: tuple[int, ...] = ()
+    limit: int = 10, exclude_user_ids: tuple[int, ...] = (), include_hidden: bool = False
 ) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
@@ -2657,6 +2679,8 @@ async def top_losers(
     Args:
         limit: Maximum number of accounts to return.
         exclude_user_ids: User IDs to filter out before applying the limit.
+        include_hidden: Whether to include accounts marked as hidden from
+            public leaderboards.
 
     Returns:
         Loss leaderboard entries ordered by loss descending. ``loss_amount``
@@ -2683,6 +2707,8 @@ async def top_losers(
             .order_by(desc(UserAccount.daily_casino_loss))
             .limit(limit=limit)
         )
+        if not include_hidden:
+            stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
         if exclude_user_ids:
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)

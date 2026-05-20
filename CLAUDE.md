@@ -98,7 +98,7 @@ make gen-docs                    # regenerate docs/ from sources
     Do not move it to `cached_property`; tests monkeypatch `_engine` and expect
     helpers to bind sessions directly from the current object.
 - `UserAccount` has no `guild_id`. Balances, VIP, loans, check-ins, admin flags,
-    and leaderboards are cross-server by design.
+    leaderboard visibility, and leaderboards are cross-server by design.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths use
     `utils.avatars.guild_avatar_url(...)` with guild context so guild avatars are
     stored when available, falling back to global `display_avatar`. Do not add a
@@ -117,6 +117,9 @@ make gen-docs                    # regenerate docs/ from sources
     credit rejects.
 - Admin adjustments use `adjust_balance(..., allow_negative=..., note=...)` and
     `MANUAL_ADJUSTMENT`, not casino transaction kinds.
+- `UserAccount.hide_from_leaderboard` defaults to `False`. When set, `/leaderboard`
+    and `/loss_leaderboard` omit that account; maintenance callers can still opt
+    into hidden rows.
 - Daily casino counters live on `user_account` as
     `casino_day_started_at`, `daily_casino_loss`, `daily_casino_win`, and
     `daily_casino_net`. Player-side Blackjack and Dragon Gate settlements
