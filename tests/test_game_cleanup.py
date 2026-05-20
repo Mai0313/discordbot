@@ -171,14 +171,20 @@ class _FollowupStub:
         self.sent_wait: bool | None = None
         self.sent_ephemeral: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
+        self.sent_view: nextcord.ui.View | None = None
 
     async def send(
-        self, embed: nextcord.Embed, wait: bool = False, ephemeral: bool = False
+        self,
+        embed: nextcord.Embed,
+        wait: bool = False,
+        ephemeral: bool = False,
+        view: nextcord.ui.View | None = None,
     ) -> _SentFollowupMessageStub:
         """Records the embed send and returns the message object."""
         self.sent_embed = embed
         self.sent_wait = wait
         self.sent_ephemeral = ephemeral
+        self.sent_view = view
         return self.message
 
 
@@ -344,6 +350,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
 
     assert interaction.followup.sent_wait is True
     assert interaction.followup.sent_embed is embed
+    assert interaction.followup.sent_view is None
     assert scheduled_messages == [interaction.followup.message]
     assert scheduled_user_names == ["alice"]
 

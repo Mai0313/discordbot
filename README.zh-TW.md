@@ -26,35 +26,37 @@
 - **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、生成或編輯圖片、生成短影片，並在可用時使用 model-provided web tools。
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片，檔案太大時會自動 retry 低畫質。
-- **虛擬歡樂豆**：使用者可從訊息與 AI 回覆獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、借款到台北時間每日重置，並查看排行榜。
+- **虛擬歡樂豆與金融系統**：使用者可從訊息與 AI 回覆獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款、發行玩家股票、配息，並查看排行榜。
 - **賭場遊戲**：多人 `/blackjack` 與 `/dragon_gate` lobby，帶 AI dealer 對話、公開結果 embed 與自動清理。
 - **MapleStory Artale 資料庫**：`/maple_*` 指令可查詢怪物、裝備、卷軸、NPC、任務、地圖、掉落來源與資料庫統計。
 - **本地化指令**：slash command metadata 與 `/help` 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。
 
 ## 指令
 
-| 指令                                              | 功能                                                      |
-| ------------------------------------------------- | --------------------------------------------------------- |
-| `@bot <message>`                                  | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。 |
-| _Threads URL_                                     | 自動展開 Threads 貼文與 media。                           |
-| `/download_video <url> [quality]`                 | 下載影片並傳回 Discord。                                  |
-| `/balance`                                        | 私密顯示你的虛擬歡樂豆餘額、VIP 狀態與借款狀態。          |
-| `/checkin`                                        | 領取每日簽到獎勵。                                        |
-| `/vip`                                            | 購買永久 VIP 權益。                                       |
-| `/leaderboard`                                    | 顯示全域餘額排行榜。                                      |
-| `/loss_leaderboard`                               | 顯示今日賭場輸局累計排行榜。                              |
-| `/borrow <amount>`                                | 借虛擬歡樂豆，到下一次 Asia/Taipei 每日重置為止。         |
-| `/repay <amount>`                                 | 用餘額償還未還本金。                                      |
-| `/give <member> <amount>`                         | 轉帳虛擬歡樂豆給其他成員。                                |
-| `/admin refund_tax\|collect_tax`                  | admin-only 手動餘額調整。                                 |
-| `/blackjack <bet>`                                | 開一個多人 Blackjack lobby。                              |
-| `/dragon_gate`                                    | 開一個由共享 jackpot pool 支撐的多人射龍門桌。            |
-| `/house`                                          | 顯示 Blackjack dealer ledger。                            |
-| `/maple_monster`, `/maple_equip`, `/maple_scroll` | 查詢 MapleStory Artale 怪物、裝備與卷軸。                 |
-| `/maple_npc`, `/maple_quest`, `/maple_map`        | 查詢 NPC、任務與地圖。                                    |
-| `/maple_item`, `/maple_stats`                     | 查詢物品掉落來源與資料庫統計。                            |
-| `/help`                                           | 顯示 Discord 內的使用指南。                               |
-| `/ping`                                           | 檢查 bot latency。                                        |
+| 指令                                              | 功能                                                             |
+| ------------------------------------------------- | ---------------------------------------------------------------- |
+| `@bot <message>`                                  | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。        |
+| _Threads URL_                                     | 自動展開 Threads 貼文與 media。                                  |
+| `/download_video <url> [quality]`                 | 下載影片並傳回 Discord。                                         |
+| `/balance`                                        | 私密顯示你的虛擬歡樂豆餘額、債務、股票估值、淨資產與 VIP 狀態。  |
+| `/checkin`                                        | 領取每日簽到獎勵。                                               |
+| `/vip`                                            | 購買永久 VIP 權益。                                              |
+| `/leaderboard`                                    | 顯示全域餘額排行榜。                                             |
+| `/loss_leaderboard`                               | 顯示今日賭場輸局累計排行榜。                                     |
+| `/credit status\|borrow\|call\|repay`             | 處理個人信貸申請、按鈕批准或拒絕、取消、還款、催收與狀態。       |
+| `/central_bank status\|borrow\|call\|repay`       | 處理央行借款申請、按鈕批准或拒絕、取消、還款、催收與可放貸額度。 |
+| `/stock issue\|buy\|dividend\|info`               | 發行玩家股票、購買未售出股數、配息與查看股票資訊。               |
+| `/portfolio [member]`                             | 查看錢包、持股、債務與預估淨資產。                               |
+| `/give <member> <amount>`                         | 轉帳虛擬歡樂豆給其他成員。                                       |
+| `/admin refund_tax\|collect_tax`                  | admin-only 手動餘額調整。                                        |
+| `/blackjack <bet>`                                | 開一個多人 Blackjack lobby。                                     |
+| `/dragon_gate`                                    | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                   |
+| `/house`                                          | 顯示 Blackjack dealer ledger。                                   |
+| `/maple_monster`, `/maple_equip`, `/maple_scroll` | 查詢 MapleStory Artale 怪物、裝備與卷軸。                        |
+| `/maple_npc`, `/maple_quest`, `/maple_map`        | 查詢 NPC、任務與地圖。                                           |
+| `/maple_item`, `/maple_stats`                     | 查詢物品掉落來源與資料庫統計。                                   |
+| `/help`                                           | 顯示 Discord 內的使用指南。                                      |
+| `/ping`                                           | 檢查 bot latency。                                               |
 
 ## 自架
 
@@ -104,12 +106,14 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 `OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。
 
+本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
+
 ## 資料與隱私
 
 這個 bot 會把 runtime data 存在本機 `data/` 底下。
 
 - `messages.db`：human messages 與 bot 自己的回覆，用於聊天歷史與摘要。
-- `economy.db`：per-user 虛擬歡樂豆餘額、VIP flag、借款、簽到、賭場每日統計，以及 cached Discord account name / avatar URL。
+- `economy.db`：每位使用者的虛擬歡樂豆餘額、VIP flag、長期信貸申請與契約、央行成員 flag、股票發行資料、持股、事件、簽到、賭場每日統計，以及 cached Discord account name / avatar URL。
 - `global_state.db`：bot-wide shared state，例如 jackpot pool。
 - `game_cleanup.db`：公開 game 或 economy response 的 Discord guild/channel 名稱、user name、channel ID 與 message ID，用於 bot 重啟後的清理。
 - `model_prices.json`：快取的 LiteLLM pricing metadata，用於 AI 回覆費用估算。

@@ -53,11 +53,11 @@ _HELP_CONTENT = {
             f"`/give` transfer {CURRENCY_NAME} · "
             "`/house` show the Blackjack dealer ledger P&L · "
             "`/admin` run admin-only tax adjustments\n"
-            "`/borrow` take out a loan (cap scales with your Discord account age, "
-            "auto-borrows the remaining cap when requested amount is too high, "
-            "auto-expires at Asia/Taipei midnight); `/repay` pay debt from your balance.\n"
-            "`/balance`, `/borrow`, `/repay`, and `/vip` replies are private. "
-            "`/give`, successful `/admin` tax adjustments, `/leaderboard`, "
+            "`/credit` handles personal credit status, borrow requests with approval/rejection/cancel buttons, repayment, and collection\n"
+            "`/central_bank` handles central-bank status, borrow requests with approval/rejection/cancel buttons, repayment, and collection.\n"
+            "`/stock` issue/buy/dividend/info player-issued shares · `/portfolio` shows cash, debt, holdings, and net worth.\n"
+            "`/balance`, `/credit`, `/central_bank`, `/stock`, `/portfolio`, and `/vip` replies are private where personal data is involved. "
+            "`/give`, `/credit borrow`, successful `/admin` tax adjustments, `/leaderboard`, "
             "`/loss_leaderboard`, and `/house` stay public and "
             "clean themselves up after 3 minutes."
         ),
@@ -70,8 +70,8 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 2x "
-            "daily check-in rewards, 2x borrow cap, and 1.5x Blackjack winning payouts. "
-            "`/vip`, `/balance`, `/borrow`, and `/checkin` show the base number and the "
+            "daily check-in rewards and 1.5x Blackjack winning payouts. "
+            "`/vip`, `/balance`, and `/checkin` show the base number and the "
             "VIP-boosted number; Blackjack final results show the VIP bonus when it applies."
         ),
         "games": (
@@ -148,14 +148,14 @@ _HELP_CONTENT = {
             f"**{CURRENCY_NAME}**\n"
             f"每則訊息會獲得 {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}, "
             f"AI chat 回覆另外追加 token bonus, {CURRENCY_NAME}跨 server 共用\n"
-            "`/balance` 查餘額 (含欠款狀態) · `/leaderboard` 看 global 前 10 名 · "
+            "`/balance` 查餘額、債務、股票估值與淨資產 · `/leaderboard` 看全域前 10 名 · "
             "`/loss_leaderboard` 看今日輸局累計前 10 名\n"
             "`/give` 轉帳 · `/house` 看 Blackjack 莊家累積 P&L · `/admin` 管理員退稅/收稅\n"
-            "`/borrow` 依 Discord 帳號年齡借款 (超過剩餘額度會自動全借, "
-            "每天 0:00 Asia/Taipei 自動清零); "
-            "`/repay` 從餘額還款\n"
-            "`/balance`、`/borrow`、`/repay`、`/vip` 是 private reply\n"
-            "`/give`、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
+            "`/credit` 處理個人信貸狀態、借款申請、按鈕批准或拒絕、取消、還款與催收\n"
+            "`/central_bank` 處理央行狀態、借款申請、按鈕批准或拒絕、取消、還款與催收\n"
+            "`/stock` 發行、購買、配息、查詢玩家股票 · `/portfolio` 查現金、債務、持股與淨資產\n"
+            "`/balance`、`/credit`、`/central_bank`、`/stock`、`/portfolio`、`/vip` 涉及個人資料時會私密回覆\n"
+            "`/give`、`/credit borrow`、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
             "`/house` 維持公開, 3 分鐘後自動清掉"
         ),
         "checkin": (
@@ -166,8 +166,8 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
-            "VIP 會讓每日簽到 2x、貸款額度 2x、Blackjack 贏局 payout 1.5x\n"
-            "`/vip`、`/balance`、`/borrow`、`/checkin` 會顯示原本數字與 VIP加成後數字, "
+            "VIP 會讓每日簽到 2x、Blackjack 贏局 payout 1.5x\n"
+            "`/vip`、`/balance`、`/checkin` 會顯示原本數字與 VIP加成後數字, "
             "Blackjack final result 也會在套用時顯示 VIP加成"
         ),
         "games": (
@@ -245,11 +245,11 @@ _HELP_CONTENT = {
             "`/loss_leaderboard` 本日の累計負け額トップ10\n"
             f"`/give` {CURRENCY_NAME}送付 · `/house` Blackjack dealer ledger P&L\n"
             "`/admin` admin-only tax adjustments\n"
-            "`/borrow` Discord アカウント年齢に応じて借入 (上限超過時は残り枠まで借入, "
-            "毎日0:00 Asia/Taipei 自動リセット); "
-            "`/repay` 残高から返済。\n"
-            "`/balance`、`/borrow`、`/repay`、`/vip` は private reply です。"
-            "`/give`、successful `/admin` tax adjustments、`/leaderboard`、"
+            "`/credit` personal credit status、borrow request buttons、repayment、collection\n"
+            "`/central_bank` central-bank status、borrow request buttons、repayment、collection、capacity。\n"
+            "`/stock` player shares issue/buy/dividend/info · `/portfolio` cash、debt、holding、net worth。\n"
+            "`/balance`、`/credit`、`/central_bank`、`/stock`、`/portfolio`、`/vip` は個人情報を含む場合 private reply です。"
+            "`/give`、`/credit borrow`、successful `/admin` tax adjustments、`/leaderboard`、"
             "`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
         ),
         "checkin": (
@@ -260,8 +260,8 @@ _HELP_CONTENT = {
         "vip": (
             "**VIP** — `/vip`\n"
             f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入。"
-            "VIP は check-in 2x、借入上限 2x、Blackjack 勝利 payout 1.5x。"
-            "`/vip`、`/balance`、`/borrow`、`/checkin` は通常値と VIP 後の値を表示し、"
+            "VIP は check-in 2x、Blackjack 勝利 payout 1.5x。"
+            "`/vip`、`/balance`、`/checkin` は通常値と VIP 後の値を表示し、"
             "Blackjack final result も適用時に VIP bonus を表示します。"
         ),
         "games": (

@@ -3,29 +3,52 @@
 from datetime import UTC, datetime
 
 import nextcord
-from nextcord import Embed, Locale, Member, Interaction, SlashOption
+from nextcord import Embed, Locale, Member, ButtonStyle, Interaction, SlashOption
+from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.typings.economy import VIP_PURCHASE_COST, BASE_CHECKIN_REWARD_AMOUNT
+from discordbot.typings.config import EconomyConfig
+from discordbot.typings.economy import (
+    VIP_PURCHASE_COST,
+    STOCK_ISSUE_MIN_NET_WORTH,
+    BASE_CHECKIN_REWARD_AMOUNT,
+    DEFAULT_LOAN_MONTHLY_RATE_BPS,
+    LoanLenderType,
+)
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._economy.database import (
-    repay,
     top_n,
-    borrow,
     buy_vip,
     checkin,
     get_vip,
     transfer,
+    buy_stock,
     get_admin,
     top_losers,
     get_account,
     get_balance,
-    credit_limit,
-    get_loan_view,
+    issue_stock,
+    get_portfolio,
     adjust_balance,
     checkin_reward,
+    get_stock_profile,
+    get_central_banker,
+    pay_stock_dividend,
+    call_personal_loans,
+    list_loan_contracts,
+    accept_loan_proposal,
+    cancel_loan_proposal,
+    reject_loan_proposal,
+    repay_personal_loans,
+    call_central_bank_loans,
+    get_central_bank_status,
+    repay_central_bank_loans,
     apply_vip_blackjack_bonus,
+    monthly_rate_bps_to_percent,
+    monthly_rate_percent_to_bps,
+    create_personal_loan_request,
+    create_central_bank_loan_request,
 )
 from discordbot.cogs._economy.presentation import (
     CURRENCY_NAME,
@@ -42,6 +65,9 @@ _ADMIN_COLOR = 0x3498DB
 _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
+_CENTRAL_BANK_COLOR = 0x1ABC9C
+_STOCK_COLOR = 0x11806A
+_PORTFOLIO_COLOR = 0x95A5A6
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
@@ -49,8 +75,6 @@ _ERROR_COLOR = 0xED4245
 
 def _vip_perk_lines(user: nextcord.User | Member, checkin_streak: int = 1) -> str:
     """Formats VIP perks with the base number and the boosted number."""
-    base_limit = credit_limit(user=user, is_vip=False)
-    vip_limit = credit_limit(user=user, is_vip=True)
     base_checkin = checkin_reward(streak=checkin_streak, is_vip=False)
     vip_checkin = checkin_reward(streak=checkin_streak, is_vip=True)
     sample_win = 10_000
@@ -58,17 +82,9 @@ def _vip_perk_lines(user: nextcord.User | Member, checkin_streak: int = 1) -> st
     checkin_label = "簽到基礎" if checkin_streak == 1 else f"第 {checkin_streak} 天簽到"
     return (
         f"{checkin_label} {amount_code(amount=base_checkin)} → {amount_code(amount=vip_checkin)}\n"
-        f"貸款額度 {amount_code(amount=base_limit)} → {amount_code(amount=vip_limit)}\n"
         f"Blackjack 贏局例 {amount_code(amount=sample_win, signed=True)} → "
         f"{amount_code(amount=boosted_win, signed=True)}"
     )
-
-
-def _vip_credit_limit_line(user: nextcord.User | Member) -> str:
-    """Formats the user's borrow cap before and after the VIP multiplier."""
-    base_limit = credit_limit(user=user, is_vip=False)
-    vip_limit = credit_limit(user=user, is_vip=True)
-    return f"今日額度 {amount_code(amount=base_limit)} → {amount_code(amount=vip_limit)}"
 
 
 def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
@@ -91,9 +107,14 @@ def _loss_rank_line(position: int, name: str, loss: int) -> str:
     return f"{rank} **{name}**  累計輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
 
 
-async def _send_expiring_followup(interaction: Interaction, embed: Embed) -> None:
+async def _send_expiring_followup(
+    interaction: Interaction, embed: Embed, view: View | None = None
+) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
-    message = await interaction.followup.send(embed=embed, wait=True)
+    if view is None:
+        message = await interaction.followup.send(embed=embed, wait=True)
+    else:
+        message = await interaction.followup.send(embed=embed, view=view, wait=True)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_game_message_delete(message=message, user_name=user_name)
 
@@ -106,6 +127,336 @@ async def _send_private_followup(interaction: Interaction, embed: Embed) -> None
 def _admin_note(action: str, actor: nextcord.User | Member) -> str:
     """Builds a compact audit note for admin balance adjustments."""
     return f"{action} by {actor.name or actor.id} ({actor.id})"
+
+
+def _rate_text(monthly_rate_bps: int) -> str:
+    """Formats a monthly loan rate."""
+    return f"每月 {monthly_rate_bps_to_percent(monthly_rate_bps=monthly_rate_bps):g}%"
+
+
+def _loan_terms_text(amount: int, monthly_rate_bps: int) -> str:
+    """Formats the loan terms shown before acceptance."""
+    return (
+        f"本金 {amount_code(amount=amount)}\n"
+        f"利率 `{_rate_text(monthly_rate_bps=monthly_rate_bps)}`\n"
+        "利息採單利，依經過天數按比例計算\n"
+        "還款會先抵利息，再抵本金；貸方可催收"
+    )
+
+
+def _payment_summary_text(  # noqa: PLR0913 -- summary needs all visible repayment fields
+    paid_amount: int,
+    interest_paid: int,
+    principal_paid: int,
+    remaining_principal: int,
+    remaining_interest: int,
+    borrower_balance: int,
+) -> str:
+    """Formats one repayment or collection result."""
+    return (
+        f"本次扣款 {amount_code(amount=paid_amount)}\n"
+        f"償還利息 {amount_code(amount=interest_paid)}\n"
+        f"償還本金 {amount_code(amount=principal_paid)}\n"
+        f"剩餘本金 {amount_code(amount=remaining_principal)}\n"
+        f"剩餘利息 {amount_code(amount=remaining_interest)}\n"
+        f"借方餘額 {amount_code(amount=borrower_balance)}"
+    )
+
+
+def _credit_request_footer() -> str:
+    """Formats the personal credit request button hint."""
+    return "貸方可用下方按鈕批准或拒絕，發起者可取消"
+
+
+def _central_bank_request_footer() -> str:
+    """Formats the central-bank request button hint."""
+    return "央行成員可用下方按鈕批准或拒絕，發起者可取消"
+
+
+class CentralBankLoanDecisionView(View):
+    """Button controls for deciding a public central-bank loan request."""
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        proposal_id: int,
+        creator_id: int,
+        allow_self_approval: bool = False,
+    ) -> None:
+        """Initializes a decision view for one proposal."""
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.proposal_id = proposal_id
+        self.creator_id = creator_id
+        self.allow_self_approval = allow_self_approval
+
+    async def _send_permission_denied(self, interaction: Interaction) -> None:
+        """Replies privately when a non-banker clicks a decision button."""
+        embed = Embed(
+            title="權限不足",
+            description="### 只有央行成員可以處理央行借款申請",
+            color=_ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _is_central_banker(self, interaction: Interaction) -> bool:
+        """Returns whether the clicking user can decide central-bank proposals."""
+        if interaction.user is None:
+            return False
+        return await get_central_banker(user_id=interaction.user.id)
+
+    def _central_bank_exclude_user_ids(self) -> tuple[int, ...]:
+        """Returns bot-owned account IDs excluded from central-bank capacity."""
+        return (self.bot.user.id,) if self.bot.user is not None else ()
+
+    @nextcord.ui.button(
+        label="批准",
+        emoji="✅",
+        style=ButtonStyle.success,
+        custom_id="central_bank:approve",
+        row=0,
+    )
+    async def approve(self, _button: Button, interaction: Interaction) -> None:
+        """Approves the central-bank request when clicked by a central banker."""
+        if interaction.user is None:
+            return
+        if not await self._is_central_banker(interaction=interaction):
+            await self._send_permission_denied(interaction=interaction)
+            return
+
+        banker_avatar_url = await guild_avatar_url(
+            user=interaction.user, guild=getattr(interaction, "guild", None)
+        )
+        result = await accept_loan_proposal(
+            proposal_id=self.proposal_id,
+            actor_id=interaction.user.id,
+            actor_name=interaction.user.name,
+            actor_avatar_url=banker_avatar_url,
+            is_central_banker=True,
+            central_bank_exclude_user_ids=self._central_bank_exclude_user_ids(),
+            allow_central_bank_self_approval=self.allow_self_approval,
+        )
+        if result is None:
+            embed = Embed(
+                title="批准失敗",
+                description="### 申請不存在、已處理、自我批准未開放，或央行額度不足",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="🏛️ 央行借款已批准",
+            description=(
+                f"### {currency_text(amount=result.contract.principal_remaining)} 已入帳"
+            ),
+            color=_CENTRAL_BANK_COLOR,
+        )
+        embed.add_field(name="批准者", value=interaction.user.mention, inline=True)
+        embed.add_field(
+            name="央行剩餘額度",
+            value=amount_code(amount=result.central_bank_available_credit or 0),
+            inline=True,
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @nextcord.ui.button(
+        label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="central_bank:reject", row=0
+    )
+    async def reject(self, _button: Button, interaction: Interaction) -> None:
+        """Rejects the central-bank request when clicked by a central banker."""
+        if interaction.user is None:
+            return
+        if not await self._is_central_banker(interaction=interaction):
+            await self._send_permission_denied(interaction=interaction)
+            return
+
+        proposal = await reject_loan_proposal(
+            proposal_id=self.proposal_id, actor_id=interaction.user.id, is_central_banker=True
+        )
+        if proposal is None:
+            embed = Embed(
+                title="拒絕失敗",
+                description="### 申請不存在、已處理，或你沒有權限拒絕",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="🏛️ 央行申請已拒絕",
+            description=f"### 央行借款申請已關閉\n處理人 {interaction.user.mention}",
+            color=_CENTRAL_BANK_COLOR,
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @nextcord.ui.button(
+        label="取消",
+        emoji="🚫",
+        style=ButtonStyle.secondary,
+        custom_id="central_bank:cancel",
+        row=0,
+    )
+    async def cancel(self, _button: Button, interaction: Interaction) -> None:
+        """Cancels the central-bank request when clicked by its creator."""
+        if interaction.user is None:
+            return
+        if interaction.user.id != self.creator_id:
+            embed = Embed(
+                title="權限不足",
+                description="### 只有申請發起者可以取消央行借款申請",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        proposal = await cancel_loan_proposal(
+            proposal_id=self.proposal_id, actor_id=interaction.user.id
+        )
+        if proposal is None:
+            embed = Embed(
+                title="取消失敗",
+                description="### 申請不存在、已處理，或你不是發起者",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="🏛️ 央行申請已取消",
+            description=f"### 央行借款申請已關閉\n發起者 {interaction.user.mention}",
+            color=_CENTRAL_BANK_COLOR,
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class CreditLoanDecisionView(View):
+    """Button controls for deciding a public personal credit request."""
+
+    def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
+        """Initializes a decision view for one personal credit proposal."""
+        super().__init__(timeout=180)
+        self.proposal_id = proposal_id
+        self.lender_id = lender_id
+        self.creator_id = creator_id
+
+    async def _send_permission_denied(self, interaction: Interaction, description: str) -> None:
+        """Replies privately when a user clicks a button they cannot use."""
+        embed = Embed(title="權限不足", description=description, color=_ERROR_COLOR)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _require_lender(self, interaction: Interaction) -> bool:
+        """Returns whether the clicking user is the requested lender."""
+        if interaction.user is None:
+            return False
+        if interaction.user.id == self.lender_id:
+            return True
+        await self._send_permission_denied(
+            interaction=interaction, description="### 只有指定貸方可以處理這筆信貸申請"
+        )
+        return False
+
+    @nextcord.ui.button(
+        label="批准", emoji="✅", style=ButtonStyle.success, custom_id="credit:approve", row=0
+    )
+    async def approve(self, _button: Button, interaction: Interaction) -> None:
+        """Approves the personal credit request when clicked by the lender."""
+        if interaction.user is None or not await self._require_lender(interaction=interaction):
+            return
+
+        lender_avatar_url = await guild_avatar_url(
+            user=interaction.user, guild=getattr(interaction, "guild", None)
+        )
+        result = await accept_loan_proposal(
+            proposal_id=self.proposal_id,
+            actor_id=interaction.user.id,
+            actor_name=interaction.user.name,
+            actor_avatar_url=lender_avatar_url,
+        )
+        if result is None:
+            embed = Embed(
+                title="批准失敗",
+                description="### 申請不存在、已處理、不是指定貸方，或貸方餘額不足",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="✅ 信貸已批准",
+            description=f"### {currency_text(amount=result.contract.principal_remaining)} 已入帳",
+            color=_BORROW_COLOR,
+        )
+        embed.add_field(name="批准者", value=interaction.user.mention, inline=True)
+        embed.add_field(
+            name="借方餘額", value=amount_code(amount=result.borrower_balance), inline=True
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @nextcord.ui.button(
+        label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="credit:reject", row=0
+    )
+    async def reject(self, _button: Button, interaction: Interaction) -> None:
+        """Rejects the personal credit request when clicked by the lender."""
+        if interaction.user is None or not await self._require_lender(interaction=interaction):
+            return
+
+        proposal = await reject_loan_proposal(
+            proposal_id=self.proposal_id, actor_id=interaction.user.id
+        )
+        if proposal is None:
+            embed = Embed(
+                title="拒絕失敗",
+                description="### 申請不存在、已處理，或你不是指定貸方",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="信貸申請已拒絕",
+            description=f"### 信貸申請已關閉\n處理人 {interaction.user.mention}",
+            color=_REPAY_COLOR,
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @nextcord.ui.button(
+        label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="credit:cancel", row=0
+    )
+    async def cancel(self, _button: Button, interaction: Interaction) -> None:
+        """Cancels the personal credit request when clicked by its creator."""
+        if interaction.user is None:
+            return
+        if interaction.user.id != self.creator_id:
+            await self._send_permission_denied(
+                interaction=interaction, description="### 只有申請發起者可以取消這筆信貸申請"
+            )
+            return
+
+        proposal = await cancel_loan_proposal(
+            proposal_id=self.proposal_id, actor_id=interaction.user.id
+        )
+        if proposal is None:
+            embed = Embed(
+                title="取消失敗",
+                description="### 申請不存在、已處理，或你不是發起者",
+                color=_ERROR_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        embed = Embed(
+            title="信貸申請已取消",
+            description=f"### 信貸申請已關閉\n發起者 {interaction.user.mention}",
+            color=_REPAY_COLOR,
+        )
+        self.stop()
+        await interaction.response.edit_message(embed=embed, view=None)
 
 
 class EconomyCogs(commands.Cog):
@@ -310,36 +661,38 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
-        amount = await get_balance(user_id=user.id)
-        loan = await get_loan_view(user_id=user.id)
+        portfolio = await get_portfolio(user_id=user.id)
         is_vip = await get_vip(user_id=user.id)
-        limit = credit_limit(user=user, is_vip=is_vip)
         age_days = (datetime.now(tz=UTC) - user.created_at).days
 
         embed = Embed(
-            title="💰 錢包", color=_BALANCE_COLOR, description=f"## {currency_text(amount=amount)}"
+            title="💰 錢包",
+            color=_BALANCE_COLOR,
+            description=f"## {currency_text(amount=portfolio.balance)}",
         )
         embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
 
-        has_debt = loan is not None and loan.principal > 0
-        if has_debt and loan is not None:
+        if portfolio.debt_principal > 0 or portfolio.debt_interest > 0:
             embed.add_field(
-                name="今日欠款",
+                name="未還債務",
                 value=(
-                    f"本金 {amount_code(amount=loan.principal)}\n"
-                    "-# 每天 0:00 自動清零, 請主動 /repay 還款"
+                    f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
+                    f"利息 {amount_code(amount=portfolio.debt_interest)}"
                 ),
                 inline=False,
             )
+        if portfolio.stock_value > 0:
+            embed.add_field(
+                name="股票估值", value=amount_code(amount=portfolio.stock_value), inline=False
+            )
+        embed.add_field(name="淨資產", value=amount_code(amount=portfolio.net_worth), inline=False)
 
         if is_vip:
             embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
 
         vip_badge = " · 👑 VIP" if is_vip else ""
-        embed.set_footer(
-            text=f"帳號 {age_days} 天 | 借款上限 {currency_text(amount=limit)}{vip_badge}"
-        )
+        embed.set_footer(text=f"帳號 {age_days} 天{vip_badge}")
         await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -347,7 +700,7 @@ class EconomyCogs(commands.Cog):
         description=f"Show the global top {CURRENCY_NAME} holders.",
         name_localizations={Locale.zh_TW: "排行榜", Locale.ja: "リーダーボード"},
         description_localizations={
-            Locale.zh_TW: f"顯示 global {CURRENCY_NAME}前 10 名",
+            Locale.zh_TW: f"顯示全域 {CURRENCY_NAME}前 10 名",
             Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
         },
         nsfw=False,
@@ -603,147 +956,166 @@ class EconomyCogs(commands.Cog):
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
-        name="borrow",
-        description=f"Borrow {CURRENCY_NAME} that auto-expires at midnight (Asia/Taipei).",
-        name_localizations={Locale.zh_TW: "貸款", Locale.ja: "借入"},
+        name="credit",
+        description="Personal credit operations.",
+        name_localizations={Locale.zh_TW: "信貸", Locale.ja: "信用"},
         description_localizations={
-            Locale.zh_TW: (
-                f"借入{CURRENCY_NAME}, 每天 0:00 自動清零 (額度依 Discord 帳號年齡, VIP 2x)"
-            ),
-            Locale.ja: (
-                f"{CURRENCY_NAME}を借入します (毎日0:00自動リセット, 上限はアカウント年齢に依存, VIPは2倍)。"
-            ),
+            Locale.zh_TW: "個人信貸操作",
+            Locale.ja: "personal credit 操作。",
         },
         nsfw=False,
     )
-    async def borrow_loan(
+    async def credit(self, interaction: Interaction) -> None:
+        """Slash command group for personal credit operations."""
+
+    @credit.subcommand(
+        name="borrow",
+        description=f"Request a personal {CURRENCY_NAME} loan from another member.",
+        name_localizations={Locale.zh_TW: "借款", Locale.ja: "借入"},
+        description_localizations={
+            Locale.zh_TW: f"向指定成員提出{CURRENCY_NAME}借款申請",
+            Locale.ja: f"指定メンバーに{CURRENCY_NAME}借入リクエストを送ります。",
+        },
+    )
+    async def credit_borrow(
         self,
         interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The member you want to borrow from.",
+            name_localizations={Locale.zh_TW: "貸方", Locale.ja: "貸し手"},
+            description_localizations={
+                Locale.zh_TW: "要向誰借款",
+                Locale.ja: "借入先のメンバー。",
+            },
+            required=True,
+        ),
         amount: int = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to borrow (must be positive).",
+            description=f"How much {CURRENCY_NAME} to request.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要借入的{CURRENCY_NAME} (必須大於 0)",
-                Locale.ja: f"借入する{CURRENCY_NAME} (1以上)。",
+                Locale.zh_TW: f"要借入的{CURRENCY_NAME}",
+                Locale.ja: f"借入する{CURRENCY_NAME}。",
             },
             required=True,
             min_value=1,
         ),
+        monthly_rate_percent: float = SlashOption(
+            name="monthly_rate_percent",
+            description="Monthly simple-interest rate percent.",
+            name_localizations={Locale.zh_TW: "月利率", Locale.ja: "月利率"},
+            description_localizations={
+                Locale.zh_TW: "每月單利百分比",
+                Locale.ja: "月次 simple interest rate percent。",
+            },
+            required=False,
+            default=DEFAULT_LOAN_MONTHLY_RATE_BPS / 100,
+            min_value=0,
+            max_value=100,
+        ),
     ) -> None:
-        """Borrows ``amount`` points against the caller's daily credit window.
+        """Creates a personal loan request for the target lender.
 
         Args:
             interaction: The interaction that triggered the command.
+            member: The requested lender.
             amount: How many points to borrow.
+            monthly_rate_percent: Monthly simple-interest rate.
         """
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         if interaction.user is None:
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
-        is_vip = await get_vip(user_id=user.id)
-        limit = credit_limit(user=user, is_vip=is_vip)
-        loan_before = await get_loan_view(user_id=user.id)
-        debt_before = loan_before.principal if loan_before else 0
-        result = await borrow(
-            user_id=user.id,
-            name=user.name,
-            avatar_url=user_avatar_url,
-            amount=amount,
-            credit_limit_value=limit,
-        )
-        if result is None:
-            loan = await get_loan_view(user_id=user.id)
-            current_debt = loan.principal if loan else 0
-            remaining = max(limit - current_debt, 0)
-            embed = Embed(
-                title="借款失敗",
-                description=(
-                    f"### 剩餘額度 {currency_text(amount=remaining)}\n"
-                    f"申請後會超過今日上限 {bold_currency(amount=limit)}"
-                ),
-                color=_ERROR_COLOR,
-            )
+        guild = getattr(interaction, "guild", None)
+        user_avatar_url = await guild_avatar_url(user=user, guild=guild)
+        lender_avatar_url = await guild_avatar_url(user=member, guild=guild)
+        if member.bot:
+            embed = Embed(title="借款失敗", description="### 不能向 bot 借款", color=_ERROR_COLOR)
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-            _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
-            embed.add_field(name="目前欠款", value=amount_code(amount=current_debt), inline=False)
-            if is_vip:
-                embed.add_field(
-                    name="👑 VIP加成", value=_vip_credit_limit_line(user=user), inline=False
-                )
-            await _send_private_followup(interaction=interaction, embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+        if member.id == user.id:
+            embed = Embed(title="借款失敗", description="### 不能向自己借款", color=_ERROR_COLOR)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
 
-        borrowed_amount = result.borrowed_amount or max(result.principal - debt_before, 0)
+        monthly_rate_bps = monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent)
+        proposal = await create_personal_loan_request(
+            borrower_id=user.id,
+            borrower_name=user.name,
+            borrower_avatar_url=user_avatar_url,
+            lender_id=member.id,
+            lender_name=member.name,
+            lender_avatar_url=lender_avatar_url,
+            amount=amount,
+            monthly_rate_bps=monthly_rate_bps,
+        )
+        if proposal is None:
+            embed = Embed(title="借款失敗", description="### 無法建立借款申請", color=_ERROR_COLOR)
+            embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+
         embed = Embed(
-            title="💴 借款完成",
-            description=f"### {currency_text(amount=borrowed_amount, signed=True)} 入帳",
+            title="💴 信貸申請已建立",
+            description=f"### {user.mention} → {member.mention}\n{currency_text(amount=amount)}",
             color=_BORROW_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
-        if borrowed_amount != amount:
-            embed.add_field(
-                name="自動調整",
-                value=(
-                    f"申請 {amount_code(amount=amount)}\n"
-                    f"剩餘額度 {amount_code(amount=borrowed_amount)}"
-                ),
-                inline=False,
-            )
+        _set_optional_thumbnail(embed=embed, avatar_url=lender_avatar_url)
         embed.add_field(
-            name="借款後",
-            value=(
-                f"餘額 {amount_code(amount=result.new_balance)}\n"
-                f"本金 {amount_code(amount=result.principal)}"
-            ),
+            name="條款",
+            value=_loan_terms_text(amount=amount, monthly_rate_bps=monthly_rate_bps),
             inline=False,
         )
-        if is_vip:
-            embed.add_field(
-                name="👑 VIP加成", value=_vip_credit_limit_line(user=user), inline=False
-            )
-        embed.set_footer(
-            text=(
-                f"每天 0:00 (Asia/Taipei) 自動清零 | 請用 /repay 手動還款 | "
-                f"上限 {currency_text(amount=limit)}"
-            )
+        embed.set_footer(text=_credit_request_footer())
+        await _send_expiring_followup(
+            interaction=interaction,
+            embed=embed,
+            view=CreditLoanDecisionView(
+                proposal_id=proposal.proposal_id, lender_id=member.id, creator_id=user.id
+            ),
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
 
-    @nextcord.slash_command(
+    @credit.subcommand(
         name="repay",
-        description=f"Repay your outstanding {CURRENCY_NAME} loan from your balance.",
+        description=f"Repay a personal {CURRENCY_NAME} loan to a member.",
         name_localizations={Locale.zh_TW: "還款", Locale.ja: "返済"},
         description_localizations={
-            Locale.zh_TW: f"從餘額扣款以償還{CURRENCY_NAME}欠款",
-            Locale.ja: f"残高から{CURRENCY_NAME}の借入を返済します。",
+            Locale.zh_TW: "還款給指定貸方",
+            Locale.ja: "指定 lender へ personal loan を返済します。",
         },
-        nsfw=False,
     )
-    async def repay_loan(
+    async def credit_repay(
         self,
         interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The lender to repay.",
+            name_localizations={Locale.zh_TW: "貸方", Locale.ja: "貸し手"},
+            description_localizations={Locale.zh_TW: "要還款給誰", Locale.ja: "返済先の lender。"},
+            required=True,
+        ),
         amount: int = SlashOption(
             name="amount",
-            description=f"Maximum {CURRENCY_NAME} to apply against the debt.",
+            description=f"Maximum {CURRENCY_NAME} to apply against personal debt.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME} (自動 clamp 到欠款額)",
-                Locale.ja: f"返済する{CURRENCY_NAME}の上限 (借入額にクランプ)。",
+                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME}",
+                Locale.ja: f"返済する{CURRENCY_NAME}の上限。",
             },
             required=True,
             min_value=1,
         ),
     ) -> None:
-        """Pays down outstanding principal from the caller's balance.
+        """Pays down active personal loans owed to ``member``.
 
         Args:
             interaction: The interaction that triggered the command.
-            amount: Maximum amount to repay; clamped to ``min(amount, balance, debt)``.
+            member: The personal lender.
+            amount: Maximum amount to repay.
         """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
@@ -753,19 +1125,15 @@ class EconomyCogs(commands.Cog):
             user=user, guild=getattr(interaction, "guild", None)
         )
 
-        result = await repay(
-            user_id=user.id, name=user.name, avatar_url=user_avatar_url, amount=amount
+        result = await repay_personal_loans(
+            borrower_id=user.id,
+            borrower_name=user.name,
+            borrower_avatar_url=user_avatar_url,
+            lender_id=member.id,
+            amount=amount,
         )
         if result is None:
-            balance_now = await get_balance(user_id=user.id)
-            loan = await get_loan_view(user_id=user.id)
-            debt = loan.principal if loan else 0
-            if debt == 0:
-                reason = "目前沒有欠款"
-            elif balance_now == 0:
-                reason = f"餘額為 0, 無法還款\n欠 {bold_currency(amount=debt)}"
-            else:
-                reason = "還款失敗, 請稍後再試"
+            reason = f"沒有可還給 {member.display_name} 的有效個人借款"
             embed = Embed(title="還款失敗", description=f"### {reason}", color=_ERROR_COLOR)
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
             _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
@@ -773,25 +1141,693 @@ class EconomyCogs(commands.Cog):
             return
 
         embed = Embed(
-            title="🧾 還款完成",
-            description=f"### {currency_text(amount=-result.principal_repaid, signed=True)} 扣款",
+            title="🧾 信貸還款完成",
+            description=f"### {currency_text(amount=-result.paid_amount, signed=True)} 扣款",
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
         _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(
-            name="本次還款",
-            value=f"本金 {amount_code(amount=result.principal_repaid)}",
-            inline=True,
+            name=f"還給 {member.display_name}",
+            value=_payment_summary_text(
+                paid_amount=result.paid_amount,
+                interest_paid=result.interest_paid,
+                principal_paid=result.principal_paid,
+                remaining_principal=result.remaining_principal,
+                remaining_interest=result.remaining_interest,
+                borrower_balance=result.borrower_balance,
+            ),
+            inline=False,
+        )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @credit.subcommand(
+        name="call",
+        description=f"Forcibly collect a personal {CURRENCY_NAME} loan.",
+        name_localizations={Locale.zh_TW: "催收", Locale.ja: "回収"},
+        description_localizations={
+            Locale.zh_TW: "從借方可用餘額強制回收個人借款",
+            Locale.ja: "借り手の利用可能残高から personal loan を回収します。",
+        },
+    )
+    async def credit_call(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The borrower to collect from.",
+            name_localizations={Locale.zh_TW: "借方", Locale.ja: "借り手"},
+            description_localizations={
+                Locale.zh_TW: "要向誰強制回收",
+                Locale.ja: "回収対象の borrower。",
+            },
+            required=True,
+        ),
+        amount: int = SlashOption(
+            name="amount",
+            description="Maximum amount to collect; omit or 0 means all owed.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: "最多回收多少；0 代表嘗試全收",
+                Locale.ja: "回収上限。0 は全額。",
+            },
+            required=False,
+            default=0,
+            min_value=0,
+        ),
+    ) -> None:
+        """Forcibly collects a personal loan from a borrower."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        borrower_avatar_url = await guild_avatar_url(
+            user=member, guild=getattr(interaction, "guild", None)
+        )
+        result = await call_personal_loans(
+            lender_id=user.id,
+            borrower_id=member.id,
+            borrower_name=member.name,
+            borrower_avatar_url=borrower_avatar_url,
+            amount=amount or None,
+        )
+        if result is None:
+            embed = Embed(
+                title="催收失敗",
+                description=f"### {member.display_name} 沒有欠你有效個人借款，或目前無可扣餘額",
+                color=_ERROR_COLOR,
+            )
+            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="📣 信貸催收完成",
+            description=f"### 從 {member.mention} 回收 {currency_text(amount=result.paid_amount)}",
+            color=_REPAY_COLOR,
+        )
+        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        embed.add_field(
+            name="回收明細",
+            value=_payment_summary_text(
+                paid_amount=result.paid_amount,
+                interest_paid=result.interest_paid,
+                principal_paid=result.principal_paid,
+                remaining_principal=result.remaining_principal,
+                remaining_interest=result.remaining_interest,
+                borrower_balance=result.borrower_balance,
+            ),
+            inline=False,
+        )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @credit.subcommand(
+        name="status",
+        description="Show your active personal loan contracts.",
+        name_localizations={Locale.zh_TW: "狀態", Locale.ja: "状態"},
+        description_localizations={
+            Locale.zh_TW: "查看你的有效個人信貸",
+            Locale.ja: "active personal loan contracts を表示します。",
+        },
+    )
+    async def credit_status(self, interaction: Interaction) -> None:
+        """Shows the caller's active personal credit contracts."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        contracts = [
+            contract
+            for contract in await list_loan_contracts(user_id=interaction.user.id)
+            if contract.lender_type == LoanLenderType.USER
+        ]
+        if not contracts:
+            embed = Embed(
+                title="信貸狀態", description="### 目前沒有有效信貸", color=_BORROW_COLOR
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        lines = [
+            (
+                f"{'欠 ' + contract.lender_name if contract.borrower_id == interaction.user.id else contract.borrower_name + ' 欠你'} "
+                f"本金 {amount_code(amount=contract.principal_remaining)} · "
+                f"利息 {amount_code(amount=contract.interest_due)} · "
+                f"{_rate_text(monthly_rate_bps=contract.monthly_rate_bps)}"
+            )
+            for contract in contracts[:10]
+        ]
+        embed = Embed(title="信貸狀態", description="\n".join(lines), color=_BORROW_COLOR)
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="central_bank",
+        description="Central bank lending operations.",
+        name_localizations={Locale.zh_TW: "中央銀行", Locale.ja: "中央銀行"},
+        description_localizations={
+            Locale.zh_TW: "中央銀行借款操作",
+            Locale.ja: "中央銀行 loan 操作。",
+        },
+        nsfw=False,
+    )
+    async def central_bank(self, interaction: Interaction) -> None:
+        """Slash command group for central bank operations."""
+
+    @central_bank.subcommand(
+        name="borrow",
+        description=f"Request a central bank {CURRENCY_NAME} loan.",
+        name_localizations={Locale.zh_TW: "借款", Locale.ja: "借入"},
+        description_localizations={
+            Locale.zh_TW: f"向中央銀行提出{CURRENCY_NAME}借款申請",
+            Locale.ja: f"中央銀行に{CURRENCY_NAME}借入 request を送ります。",
+        },
+    )
+    async def central_bank_borrow(
+        self,
+        interaction: Interaction,
+        amount: int = SlashOption(
+            name="amount",
+            description=f"How much {CURRENCY_NAME} to request.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: f"要向中央銀行借的{CURRENCY_NAME}",
+                Locale.ja: f"中央銀行から借入する{CURRENCY_NAME}。",
+            },
+            required=True,
+            min_value=1,
+        ),
+        monthly_rate_percent: float = SlashOption(
+            name="monthly_rate_percent",
+            description="Monthly simple-interest rate percent.",
+            name_localizations={Locale.zh_TW: "月利率", Locale.ja: "月利率"},
+            description_localizations={
+                Locale.zh_TW: "每月單利百分比",
+                Locale.ja: "月次 simple interest rate percent。",
+            },
+            required=False,
+            default=DEFAULT_LOAN_MONTHLY_RATE_BPS / 100,
+            min_value=0,
+            max_value=100,
+        ),
+    ) -> None:
+        """Creates a central bank loan request."""
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        monthly_rate_bps = monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent)
+        proposal = await create_central_bank_loan_request(
+            borrower_id=user.id,
+            borrower_name=user.name,
+            borrower_avatar_url=user_avatar_url,
+            amount=amount,
+            monthly_rate_bps=monthly_rate_bps,
+        )
+        if proposal is None:
+            embed = Embed(
+                title="央行借款失敗", description="### 無法建立央行借款申請", color=_ERROR_COLOR
+            )
+            await _send_expiring_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="🏛️ 央行借款申請已建立",
+            description=f"### {user.mention}\n{currency_text(amount=amount)}",
+            color=_CENTRAL_BANK_COLOR,
+        )
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        embed.add_field(
+            name="條款",
+            value=_loan_terms_text(amount=amount, monthly_rate_bps=monthly_rate_bps),
+            inline=False,
+        )
+        embed.set_footer(text=_central_bank_request_footer())
+        await _send_expiring_followup(
+            interaction=interaction,
+            embed=embed,
+            view=CentralBankLoanDecisionView(
+                bot=self.bot,
+                proposal_id=proposal.proposal_id,
+                creator_id=user.id,
+                allow_self_approval=EconomyConfig().allow_central_bank_self_approval,
+            ),
+        )
+
+    @central_bank.subcommand(
+        name="repay",
+        description="Repay your central bank loan.",
+        name_localizations={Locale.zh_TW: "還款", Locale.ja: "返済"},
+        description_localizations={
+            Locale.zh_TW: "償還自己的央行借款",
+            Locale.ja: "自分の central bank loan を返済します。",
+        },
+    )
+    async def central_bank_repay(
+        self,
+        interaction: Interaction,
+        amount: int = SlashOption(
+            name="amount",
+            description="Maximum amount to repay.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={Locale.zh_TW: "最多還款多少", Locale.ja: "返済上限。"},
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Repays central-bank debt."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        result = await repay_central_bank_loans(
+            borrower_id=user.id,
+            borrower_name=user.name,
+            borrower_avatar_url=user_avatar_url,
+            amount=amount,
+        )
+        if result is None:
+            embed = Embed(
+                title="央行還款失敗",
+                description="### 沒有有效央行借款，或目前無可扣餘額",
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="🏛️ 央行還款完成",
+            description=_payment_summary_text(
+                paid_amount=result.paid_amount,
+                interest_paid=result.interest_paid,
+                principal_paid=result.principal_paid,
+                remaining_principal=result.remaining_principal,
+                remaining_interest=result.remaining_interest,
+                borrower_balance=result.borrower_balance,
+            ),
+            color=_CENTRAL_BANK_COLOR,
+        )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @central_bank.subcommand(
+        name="call",
+        description="Central banker forced collection from a borrower.",
+        name_localizations={Locale.zh_TW: "催收", Locale.ja: "回収"},
+        description_localizations={
+            Locale.zh_TW: "央行成員從借方可用餘額強制回收",
+            Locale.ja: "central banker が borrower から強制回収します。",
+        },
+    )
+    async def central_bank_call(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The borrower to collect from.",
+            name_localizations={Locale.zh_TW: "借方", Locale.ja: "借り手"},
+            description_localizations={
+                Locale.zh_TW: "要向誰催收",
+                Locale.ja: "回収対象 borrower。",
+            },
+            required=True,
+        ),
+        amount: int = SlashOption(
+            name="amount",
+            description="Maximum amount to collect; 0 means all owed.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={
+                Locale.zh_TW: "最多回收多少；0 代表嘗試全收",
+                Locale.ja: "回収上限。0 は全額。",
+            },
+            required=False,
+            default=0,
+            min_value=0,
+        ),
+    ) -> None:
+        """Central-bank forced collection."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        if not await get_central_banker(user_id=interaction.user.id):
+            embed = Embed(
+                title="權限不足",
+                description="### 只有央行成員可以執行央行催收",
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        borrower_avatar_url = await guild_avatar_url(
+            user=member, guild=getattr(interaction, "guild", None)
+        )
+        result = await call_central_bank_loans(
+            borrower_id=member.id,
+            borrower_name=member.name,
+            borrower_avatar_url=borrower_avatar_url,
+            amount=amount or None,
+        )
+        if result is None:
+            embed = Embed(
+                title="央行催收失敗",
+                description="### 目標沒有有效央行借款，或目前無可扣餘額",
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="🏛️ 央行催收完成",
+            description=_payment_summary_text(
+                paid_amount=result.paid_amount,
+                interest_paid=result.interest_paid,
+                principal_paid=result.principal_paid,
+                remaining_principal=result.remaining_principal,
+                remaining_interest=result.remaining_interest,
+                borrower_balance=result.borrower_balance,
+            ),
+            color=_CENTRAL_BANK_COLOR,
+        )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @central_bank.subcommand(
+        name="status",
+        description="Show central bank lending capacity.",
+        name_localizations={Locale.zh_TW: "狀態", Locale.ja: "状態"},
+        description_localizations={
+            Locale.zh_TW: "查看中央銀行可放貸額度",
+            Locale.ja: "中央銀行の lending capacity を表示します。",
+        },
+    )
+    async def central_bank_status(self, interaction: Interaction) -> None:
+        """Shows central bank lending capacity."""
+        await interaction.response.defer(ephemeral=True)
+        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
+        status = await get_central_bank_status(exclude_user_ids=exclude_user_ids)
+        embed = Embed(
+            title="🏛️ 中央銀行狀態",
+            description=f"## 可放貸 {bold_currency(amount=status.available_credit)}",
+            color=_CENTRAL_BANK_COLOR,
         )
         embed.add_field(
-            name="剩餘",
+            name="資金池",
             value=(
-                f"欠款 {amount_code(amount=result.remaining_debt)}\n"
-                f"餘額 {amount_code(amount=result.new_balance)}"
+                f"全體正餘額 {amount_code(amount=status.total_positive_user_balance)}\n"
+                f"未還本金 {amount_code(amount=status.outstanding_principal)}"
             ),
-            inline=True,
+            inline=False,
         )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="stock",
+        description="Issue and manage player-issued stocks.",
+        name_localizations={Locale.zh_TW: "股票", Locale.ja: "株式"},
+        description_localizations={
+            Locale.zh_TW: "發行與管理玩家名義股票",
+            Locale.ja: "player-issued stocks を管理します。",
+        },
+        nsfw=False,
+    )
+    async def stock(self, interaction: Interaction) -> None:
+        """Slash command group for stock operations."""
+
+    @stock.subcommand(
+        name="issue",
+        description="Issue your first stock offering.",
+        name_localizations={Locale.zh_TW: "發行", Locale.ja: "発行"},
+        description_localizations={
+            Locale.zh_TW: "發行自己的第一檔股票",
+            Locale.ja: "自分の stock を発行します。",
+        },
+    )
+    async def stock_issue(
+        self,
+        interaction: Interaction,
+        shares: int = SlashOption(
+            name="shares",
+            description="Total shares to issue.",
+            name_localizations={Locale.zh_TW: "股數", Locale.ja: "株数"},
+            description_localizations={Locale.zh_TW: "總發行股數", Locale.ja: "発行株数。"},
+            required=True,
+            min_value=1,
+        ),
+        price: int = SlashOption(
+            name="price",
+            description=f"{CURRENCY_NAME} per share.",
+            name_localizations={Locale.zh_TW: "股價", Locale.ja: "価格"},
+            description_localizations={Locale.zh_TW: "每股價格", Locale.ja: "1株あたり価格。"},
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Issues a stock profile for a qualified player."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        profile = await issue_stock(
+            issuer_id=user.id,
+            issuer_name=user.name,
+            issuer_avatar_url=user_avatar_url,
+            shares=shares,
+            price=price,
+        )
+        if profile is None:
+            portfolio = await get_portfolio(user_id=user.id)
+            embed = Embed(
+                title="發行失敗",
+                description=(
+                    f"### 需要淨資產大於 {bold_currency(amount=STOCK_ISSUE_MIN_NET_WORTH)}\n"
+                    f"目前淨資產 {bold_currency(amount=portfolio.net_worth)}\n"
+                    "或你已經發行過股票"
+                ),
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="📈 股票發行完成",
+            description=f"### {user.display_name}\n總股數 `{profile.total_shares:,}` · 每股 {amount_code(amount=profile.issue_price)}",
+            color=_STOCK_COLOR,
+        )
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @stock.subcommand(
+        name="buy",
+        description="Buy treasury shares from a player issuer.",
+        name_localizations={Locale.zh_TW: "購買", Locale.ja: "購入"},
+        description_localizations={
+            Locale.zh_TW: "購買指定玩家的未售出股數",
+            Locale.ja: "指定 player issuer の treasury shares を購入します。",
+        },
+    )
+    async def stock_buy(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The stock issuer.",
+            name_localizations={Locale.zh_TW: "發行者", Locale.ja: "発行者"},
+            description_localizations={Locale.zh_TW: "股票發行者", Locale.ja: "stock issuer。"},
+            required=True,
+        ),
+        shares: int = SlashOption(
+            name="shares",
+            description="Shares to buy.",
+            name_localizations={Locale.zh_TW: "股數", Locale.ja: "株数"},
+            description_localizations={Locale.zh_TW: "要購買的股數", Locale.ja: "購入株数。"},
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Buys treasury shares from an issuer."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        result = await buy_stock(
+            buyer_id=user.id,
+            buyer_name=user.name,
+            buyer_avatar_url=user_avatar_url,
+            issuer_id=member.id,
+            shares=shares,
+        )
+        if result is None:
+            embed = Embed(
+                title="購買失敗",
+                description="### 股票不存在、未售出股數不足、餘額不足，或不能買自己的股票",
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="📈 股票購買完成",
+            description=f"### {member.display_name}\n買入 `{result.shares_bought:,}` 股 · 花費 {amount_code(amount=result.total_cost)}",
+            color=_STOCK_COLOR,
+        )
+        embed.add_field(
+            name="餘額",
+            value=(
+                f"買方 {amount_code(amount=result.buyer_balance)}\n"
+                f"發行者 {amount_code(amount=result.issuer_balance)}"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="剩餘未售出股數", value=f"`{result.treasury_shares:,}`", inline=False)
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @stock.subcommand(
+        name="dividend",
+        description="Pay a manual dividend to sold-share holders.",
+        name_localizations={Locale.zh_TW: "配息", Locale.ja: "配当"},
+        description_localizations={
+            Locale.zh_TW: "從自己的餘額手動配息給持有人",
+            Locale.ja: "自分の balance から holder に dividend を払います。",
+        },
+    )
+    async def stock_dividend(
+        self,
+        interaction: Interaction,
+        amount: int = SlashOption(
+            name="amount",
+            description=f"Total {CURRENCY_NAME} dividend budget.",
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
+            description_localizations={Locale.zh_TW: "總配息預算", Locale.ja: "dividend 予算。"},
+            required=True,
+            min_value=1,
+        ),
+    ) -> None:
+        """Pays a manual stock dividend."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        user = interaction.user
+        user_avatar_url = await guild_avatar_url(
+            user=user, guild=getattr(interaction, "guild", None)
+        )
+        result = await pay_stock_dividend(
+            issuer_id=user.id,
+            issuer_name=user.name,
+            issuer_avatar_url=user_avatar_url,
+            amount=amount,
+        )
+        if result is None:
+            embed = Embed(
+                title="配息失敗",
+                description="### 股票不存在、尚無已售出股數、餘額不足，或分配後金額為 0",
+                color=_ERROR_COLOR,
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="💵 配息完成",
+            description=f"### 實際配發 {currency_text(amount=result.distributed_amount)}",
+            color=_STOCK_COLOR,
+        )
+        embed.add_field(name="收款人數", value=f"`{result.recipient_count:,}`", inline=True)
+        embed.add_field(
+            name="發行者餘額", value=amount_code(amount=result.issuer_balance), inline=True
+        )
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @stock.subcommand(
+        name="info",
+        description="Show a player's stock profile.",
+        name_localizations={Locale.zh_TW: "資訊", Locale.ja: "情報"},
+        description_localizations={
+            Locale.zh_TW: "查看玩家股票資訊",
+            Locale.ja: "player stock profile を表示します。",
+        },
+    )
+    async def stock_info(
+        self,
+        interaction: Interaction,
+        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="The stock issuer.",
+            name_localizations={Locale.zh_TW: "發行者", Locale.ja: "発行者"},
+            description_localizations={Locale.zh_TW: "股票發行者", Locale.ja: "stock issuer。"},
+            required=True,
+        ),
+    ) -> None:
+        """Shows one stock profile."""
+        await interaction.response.defer(ephemeral=True)
+        profile = await get_stock_profile(issuer_id=member.id)
+        if profile is None:
+            embed = Embed(
+                title="股票資訊", description="### 這位玩家尚未發行股票", color=_ERROR_COLOR
+            )
+            await _send_private_followup(interaction=interaction, embed=embed)
+            return
+        embed = Embed(
+            title="📈 股票資訊",
+            description=f"### {member.display_name}\n每股 {amount_code(amount=profile.issue_price)}",
+            color=_STOCK_COLOR,
+        )
+        embed.add_field(name="總股數", value=f"`{profile.total_shares:,}`", inline=True)
+        embed.add_field(name="已售出", value=f"`{profile.sold_shares:,}`", inline=True)
+        embed.add_field(name="未售出", value=f"`{profile.treasury_shares:,}`", inline=True)
+        await _send_private_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="portfolio",
+        description="Show wallet, debt, stock holdings, and estimated net worth.",
+        name_localizations={Locale.zh_TW: "投資組合", Locale.ja: "portfolio"},
+        description_localizations={
+            Locale.zh_TW: "查看餘額、債務、持股與預估淨資產",
+            Locale.ja: "balance、debt、holding、estimated net worth を表示します。",
+        },
+        nsfw=False,
+    )
+    async def portfolio(
+        self,
+        interaction: Interaction,
+        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="Member to inspect; defaults to yourself.",
+            name_localizations={Locale.zh_TW: "成員", Locale.ja: "メンバー"},
+            description_localizations={
+                Locale.zh_TW: "要查看的成員；預設是自己",
+                Locale.ja: "表示する member。省略時は自分。",
+            },
+            required=False,
+            default=None,
+        ),
+    ) -> None:
+        """Shows a portfolio view."""
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        target = member or interaction.user
+        portfolio = await get_portfolio(user_id=target.id)
+        embed = Embed(
+            title="📊 投資組合",
+            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=portfolio.net_worth)}",
+            color=_PORTFOLIO_COLOR,
+        )
+        embed.add_field(name="現金", value=amount_code(amount=portfolio.balance), inline=True)
+        embed.add_field(
+            name="股票估值", value=amount_code(amount=portfolio.stock_value), inline=True
+        )
+        embed.add_field(
+            name="債務",
+            value=(
+                f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
+                f"利息 {amount_code(amount=portfolio.debt_interest)}"
+            ),
+            inline=False,
+        )
+        if portfolio.holdings:
+            holding_lines = [
+                f"**{holding.issuer_name}** `{holding.shares:,}` 股 · {amount_code(amount=holding.estimated_value)}"
+                for holding in portfolio.holdings[:8]
+            ]
+            embed.add_field(name="持股", value="\n".join(holding_lines), inline=False)
         await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
@@ -857,12 +1893,12 @@ class EconomyCogs(commands.Cog):
         name="vip",
         description=(
             f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}: "
-            "2x check-in, 2x borrow cap, 1.5x Blackjack wins."
+            "2x check-in and 1.5x Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: "購買永久 VIP：簽到 2x、貸款額度 2x、Blackjack 贏局 1.5x",
-            Locale.ja: "永久 VIP を購入: check-in 2x、借入上限 2x、Blackjack 勝利 1.5x。",
+            Locale.zh_TW: "購買永久 VIP：簽到 2x、Blackjack 贏局 1.5x",
+            Locale.ja: "永久 VIP を購入: check-in 2x、Blackjack 勝利 1.5x。",
         },
         nsfw=False,
     )
@@ -912,7 +1948,7 @@ class EconomyCogs(commands.Cog):
             title="👑 升級 VIP 成功",
             description=(
                 f"### {currency_text(amount=-result.cost, signed=True)} 扣款\n"
-                "簽到、貸款與 Blackjack 贏局加成已生效"
+                "簽到與 Blackjack 贏局加成已生效"
             ),
             color=_VIP_COLOR,
         )

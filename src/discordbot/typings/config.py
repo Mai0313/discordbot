@@ -24,4 +24,17 @@ class DiscordConfig(BaseSettings):
     )
 
 
-__all__ = ["DiscordConfig"]
+class EconomyConfig(BaseSettings):
+    """Economy feature settings loaded from environment variables."""
+
+    allow_central_bank_self_approval: bool = Field(
+        False,
+        description="Allow central-bank borrowers to approve their own loan requests for local testing.",
+        examples=[False],
+        validation_alias=AliasChoices("ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL"),
+        frozen=False,
+        deprecated=False,
+    )
+
+
+__all__ = ["DiscordConfig", "EconomyConfig"]
