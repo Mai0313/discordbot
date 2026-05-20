@@ -106,6 +106,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 `OPENAI_BASE_URL` may point at OpenAI directly or at an OpenAI-compatible gateway such as LiteLLM.
 
+For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
+
 ## Data And Privacy
 
 This bot stores runtime data locally under `data/`.

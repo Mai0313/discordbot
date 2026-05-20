@@ -1,6 +1,5 @@
 """Slash commands that surface point balances, leaderboards, transfers, and loans."""
 
-from typing import Final
 from datetime import UTC, datetime
 
 import nextcord
@@ -9,6 +8,7 @@ from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     STOCK_ISSUE_MIN_NET_WORTH,
@@ -71,9 +71,6 @@ _PORTFOLIO_COLOR = 0x95A5A6
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
-# Temporary testing switch. Set this to False to restore the production rule
-# that central-bank borrowers cannot approve their own requests.
-_ALLOW_CENTRAL_BANK_SELF_APPROVAL: Final[bool] = True
 
 
 def _vip_perk_lines(user: nextcord.User | Member, checkin_streak: int = 1) -> str:
@@ -179,12 +176,19 @@ def _central_bank_request_footer() -> str:
 class CentralBankLoanDecisionView(View):
     """Button controls for deciding a public central-bank loan request."""
 
-    def __init__(self, bot: commands.Bot, proposal_id: int, creator_id: int) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        proposal_id: int,
+        creator_id: int,
+        allow_self_approval: bool = False,
+    ) -> None:
         """Initializes a decision view for one proposal."""
         super().__init__(timeout=180)
         self.bot = bot
         self.proposal_id = proposal_id
         self.creator_id = creator_id
+        self.allow_self_approval = allow_self_approval
 
     async def _send_permission_denied(self, interaction: Interaction) -> None:
         """Replies privately when a non-banker clicks a decision button."""
@@ -230,7 +234,7 @@ class CentralBankLoanDecisionView(View):
             actor_avatar_url=banker_avatar_url,
             is_central_banker=True,
             central_bank_exclude_user_ids=self._central_bank_exclude_user_ids(),
-            allow_central_bank_self_approval=_ALLOW_CENTRAL_BANK_SELF_APPROVAL,
+            allow_central_bank_self_approval=self.allow_self_approval,
         )
         if result is None:
             embed = Embed(
@@ -1361,7 +1365,10 @@ class EconomyCogs(commands.Cog):
             interaction=interaction,
             embed=embed,
             view=CentralBankLoanDecisionView(
-                bot=self.bot, proposal_id=proposal.proposal_id, creator_id=user.id
+                bot=self.bot,
+                proposal_id=proposal.proposal_id,
+                creator_id=user.id,
+                allow_self_approval=EconomyConfig().allow_central_bank_self_approval,
             ),
         )
 

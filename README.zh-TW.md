@@ -106,6 +106,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 `OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。
 
+本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
+
 ## 資料與隱私
 
 這個 bot 會把 runtime data 存在本機 `data/` 底下。

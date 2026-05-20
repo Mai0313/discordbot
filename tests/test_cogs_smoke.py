@@ -729,6 +729,7 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
         bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
         proposal_id=42,
         creator_id=1,
+        allow_self_approval=True,
     )
     approve_button = next(
         child

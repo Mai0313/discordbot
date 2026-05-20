@@ -462,6 +462,8 @@ _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None
 _global_state_schema_lock: asyncio.Lock | None = None
 _global_state_schema_lock_loop: asyncio.AbstractEventLoop | None = None
+_loan_accept_lock: asyncio.Lock | None = None
+_loan_accept_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _current_schema_lock() -> asyncio.Lock:
@@ -482,6 +484,16 @@ def _current_global_state_schema_lock() -> asyncio.Lock:
         _global_state_schema_lock = asyncio.Lock()
         _global_state_schema_lock_loop = loop
     return _global_state_schema_lock
+
+
+def _current_loan_accept_lock() -> asyncio.Lock:
+    """Serializes loan approval so central-bank capacity is consumed once."""
+    global _loan_accept_lock, _loan_accept_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
+    loop = asyncio.get_running_loop()
+    if _loan_accept_lock is None or _loan_accept_lock_loop is not loop:
+        _loan_accept_lock = asyncio.Lock()
+        _loan_accept_lock_loop = loop
+    return _loan_accept_lock
 
 
 async def _ensure_global_state_schema() -> None:
@@ -2571,7 +2583,7 @@ async def reject_loan_proposal(
         return _loan_proposal_view(proposal=proposal)
 
 
-async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0912, PLR0913 -- proposal-kind branches must stay in one transaction
+async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, actor, and central-bank policy
     proposal_id: int,
     actor_id: int,
     actor_name: str,
@@ -2582,8 +2594,32 @@ async def accept_loan_proposal(  # noqa: C901, PLR0911, PLR0912, PLR0913 -- prop
 ) -> LoanProposalAcceptResult | None:
     """Accepts a pending loan proposal and opens the loan contract."""
     await _ensure_schema()
+    async with _current_loan_accept_lock():
+        return await _accept_loan_proposal_locked(
+            proposal_id=proposal_id,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_avatar_url=actor_avatar_url,
+            is_central_banker=is_central_banker,
+            central_bank_exclude_user_ids=central_bank_exclude_user_ids,
+            allow_central_bank_self_approval=allow_central_bank_self_approval,
+        )
+
+
+async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0912, PLR0913 -- proposal-kind branches must stay in one transaction
+    proposal_id: int,
+    actor_id: int,
+    actor_name: str,
+    actor_avatar_url: str = "",
+    is_central_banker: bool = False,
+    central_bank_exclude_user_ids: tuple[int, ...] = (),
+    allow_central_bank_self_approval: bool = False,
+) -> LoanProposalAcceptResult | None:
+    """Accepts a loan proposal while the caller holds the acceptance lock."""
     now = _database_now()
     async with open_session() as session:
+        # Acquire SQLite's write lock before reading capacity or proposal state.
+        await session.execute(statement=text(text="BEGIN IMMEDIATE"))
         result = await session.execute(
             statement=select(LoanProposal).where(
                 LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING

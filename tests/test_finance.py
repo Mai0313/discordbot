@@ -1,5 +1,6 @@
 """Tests for long-term lending, central bank lending, and player stocks."""
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -129,6 +130,35 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
         proposal_id=too_large.proposal_id, actor_id=99, actor_name="banker", is_central_banker=True
     )
     assert rejected is None
+
+
+async def test_central_bank_concurrent_approvals_do_not_exceed_capacity() -> None:
+    """Concurrent central-bank approvals serialize capacity consumption."""
+    await _add_balance(user_id=10, name="capital", amount=1_000)
+    first = await create_central_bank_loan_request(
+        borrower_id=1, borrower_name="alice", amount=800
+    )
+    second = await create_central_bank_loan_request(borrower_id=2, borrower_name="bob", amount=800)
+    assert first is not None
+    assert second is not None
+
+    first_result, second_result = await asyncio.gather(
+        accept_loan_proposal(
+            proposal_id=first.proposal_id, actor_id=99, actor_name="banker", is_central_banker=True
+        ),
+        accept_loan_proposal(
+            proposal_id=second.proposal_id,
+            actor_id=98,
+            actor_name="banker2",
+            is_central_banker=True,
+        ),
+    )
+    accepted_results = [result for result in (first_result, second_result) if result is not None]
+    status = await get_central_bank_status()
+
+    assert len(accepted_results) == 1
+    assert status.outstanding_principal == 800
+    assert status.available_credit == 200
 
 
 async def test_central_bank_self_approval_requires_explicit_flag() -> None:
