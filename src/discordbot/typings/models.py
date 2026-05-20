@@ -98,7 +98,7 @@ class RuntimeModelCatalog(BaseModel):
             Fast model settings used for routing, image captions, and short
             Discord replies.
         """
-        fast_model = ModelSettings(name="gemini-flash-latest", effort="none")
+        fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
 
     @property
@@ -114,7 +114,7 @@ class RuntimeModelCatalog(BaseModel):
             Slow-path model settings for reply and summary generation.
         """
         if self.is_peak:
-            return ModelSettings(name="gemini-3-flash-preview", effort="high")
+            return ModelSettings(name="gemini-flash-latest", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
 
