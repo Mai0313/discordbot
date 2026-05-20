@@ -42,6 +42,8 @@ from discordbot.cogs._economy.database import (
 from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
+TEST_DEALER_MODEL = "test-dealer-llm-model"
+
 if TYPE_CHECKING:
     from pathlib import Path
     from collections.abc import AsyncIterator
@@ -980,7 +982,7 @@ async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("discordbot.cogs._games.dealer.DEALER_AI_TIMEOUT_SECONDS", 0.01)
     dealer = DealerAI(
         client=cast("AsyncOpenAI", HangingClient()),
-        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
     )
 
     line = await dealer.taunt_bet(
@@ -998,7 +1000,7 @@ async def test_dealer_ai_parses_blackjack_decision() -> None:
     client = SimpleNamespace(responses=responses)
     dealer = DealerAI(
         client=cast("AsyncOpenAI", client),
-        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
     )
 
     decision = await dealer.decide_blackjack_action(
@@ -1015,7 +1017,7 @@ async def test_dealer_ai_empty_blackjack_decision_uses_basic_rule() -> None:
     client = SimpleNamespace(responses=responses)
     dealer = DealerAI(
         client=cast("AsyncOpenAI", client),
-        model=ModelSettings(name="gemini-flash-latest", effort="none"),
+        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
     )
 
     decision = await dealer.decide_blackjack_action(
@@ -1034,7 +1036,7 @@ async def test_dealer_ai_blackjack_decision_times_out_to_basic_rule(
     )
     dealer = DealerAI(
         client=cast("AsyncOpenAI", HangingClient()),
-        model=ModelSettings(name="gemini-flash-latest", effort="medium"),
+        model=ModelSettings(name=TEST_DEALER_MODEL, effort="medium"),
     )
 
     decision = await dealer.decide_blackjack_action(

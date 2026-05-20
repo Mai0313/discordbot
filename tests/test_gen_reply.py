@@ -16,6 +16,8 @@ from discordbot.typings.models import ModelSettings, RouteDecision
 from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
+TEST_LLM_MODEL = "test-llm-model"
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -306,7 +308,7 @@ async def _stream_events() -> AsyncIterator[SimpleNamespace]:
     yield SimpleNamespace(
         type="response.completed",
         response=SimpleNamespace(
-            model="gemini-pro-latest",
+            model=TEST_LLM_MODEL,
             usage=SimpleNamespace(input_tokens=12, output_tokens=34, output_tokens_details=None),
         ),
     )
@@ -340,7 +342,7 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     def fake_calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
         """Verifies token counts passed to cost calculation."""
-        assert model_name == "gemini-pro-latest"
+        assert model_name == TEST_LLM_MODEL
         assert input_tokens == 12
         assert output_tokens == 34
         return 0.0
@@ -359,7 +361,7 @@ async def test_handle_streaming_allows_missing_output_token_details(
     result = await cog._handle_streaming(responses=_stream_events(), message=message)
 
     expected = (
-        "hello from stream\n\n-# gemini-pro-latest · ⬆ 12 ⬇ 34 · $0.00000000 · +46 虛擬歡樂豆"
+        f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000 · +46 虛擬歡樂豆"
     )
     assert result == expected
     assert message.replies[0].content == result
@@ -381,7 +383,8 @@ async def test_handle_streaming_marks_web_search_from_call_event(
                 SimpleNamespace(
                     type="response.completed",
                     response=SimpleNamespace(
-                        model="gpt-5.4", usage=SimpleNamespace(input_tokens=12, output_tokens=34)
+                        model=TEST_LLM_MODEL,
+                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
                     ),
                 ),
             ]
@@ -416,7 +419,7 @@ async def test_handle_streaming_marks_web_search_from_annotation(
                 SimpleNamespace(
                     type="response.completed",
                     response=SimpleNamespace(
-                        model="gemini-pro-latest",
+                        model=TEST_LLM_MODEL,
                         usage=SimpleNamespace(input_tokens=12, output_tokens=34),
                     ),
                 ),
