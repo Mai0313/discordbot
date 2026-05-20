@@ -300,16 +300,9 @@ async def test_repay_zero_balance_returns_none() -> None:
 
 
 async def test_repay_negative_balance_returns_none() -> None:
-    """Negative casino balance is not repayable cash."""
+    """Negative balance from manual maintenance is not repayable cash."""
     await borrow(user_id=1, name="alice", amount=500, credit_limit_value=1_000)
-    await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-600,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=600,
-    )
+    await adjust_balance(user_id=1, name="alice", delta=-600, allow_negative=True)
     assert await repay(user_id=1, name="alice", amount=100) is None
 
 

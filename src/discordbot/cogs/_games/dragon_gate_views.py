@@ -484,14 +484,14 @@ class DragonGateView(View):
             await self._finalize_locked(message=self.message, reason="逾時未操作")
 
     @nextcord.ui.button(
-        label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher", row=0
+        label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher", row=1
     )
     async def choose_higher(self, _button: Button, interaction: Interaction) -> None:
         """Chooses higher for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="higher")
 
     @nextcord.ui.button(
-        label="同點猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower", row=0
+        label="同點猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower", row=1
     )
     async def choose_lower(self, _button: Button, interaction: Interaction) -> None:
         """Chooses lower for a same-point gate."""
@@ -507,14 +507,14 @@ class DragonGateView(View):
             nextcord.SelectOption(label="全池", value="max", emoji="💰"),
             nextcord.SelectOption(label="自訂", value="custom", emoji="✏️"),
         ],
-        row=1,
+        row=2,
     )
     async def bet_select(self, select: StringSelect, interaction: Interaction) -> None:
         """Routes the bet select choice to a fixed amount or a custom modal."""
         await self._handle_bet_choice(choice=select.values[0], interaction=interaction)
 
     @nextcord.ui.button(
-        label="離桌", emoji="🚪", style=ButtonStyle.danger, custom_id="dg:leave", row=2
+        label="離桌", emoji="🚪", style=ButtonStyle.danger, custom_id="dg:leave", row=0
     )
     async def leave_table(self, _button: Button, interaction: Interaction) -> None:
         """Lets any seated player withdraw mid-table without ending the round."""

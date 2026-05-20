@@ -631,6 +631,7 @@ async def test_apply_round_settlement_allows_negative_house_balance() -> None:
 
 async def test_apply_round_settlement_house_accumulates_gross_flows() -> None:
     """Wins and losses both accumulate gross totals, not just the net balance."""
+    await _add_balance(user_id=1, name="alice", amount=200)
     await apply_round_settlement(
         player_id=1,
         player_account_name="alice",
@@ -1245,6 +1246,8 @@ async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
 
 async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> None:
     """Verifies that concurrent dealer ledger settlements accumulate."""
+    for user_id in range(10):
+        await _add_balance(user_id=user_id, name=f"player{user_id}", amount=10)
     await asyncio.gather(*[
         apply_round_settlement(
             player_id=user_id,
@@ -1301,8 +1304,8 @@ async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
     assert account.total_spent == 40
 
 
-async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
-    """Deferred settlement still collects a loss after the balance was spent elsewhere."""
+async def test_apply_round_settlement_loss_clamps_player_and_house_to_available_balance() -> None:
+    """Deferred settlement stops at zero and only credits the house with actual debit."""
     await _add_balance(user_id=1, name="alice", amount=25)
 
     player_balance, house_balance = await apply_round_settlement(
@@ -1314,8 +1317,11 @@ async def test_apply_round_settlement_loss_can_make_player_negative() -> None:
         dealer_delta=40,
     )
 
-    assert player_balance == -15
-    assert house_balance == 40
+    assert player_balance == 0
+    assert house_balance == 25
+    account = await get_account(user_id=1)
+    assert account is not None
+    assert account.total_spent == 25
 
 
 async def test_apply_round_settlement_updates_daily_casino_counters() -> None:

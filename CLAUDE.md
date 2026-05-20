@@ -162,8 +162,9 @@ make gen-docs                    # regenerate docs/ from sources
     `self.stop()` before settlement. The final edit removes controls with
     `view=None`, and `interaction_check` replies with an ephemeral notice once
     `_settled=True`.
-- Blackjack player settlements mirror `-player_delta` into the bot's house
-    ledger through `apply_round_settlement`.
+- Blackjack player losses clamp at balance 0. `apply_round_settlement` mirrors
+    only the actual collected player debit into the bot's house ledger; full
+    positive payouts still mirror the dealer-paid delta.
 - Dragon Gate is backed by the shared `jackpot_pool` row
     `game_id="dragon_gate"`. Do not route it through the house ledger.
 - Dragon Gate ante, losses, wins, leave refunds, and timeout refunds settle

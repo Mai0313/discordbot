@@ -153,7 +153,8 @@ sync.
 - `credit_with_repayment` is the income path for message reward, chat reward,
     and casino payout. Gifts do not auto-repay loans.
 - Casino settlement is atomic. Validate or clamp bets before play, then apply
-    the signed result once through the settlement helpers.
+    the signed result once through the settlement helpers. Player-side casino
+    losses clamp at balance 0; dealer / house ledgers may still go negative.
 - Daily casino loss leaderboards read persisted `user_account` counters, not a
     fresh `point_transaction` aggregate. Keep those counters tied to
     player-side casino settlement deltas only.

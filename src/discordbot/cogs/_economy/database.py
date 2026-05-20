@@ -971,7 +971,12 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
-    new_balance = max(current_balance + delta, 0)
+    if delta < 0 and current_balance <= 0:
+        new_balance = current_balance
+    elif delta < 0:
+        new_balance = max(current_balance + delta, 0)
+    else:
+        new_balance = current_balance + delta
     applied = new_balance - current_balance
     update_values: dict[str, Any] = {"balance": new_balance, "updated_at": now}
     if applied > 0:
@@ -1015,9 +1020,8 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 ) -> int:
     """Applies a signed delta without clamping and logs the audit row.
 
-    Used for both player-side casino losses (``CASINO_BET``) and dealer-side
-    mirrors (``HOUSE_SETTLE``); neither clamps at zero, so a player can finish
-    a losing round in the red and the dealer can run cumulative negative P&L.
+    Used for dealer-side mirrors (``HOUSE_SETTLE``), which may run cumulative
+    negative P&L. Player-side losses use the clamped path instead.
     """
     stmt = _build_signed_delta_upsert(
         user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
@@ -1038,8 +1042,8 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
-) -> int:
-    """Applies a casino player delta through the correct audit path."""
+) -> tuple[int, int]:
+    """Applies a casino player delta and returns the balance plus actual delta."""
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
             session=session,
@@ -1054,9 +1058,9 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
         await _apply_daily_casino_delta_in_session(
             session=session, user_id=user_id, delta=delta, now=now
         )
-        return credit_result.new_balance
+        return credit_result.new_balance, delta
     if delta < 0:
-        new_balance = await _apply_signed_delta_in_session(
+        new_balance, applied_delta = await _apply_clamped_delta_in_session(
             session=session,
             user_id=user_id,
             name=name,
@@ -1066,13 +1070,13 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, delta=delta, now=now
+            session=session, user_id=user_id, delta=applied_delta, now=now
         )
-        return new_balance
+        return new_balance, applied_delta
     read_result = await session.execute(
         statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
     )
-    return read_result.scalar_one_or_none() or 0
+    return read_result.scalar_one_or_none() or 0, 0
 
 
 async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot settlement needs identity and audit metadata
@@ -1256,16 +1260,16 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     crash between the player and dealer writes cannot leave the dealer
     ledger drifting from the player result. Positive player deltas go through
     ``_credit_with_repayment_in_session`` so the auto-repay rule (currently
-    disabled at 0%) applies to casino profit. Negative deltas are debited
-    without a zero clamp so a player cannot evade a bad in-memory round by
-    moving funds before it settles.
+    disabled at 0%) applies to casino profit. Negative player deltas clamp at
+    zero; when a loss cannot be fully collected, the dealer ledger only records
+    the actual collected debit.
 
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
         player_avatar_url: Last-seen Discord avatar URL for the player.
-        player_delta: Signed net change for the player. Losses may make the
-            balance negative.
+        player_delta: Signed net change for the player. Losses are clamped at
+            zero and may apply less than the requested debit.
         dealer_id: Discord user ID for the dealer ledger row.
         dealer_name: Account name to store for the dealer ledger row.
         dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
@@ -1277,7 +1281,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        player_balance = await _apply_player_delta_in_session(
+        player_balance, applied_player_delta = await _apply_player_delta_in_session(
             session=session,
             user_id=player_id,
             name=player_account_name,
@@ -1286,7 +1290,11 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
             now=now,
         )
 
-        if dealer_delta == 0:
+        dealer_delta_to_apply = dealer_delta
+        if player_delta < 0 and dealer_delta > 0:
+            dealer_delta_to_apply = min(dealer_delta, max(-applied_player_delta, 0))
+
+        if dealer_delta_to_apply == 0:
             dealer_result = await session.execute(
                 statement=select(UserAccount.balance).where(UserAccount.user_id == dealer_id)
             )
@@ -1297,7 +1305,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
                 user_id=dealer_id,
                 name=dealer_name,
                 avatar_url=dealer_avatar_url,
-                delta=dealer_delta,
+                delta=dealer_delta_to_apply,
                 kind=TransactionKind.HOUSE_SETTLE,
                 now=now,
             )

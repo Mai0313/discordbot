@@ -81,6 +81,16 @@ def _button_ids(view: BlackjackView) -> set[str]:
     return ids
 
 
+def _button_rows(view: BlackjackView) -> dict[str, int | None]:
+    """Returns ``{custom_id: row}`` for every button in the view."""
+    rows: dict[str, int | None] = {}
+    for child in view.children:
+        cid = getattr(child, "custom_id", None)
+        if cid is not None:
+            rows[cid] = getattr(child, "row", None)
+    return rows
+
+
 async def test_player_actions_same_rank_pair_enables_every_action_button() -> None:
     """Initial deal with [8, 8] vs dealer up 6 enables all five action buttons."""
     round_state = _round_with_two_cards(
@@ -98,6 +108,13 @@ async def test_player_actions_same_rank_pair_enables_every_action_button() -> No
         "bj:surrender",
     }
     assert all(disabled is False for disabled in _button_states(view=view).values())
+    assert _button_rows(view=view) == {
+        "bj:hit": 0,
+        "bj:stand": 0,
+        "bj:double": 1,
+        "bj:split": 1,
+        "bj:surrender": 1,
+    }
 
 
 async def test_player_actions_ten_value_pair_shows_split() -> None:
@@ -238,6 +255,7 @@ async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> Non
     assert _button_ids(view=view) == {"bj:insure_yes", "bj:insure_no"}
     assert states["bj:insure_yes"] is False
     assert states["bj:insure_no"] is False
+    assert _button_rows(view=view) == {"bj:insure_yes": 1, "bj:insure_no": 1}
 
 
 async def test_settled_phase_removes_every_button() -> None:

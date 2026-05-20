@@ -705,7 +705,7 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=interaction.message)
 
     @nextcord.ui.button(
-        label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=0
+        label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=1
     )
     async def double(self, _button: Button, interaction: Interaction) -> None:
         """Doubles the active hand's bet and finishes it after one draw."""
@@ -733,7 +733,7 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=interaction.message)
 
     @nextcord.ui.button(
-        label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=0
+        label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=1
     )
     async def split(self, _button: Button, interaction: Interaction) -> None:
         """Splits the active pair into two sibling sub-hands."""
@@ -761,7 +761,7 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=interaction.message)
 
     @nextcord.ui.button(
-        label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=0
+        label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=1
     )
     async def surrender(self, _button: Button, interaction: Interaction) -> None:
         """Surrenders the active hand for a half-bet refund."""

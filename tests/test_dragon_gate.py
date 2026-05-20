@@ -316,6 +316,16 @@ def _component_ids(view: DragonGateView) -> set[str]:
     return custom_ids
 
 
+def _component_rows(view: DragonGateView) -> dict[str, int | None]:
+    """Returns rows for currently attached view components."""
+    rows: dict[str, int | None] = {}
+    for child in view.children:
+        custom_id = getattr(child, "custom_id", None)
+        if isinstance(custom_id, str):
+            rows[custom_id] = getattr(child, "row", None)
+    return rows
+
+
 def _attached_button(view: DragonGateView, custom_id: str) -> Button:
     """Returns an attached button by custom ID."""
     for child in view.children:
@@ -546,6 +556,7 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     )
     normal_view.sync_controls()
     assert _component_ids(view=normal_view) == {"dg:bet", "dg:leave"}
+    assert _component_rows(view=normal_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=normal_view, custom_id="dg:bet").disabled is False
 
     pair_round = DragonGateRound.from_participants(
@@ -562,10 +573,12 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     )
     pair_view.sync_controls()
     assert _component_ids(view=pair_view) == {"dg:higher", "dg:lower", "dg:leave"}
+    assert _component_rows(view=pair_view) == {"dg:higher": 1, "dg:lower": 1, "dg:leave": 0}
 
     pair_round.choose_pair_direction(user_id=1, direction="higher")
     pair_view.sync_controls()
     assert _component_ids(view=pair_view) == {"dg:bet", "dg:leave"}
+    assert _component_rows(view=pair_view) == {"dg:leave": 0, "dg:bet": 2}
     assert _attached_select(view=pair_view, custom_id="dg:bet").disabled is False
 
 
