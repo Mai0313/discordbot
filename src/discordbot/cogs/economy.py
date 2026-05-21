@@ -1184,7 +1184,6 @@ class EconomyCogs(commands.Cog):
             member: The personal lender.
             amount: Maximum amount to repay.
         """
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -1201,12 +1200,14 @@ class EconomyCogs(commands.Cog):
         )
         if result is None:
             reason = f"沒有可還給 {member.display_name} 的有效個人借款"
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(title="還款失敗", description=f"### {reason}", color=_ERROR_COLOR)
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
             _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
+        await interaction.response.defer()
         embed = Embed(
             title="🧾 信貸還款完成",
             description=f"### {currency_text(amount=-result.paid_amount, signed=True)} 扣款",
@@ -1226,7 +1227,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @credit.subcommand(
         name="call",
@@ -1264,7 +1265,6 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Forcibly collects a personal loan from a borrower."""
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -1279,6 +1279,7 @@ class EconomyCogs(commands.Cog):
             amount=amount or None,
         )
         if result is None:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="催收失敗",
                 description=f"### {member.display_name} 沒有欠你有效個人借款，或目前無可扣餘額",
@@ -1287,6 +1288,7 @@ class EconomyCogs(commands.Cog):
             embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
         embed = Embed(
             title="📣 信貸催收完成",
             description=f"### 從 {member.mention} 回收 {currency_text(amount=result.paid_amount)}",
@@ -1305,7 +1307,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @credit.subcommand(
         name="status",
@@ -1461,7 +1463,6 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Repays central-bank debt."""
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -1475,6 +1476,7 @@ class EconomyCogs(commands.Cog):
             amount=amount,
         )
         if result is None:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="央行還款失敗",
                 description="### 沒有有效央行借款，或目前無可扣餘額",
@@ -1482,19 +1484,25 @@ class EconomyCogs(commands.Cog):
             )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
         embed = Embed(
             title="🏛️ 央行還款完成",
-            description=_payment_summary_text(
-                paid_amount=result.paid_amount,
-                interest_paid=result.interest_paid,
-                principal_paid=result.principal_paid,
-                remaining_principal=result.remaining_principal,
-                remaining_interest=result.remaining_interest,
-                borrower_balance=result.borrower_balance,
+            description=(
+                f"### {user.mention}\n"
+                + _payment_summary_text(
+                    paid_amount=result.paid_amount,
+                    interest_paid=result.interest_paid,
+                    principal_paid=result.principal_paid,
+                    remaining_principal=result.remaining_principal,
+                    remaining_interest=result.remaining_interest,
+                    borrower_balance=result.borrower_balance,
+                )
             ),
             color=_CENTRAL_BANK_COLOR,
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @central_bank.subcommand(
         name="call",
@@ -1532,10 +1540,10 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Central-bank forced collection."""
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         if not await get_central_banker(user_id=interaction.user.id):
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="權限不足",
                 description="### 只有央行成員可以執行央行催收",
@@ -1553,6 +1561,7 @@ class EconomyCogs(commands.Cog):
             amount=amount or None,
         )
         if result is None:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="央行催收失敗",
                 description="### 目標沒有有效央行借款，或目前無可扣餘額",
@@ -1560,19 +1569,27 @@ class EconomyCogs(commands.Cog):
             )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
         embed = Embed(
             title="🏛️ 央行催收完成",
-            description=_payment_summary_text(
-                paid_amount=result.paid_amount,
-                interest_paid=result.interest_paid,
-                principal_paid=result.principal_paid,
-                remaining_principal=result.remaining_principal,
-                remaining_interest=result.remaining_interest,
-                borrower_balance=result.borrower_balance,
+            description=(
+                f"### 從 {member.mention} 回收\n"
+                + _payment_summary_text(
+                    paid_amount=result.paid_amount,
+                    interest_paid=result.interest_paid,
+                    principal_paid=result.principal_paid,
+                    remaining_principal=result.remaining_principal,
+                    remaining_interest=result.remaining_interest,
+                    borrower_balance=result.borrower_balance,
+                )
             ),
             color=_CENTRAL_BANK_COLOR,
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        embed.set_author(
+            name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url
+        )
+        _set_optional_thumbnail(embed=embed, avatar_url=borrower_avatar_url)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @central_bank.subcommand(
         name="status",
@@ -1646,7 +1663,6 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Issues a stock profile for a qualified player."""
-        await interaction.response.defer()
         if interaction.user is None:
             return
         user = interaction.user
@@ -1662,6 +1678,7 @@ class EconomyCogs(commands.Cog):
         )
         if profile is None:
             portfolio = await get_portfolio(user_id=user.id)
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="發行失敗",
                 description=(
@@ -1673,6 +1690,7 @@ class EconomyCogs(commands.Cog):
             )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
         embed = Embed(
             title="📈 股票發行完成",
             description=f"### {user.display_name}\n總股數 `{profile.total_shares:,}` · 每股 {amount_code(amount=profile.issue_price)}",
@@ -1710,13 +1728,11 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Buys treasury shares from an issuer."""
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
+        guild = getattr(interaction, "guild", None)
+        user_avatar_url = await guild_avatar_url(user=user, guild=guild)
         result = await buy_stock(
             buyer_id=user.id,
             buyer_name=user.name,
@@ -1725,6 +1741,7 @@ class EconomyCogs(commands.Cog):
             shares=shares,
         )
         if result is None:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="購買失敗",
                 description="### 股票不存在、未售出股數不足、餘額不足，或不能買自己的股票",
@@ -1732,11 +1749,18 @@ class EconomyCogs(commands.Cog):
             )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
+        issuer_avatar_url = await guild_avatar_url(user=member, guild=guild)
         embed = Embed(
             title="📈 股票購買完成",
-            description=f"### {member.display_name}\n買入 `{result.shares_bought:,}` 股 · 花費 {amount_code(amount=result.total_cost)}",
+            description=(
+                f"### {user.mention} → {member.mention}\n"
+                f"買入 `{result.shares_bought:,}` 股 · 花費 {amount_code(amount=result.total_cost)}"
+            ),
             color=_STOCK_COLOR,
         )
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=issuer_avatar_url)
         embed.add_field(
             name="餘額",
             value=(
@@ -1746,7 +1770,7 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         embed.add_field(name="剩餘未售出股數", value=f"`{result.treasury_shares:,}`", inline=False)
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @stock.subcommand(
         name="dividend",
@@ -1770,7 +1794,6 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Pays a manual stock dividend."""
-        await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
@@ -1784,6 +1807,7 @@ class EconomyCogs(commands.Cog):
             amount=amount,
         )
         if result is None:
+            await interaction.response.defer(ephemeral=True)
             embed = Embed(
                 title="配息失敗",
                 description="### 股票不存在、尚無已售出股數、餘額不足，或分配後金額為 0",
@@ -1791,16 +1815,19 @@ class EconomyCogs(commands.Cog):
             )
             await _send_private_followup(interaction=interaction, embed=embed)
             return
+        await interaction.response.defer()
         embed = Embed(
             title="💵 配息完成",
-            description=f"### 實際配發 {currency_text(amount=result.distributed_amount)}",
+            description=f"### {user.mention}\n實際配發 {currency_text(amount=result.distributed_amount)}",
             color=_STOCK_COLOR,
         )
+        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
+        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(name="收款人數", value=f"`{result.recipient_count:,}`", inline=True)
         embed.add_field(
             name="發行者餘額", value=amount_code(amount=result.issuer_balance), inline=True
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @stock.subcommand(
         name="info",
@@ -1823,13 +1850,13 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Shows one stock profile."""
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         profile = await get_stock_profile(issuer_id=member.id)
         if profile is None:
             embed = Embed(
                 title="股票資訊", description="### 這位玩家尚未發行股票", color=_ERROR_COLOR
             )
-            await _send_private_followup(interaction=interaction, embed=embed)
+            await _send_expiring_followup(interaction=interaction, embed=embed)
             return
         embed = Embed(
             title="📈 股票資訊",
@@ -1839,7 +1866,7 @@ class EconomyCogs(commands.Cog):
         embed.add_field(name="總股數", value=f"`{profile.total_shares:,}`", inline=True)
         embed.add_field(name="已售出", value=f"`{profile.sold_shares:,}`", inline=True)
         embed.add_field(name="未售出", value=f"`{profile.treasury_shares:,}`", inline=True)
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="portfolio",

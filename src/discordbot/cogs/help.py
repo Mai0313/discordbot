@@ -58,8 +58,8 @@ _HELP_CONTENT = {
             f"`/credit` handles personal credit status, borrow requests with approval/rejection/cancel buttons, repayment, and collection; requests auto-reject after {LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds\n"
             f"`/central_bank` handles central-bank status, borrow requests with approval/rejection/cancel buttons, repayment, and collection; requests auto-reject after {LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds.\n"
             f"`/stock` issue/buy/dividend/info player-issued shares; issuing requires balance above {STOCK_ISSUE_MIN_BALANCE:,} · `/portfolio` shows cash, debt, holdings, and net worth.\n"
-            "`/balance`, `/credit`, `/central_bank`, `/stock`, `/portfolio`, and `/vip` replies are private where personal data is involved. "
-            "`/give`, `/credit borrow`, successful `/admin` tax adjustments, `/leaderboard`, "
+            "`/balance`, `/credit status`, `/central_bank status`, `/portfolio`, and `/vip` replies are private where personal data is involved. "
+            "`/give`, loan requests and settlements, stock market events, successful `/admin` tax adjustments, `/leaderboard`, "
             "`/loss_leaderboard`, and `/house` stay public and "
             "clean themselves up after 3 minutes."
         ),
@@ -156,8 +156,8 @@ _HELP_CONTENT = {
             f"`/credit` 處理個人信貸狀態、借款申請、按鈕批准或拒絕、取消、還款與催收；申請 {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕\n"
             f"`/central_bank` 處理央行狀態、借款申請、按鈕批准或拒絕、取消、還款與催收；申請 {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕\n"
             f"`/stock` 發行、購買、配息、查詢玩家股票；發行需要餘額大於 {STOCK_ISSUE_MIN_BALANCE:,} · `/portfolio` 查現金、債務、持股與淨資產\n"
-            "`/balance`、`/credit`、`/central_bank`、`/stock`、`/portfolio`、`/vip` 涉及個人資料時會私密回覆\n"
-            "`/give`、`/credit borrow`、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
+            "`/balance`、`/credit status`、`/central_bank status`、`/portfolio`、`/vip` 涉及個人資料時會私密回覆\n"
+            "`/give`、信貸與央行借款的申請/還款/催收、股票市場事件、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
             "`/house` 維持公開, 3 分鐘後自動清掉"
         ),
         "checkin": (
@@ -250,8 +250,8 @@ _HELP_CONTENT = {
             f"`/credit` personal credit status、borrow request buttons、repayment、collection。requests は {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後に auto-reject。\n"
             f"`/central_bank` central-bank status、borrow request buttons、repayment、collection、capacity。requests は {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後に auto-reject。\n"
             f"`/stock` player shares issue/buy/dividend/info。issue には balance {STOCK_ISSUE_MIN_BALANCE:,} 超が必要 · `/portfolio` cash、debt、holding、net worth。\n"
-            "`/balance`、`/credit`、`/central_bank`、`/stock`、`/portfolio`、`/vip` は個人情報を含む場合 private reply です。"
-            "`/give`、`/credit borrow`、successful `/admin` tax adjustments、`/leaderboard`、"
+            "`/balance`、`/credit status`、`/central_bank status`、`/portfolio`、`/vip` は個人情報を含む場合 private reply です。"
+            "`/give`、loan requests and settlements、stock market events、successful `/admin` tax adjustments、`/leaderboard`、"
             "`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
         ),
         "checkin": (
