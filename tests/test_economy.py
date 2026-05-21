@@ -59,7 +59,6 @@ from discordbot.cogs._economy.database import (
     checkin_reward,
     _taipei_midnight,
     get_jackpot_pool,
-    _build_credit_upsert,
     get_jackpot_snapshot,
     credit_with_repayment,
     apply_round_settlement,
@@ -260,18 +259,10 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
     """Seeds a positive balance without loan or casino side effects."""
-    await _ensure_schema()
     if amount <= 0:
         return await get_balance(user_id=user_id)
-    now = _database_now()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=_build_credit_upsert(
-                user_id=user_id, name=name, amount=amount, avatar_url=avatar_url, now=now
-            )
-        )
-        await session.commit()
-        return result.scalar_one()
+    result = await adjust_balance(user_id=user_id, name=name, delta=amount, avatar_url=avatar_url)
+    return result.new_balance
 
 
 async def test_adjust_balance_creates_user() -> None:
@@ -442,12 +433,13 @@ async def test_ensure_schema_bootstraps_current_databases(
             )
         )
         economy_tables = {row[0] for row in result.all()}
-        result = await session.execute(statement=text(text="PRAGMA index_list(user_account)"))
-        index_names = {row[1] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(user_wallet)"))
+        wallet_index_names = {row[1] for row in result.all()}
         result = await session.execute(statement=text(text="PRAGMA index_list(casino_account)"))
         casino_index_names = {row[1] for row in result.all()}
         column_queries = {
             "user_account": "PRAGMA table_info(user_account)",
+            "user_wallet": "PRAGMA table_info(user_wallet)",
             "loan_proposal": "PRAGMA table_info(loan_proposal)",
             "loan_contract": "PRAGMA table_info(loan_contract)",
             "casino_account": "PRAGMA table_info(casino_account)",
@@ -478,6 +470,7 @@ async def test_ensure_schema_bootstraps_current_databases(
         jackpot_row = result.one()
     assert economy_tables == {
         "user_account",
+        "user_wallet",
         "loan_proposal",
         "loan_contract",
         "casino_account",
@@ -487,13 +480,15 @@ async def test_ensure_schema_bootstraps_current_databases(
     }
     assert global_state_tables == {"jackpot_pool"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
+    assert {"balance", "total_earned", "total_spent"} <= table_columns["user_wallet"]
+    assert {"balance", "total_earned", "total_spent"}.isdisjoint(table_columns["user_account"])
     assert {"borrower_id", "borrower_name", "lender_id", "lender_name"} <= table_columns[
         "loan_proposal"
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
     assert {"issuer_id", "issuer_name"} <= table_columns["stock_profile"]
     assert {"issuer_id", "holder_id", "holder_name"} <= table_columns["stock_holding"]
-    assert "ix_user_account_balance" in index_names
+    assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
     assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)
 

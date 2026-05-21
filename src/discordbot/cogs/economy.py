@@ -1,6 +1,7 @@
 """Slash commands that surface point balances, leaderboards, transfers, and loans."""
 
 from datetime import UTC, datetime
+import contextlib
 
 import nextcord
 from nextcord import Embed, Locale, Member, ButtonStyle, Interaction, SlashOption
@@ -11,9 +12,10 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
-    STOCK_ISSUE_MIN_NET_WORTH,
+    STOCK_ISSUE_MIN_BALANCE,
     BASE_CHECKIN_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanLenderType,
 )
 from discordbot.cogs._games.cleanup import schedule_game_message_delete
@@ -48,6 +50,7 @@ from discordbot.cogs._economy.database import (
     monthly_rate_bps_to_percent,
     monthly_rate_percent_to_bps,
     create_personal_loan_request,
+    reject_expired_loan_proposal,
     create_central_bank_loan_request,
 )
 from discordbot.cogs._economy.presentation import (
@@ -119,6 +122,12 @@ async def _send_expiring_followup(
     schedule_game_message_delete(message=message, user_name=user_name)
 
 
+async def _send_loan_request_followup(interaction: Interaction, embed: Embed, view: View) -> None:
+    """Sends a loan request message that owns its cleanup after a terminal state."""
+    message = await interaction.followup.send(embed=embed, view=view, wait=True)
+    view.message = message
+
+
 async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a personal economy embed visible only to the caller."""
     await interaction.followup.send(embed=embed, ephemeral=True)
@@ -165,12 +174,14 @@ def _payment_summary_text(  # noqa: PLR0913 -- summary needs all visible repayme
 
 def _credit_request_footer() -> str:
     """Formats the personal credit request button hint."""
-    return "貸方可用下方按鈕批准或拒絕，發起者可取消"
+    return (
+        f"貸方可用下方按鈕批准或拒絕，發起者可取消，{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
+    )
 
 
 def _central_bank_request_footer() -> str:
     """Formats the central-bank request button hint."""
-    return "央行成員可用下方按鈕批准或拒絕，發起者可取消"
+    return f"央行成員可用下方按鈕批准或拒絕，發起者可取消，{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
 
 
 class CentralBankLoanDecisionView(View):
@@ -184,11 +195,37 @@ class CentralBankLoanDecisionView(View):
         allow_self_approval: bool = False,
     ) -> None:
         """Initializes a decision view for one proposal."""
-        super().__init__(timeout=180)
+        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.bot = bot
         self.proposal_id = proposal_id
         self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
+        self.message: nextcord.Message | None = None
+
+    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
+        """Schedules the public request message for cleanup after a terminal state."""
+        message = self.message or getattr(interaction, "message", None)
+        if message is None:
+            return
+        user_name = None
+        if interaction is not None and interaction.user is not None:
+            user_name = interaction.user.name
+        schedule_game_message_delete(message=message, user_name=user_name)
+
+    async def on_timeout(self) -> None:
+        """Rejects a stale central-bank request and cleans up its message."""
+        proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
+        if proposal is None or self.message is None:
+            return
+        self.stop()
+        embed = Embed(
+            title="🏛️ 央行申請已逾時",
+            description="### 申請已逾時，自動拒絕",
+            color=_CENTRAL_BANK_COLOR,
+        )
+        with contextlib.suppress(Exception):
+            await self.message.edit(embed=embed, view=None)
+        self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction) -> None:
         """Replies privately when a non-banker clicks a decision button."""
@@ -260,6 +297,7 @@ class CentralBankLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
         label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="central_bank:reject", row=0
@@ -291,6 +329,7 @@ class CentralBankLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
         label="取消",
@@ -331,6 +370,7 @@ class CentralBankLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
 
 class CreditLoanDecisionView(View):
@@ -338,10 +378,34 @@ class CreditLoanDecisionView(View):
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
         """Initializes a decision view for one personal credit proposal."""
-        super().__init__(timeout=180)
+        super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.proposal_id = proposal_id
         self.lender_id = lender_id
         self.creator_id = creator_id
+        self.message: nextcord.Message | None = None
+
+    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
+        """Schedules the public request message for cleanup after a terminal state."""
+        message = self.message or getattr(interaction, "message", None)
+        if message is None:
+            return
+        user_name = None
+        if interaction is not None and interaction.user is not None:
+            user_name = interaction.user.name
+        schedule_game_message_delete(message=message, user_name=user_name)
+
+    async def on_timeout(self) -> None:
+        """Rejects a stale personal credit request and cleans up its message."""
+        proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
+        if proposal is None or self.message is None:
+            return
+        self.stop()
+        embed = Embed(
+            title="信貸申請已逾時", description="### 申請已逾時，自動拒絕", color=_REPAY_COLOR
+        )
+        with contextlib.suppress(Exception):
+            await self.message.edit(embed=embed, view=None)
+        self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction, description: str) -> None:
         """Replies privately when a user clicks a button they cannot use."""
@@ -396,6 +460,7 @@ class CreditLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
         label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="credit:reject", row=0
@@ -424,6 +489,7 @@ class CreditLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
         label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="credit:cancel", row=0
@@ -457,6 +523,7 @@ class CreditLoanDecisionView(View):
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
+        self._schedule_cleanup(interaction=interaction)
 
 
 class EconomyCogs(commands.Cog):
@@ -1071,7 +1138,7 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         embed.set_footer(text=_credit_request_footer())
-        await _send_expiring_followup(
+        await _send_loan_request_followup(
             interaction=interaction,
             embed=embed,
             view=CreditLoanDecisionView(
@@ -1361,7 +1428,7 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         embed.set_footer(text=_central_bank_request_footer())
-        await _send_expiring_followup(
+        await _send_loan_request_followup(
             interaction=interaction,
             embed=embed,
             view=CentralBankLoanDecisionView(
@@ -1598,8 +1665,8 @@ class EconomyCogs(commands.Cog):
             embed = Embed(
                 title="發行失敗",
                 description=(
-                    f"### 需要淨資產大於 {bold_currency(amount=STOCK_ISSUE_MIN_NET_WORTH)}\n"
-                    f"目前淨資產 {bold_currency(amount=portfolio.net_worth)}\n"
+                    f"### 需要餘額大於 {bold_currency(amount=STOCK_ISSUE_MIN_BALANCE)}\n"
+                    f"目前餘額 {bold_currency(amount=portfolio.balance)}\n"
                     "或你已經發行過股票"
                 ),
                 color=_ERROR_COLOR,

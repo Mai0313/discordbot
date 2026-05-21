@@ -678,7 +678,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 22
-    assert len(scheduled) == 9
+    assert len(scheduled) == 7
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert "view" not in interaction.followup.sent[3]
@@ -689,10 +689,14 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[8].get("ephemeral") is True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     borrow_embed = interaction.followup.sent[7]["embed"]
-    assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消"
-    assert isinstance(interaction.followup.sent[7]["view"], economy.CreditLoanDecisionView)
+    assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
+    borrow_view = interaction.followup.sent[7]["view"]
+    assert isinstance(borrow_view, economy.CreditLoanDecisionView)
+    assert borrow_view.message is not None
     central_bank_payload = interaction.followup.sent[11]
-    assert isinstance(central_bank_payload["view"], economy.CentralBankLoanDecisionView)
+    central_bank_view = central_bank_payload["view"]
+    assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
+    assert central_bank_view.message is not None
     stock_issue_payload = interaction.followup.sent[15]
     assert stock_issue_payload.get("ephemeral") is not True
     assert stock_issue_payload["embed"].title == "📈 股票發行完成"
@@ -846,6 +850,52 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     await cancel_button.callback(allowed_cancel)
     assert captured_cancel_kwargs == {"proposal_id": 44, "actor_id": 1}
     assert allowed_cancel.response.edited[0]["view"] is None
+
+
+async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loan request views reject stale proposals and remove buttons on timeout."""
+    scheduled: list[FakeDiscordMessage] = []
+    rejected: list[int] = []
+
+    async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
+        """Records the expired proposal rejection."""
+        rejected.append(proposal_id)
+        return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
+            update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
+        )
+
+    def record_scheduled(
+        message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
+    ) -> None:
+        """Records cleanup scheduling."""
+        del delay, user_name
+        scheduled.append(message)
+
+    monkeypatch.setattr(economy, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
+    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+
+    credit_message = FakeDiscordMessage()
+    credit_view = economy.CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    credit_view.message = credit_message
+    await credit_view.on_timeout()
+
+    central_message = FakeDiscordMessage()
+    central_view = economy.CentralBankLoanDecisionView(
+        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        proposal_id=43,
+        creator_id=1,
+    )
+    central_view.message = central_message
+    await central_view.on_timeout()
+
+    assert rejected == [42, 43]
+    assert scheduled == [credit_message, central_message]
+    assert credit_message.edits[0]["view"] is None
+    assert central_message.edits[0]["view"] is None
+    assert "逾時" in credit_message.edits[0]["embed"].title
+    assert "逾時" in central_message.edits[0]["embed"].title
 
 
 async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:

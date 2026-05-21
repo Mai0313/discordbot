@@ -4,17 +4,23 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
-from discordbot.typings.economy import STOCK_ISSUE_MIN_NET_WORTH
+from discordbot.typings.economy import (
+    STOCK_ISSUE_MIN_BALANCE,
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
+    LoanProposalStatus,
+)
 from discordbot.cogs._economy.database import (
     LoanContract,
+    LoanProposal,
     buy_stock,
     get_account,
     get_balance,
     issue_stock,
     open_session,
     _database_now,
+    get_portfolio,
     adjust_balance,
     pay_stock_dividend,
     set_central_banker,
@@ -23,6 +29,7 @@ from discordbot.cogs._economy.database import (
     call_central_bank_loans,
     get_central_bank_status,
     create_personal_loan_request,
+    reject_expired_loan_proposal,
     create_central_bank_loan_request,
 )
 
@@ -42,6 +49,20 @@ async def _backdate_contract(contract_id: int, days: int) -> None:
             statement=update(LoanContract)
             .where(LoanContract.id == contract_id)
             .values(last_interest_accrued_at=_database_now() - timedelta(days=days))
+        )
+        await session.commit()
+
+
+async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
+    """Moves a loan proposal's creation timestamp into the past."""
+    async with open_session() as session:
+        await session.execute(
+            statement=update(LoanProposal)
+            .where(LoanProposal.id == proposal_id)
+            .values(
+                created_at=_database_now() - timedelta(seconds=seconds),
+                updated_at=_database_now() - timedelta(seconds=seconds),
+            )
         )
         await session.commit()
 
@@ -79,6 +100,36 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
     assert result.remaining_interest == 0
     assert await get_balance(user_id=1) == 400
     assert await get_balance(user_id=2) == 600
+
+
+async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
+    """Expired pending requests become rejected and cannot be accepted later."""
+    await _add_balance(user_id=2, name="bob", amount=1_000)
+    proposal = await create_personal_loan_request(
+        borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
+    )
+    assert proposal is not None
+    await _backdate_proposal(
+        proposal_id=proposal.proposal_id, seconds=LOAN_PROPOSAL_TIMEOUT_SECONDS
+    )
+
+    expired = await reject_expired_loan_proposal(proposal_id=proposal.proposal_id)
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=2, actor_name="bob"
+    )
+
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(LoanProposal.status).where(LoanProposal.id == proposal.proposal_id)
+        )
+        stored_status = result.scalar_one()
+
+    assert expired is not None
+    assert expired.status == LoanProposalStatus.REJECTED
+    assert accepted is None
+    assert stored_status == LoanProposalStatus.REJECTED
+    assert await get_balance(user_id=1) == 0
+    assert await get_balance(user_id=2) == 1_000
 
 
 async def test_central_bank_loan_approves_against_cap_and_call_clamps_to_balance() -> None:
@@ -216,10 +267,10 @@ async def test_forced_collection_without_amount_includes_accrued_interest() -> N
 
 async def test_stock_issue_buy_and_dividend_keep_account_totals_aligned() -> None:
     """Stock purchase finances issuer and dividend pays sold-share holders."""
-    await _add_balance(user_id=3, name="almost", amount=STOCK_ISSUE_MIN_NET_WORTH)
+    await _add_balance(user_id=3, name="almost", amount=STOCK_ISSUE_MIN_BALANCE)
     assert await issue_stock(issuer_id=3, issuer_name="almost", shares=100, price=10) is None
 
-    await _add_balance(user_id=1, name="issuer", amount=STOCK_ISSUE_MIN_NET_WORTH + 1)
+    await _add_balance(user_id=1, name="issuer", amount=STOCK_ISSUE_MIN_BALANCE + 1)
     await _add_balance(user_id=2, name="buyer", amount=1_000)
 
     profile = await issue_stock(issuer_id=1, issuer_name="issuer", shares=100, price=10)
@@ -240,3 +291,28 @@ async def test_stock_issue_buy_and_dividend_keep_account_totals_aligned() -> Non
     assert issuer.total_earned - issuer.total_spent == issuer.balance
     assert buyer.total_earned - buyer.total_spent == buyer.balance
     assert buyer.balance == 1_050
+
+
+async def test_stock_issue_uses_spendable_balance_not_net_worth() -> None:
+    """A negative net worth from debt does not block stock issuance when balance qualifies."""
+    await _add_balance(user_id=2, name="lender", amount=STOCK_ISSUE_MIN_BALANCE * 2)
+    proposal = await create_personal_loan_request(
+        borrower_id=1,
+        borrower_name="issuer",
+        lender_id=2,
+        lender_name="lender",
+        amount=STOCK_ISSUE_MIN_BALANCE * 2,
+    )
+    assert proposal is not None
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=2, actor_name="lender"
+    )
+    assert accepted is not None
+    await adjust_balance(user_id=1, name="issuer", delta=-(STOCK_ISSUE_MIN_BALANCE - 1))
+    portfolio = await get_portfolio(user_id=1)
+
+    profile = await issue_stock(issuer_id=1, issuer_name="issuer", shares=100, price=10)
+
+    assert portfolio.balance == STOCK_ISSUE_MIN_BALANCE + 1
+    assert portfolio.net_worth < 0
+    assert profile is not None

@@ -72,11 +72,12 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
+    STOCK_ISSUE_MIN_BALANCE,
     MAX_LOAN_MONTHLY_RATE_BPS,
     MIN_LOAN_MONTHLY_RATE_BPS,
-    STOCK_ISSUE_MIN_NET_WORTH,
     BASE_CHECKIN_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
     AdminAccount,
     CreditResult,
     CheckinResult,
@@ -180,22 +181,17 @@ class GlobalStateBase(DeclarativeBase):
 
 
 class UserAccount(Base):
-    """Persistent balance, VIP, admin, and check-in state for a Discord user.
+    """Persistent identity, VIP, admin, and check-in state for a Discord user.
 
-    The row owns the spendable balance and lifetime gross totals. For every
-    completed balance mutation, positive applied deltas increase
-    ``total_earned`` and negative applied deltas increase ``total_spent`` so
-    ``total_earned - total_spent`` matches ``balance``. Debt state lives in
-    ``loan_contract`` and daily casino counters live in ``casino_account``.
-    ``last_checkin_at`` is nullable for users who have never checked in.
+    Spendable balance and lifetime gross totals live in ``user_wallet``. Debt
+    state lives in ``loan_contract`` and daily casino counters live in
+    ``casino_account``. ``last_checkin_at`` is nullable for users who have never
+    checked in.
 
     Attributes:
         user_id: Discord user ID; primary key.
         name: Last-seen Discord username (refreshed on every write).
         avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
-        balance: Current spendable point balance.
-        total_earned: Lifetime positive balance deltas.
-        total_spent: Lifetime negative balance deltas stored as positive amounts.
         updated_at: Taiwan-local timestamp of the last write.
         is_vip: Permanent VIP flag toggled by a successful ``/vip`` purchase.
         last_checkin_at: Timestamp of the latest ``/checkin`` payout; ``None``
@@ -208,19 +204,9 @@ class UserAccount(Base):
     """
 
     __tablename__ = "user_account"
-    __table_args__ = (
-        # /leaderboard does ORDER BY balance DESC LIMIT 10; the index turns a
-        # full scan into a bounded walk. SQLite can use an ASC index to satisfy
-        # ORDER BY DESC by reading it backwards, so no DESC index is needed.
-        Index("ix_user_account_balance", "balance"),
-    )
-
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="")
     avatar_url: Mapped[str] = mapped_column(String(length=2048), default="", nullable=False)
-    balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -235,6 +221,26 @@ class UserAccount(Base):
     )
     hide_from_leaderboard: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
+    )
+
+
+class UserWallet(Base):
+    """Spendable balance and lifetime gross totals for a Discord user."""
+
+    __tablename__ = "user_wallet"
+    __table_args__ = (
+        # /leaderboard does ORDER BY balance DESC LIMIT 10; the index turns a
+        # full scan into a bounded walk. SQLite can read an ASC index backwards
+        # to satisfy ORDER BY DESC.
+        Index("ix_user_wallet_balance", "balance"),
+    )
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
 
 
@@ -614,48 +620,62 @@ def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     return delta * _VIP_WIN_MULTIPLIER_NUM // _VIP_WIN_MULTIPLIER_DEN
 
 
+async def _upsert_user_metadata_in_session(
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
+) -> None:
+    """Creates or refreshes the user identity row without touching wallet state."""
+    effective_name = name or str(user_id)
+    stmt = insert(UserAccount).values(
+        user_id=user_id,
+        name=effective_name,
+        avatar_url=avatar_url,
+        updated_at=now,
+        is_vip=False,
+        last_checkin_at=None,
+        checkin_streak=0,
+        is_admin=False,
+        is_central_banker=False,
+        hide_from_leaderboard=False,
+    )
+    set_: dict[str, Any] = {"updated_at": now}
+    if name:
+        set_["name"] = effective_name
+    if avatar_url:
+        set_["avatar_url"] = avatar_url
+    await session.execute(
+        statement=stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_)
+    )
+
+
 def _build_credit_upsert(
     user_id: int, name: str, amount: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT that credits ``amount`` points (caller guarantees ``amount > 0``).
+    """UPSERT that credits ``amount`` points into ``user_wallet``.
 
-    On INSERT, the new row starts at ``balance = total_earned = amount``,
-    ``total_spent = 0``. On UPDATE, ``balance`` and ``total_earned`` are
-    each incremented by ``amount``. ``name`` is only refreshed when the
-    caller actually supplied one, mirroring the previous Python-side
-    "only update if non-empty and different" rule.
+    Caller guarantees ``amount > 0`` and refreshes ``user_account`` metadata
+    separately.
 
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    insert_name = name or str(user_id)
-    stmt = insert(UserAccount).values(
-        user_id=user_id,
-        name=insert_name,
-        avatar_url=avatar_url,
-        balance=amount,
-        total_earned=amount,
-        total_spent=0,
-        updated_at=now,
+    _ = (name, avatar_url)
+    stmt = insert(UserWallet).values(
+        user_id=user_id, balance=amount, total_earned=amount, total_spent=0, updated_at=now
     )
     set_: dict[str, Any] = {
-        "balance": UserAccount.balance + amount,
-        "total_earned": UserAccount.total_earned + amount,
+        "balance": UserWallet.balance + amount,
+        "total_earned": UserWallet.total_earned + amount,
         "updated_at": now,
     }
-    if name:
-        set_["name"] = insert_name
-    if avatar_url:
-        set_["avatar_url"] = avatar_url
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
-        UserAccount.balance
+        UserWallet.balance
     )
 
 
 def _build_signed_delta_upsert(
     user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT applying a signed ``delta`` with NO clamp on the resulting balance.
+    """UPSERT applying a signed ``delta`` with NO clamp on wallet balance.
 
     Used for the dealer's house-ledger row, which is allowed to go negative
     when the casino has paid out more than it took in. `total_earned` /
@@ -665,30 +685,24 @@ def _build_signed_delta_upsert(
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    insert_name = name or str(user_id)
+    _ = (name, avatar_url)
     initial_earned = max(delta, 0)
     initial_spent = max(-delta, 0)
-    stmt = insert(UserAccount).values(
+    stmt = insert(UserWallet).values(
         user_id=user_id,
-        name=insert_name,
-        avatar_url=avatar_url,
         balance=delta,
         total_earned=initial_earned,
         total_spent=initial_spent,
         updated_at=now,
     )
     set_: dict[str, Any] = {
-        "balance": UserAccount.balance + delta,
-        "total_earned": UserAccount.total_earned + initial_earned,
-        "total_spent": UserAccount.total_spent + initial_spent,
+        "balance": UserWallet.balance + delta,
+        "total_earned": UserWallet.total_earned + initial_earned,
+        "total_spent": UserWallet.total_spent + initial_spent,
         "updated_at": now,
     }
-    if name:
-        set_["name"] = insert_name
-    if avatar_url:
-        set_["avatar_url"] = avatar_url
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
-        UserAccount.balance
+        UserWallet.balance
     )
 
 
@@ -749,6 +763,9 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- public facade k
     Caller must guarantee ``amount > 0``.
     """
     _ = (kind, note)
+    await _upsert_user_metadata_in_session(
+        session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+    )
     result = await session.execute(
         statement=_build_credit_upsert(
             user_id=user_id, name=name, avatar_url=avatar_url, amount=amount, now=now
@@ -781,26 +798,22 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     """
     if delta == 0:
         read_result = await session.execute(
-            statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+            statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
         )
         return read_result.scalar_one_or_none() or 0, 0
 
-    insert_name = name or str(user_id)
     for _ in range(_CLAMPED_DELTA_MAX_RETRIES):
         read_result = await session.execute(
-            statement=select(UserAccount.balance, UserAccount.name).where(
-                UserAccount.user_id == user_id
-            )
+            statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
         )
-        row = read_result.one_or_none()
+        current_balance = read_result.scalar_one_or_none()
 
-        if row is None:
+        if current_balance is None:
             if delta < 0:
                 return 0, 0
             insert_result = await _try_insert_clamped_positive_delta_in_session(
                 session=session,
                 user_id=user_id,
-                insert_name=insert_name,
                 avatar_url=avatar_url,
                 delta=delta,
                 kind=kind,
@@ -808,23 +821,27 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
                 note=note,
             )
             if insert_result is not None:
+                await _upsert_user_metadata_in_session(
+                    session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+                )
                 return insert_result
             continue
 
-        current_balance, existing_name = row
         update_result = await _try_update_clamped_delta_in_session(
             session=session,
             user_id=user_id,
             name=name,
             avatar_url=avatar_url,
             current_balance=current_balance,
-            existing_name=existing_name,
             kind=kind,
             delta=delta,
             now=now,
             note=note,
         )
         if update_result is not None:
+            await _upsert_user_metadata_in_session(
+                session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+            )
             return update_result
 
     raise RuntimeError(f"apply_clamped_delta retry budget exhausted for user_id={user_id}")
@@ -833,7 +850,6 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
 async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mirrors the caller's audit identity
     session: AsyncSession,
     user_id: int,
-    insert_name: str,
     avatar_url: str,
     delta: int,
     kind: TransactionKind,
@@ -841,20 +857,12 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts to create a missing account for a positive clamped delta."""
-    _ = (kind, note)
+    _ = (avatar_url, kind, note)
     insert_stmt = (
-        insert(UserAccount)
-        .values(
-            user_id=user_id,
-            name=insert_name,
-            avatar_url=avatar_url,
-            balance=delta,
-            total_earned=delta,
-            total_spent=0,
-            updated_at=now,
-        )
+        insert(UserWallet)
+        .values(user_id=user_id, balance=delta, total_earned=delta, total_spent=0, updated_at=now)
         .on_conflict_do_nothing(index_elements=["user_id"])
-        .returning(UserAccount.balance)
+        .returning(UserWallet.balance)
     )
     insert_result = await session.execute(statement=insert_stmt)
     inserted_balance = insert_result.scalar_one_or_none()
@@ -869,14 +877,13 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     name: str,
     avatar_url: str,
     current_balance: int,
-    existing_name: str,
     delta: int,
     kind: TransactionKind,
     now: datetime,
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
-    _ = (kind, note)
+    _ = (name, avatar_url, kind, note)
     if delta < 0 and current_balance <= 0:
         new_balance = current_balance
     elif delta < 0:
@@ -886,19 +893,15 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     applied = new_balance - current_balance
     update_values: dict[str, Any] = {"balance": new_balance, "updated_at": now}
     if applied > 0:
-        update_values["total_earned"] = UserAccount.total_earned + applied
+        update_values["total_earned"] = UserWallet.total_earned + applied
     elif applied < 0:
-        update_values["total_spent"] = UserAccount.total_spent - applied
-    if name and name != existing_name:
-        update_values["name"] = name
-    if avatar_url:
-        update_values["avatar_url"] = avatar_url
+        update_values["total_spent"] = UserWallet.total_spent - applied
 
     update_result = await session.execute(
-        statement=update(UserAccount)
-        .where(UserAccount.user_id == user_id, UserAccount.balance == current_balance)
+        statement=update(UserWallet)
+        .where(UserWallet.user_id == user_id, UserWallet.balance == current_balance)
         .values(**update_values)
-        .returning(UserAccount.balance)
+        .returning(UserWallet.balance)
     )
     if update_result.scalar_one_or_none() is None:
         return None
@@ -921,6 +924,9 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     negative P&L. Player-side losses use the clamped path instead.
     """
     _ = (kind, note)
+    await _upsert_user_metadata_in_session(
+        session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+    )
     stmt = _build_signed_delta_upsert(
         user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
     )
@@ -962,7 +968,7 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
         )
         return new_balance, applied_delta
     read_result = await session.execute(
-        statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
     )
     return read_result.scalar_one_or_none() or 0, 0
 
@@ -1006,7 +1012,7 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
         )
         return new_balance, applied_delta
     read_result = await session.execute(
-        statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
     )
     return read_result.scalar_one_or_none() or 0, 0
 
@@ -1092,7 +1098,7 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
     async with open_session() as session:
         if delta == 0:
             result = await session.execute(
-                statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+                statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
             )
             new_balance = result.scalar_one_or_none() or 0
             return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=0)
@@ -1174,7 +1180,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
 
         if dealer_delta_to_apply == 0:
             dealer_result = await session.execute(
-                statement=select(UserAccount.balance).where(UserAccount.user_id == dealer_id)
+                statement=select(UserWallet.balance).where(UserWallet.user_id == dealer_id)
             )
             dealer_balance = dealer_result.scalar_one_or_none() or 0
         else:
@@ -1465,8 +1471,8 @@ async def _full_debit_rejections_in_session(
         return ()
 
     result = await session.execute(
-        statement=select(UserAccount.user_id, UserAccount.balance).where(
-            UserAccount.user_id.in_(other=tuple(required_debits))
+        statement=select(UserWallet.user_id, UserWallet.balance).where(
+            UserWallet.user_id.in_(other=tuple(required_debits))
         )
     )
     balances = {row[0]: row[1] for row in result.all()}
@@ -1666,12 +1672,12 @@ async def _insert_first_checkin_in_session(
             user_id=user_id,
             name=name or str(user_id),
             avatar_url=avatar_url,
-            balance=reward,
-            total_earned=reward,
-            total_spent=0,
             is_vip=False,
             last_checkin_at=now,
             checkin_streak=new_streak,
+            is_admin=False,
+            is_central_banker=False,
+            hide_from_leaderboard=False,
             updated_at=now,
         )
         .on_conflict_do_nothing(index_elements=["user_id"])
@@ -1679,7 +1685,13 @@ async def _insert_first_checkin_in_session(
     insert_result = await session.execute(statement=insert_stmt)
     if (insert_result.rowcount or 0) == 0:
         return None
-    return reward, reward, new_streak, False
+    credit_result = await session.execute(
+        statement=_build_credit_upsert(
+            user_id=user_id, name=name, avatar_url=avatar_url, amount=reward, now=now
+        )
+    )
+    balance_after = credit_result.scalar_one()
+    return reward, balance_after, new_streak, False
 
 
 async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper carries account identity + observed row
@@ -1689,12 +1701,12 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
     avatar_url: str,
     now: datetime,
     new_streak: int,
-    row: tuple[int, datetime | None, int, bool, str],
+    row: tuple[datetime | None, int, bool, str],
 ) -> tuple[int, int, int, bool] | None:
     """Performs the conditional UPDATE for an existing account.
 
-    The WHERE clause pins ``balance`` and ``last_checkin_at`` to the values
-    observed in the SELECT so concurrent writers can't double-credit.
+    The WHERE clause pins ``last_checkin_at`` to the observed value so
+    concurrent check-ins cannot double-credit.
 
     Args:
         session: Active SQLAlchemy session.
@@ -1709,13 +1721,10 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
         ``(reward, balance_after, streak_after, vip_after)`` on success or
         ``None`` when the conditional UPDATE matched zero rows.
     """
-    current_balance, last_checkin_at, _current_streak, is_vip, existing_name = row
+    last_checkin_at, _current_streak, is_vip, existing_name = row
     reward = checkin_reward(streak=new_streak, is_vip=is_vip)
-    new_balance = current_balance + reward
 
     update_values: dict[str, Any] = {
-        "balance": new_balance,
-        "total_earned": UserAccount.total_earned + reward,
         "last_checkin_at": now,
         "checkin_streak": new_streak,
         "updated_at": now,
@@ -1733,19 +1742,21 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
 
     stmt = (
         update(UserAccount)
-        .where(
-            UserAccount.user_id == user_id,
-            UserAccount.balance == current_balance,
-            last_checkin_gate,
-        )
+        .where(UserAccount.user_id == user_id, last_checkin_gate)
         .values(**update_values)
-        .returning(UserAccount.balance, UserAccount.checkin_streak, UserAccount.is_vip)
+        .returning(UserAccount.checkin_streak, UserAccount.is_vip)
     )
     update_result = await session.execute(statement=stmt)
     updated_row = update_result.one_or_none()
     if updated_row is None:
         return None
-    balance_after, streak_after, vip_after = updated_row
+    streak_after, vip_after = updated_row
+    credit_result = await session.execute(
+        statement=_build_credit_upsert(
+            user_id=user_id, name=name, avatar_url=avatar_url, amount=reward, now=now
+        )
+    )
+    balance_after = credit_result.scalar_one()
     return reward, balance_after, streak_after, bool(vip_after)
 
 
@@ -1786,7 +1797,6 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
         for _ in range(_CHECKIN_MAX_RETRIES):
             read_result = await session.execute(
                 statement=select(
-                    UserAccount.balance,
                     UserAccount.last_checkin_at,
                     UserAccount.checkin_streak,
                     UserAccount.is_vip,
@@ -1801,8 +1811,8 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
                 )
             else:
                 new_streak = _next_checkin_streak(
-                    last_checkin_at=row[1],
-                    current_streak=row[2],
+                    last_checkin_at=row[0],
+                    current_streak=row[1],
                     today_midnight=today_midnight,
                     yesterday_midnight=yesterday_midnight,
                     tomorrow_midnight=tomorrow_midnight,
@@ -1816,7 +1826,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
                     avatar_url=avatar_url,
                     now=now,
                     new_streak=new_streak,
-                    row=cast("tuple[int, datetime | None, int, bool, str]", row),
+                    row=cast("tuple[datetime | None, int, bool, str]", row),
                 )
 
             if outcome is None:
@@ -1854,9 +1864,10 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     async with open_session() as session:
         for _ in range(_VIP_PURCHASE_MAX_RETRIES):
             read_result = await session.execute(
-                statement=select(UserAccount.balance, UserAccount.is_vip, UserAccount.name).where(
-                    UserAccount.user_id == user_id
-                )
+                statement=select(UserWallet.balance, UserAccount.is_vip, UserAccount.name)
+                .select_from(UserAccount)
+                .join(UserWallet, UserWallet.user_id == UserAccount.user_id)
+                .where(UserAccount.user_id == user_id)
             )
             row = read_result.one_or_none()
             if row is None:
@@ -1868,12 +1879,20 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 return None
 
             new_balance = balance - cost
-            update_values: dict[str, Any] = {
-                "balance": new_balance,
-                "total_spent": UserAccount.total_spent + cost,
-                "is_vip": True,
-                "updated_at": now,
-            }
+            wallet_result = await session.execute(
+                statement=update(UserWallet)
+                .where(UserWallet.user_id == user_id, UserWallet.balance == balance)
+                .values(
+                    balance=new_balance, total_spent=UserWallet.total_spent + cost, updated_at=now
+                )
+                .returning(UserWallet.balance)
+            )
+            wallet_row = wallet_result.one_or_none()
+            if wallet_row is None:
+                await session.rollback()
+                continue
+
+            update_values: dict[str, Any] = {"is_vip": True, "updated_at": now}
             if name and name != existing_name:
                 update_values["name"] = name
             if avatar_url:
@@ -1881,13 +1900,9 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
 
             stmt = (
                 update(UserAccount)
-                .where(
-                    UserAccount.user_id == user_id,
-                    UserAccount.balance == balance,
-                    UserAccount.is_vip.is_(False),
-                )
+                .where(UserAccount.user_id == user_id, UserAccount.is_vip.is_(False))
                 .values(**update_values)
-                .returning(UserAccount.balance)
+                .returning(UserAccount.user_id)
             )
             update_result = await session.execute(statement=stmt)
             updated_row = update_result.one_or_none()
@@ -1896,7 +1911,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 continue
 
             await session.commit()
-            return VipPurchaseResult(new_balance=updated_row[0], cost=cost)
+            return VipPurchaseResult(new_balance=wallet_row[0], cost=cost)
 
         return None
 
@@ -1913,7 +1928,7 @@ async def get_balance(user_id: int) -> int:
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
-            statement=select(UserAccount.balance).where(UserAccount.user_id == user_id)
+            statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
         )
         return result.scalar_one_or_none() or 0
 
@@ -1979,9 +1994,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
                 user_id=user_id,
                 name=effective_name,
                 avatar_url=avatar_url,
-                balance=0,
-                total_earned=0,
-                total_spent=0,
                 updated_at=now,
                 is_vip=False,
                 last_checkin_at=None,
@@ -2051,9 +2063,6 @@ async def set_central_banker(
                 user_id=user_id,
                 name=effective_name,
                 avatar_url=avatar_url,
-                balance=0,
-                total_earned=0,
-                total_spent=0,
                 updated_at=now,
                 is_vip=False,
                 last_checkin_at=None,
@@ -2115,16 +2124,19 @@ async def get_account(user_id: int) -> AccountSnapshot | None:
         result = await session.execute(
             statement=select(
                 UserAccount.name,
-                UserAccount.balance,
-                UserAccount.total_earned,
-                UserAccount.total_spent,
-            ).where(UserAccount.user_id == user_id)
+                UserWallet.balance,
+                UserWallet.total_earned,
+                UserWallet.total_spent,
+            )
+            .select_from(UserAccount)
+            .outerjoin(UserWallet, UserWallet.user_id == UserAccount.user_id)
+            .where(UserAccount.user_id == user_id)
         )
         row = result.one_or_none()
         if row is None:
             return None
         return AccountSnapshot(
-            name=row[0], balance=row[1], total_earned=row[2], total_spent=row[3]
+            name=row[0], balance=row[1] or 0, total_earned=row[2] or 0, total_spent=row[3] or 0
         )
 
 
@@ -2166,20 +2178,16 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     now = _database_now()
     async with open_session() as session:
         debit_values: dict[str, Any] = {
-            "balance": UserAccount.balance - amount,
-            "total_spent": UserAccount.total_spent + amount,
+            "balance": UserWallet.balance - amount,
+            "total_spent": UserWallet.total_spent + amount,
             "updated_at": now,
         }
-        if sender_name:
-            debit_values["name"] = sender_name
-        if sender_avatar_url:
-            debit_values["avatar_url"] = sender_avatar_url
 
         debit_stmt = (
-            update(UserAccount)
-            .where(UserAccount.user_id == sender_id, UserAccount.balance >= amount)
+            update(UserWallet)
+            .where(UserWallet.user_id == sender_id, UserWallet.balance >= amount)
             .values(**debit_values)
-            .returning(UserAccount.balance)
+            .returning(UserWallet.balance)
         )
         debit_result = await session.execute(statement=debit_stmt)
         debit_row = debit_result.one_or_none()
@@ -2187,12 +2195,26 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
             await session.rollback()
             return None
         sender_balance = debit_row[0]
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=sender_id,
+            name=sender_name,
+            avatar_url=sender_avatar_url,
+            now=now,
+        )
 
         credit_stmt = _build_credit_upsert(
             user_id=receiver_id,
             name=receiver_name,
             avatar_url=receiver_avatar_url,
             amount=amount,
+            now=now,
+        )
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=receiver_id,
+            name=receiver_name,
+            avatar_url=receiver_avatar_url,
             now=now,
         )
         credit_result = await session.execute(statement=credit_stmt)
@@ -2209,7 +2231,7 @@ async def top_n(
 
     ``exclude_user_ids`` filters out specific accounts (notably the bot's
     own house ledger row) before applying the limit, so the leaderboard
-    always shows real players. The ``ix_user_account_balance`` index keeps
+    always shows real players. The ``ix_user_wallet_balance`` index keeps
     this query cheap even as the user table grows.
 
     Args:
@@ -2225,13 +2247,17 @@ async def top_n(
     """
     await _ensure_schema()
     async with open_session() as session:
-        stmt = select(
-            UserAccount.user_id, UserAccount.name, UserAccount.balance, UserAccount.avatar_url
-        ).order_by(desc(UserAccount.balance))
+        stmt = (
+            select(
+                UserWallet.user_id, UserAccount.name, UserWallet.balance, UserAccount.avatar_url
+            )
+            .join(UserAccount, UserAccount.user_id == UserWallet.user_id)
+            .order_by(desc(UserWallet.balance))
+        )
         if not include_hidden:
             stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
         if exclude_user_ids:
-            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
+            stmt = stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
         if limit is not None:
             stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
@@ -2333,6 +2359,34 @@ def _loan_contract_view(contract: LoanContract) -> LoanContractView:
     )
 
 
+def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
+    """Returns whether a pending loan proposal has passed its decision window."""
+    if proposal.status != LoanProposalStatus.PENDING:
+        return False
+    elapsed_seconds = (_as_taipei(dt=now) - _as_taipei(dt=proposal.created_at)).total_seconds()
+    return elapsed_seconds >= LOAN_PROPOSAL_TIMEOUT_SECONDS
+
+
+async def _reject_expired_loan_proposal_in_session(
+    session: AsyncSession, proposal: LoanProposal, now: datetime
+) -> LoanProposalView | None:
+    """Marks an expired pending proposal as rejected inside the caller's session."""
+    if not _loan_proposal_is_expired(proposal=proposal, now=now):
+        return None
+    status_result = await session.execute(
+        statement=update(LoanProposal)
+        .where(LoanProposal.id == proposal.id, LoanProposal.status == LoanProposalStatus.PENDING)
+        .values(status=LoanProposalStatus.REJECTED, updated_at=now)
+        .returning(LoanProposal.id)
+    )
+    if status_result.scalar_one_or_none() is None:
+        return None
+    await _refund_proposal_escrow_in_session(session=session, proposal=proposal, now=now)
+    proposal.status = LoanProposalStatus.REJECTED
+    proposal.updated_at = now
+    return _loan_proposal_view(proposal=proposal)
+
+
 def _stock_profile_view(profile: StockProfile) -> StockProfileView:
     """Projects an ORM stock profile into an immutable API view."""
     return StockProfileView(
@@ -2383,10 +2437,10 @@ async def _central_bank_status_in_session(
     session: AsyncSession, exclude_user_ids: tuple[int, ...] = ()
 ) -> CentralBankStatus:
     """Computes central-bank lending capacity from positive user balances."""
-    positive_balance_expr = case((UserAccount.balance > 0, UserAccount.balance), else_=0)
+    positive_balance_expr = case((UserWallet.balance > 0, UserWallet.balance), else_=0)
     balance_stmt = select(func.coalesce(func.sum(positive_balance_expr), 0))
     if exclude_user_ids:
-        balance_stmt = balance_stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
+        balance_stmt = balance_stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
     total_result = await session.execute(statement=balance_stmt)
     total_positive_user_balance = int(total_result.scalar_one() or 0)
 
@@ -2500,6 +2554,13 @@ async def _refund_proposal_escrow_in_session(
     """Refunds escrowed proposal funds and returns lender balance."""
     if proposal.escrow_amount <= 0 or proposal.lender_id is None:
         return None
+    await _upsert_user_metadata_in_session(
+        session=session,
+        user_id=proposal.lender_id,
+        name=proposal.lender_name,
+        avatar_url=proposal.lender_avatar_url,
+        now=now,
+    )
     credit_result = await session.execute(
         statement=_build_credit_upsert(
             user_id=proposal.lender_id,
@@ -2510,6 +2571,29 @@ async def _refund_proposal_escrow_in_session(
         )
     )
     return credit_result.scalar_one()
+
+
+async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
+    """Rejects a pending loan proposal if its decision window has expired."""
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(LoanProposal).where(
+                LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING
+            )
+        )
+        proposal = result.scalar_one_or_none()
+        if proposal is None:
+            return None
+        expired = await _reject_expired_loan_proposal_in_session(
+            session=session, proposal=proposal, now=now
+        )
+        if expired is None:
+            await session.rollback()
+            return None
+        await session.commit()
+        return expired
 
 
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
@@ -2526,6 +2610,12 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
         )
         proposal = result.scalar_one_or_none()
         if proposal is None:
+            return None
+        expired = await _reject_expired_loan_proposal_in_session(
+            session=session, proposal=proposal, now=now
+        )
+        if expired is not None:
+            await session.commit()
             return None
         await _refund_proposal_escrow_in_session(session=session, proposal=proposal, now=now)
         status_result = await session.execute(
@@ -2558,6 +2648,12 @@ async def reject_loan_proposal(
         )
         proposal = result.scalar_one_or_none()
         if proposal is None:
+            return None
+        expired = await _reject_expired_loan_proposal_in_session(
+            session=session, proposal=proposal, now=now
+        )
+        if expired is not None:
+            await session.commit()
             return None
         allowed = False
         if proposal.kind == LoanProposalKind.PERSONAL_REQUEST:
@@ -2606,7 +2702,7 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
         )
 
 
-async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0912, PLR0913 -- proposal-kind branches must stay in one transaction
+async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- proposal-kind branches must stay in one transaction
     proposal_id: int,
     actor_id: int,
     actor_name: str,
@@ -2628,26 +2724,35 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0912, PLR0913
         proposal = result.scalar_one_or_none()
         if proposal is None:
             return None
+        expired = await _reject_expired_loan_proposal_in_session(
+            session=session, proposal=proposal, now=now
+        )
+        if expired is not None:
+            await session.commit()
+            return None
 
         lender_balance: int | None = None
         central_status: CentralBankStatus | None = None
         if proposal.kind == LoanProposalKind.PERSONAL_REQUEST:
             if proposal.lender_id != actor_id:
                 return None
+            await _upsert_user_metadata_in_session(
+                session=session,
+                user_id=actor_id,
+                name=actor_name,
+                avatar_url=actor_avatar_url,
+                now=now,
+            )
             debit_values: dict[str, Any] = {
-                "balance": UserAccount.balance - proposal.amount,
-                "total_spent": UserAccount.total_spent + proposal.amount,
+                "balance": UserWallet.balance - proposal.amount,
+                "total_spent": UserWallet.total_spent + proposal.amount,
                 "updated_at": now,
             }
-            if actor_name:
-                debit_values["name"] = actor_name
-            if actor_avatar_url:
-                debit_values["avatar_url"] = actor_avatar_url
             debit_result = await session.execute(
-                statement=update(UserAccount)
-                .where(UserAccount.user_id == actor_id, UserAccount.balance >= proposal.amount)
+                statement=update(UserWallet)
+                .where(UserWallet.user_id == actor_id, UserWallet.balance >= proposal.amount)
                 .values(**debit_values)
-                .returning(UserAccount.balance)
+                .returning(UserWallet.balance)
             )
             lender_balance = debit_result.scalar_one_or_none()
             if lender_balance is None:
@@ -2680,6 +2785,13 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0912, PLR0913
             await session.rollback()
             return None
 
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=proposal.borrower_id,
+            name=proposal.borrower_name,
+            avatar_url=proposal.borrower_avatar_url,
+            now=now,
+        )
         credit_result = await session.execute(
             statement=_build_credit_upsert(
                 user_id=proposal.borrower_id,
@@ -2803,6 +2915,13 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
             closed_contract_ids.append(contract.id)
 
         if contract.lender_type == LoanLenderType.USER and contract.lender_id is not None:
+            await _upsert_user_metadata_in_session(
+                session=session,
+                user_id=contract.lender_id,
+                name=contract.lender_name,
+                avatar_url=contract.lender_avatar_url,
+                now=now,
+            )
             credit_result = await session.execute(
                 statement=_build_credit_upsert(
                     user_id=contract.lender_id,
@@ -2993,16 +3112,17 @@ async def _portfolio_in_session(
 ) -> PortfolioView:
     """Builds a portfolio view, accruing active debt interest first."""
     account_result = await session.execute(
-        statement=select(UserAccount.name, UserAccount.balance).where(
-            UserAccount.user_id == user_id
-        )
+        statement=select(UserAccount.name, UserWallet.balance)
+        .select_from(UserAccount)
+        .outerjoin(UserWallet, UserWallet.user_id == UserAccount.user_id)
+        .where(UserAccount.user_id == user_id)
     )
     account_row = account_result.one_or_none()
     name = str(user_id)
     balance = 0
     if account_row is not None:
         name = account_row[0]
-        balance = account_row[1]
+        balance = account_row[1] or 0
 
     debt_result = await session.execute(
         statement=select(LoanContract).where(
@@ -3081,7 +3201,7 @@ async def issue_stock(
         if existing.scalar_one_or_none() is not None:
             return None
         portfolio = await _portfolio_in_session(session=session, user_id=issuer_id, now=now)
-        if portfolio.net_worth <= STOCK_ISSUE_MIN_NET_WORTH:
+        if portfolio.balance <= STOCK_ISSUE_MIN_BALANCE:
             return None
         profile = StockProfile(
             issuer_id=issuer_id,
@@ -3139,22 +3259,34 @@ async def buy_stock(
         if profile is None or profile.treasury_shares < shares:
             return None
         total_cost = shares * profile.issue_price
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=buyer_id,
+            name=buyer_name,
+            avatar_url=buyer_avatar_url,
+            now=now,
+        )
         debit_result = await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == buyer_id, UserAccount.balance >= total_cost)
+            statement=update(UserWallet)
+            .where(UserWallet.user_id == buyer_id, UserWallet.balance >= total_cost)
             .values(
-                balance=UserAccount.balance - total_cost,
-                total_spent=UserAccount.total_spent + total_cost,
-                name=buyer_name or str(buyer_id),
+                balance=UserWallet.balance - total_cost,
+                total_spent=UserWallet.total_spent + total_cost,
                 updated_at=now,
-                **({"avatar_url": buyer_avatar_url} if buyer_avatar_url else {}),
             )
-            .returning(UserAccount.balance)
+            .returning(UserWallet.balance)
         )
         buyer_balance = debit_result.scalar_one_or_none()
         if buyer_balance is None:
             await session.rollback()
             return None
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=issuer_id,
+            name=profile.issuer_name,
+            avatar_url=profile.issuer_avatar_url,
+            now=now,
+        )
         credit_result = await session.execute(
             statement=_build_credit_upsert(
                 user_id=issuer_id,
@@ -3242,25 +3374,35 @@ async def pay_stock_dividend(
         if distributed_amount <= 0:
             return None
 
-        debit_values: dict[str, Any] = {
-            "balance": UserAccount.balance - distributed_amount,
-            "total_spent": UserAccount.total_spent + distributed_amount,
-            "name": issuer_name or profile.issuer_name,
-            "updated_at": now,
-        }
-        if issuer_avatar_url:
-            debit_values["avatar_url"] = issuer_avatar_url
+        await _upsert_user_metadata_in_session(
+            session=session,
+            user_id=issuer_id,
+            name=issuer_name or profile.issuer_name,
+            avatar_url=issuer_avatar_url,
+            now=now,
+        )
         debit_result = await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == issuer_id, UserAccount.balance >= distributed_amount)
-            .values(**debit_values)
-            .returning(UserAccount.balance)
+            statement=update(UserWallet)
+            .where(UserWallet.user_id == issuer_id, UserWallet.balance >= distributed_amount)
+            .values(
+                balance=UserWallet.balance - distributed_amount,
+                total_spent=UserWallet.total_spent + distributed_amount,
+                updated_at=now,
+            )
+            .returning(UserWallet.balance)
         )
         issuer_balance = debit_result.scalar_one_or_none()
         if issuer_balance is None:
             await session.rollback()
             return None
         for holding, payout in payouts:
+            await _upsert_user_metadata_in_session(
+                session=session,
+                user_id=holding.holder_id,
+                name=holding.holder_name,
+                avatar_url=holding.holder_avatar_url,
+                now=now,
+            )
             await session.execute(
                 statement=_build_credit_upsert(
                     user_id=holding.holder_id,
