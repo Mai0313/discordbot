@@ -674,7 +674,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 18
-    assert len(scheduled) == 10
+    assert len(scheduled) == 11
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert "view" not in interaction.followup.sent[3]
@@ -687,7 +687,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[10].get("ephemeral") is True
     assert interaction.followup.sent[12].get("ephemeral") is not True
     assert interaction.followup.sent[13].get("ephemeral") is not True
-    assert interaction.followup.sent[14].get("ephemeral") is True
+    assert interaction.followup.sent[14].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     borrow_embed = interaction.followup.sent[7]["embed"]
     assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"

@@ -1578,7 +1578,7 @@ class EconomyCogs(commands.Cog):
     )
     async def central_bank_status(self, interaction: Interaction) -> None:
         """Shows central bank lending capacity."""
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
         status = await get_central_bank_status(exclude_user_ids=exclude_user_ids)
         embed = Embed(
@@ -1594,7 +1594,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="portfolio",
