@@ -12,11 +12,9 @@ import contextlib
 from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
 import logfire
-from nextcord import File, Embed, Message, Attachment, StickerItem
+from nextcord import File, Embed, Thread, Message, Attachment, StickerItem
 from pydantic import ValidationError
-from nextcord.ui import View
 from nextcord.ext import commands
-from nextcord.utils import MISSING
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -28,7 +26,6 @@ from discordbot.utils.images import get_pil_image, get_image_data, convert_base6
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
-from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._gen_reply.prompts import (
     BELIEF,
@@ -55,6 +52,8 @@ _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 # replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count icons,
 # which never appear together in user-authored content.
 _USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
+_DISCORD_MESSAGE_LIMIT = 2000
+_DISCORD_THREAD_NAME_LIMIT = 100
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -381,9 +380,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _handle_video_generation(
-        self, message: Message, user_prompt: str, view: View | None = None
-    ) -> None:
+    async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
         video = await self.client.videos.create(
@@ -402,13 +399,9 @@ class ReplyGeneratorCogs(commands.Cog):
             video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
         )
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
-        await message.reply(
-            content=f"{message.author.mention}", file=video_file, view=view or MISSING
-        )
+        await message.reply(content=f"{message.author.mention}", file=video_file)
 
-    async def _handle_image_reply(
-        self, message: Message, user_prompt: str, view: View | None = None
-    ) -> None:
+    async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
         """Handles image generation or editing requests."""
         image_model = self.runtime_models.image_model
         if message.reference and isinstance(message.reference.resolved, Message):
@@ -485,7 +478,7 @@ class ReplyGeneratorCogs(commands.Cog):
         image_bytes = BytesIO(base64.b64decode(image_b64))
         image_file = File(fp=image_bytes, filename="generated.png")
         final_content = f"{message.author.mention} {image_description}"
-        await message.reply(content=final_content, file=image_file, view=view or MISSING)
+        await message.reply(content=final_content, file=image_file)
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous: str | None = None
@@ -568,16 +561,102 @@ class ReplyGeneratorCogs(commands.Cog):
             amount=amount,
         )
 
-    async def _handle_streaming(  # noqa: C901, PLR0912 -- dispatches on multiple Responses API stream event types
-        self,
-        responses: AsyncStream[ResponseStreamEvent],
-        message: Message,
-        view: View | None = None,
+    @staticmethod
+    def _long_reply_thread_name(message: Message) -> str:
+        """Builds a bounded thread name for long AI replies."""
+        author_name = message.author.display_name or message.author.name
+        return f"AI reply for {author_name}"[:_DISCORD_THREAD_NAME_LIMIT]
+
+    @staticmethod
+    def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
+        """Splits a completed reply into one parent message plus thread chunks."""
+        if len(f"{content}{footer}") <= _DISCORD_MESSAGE_LIMIT:
+            return f"{content}{footer}", []
+
+        tail_capacity = _DISCORD_MESSAGE_LIMIT - len(footer)
+        if tail_capacity <= 0:
+            raise ValueError("Usage footer is too long for Discord message content")
+
+        parent_content = content[:_DISCORD_MESSAGE_LIMIT]
+        remaining = content[_DISCORD_MESSAGE_LIMIT:]
+        thread_chunks: list[str] = []
+
+        while len(remaining) > _DISCORD_MESSAGE_LIMIT:
+            thread_chunks.append(remaining[:_DISCORD_MESSAGE_LIMIT])
+            remaining = remaining[_DISCORD_MESSAGE_LIMIT:]
+
+        if len(remaining) <= tail_capacity:
+            thread_chunks.append(f"{remaining}{footer}")
+        else:
+            thread_chunks.append(remaining[:tail_capacity])
+            thread_chunks.append(f"{remaining[tail_capacity:]}{footer}")
+        return parent_content, thread_chunks
+
+    async def _write_streaming_preview(
+        self, message: Message, reply: Message | None, content: str, displayed_content: str
+    ) -> tuple[Message | None, str]:
+        """Writes at most one Discord message worth of streaming preview text."""
+        preview = content[:_DISCORD_MESSAGE_LIMIT]
+        if preview == displayed_content:
+            return reply, displayed_content
+        if reply is None:
+            reply = await message.reply(content=preview)
+        else:
+            await reply.edit(content=preview)
+        return reply, preview
+
+    async def _create_long_reply_thread(self, message: Message, reply: Message) -> Thread | None:
+        """Creates a continuation thread for a long reply, returning None on fallback paths."""
+        if message.guild is None:
+            return None
+        try:
+            return await reply.create_thread(name=self._long_reply_thread_name(message=message))
+        except Exception:
+            logfire.warn("Failed to create long AI reply thread", _exc_info=True)
+            return None
+
+    async def _send_long_reply_chunks(
+        self, message: Message, reply: Message, chunks: list[str]
+    ) -> None:
+        """Sends long-reply continuation chunks into a thread, or replies as fallback."""
+        thread = await self._create_long_reply_thread(message=message, reply=reply)
+        if thread is None:
+            for chunk in chunks:
+                await message.reply(content=chunk)
+            return
+
+        for index, chunk in enumerate(chunks):
+            try:
+                await thread.send(content=chunk)
+            except Exception:
+                logfire.warn("Failed to send long AI reply chunk in thread", _exc_info=True)
+                for fallback_chunk in chunks[index:]:
+                    await message.reply(content=fallback_chunk)
+                return
+
+    async def _finalize_streaming_reply(
+        self, message: Message, reply: Message | None, content: str, footer: str
+    ) -> Message:
+        """Writes the final reply, moving overflow into a continuation thread."""
+        parent_content, thread_chunks = self._split_reply_for_discord(
+            content=content, footer=footer
+        )
+        if reply is None:
+            reply = await message.reply(content=parent_content)
+        else:
+            await reply.edit(content=parent_content)
+        if thread_chunks:
+            await self._send_long_reply_chunks(message=message, reply=reply, chunks=thread_chunks)
+        return reply
+
+    async def _handle_streaming(  # noqa: C901 -- dispatches on multiple Responses API stream event types
+        self, responses: AsyncStream[ResponseStreamEvent], message: Message
     ) -> str:
         """Handles streaming responses from the API and updates the Discord message."""
         stored_content = ""
         counted_content = 0
         reply: Message | None = None
+        displayed_content = ""
         content_started = False
         model_name = ""
         input_tokens = 0
@@ -608,10 +687,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 counted_content += len(delta)
 
                 if counted_content >= 30:
-                    if reply is None:
-                        reply = await message.reply(content=stored_content)
-                    else:
-                        await reply.edit(content=stored_content)
+                    reply, displayed_content = await self._write_streaming_preview(
+                        message=message,
+                        reply=reply,
+                        content=stored_content,
+                        displayed_content=displayed_content,
+                    )
                     counted_content = 0
 
         cost = self._calculate_cost(
@@ -633,16 +714,12 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             balance_text = currency_text(amount=total_tokens, signed=True)
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
-        stored_content += usage_footer
 
-        # Final update to ensure complete message is displayed; the regenerate
-        # view is attached only on this terminal write so intermediate streaming
-        # edits don't briefly flash the button.
-        if reply is None:
-            await message.reply(content=stored_content, view=view or MISSING)
-        else:
-            with contextlib.suppress(Exception):
-                await reply.edit(content=stored_content, view=view or MISSING)
+        # Final update to ensure complete message is displayed.
+        await self._finalize_streaming_reply(
+            message=message, reply=reply, content=stored_content, footer=usage_footer
+        )
+        stored_content += usage_footer
 
         if used_web_search:
             await self._handle_reaction(message=message, emoji="🌐")
@@ -650,12 +727,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(
-        self,
-        message: Message,
-        system_prompt: str,
-        context_prompt: str,
-        history_limit: int,
-        view: View | None = None,
+        self, message: Message, system_prompt: str, context_prompt: str, history_limit: int
     ) -> None:
         """Handles generating text replies using history and context."""
         message_list: list[EasyInputMessageParam] = [
@@ -688,7 +760,7 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"mock_testing_fallbacks": False},
         )
 
-        await self._handle_streaming(responses=responses, message=message, view=view)
+        await self._handle_streaming(responses=responses, message=message)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -724,17 +796,14 @@ class ReplyGeneratorCogs(commands.Cog):
             await self._handle_reaction(message=message, emoji="🔀", previous=current_emoji)
             current_emoji = "🔀"
             route = await self._route_message(message=message)
-            view = RegenerateView(cog=self, original_message=message)
             if route == "IMAGE":
                 await self._handle_reaction(message=message, emoji="🎨", previous=current_emoji)
                 current_emoji = "🎨"
-                await self._handle_image_reply(message=message, user_prompt=user_prompt, view=view)
+                await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
                 await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
                 current_emoji = "🎬"
-                await self._handle_video_generation(
-                    message=message, user_prompt=user_prompt, view=view
-                )
+                await self._handle_video_generation(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
                 await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
                 current_emoji = "📖"
@@ -743,7 +812,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     system_prompt=SUMMARY_PROMPT,
                     context_prompt=BELIEF,
                     history_limit=50,
-                    view=view,
                 )
             else:
                 await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
@@ -753,7 +821,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     system_prompt=REPLY_PROMPT,
                     context_prompt=BELIEF,
                     history_limit=30,
-                    view=view,
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:

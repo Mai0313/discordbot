@@ -5,24 +5,21 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Unpack, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal
 from datetime import UTC, datetime
 
 from PIL import Image
 import pytest
 from nextcord import File, Embed
 
-from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, ReplyGeneratorCogs
+from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, _DISCORD_MESSAGE_LIMIT, ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
-from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-    from nextcord.ui import View
 
 
 class FakeGuild:
@@ -41,45 +38,38 @@ class FakeReference:
         self.resolved = resolved
 
 
-class FakeReaction:
-    """Minimal reaction stub used by regenerate cleanup."""
-
-    def __init__(self, me: bool, emoji: str) -> None:
-        """Initializes ownership and emoji fields."""
-        self.me = me
-        self.emoji = emoji
-
-
-class ReplyPayload(TypedDict, total=False):
-    """Payload captured from fake message replies."""
-
-    content: str | None
-    view: View
-    file: File
-    embed: Embed
-
-
-class InteractionReplyPayload(TypedDict, total=False):
-    """Payload captured from fake interaction responses."""
-
-    content: str
-    ephemeral: bool
-
-
 class FakeReply:
-    """Provides a fake reply object that records edited content and attached view."""
+    """Provides a fake reply object that records edited content."""
 
     def __init__(self) -> None:
         """Initializes the fake reply with empty content and no attached view."""
         self.content: str | None = ""
-        self.view: View | None = None
         self.file: File | None = None
         self.embed: Embed | None = None
+        self.created_thread: FakeThread | None = None
+        self.thread_name: str | None = None
 
-    async def edit(self, content: str, view: View | None = None) -> None:
-        """Records the replacement content and view passed to edit."""
+    async def edit(self, content: str) -> None:
+        """Records the replacement content passed to edit."""
         self.content = content
-        self.view = view
+
+    async def create_thread(self, *, name: str) -> FakeThread:
+        """Creates and records a fake continuation thread."""
+        self.thread_name = name
+        self.created_thread = FakeThread()
+        return self.created_thread
+
+
+class FakeThread:
+    """Minimal fake Discord thread that records sent messages."""
+
+    def __init__(self) -> None:
+        """Initializes the fake thread message store."""
+        self.sent_messages: list[str] = []
+
+    async def send(self, content: str) -> None:
+        """Records a message sent into the fake thread."""
+        self.sent_messages.append(content)
 
 
 class FakeAuthor:
@@ -113,7 +103,6 @@ class FakeMessage:
         self.system_content = ""
         self.added_reactions: list[str] = []
         self.removed_reactions: list[tuple[str, FakeAuthor]] = []
-        self.reactions: list[FakeReaction] = []
 
     async def _history(
         self, limit: int, before: FakeMessage, oldest_first: bool
@@ -123,16 +112,11 @@ class FakeMessage:
             yield self
 
     async def reply(
-        self,
-        content: str | None,
-        view: View | None = None,
-        file: File | None = None,
-        embed: Embed | None = None,
+        self, content: str | None, file: File | None = None, embed: Embed | None = None
     ) -> FakeReply:
-        """Creates and records a fake reply with the requested content and view."""
+        """Creates and records a fake reply with the requested content."""
         reply = FakeReply()
         reply.content = content
-        reply.view = view
         reply.file = file
         reply.embed = embed
         self.replies.append(reply)
@@ -369,6 +353,44 @@ async def test_handle_streaming_allows_missing_output_token_details(
     assert message.replies[0].content == result
 
 
+async def test_handle_streaming_moves_long_reply_overflow_to_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies replies over Discord's content limit continue in a thread."""
+    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage()
+    body = "x" * 4500
+
+    result = await cog._handle_streaming(
+        responses=_stream_events_from(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta=body),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model=TEST_LLM_MODEL,
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+                    ),
+                ),
+            ]
+        ),
+        message=message,
+    )
+
+    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · +3 虛擬歡樂豆"
+    assert result == f"{body}{usage_footer}"
+    assert message.replies[0].content == body[:_DISCORD_MESSAGE_LIMIT]
+    assert message.replies[0].thread_name == "AI reply for Tester"
+    thread = message.replies[0].created_thread
+    assert thread is not None
+    assert thread.sent_messages == [
+        body[_DISCORD_MESSAGE_LIMIT : _DISCORD_MESSAGE_LIMIT * 2],
+        f"{body[_DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}",
+    ]
+    assert all(len(chunk) <= _DISCORD_MESSAGE_LIMIT for chunk in thread.sent_messages)
+
+
 async def test_handle_streaming_marks_web_search_from_call_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -439,58 +461,6 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     assert extract_friendly_error(exc=RuntimeError(raw)) == "quota exceeded"
     assert extract_friendly_error(exc=RuntimeError("plain failure")) == "plain failure"
     assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
-
-
-async def test_regenerate_view_restricts_user_and_dispatches_original_message() -> None:
-    """Verifies regeneration is limited to the original author and re-dispatches."""
-    called: list[FakeMessage] = []
-
-    async def fake_on_message(message: FakeMessage) -> None:
-        """Records the message sent back through on_message."""
-        called.append(message)
-
-    async def fake_send_message(**kwargs: Unpack[InteractionReplyPayload]) -> None:
-        """Records denied interaction responses."""
-        denied.append(kwargs)
-
-    class _ReplyMessage:
-        """Minimal reply message stub that records deletion."""
-
-        def __init__(self) -> None:
-            """Initializes the deletion flag."""
-            self.deleted = False
-
-        async def delete(self) -> None:
-            """Records reply deletion."""
-            self.deleted = True
-
-    denied: list[InteractionReplyPayload] = []
-    original = FakeMessage(author=FakeAuthor(user_id=10))
-    original.reactions = [FakeReaction(me=True, emoji="🆗"), FakeReaction(me=False, emoji="x")]
-    bot_user = FakeAuthor(bot=True, user_id=999)
-    cog = SimpleNamespace(bot=SimpleNamespace(user=bot_user), on_message=fake_on_message)
-    view = RegenerateView(cog=cog, original_message=original)
-    denied_interaction = SimpleNamespace(
-        user=FakeAuthor(user_id=11), response=SimpleNamespace(send_message=fake_send_message)
-    )
-    assert await view.interaction_check(interaction=denied_interaction) is False
-    assert denied[0]["ephemeral"] is True
-
-    reply_message = _ReplyMessage()
-    allowed_interaction = SimpleNamespace(
-        user=FakeAuthor(user_id=10),
-        message=reply_message,
-        response=SimpleNamespace(defer=_async_none),
-    )
-    assert await view.interaction_check(interaction=allowed_interaction) is True
-    await view.regenerate.callback(allowed_interaction)
-    assert reply_message.deleted
-    assert original.removed_reactions == [("🆗", cog.bot.user)]
-    assert called == [original]
-
-
-async def _async_none() -> None:
-    """Async no-op callback used by fake interactions."""
 
 
 async def test_gen_reply_message_content_and_attachment_helpers(
@@ -631,9 +601,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert isinstance(message.replies[-1].content, str)
     assert message.replies[-1].content.startswith("<@1> caption")
 
-    async def fake_streaming(
-        responses: SimpleNamespace, message: FakeMessage, view: View | None = None
-    ) -> str:
+    async def fake_streaming(responses: SimpleNamespace, message: FakeMessage) -> str:
         """Records the message passed to streaming."""
         streamed.append(message)
         return "done"
@@ -671,24 +639,16 @@ async def test_gen_reply_on_message_dispatches_routes(
         """Records reaction state transitions."""
         calls.append(f"reaction:{emoji}")
 
-    async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, view: View | None = None
-    ) -> None:
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records image handler dispatch."""
         calls.append("_handle_image_reply")
 
-    async def fake_video_handler(
-        message: FakeMessage, user_prompt: str, view: View | None = None
-    ) -> None:
+    async def fake_video_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records video handler dispatch."""
         calls.append("_handle_video_generation")
 
     async def fake_message_handler(
-        message: FakeMessage,
-        system_prompt: str,
-        context_prompt: str,
-        history_limit: int,
-        view: View | None = None,
+        message: FakeMessage, system_prompt: str, context_prompt: str, history_limit: int
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
