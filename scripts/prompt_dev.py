@@ -166,16 +166,15 @@ def gen_reply_anthropic(user_prompt: str) -> None:
     Args:
         user_prompt: User message to send as the comparison prompt.
     """
-    model = ModelSettings(name="claude-haiku-4-5", effort="medium")
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     start = time.time()
     with client.messages.stream(
-        model=model.name,
+        model=SLOW_MODEL.name,
         max_tokens=16000,
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
-        tools=model.tools,
+        tools=SLOW_MODEL.tools,
     ) as responses:
         model_name = ""
         for response in responses:
