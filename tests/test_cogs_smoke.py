@@ -1097,13 +1097,8 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
     return TransferResult(sender_balance=50, receiver_balance=100)
 
 
-async def fake_adjust_balance(  # noqa: PLR0913 -- mirrors adjust_balance signature
-    user_id: int,
-    name: str,
-    delta: int,
-    allow_negative: bool = False,
-    avatar_url: str = "",
-    note: str | None = None,
+async def fake_adjust_balance(
+    user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
 ) -> BalanceAdjustmentResult:
     """Returns a successful fake manual adjustment result."""
     return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
@@ -1573,7 +1568,6 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     await cli.DiscordBot.on_message(bot, message=user_message)
     assert processed == [user_message]
     assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
-    assert rewards[0]["kind"] == cli.TransactionKind.MESSAGE_REWARD
     await cli.DiscordBot.on_message(bot, message=SimpleNamespace(author=bot.user))
     assert len(processed) == 1
     assert len(rewards) == 1

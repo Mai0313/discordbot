@@ -84,7 +84,6 @@ from discordbot.typings.economy import (
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
-    TransactionKind,
     LeaderboardEntry,
     LoanContractView,
     LoanProposalKind,
@@ -610,7 +609,7 @@ async def _upsert_user_metadata_in_session(
 
 
 def _build_credit_upsert(
-    user_id: int, name: str, amount: int, now: datetime, avatar_url: str = ""
+    user_id: int, name: str, amount: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT that credits ``amount`` points into ``user_wallet``.
 
@@ -620,7 +619,6 @@ def _build_credit_upsert(
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    _ = avatar_url
     effective_name = name or str(user_id)
     stmt = insert(UserWallet).values(
         user_id=user_id,
@@ -643,7 +641,7 @@ def _build_credit_upsert(
 
 
 def _build_signed_delta_upsert(
-    user_id: int, name: str, delta: int, now: datetime, avatar_url: str = ""
+    user_id: int, name: str, delta: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed ``delta`` with NO clamp on wallet balance.
 
@@ -655,7 +653,6 @@ def _build_signed_delta_upsert(
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    _ = avatar_url
     effective_name = name or str(user_id)
     initial_earned = max(delta, 0)
     initial_spent = max(-delta, 0)
@@ -719,15 +716,8 @@ async def _apply_daily_casino_delta_in_session(
     )
 
 
-async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- public facade keeps income metadata explicit
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    amount: int,
-    kind: TransactionKind,
-    note: str | None,
-    now: datetime,
+async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, amount: int, now: datetime
 ) -> CreditResult:
     """Credits income inside the caller's transaction.
 
@@ -736,14 +726,11 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- public facade k
     and chat reward callers are intentionally routed through one income facade.
     Caller must guarantee ``amount > 0``.
     """
-    _ = (kind, note)
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
     )
     result = await session.execute(
-        statement=_build_credit_upsert(
-            user_id=user_id, name=name, avatar_url=avatar_url, amount=amount, now=now
-        )
+        statement=_build_credit_upsert(user_id=user_id, name=name, amount=amount, now=now)
     )
     return CreditResult(
         new_balance=result.scalar_one(),
@@ -753,15 +740,8 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- public facade k
     )
 
 
-async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + kind
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    delta: int,
-    kind: TransactionKind,
-    now: datetime,
-    note: str | None = None,
+async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and delta state
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
     """Applies a clamped signed delta and returns the balance plus applied delta.
 
@@ -786,14 +766,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
             if delta < 0:
                 return 0, 0
             insert_result = await _try_insert_clamped_positive_delta_in_session(
-                session=session,
-                user_id=user_id,
-                name=name,
-                avatar_url=avatar_url,
-                delta=delta,
-                kind=kind,
-                now=now,
-                note=note,
+                session=session, user_id=user_id, name=name, delta=delta, now=now
             )
             if insert_result is not None:
                 await _upsert_user_metadata_in_session(
@@ -806,12 +779,9 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
             session=session,
             user_id=user_id,
             name=name,
-            avatar_url=avatar_url,
             current_balance=current_balance,
-            kind=kind,
             delta=delta,
             now=now,
-            note=note,
         )
         if update_result is not None:
             await _upsert_user_metadata_in_session(
@@ -822,18 +792,10 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
     raise RuntimeError(f"apply_clamped_delta retry budget exhausted for user_id={user_id}")
 
 
-async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mirrors the caller's audit identity
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    delta: int,
-    kind: TransactionKind,
-    now: datetime,
-    note: str | None = None,
+async def _try_insert_clamped_positive_delta_in_session(
+    session: AsyncSession, user_id: int, name: str, delta: int, now: datetime
 ) -> tuple[int, int] | None:
     """Attempts to create a missing account for a positive clamped delta."""
-    _ = (avatar_url, kind, note)
     insert_stmt = (
         insert(UserWallet)
         .values(
@@ -855,18 +817,9 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
 
 
 async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional write needs observed row state
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    current_balance: int,
-    delta: int,
-    kind: TransactionKind,
-    now: datetime,
-    note: str | None = None,
+    session: AsyncSession, user_id: int, name: str, current_balance: int, delta: int, now: datetime
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
-    _ = (avatar_url, kind, note)
     if delta < 0 and current_balance <= 0:
         new_balance = current_balance
     elif delta < 0:
@@ -893,28 +846,18 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     return new_balance, applied
 
 
-async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper needs ledger identity + delta + kind
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    delta: int,
-    kind: TransactionKind,
-    now: datetime,
-    note: str | None = None,
+async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and signed delta
+    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
     """Applies a signed delta without clamping.
 
     Used for dealer-side mirrors (``HOUSE_SETTLE``), which may run cumulative
     negative P&L. Player-side losses use the clamped path instead.
     """
-    _ = (kind, note)
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
     )
-    stmt = _build_signed_delta_upsert(
-        user_id=user_id, name=name, avatar_url=avatar_url, delta=delta, now=now
-    )
+    stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
     result = await session.execute(statement=stmt)
     return result.scalar_one()
 
@@ -930,8 +873,6 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             name=name,
             avatar_url=avatar_url,
             amount=delta,
-            kind=TransactionKind.CASINO_PAYOUT,
-            note=None,
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
@@ -945,7 +886,6 @@ async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement 
             name=name,
             avatar_url=avatar_url,
             delta=delta,
-            kind=TransactionKind.CASINO_BET,
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
@@ -974,8 +914,6 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             name=name,
             avatar_url=avatar_url,
             amount=delta,
-            kind=TransactionKind.CASINO_PAYOUT,
-            note=None,
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
@@ -989,7 +927,6 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
             name=name,
             avatar_url=avatar_url,
             delta=delta,
-            kind=TransactionKind.CASINO_BET,
             now=now,
         )
         await _apply_daily_casino_delta_in_session(
@@ -1002,13 +939,8 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
     return read_result.scalar_one_or_none() or 0, 0
 
 
-async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors one income event
-    user_id: int,
-    name: str,
-    amount: int,
-    kind: TransactionKind,
-    note: str | None = None,
-    avatar_url: str = "",
+async def credit_with_repayment(
+    user_id: int, name: str, amount: int, avatar_url: str = ""
 ) -> CreditResult:
     """Credits ``amount`` to the user through the shared income path.
 
@@ -1021,8 +953,6 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
         name: Last-seen Discord username to store on the account.
         amount: Gross income amount; must be positive for the repayment
             path to run.
-        kind: Source category retained for call-site clarity.
-        note: Optional annotation retained for maintenance call-site clarity.
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
@@ -1045,21 +975,14 @@ async def credit_with_repayment(  # noqa: PLR0913 -- public DB facade mirrors on
             name=name,
             avatar_url=avatar_url,
             amount=amount,
-            kind=kind,
-            note=note,
             now=now,
         )
         await session.commit()
         return result
 
 
-async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, delta, clamp policy, and note
-    user_id: int,
-    name: str,
-    delta: int,
-    allow_negative: bool = False,
-    avatar_url: str = "",
-    note: str | None = None,
+async def adjust_balance(
+    user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
 ) -> BalanceAdjustmentResult:
     """Applies an explicit manual balance adjustment.
 
@@ -1073,7 +996,6 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
         delta: Signed amount to apply.
         allow_negative: Whether the resulting balance may go below zero.
         avatar_url: Last-seen Discord avatar URL to store when available.
-        note: Optional annotation retained for command call-site clarity.
 
     Returns:
         The post-adjustment balance and the applied delta after any clamp.
@@ -1094,9 +1016,7 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
                 name=name,
                 avatar_url=avatar_url,
                 delta=delta,
-                kind=TransactionKind.MANUAL_ADJUSTMENT,
                 now=now,
-                note=note,
             )
             applied_delta = delta
         else:
@@ -1106,9 +1026,7 @@ async def adjust_balance(  # noqa: PLR0913 -- admin adjustment needs identity, d
                 name=name,
                 avatar_url=avatar_url,
                 delta=delta,
-                kind=TransactionKind.MANUAL_ADJUSTMENT,
                 now=now,
-                note=note,
             )
         await session.commit()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
@@ -1175,7 +1093,6 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
                 name=dealer_name,
                 avatar_url=dealer_avatar_url,
                 delta=dealer_delta_to_apply,
-                kind=TransactionKind.HOUSE_SETTLE,
                 now=now,
             )
         await session.commit()
@@ -1671,9 +1588,7 @@ async def _insert_first_checkin_in_session(
     if (insert_result.rowcount or 0) == 0:
         return None
     credit_result = await session.execute(
-        statement=_build_credit_upsert(
-            user_id=user_id, name=name, avatar_url=avatar_url, amount=reward, now=now
-        )
+        statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
     )
     balance_after = credit_result.scalar_one()
     return reward, balance_after, new_streak, False
@@ -1737,9 +1652,7 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
         return None
     streak_after, vip_after = updated_row
     credit_result = await session.execute(
-        statement=_build_credit_upsert(
-            user_id=user_id, name=name, avatar_url=avatar_url, amount=reward, now=now
-        )
+        statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
     )
     balance_after = credit_result.scalar_one()
     return reward, balance_after, streak_after, bool(vip_after)
@@ -2196,11 +2109,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         )
 
         credit_stmt = _build_credit_upsert(
-            user_id=receiver_id,
-            name=receiver_name,
-            avatar_url=receiver_avatar_url,
-            amount=amount,
-            now=now,
+            user_id=receiver_id, name=receiver_name, amount=amount, now=now
         )
         await _upsert_user_metadata_in_session(
             session=session,
@@ -2545,7 +2454,6 @@ async def _refund_proposal_escrow_in_session(
         statement=_build_credit_upsert(
             user_id=proposal.lender_id,
             name=proposal.lender_name,
-            avatar_url=proposal.lender_avatar_url,
             amount=proposal.escrow_amount,
             now=now,
         )
@@ -2777,7 +2685,6 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             statement=_build_credit_upsert(
                 user_id=proposal.borrower_id,
                 name=proposal.borrower_name,
-                avatar_url=proposal.borrower_avatar_url,
                 amount=proposal.amount,
                 now=now,
             )
@@ -2876,7 +2783,6 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
             name=borrower_name or contract.borrower_name,
             avatar_url=borrower_avatar_url or contract.borrower_avatar_url,
             delta=-requested,
-            kind=TransactionKind.REPAY,
             now=now,
         )
         paid = -applied_delta
@@ -2905,11 +2811,7 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
             )
             credit_result = await session.execute(
                 statement=_build_credit_upsert(
-                    user_id=contract.lender_id,
-                    name=contract.lender_name,
-                    avatar_url=contract.lender_avatar_url,
-                    amount=paid,
-                    now=now,
+                    user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
                 )
             )
             lender_balance = credit_result.scalar_one()

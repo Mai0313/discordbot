@@ -36,7 +36,6 @@ from discordbot.cogs._economy.database import (
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
-    TransactionKind,
     LeaderboardEntry,
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
@@ -306,13 +305,6 @@ async def test_adjust_balance_positive_updates_total_earned() -> None:
     assert account == AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
 
 
-async def test_adjust_balance_accepts_note_without_changing_totals() -> None:
-    """Manual adjustment notes are accepted by the public facade."""
-    await adjust_balance(user_id=42, name="alice", delta=100, note="refund_tax by 1")
-    account = await get_account(user_id=42)
-    assert account == AccountSnapshot(name="alice", balance=100, total_earned=100, total_spent=0)
-
-
 async def test_adjust_balance_clamps_at_zero() -> None:
     """Negative manual adjustment clamps at zero by default."""
     await _add_balance(user_id=42, name="alice", amount=10)
@@ -406,9 +398,7 @@ async def test_list_admins_returns_only_admin_accounts() -> None:
 async def test_write_timestamps_use_taiwan_local_time() -> None:
     """Account timestamps are persisted as Taiwan-local wall time."""
     before = datetime.now(tz=TAIWAN_TIMEZONE).replace(tzinfo=None)
-    await credit_with_repayment(
-        user_id=42, name="alice", amount=10, kind=TransactionKind.CHAT_REWARD
-    )
+    await credit_with_repayment(user_id=42, name="alice", amount=10)
     after = datetime.now(tz=TAIWAN_TIMEZONE).replace(tzinfo=None)
 
     async with open_session() as session:

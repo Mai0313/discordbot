@@ -70,7 +70,7 @@ _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
 
 
-def _vip_perk_lines(user: nextcord.User | Member, checkin_streak: int = 1) -> str:
+def _vip_perk_lines(checkin_streak: int = 1) -> str:
     """Formats VIP perks with the base number and the boosted number."""
     base_checkin = checkin_reward(streak=checkin_streak, is_vip=False)
     vip_checkin = checkin_reward(streak=checkin_streak, is_vip=True)
@@ -125,11 +125,6 @@ async def _send_loan_request_followup(interaction: Interaction, embed: Embed, vi
 async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a personal economy embed visible only to the caller."""
     await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-def _admin_note(action: str, actor: nextcord.User | Member) -> str:
-    """Builds a compact audit note for admin balance adjustments."""
-    return f"{action} by {actor.name or actor.id} ({actor.id})"
 
 
 def _rate_text(monthly_rate_bps: int) -> str:
@@ -586,7 +581,6 @@ class EconomyCogs(commands.Cog):
         await self._run_admin_adjustment(
             interaction=interaction,
             member=member,
-            amount=amount,
             action="refund_tax",
             title="退稅完成",
             delta=amount,
@@ -630,20 +624,13 @@ class EconomyCogs(commands.Cog):
         await self._run_admin_adjustment(
             interaction=interaction,
             member=member,
-            amount=amount,
             action="collect_tax",
             title="收稅完成",
             delta=-amount,
         )
 
-    async def _run_admin_adjustment(  # noqa: PLR0913 -- shared handler needs command metadata and target delta
-        self,
-        interaction: Interaction,
-        member: Member,
-        amount: int,
-        action: str,
-        title: str,
-        delta: int,
+    async def _run_admin_adjustment(
+        self, interaction: Interaction, member: Member, action: str, title: str, delta: int
     ) -> None:
         """Runs a gated admin balance adjustment and publishes successful results."""
         if interaction.user is None:
@@ -680,7 +667,6 @@ class EconomyCogs(commands.Cog):
             delta=delta,
             allow_negative=False,
             avatar_url=member_avatar_url,
-            note=_admin_note(action=action, actor=actor),
         )
         embed = Embed(
             title=title,
@@ -746,7 +732,7 @@ class EconomyCogs(commands.Cog):
         embed.add_field(name="淨資產", value=amount_code(amount=portfolio.net_worth), inline=False)
 
         if is_vip:
-            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
+            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
 
         vip_badge = " · 👑 VIP" if is_vip else ""
         embed.set_footer(text=f"帳號 {age_days} 天{vip_badge}")
@@ -1750,7 +1736,7 @@ class EconomyCogs(commands.Cog):
                 color=_VIP_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
+            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
@@ -1767,7 +1753,7 @@ class EconomyCogs(commands.Cog):
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-            embed.add_field(name="👑 VIP權益", value=_vip_perk_lines(user=user), inline=False)
+            embed.add_field(name="👑 VIP權益", value=_vip_perk_lines(), inline=False)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
 
@@ -1781,7 +1767,7 @@ class EconomyCogs(commands.Cog):
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
         _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
-        embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(user=user), inline=False)
+        embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
         embed.add_field(
             name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
         )

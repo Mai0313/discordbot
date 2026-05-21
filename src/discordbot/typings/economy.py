@@ -22,42 +22,6 @@ MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 CHECKIN_STREAK_CYCLE: Final[int] = 7
 
 
-class TransactionKind(StrEnum):
-    """Labels the source of a balance credit or debit.
-
-    The economy DB no longer persists a per-mutation transaction log, but these
-    labels keep reward call sites explicit and leave room for future event
-    routing without changing the public database facade.
-
-    Attributes:
-        MESSAGE_REWARD: Base reward for every non-bot user message.
-        CHAT_REWARD: Streaming AI reply token reward.
-        CHECKIN_REWARD: Daily check-in payout, including streak bonus.
-        CASINO_BET: Wager debit, including deferred settlement losses.
-        CASINO_PAYOUT: Player-side payout from a finished casino round.
-        HOUSE_SETTLE: Dealer-side mirror of a player settlement.
-        BORROW: Loan disbursement from ``borrow``.
-        REPAY: Manual repayment via ``repay``.
-        TRANSFER_OUT: Sender side of ``/give``.
-        TRANSFER_IN: Receiver side of ``/give``.
-        VIP_PURCHASE: Debit for buying the permanent VIP perk.
-        MANUAL_ADJUSTMENT: Admin-side balance adjustment from maintenance tooling.
-    """
-
-    MESSAGE_REWARD = "message_reward"
-    CHAT_REWARD = "chat_reward"
-    CHECKIN_REWARD = "checkin_reward"
-    CASINO_BET = "casino_bet"
-    CASINO_PAYOUT = "casino_payout"
-    HOUSE_SETTLE = "house_settle"
-    BORROW = "borrow"
-    REPAY = "repay"
-    TRANSFER_OUT = "transfer_out"
-    TRANSFER_IN = "transfer_in"
-    VIP_PURCHASE = "vip_purchase"
-    MANUAL_ADJUSTMENT = "manual_adjustment"
-
-
 class LoanLenderType(StrEnum):
     """Kinds of lender backing a long-term loan contract."""
 
@@ -418,7 +382,6 @@ __all__ = [
     "LoanProposalView",
     "LossLeaderboardEntry",
     "PortfolioView",
-    "TransactionKind",
     "TransferResult",
     "VipPurchaseResult",
 ]

@@ -15,7 +15,7 @@ from nextcord.ext import tasks, commands
 from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
-from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, TransactionKind
+from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
 from discordbot.cogs._economy.database import credit_with_repayment
 
 
@@ -126,7 +126,6 @@ class DiscordBot(commands.Bot):
                 name=message.author.name,
                 avatar_url=avatar_url,
                 amount=BASE_MESSAGE_REWARD_AMOUNT,
-                kind=TransactionKind.MESSAGE_REWARD,
             )
         except Exception:
             logfire.warn("Failed to award base message points", _exc_info=True)

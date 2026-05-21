@@ -7,7 +7,6 @@ import nextcord
 
 from discordbot import cli
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.typings.economy import TransactionKind
 
 if TYPE_CHECKING:
     import pytest
@@ -108,11 +107,11 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
     captured_avatar_url = ""
 
     async def fake_credit_with_repayment(
-        user_id: int, name: str, avatar_url: str, amount: int, kind: TransactionKind
+        user_id: int, name: str, avatar_url: str, amount: int
     ) -> SimpleNamespace:
         """Records the avatar URL passed to the DB facade."""
         nonlocal captured_avatar_url
-        del user_id, name, amount, kind
+        del user_id, name, amount
         captured_avatar_url = avatar_url
         return SimpleNamespace(new_balance=0)
 

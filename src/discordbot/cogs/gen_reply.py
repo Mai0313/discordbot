@@ -27,7 +27,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
-from discordbot.typings.economy import TransactionKind
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._gen_reply.views import RegenerateView
 from discordbot.cogs._economy.database import credit_with_repayment
@@ -548,11 +547,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         try:
             result = await credit_with_repayment(
-                user_id=user_id,
-                name=name,
-                avatar_url=avatar_url,
-                amount=amount,
-                kind=TransactionKind.CHAT_REWARD,
+                user_id=user_id, name=name, avatar_url=avatar_url, amount=amount
             )
             return result.new_balance
         except Exception:

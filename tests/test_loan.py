@@ -4,7 +4,6 @@ import asyncio
 
 import pytest
 
-from discordbot.typings.economy import TransactionKind
 from discordbot.cogs._economy.database import (
     transfer,
     get_account,
@@ -51,9 +50,7 @@ def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> N
 
 async def test_credit_with_repayment_full_credit() -> None:
     """Income credits the full amount and leaves repayment fields at zero."""
-    result = await credit_with_repayment(
-        user_id=1, name="alice", amount=100, kind=TransactionKind.CHAT_REWARD
-    )
+    result = await credit_with_repayment(user_id=1, name="alice", amount=100)
 
     assert result.new_balance == 100
     assert result.credited_amount == 100
@@ -65,9 +62,7 @@ async def test_credit_with_repayment_zero_amount_is_noop() -> None:
     """Non-positive reward calls do not create phantom income."""
     await _add_balance(user_id=1, name="alice", amount=50)
 
-    result = await credit_with_repayment(
-        user_id=1, name="alice", amount=0, kind=TransactionKind.CHAT_REWARD
-    )
+    result = await credit_with_repayment(user_id=1, name="alice", amount=0)
 
     assert result.new_balance == 50
     assert result.credited_amount == 0
@@ -77,9 +72,7 @@ async def test_credit_with_repayment_zero_amount_is_noop() -> None:
 
 async def test_credit_with_repayment_first_sight_creates_row() -> None:
     """A first reward creates the user account row."""
-    result = await credit_with_repayment(
-        user_id=1, name="alice", amount=200, kind=TransactionKind.MESSAGE_REWARD
-    )
+    result = await credit_with_repayment(user_id=1, name="alice", amount=200)
 
     assert result.credited_amount == 200
     assert await get_balance(user_id=1) == 200
@@ -88,12 +81,7 @@ async def test_credit_with_repayment_first_sight_creates_row() -> None:
 async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
     """Concurrent reward writes add up instead of losing one update."""
     await asyncio.gather(
-        *(
-            credit_with_repayment(
-                user_id=1, name="alice", amount=10, kind=TransactionKind.CHAT_REWARD
-            )
-            for _ in range(20)
-        )
+        *(credit_with_repayment(user_id=1, name="alice", amount=10) for _ in range(20))
     )
 
     assert await get_balance(user_id=1) == 200
@@ -111,9 +99,7 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
     )
     assert accepted is not None
 
-    result = await credit_with_repayment(
-        user_id=1, name="alice", amount=100, kind=TransactionKind.CHAT_REWARD
-    )
+    result = await credit_with_repayment(user_id=1, name="alice", amount=100)
     contracts = await list_loan_contracts(user_id=1)
 
     assert result.new_balance == 600
