@@ -678,7 +678,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
     assert len(interaction.followup.sent) == 22
-    assert len(scheduled) == 8
+    assert len(scheduled) == 9
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert "view" not in interaction.followup.sent[3]
@@ -693,6 +693,9 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert isinstance(interaction.followup.sent[7]["view"], economy.CreditLoanDecisionView)
     central_bank_payload = interaction.followup.sent[11]
     assert isinstance(central_bank_payload["view"], economy.CentralBankLoanDecisionView)
+    stock_issue_payload = interaction.followup.sent[15]
+    assert stock_issue_payload.get("ephemeral") is not True
+    assert stock_issue_payload["embed"].title == "📈 股票發行完成"
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(

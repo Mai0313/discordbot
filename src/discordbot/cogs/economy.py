@@ -1579,7 +1579,7 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Issues a stock profile for a qualified player."""
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         if interaction.user is None:
             return
         user = interaction.user
@@ -1612,7 +1612,7 @@ class EconomyCogs(commands.Cog):
             color=_STOCK_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-        await _send_private_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @stock.subcommand(
         name="buy",
