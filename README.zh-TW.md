@@ -27,6 +27,7 @@
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片，檔案太大時會自動 retry 低畫質。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息與 AI 回覆獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
+- **模擬股市**：`/stock` 開啟公開 market list，並提供私密 stock detail view，可交易 BCAT、查看部位、新聞與 7D chart。
 - **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby，帶 AI dealer 對話、公開結果 embed 與自動清理。
 - **MapleStory Artale 資料庫**：`/maplestory` 子命令可查詢怪物、裝備、卷軸、NPC、任務、地圖、掉落來源與資料庫統計。
 - **本地化指令**：slash command metadata 與 `/help` 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。
@@ -46,6 +47,7 @@
 | `/credit status\|borrow\|call\|repay`                            | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。       |
 | `/central_bank status\|borrow\|call\|repay`                      | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。 |
 | `/portfolio [member]`                                            | 查看錢包、債務與預估淨資產。                                         |
+| `/stock`                                                         | 開啟模擬股市；stock detail、部位、操作與新聞都會私密顯示。           |
 | `/give <member> <amount>`                                        | 轉帳虛擬歡樂豆給其他成員。                                           |
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手動餘額調整。                                            |
 | `/games blackjack <bet>`                                         | 開一個多人 Blackjack lobby。                                         |
@@ -113,6 +115,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 - `messages.db`：human messages 與 bot 自己的回覆，用於聊天歷史與摘要。
 - `economy.db`：`user_wallet` 存每位使用者的可用餘額與 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成員、簽到與 leaderboard flags，另存長期信貸申請與契約，以及賭場每日統計。
+- `stock.db`：模擬 stock profile、price tick、position、trade operation、ordered trade leg 與 deterministic stock news。
 - `global_state.db`：bot-wide shared state，例如 jackpot pool。
 - `game_cleanup.db`：公開 game 或 economy response 的 Discord guild/channel 名稱、user name、channel ID 與 message ID，用於 bot 重啟後的清理。
 - `model_prices.json`：快取的 LiteLLM pricing metadata，用於 AI 回覆費用估算。

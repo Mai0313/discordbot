@@ -68,6 +68,10 @@ _HELP_CONTENT = {
             "Consecutive days within a 7-day cycle add a streak bonus; the reply is "
             "ephemeral so only you see it."
         ),
+        "stocks": (
+            "**Simulated Stock Market** — `/stock`\n"
+            "Open the public market list for BCAT, then select a stock for an ephemeral detail view with balance, long/short positions, recent trades, 7D chart, news, and buy/short operations."
+        ),
         "vip": (
             "**VIP** — `/vip`\n"
             f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}. VIP gives 2x "
@@ -164,6 +168,10 @@ _HELP_CONTENT = {
             f"每天可以領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME} (Asia/Taipei), "
             "連續七天為一個 cycle, 每天加成. 訊息是 ephemeral 只有自己看得到"
         ),
+        "stocks": (
+            "**模擬股市** — `/stock`（`/股票`）\n"
+            "開啟公開 market list，目前先支援 BCAT；選股後會進入 ephemeral detail view，顯示餘額、long/short 部位、近期交易、7D chart、新聞，以及買入/做空操作。"
+        ),
         "vip": (
             "**VIP** — `/vip`\n"
             f"花 {VIP_PURCHASE_COST:,} {CURRENCY_NAME}購買永久 VIP\n"
@@ -258,6 +266,10 @@ _HELP_CONTENT = {
             f"毎日{BASE_CHECKIN_REWARD_AMOUNT:,}{CURRENCY_NAME}を受け取れます (Asia/Taipei)。"
             "7日サイクルで連続日数ボーナスが付き、返信は ephemeral で本人のみ閲覧可能。"
         ),
+        "stocks": (
+            "**シミュレーション株式市場** — `/stock`\n"
+            "公開 market list から BCAT を選択し、ephemeral detail view で balance、long/short positions、recent trades、7D chart、news、buy/short operations を確認できます。"
+        ),
         "vip": (
             "**VIP** — `/vip`\n"
             f"{VIP_PURCHASE_COST:,}{CURRENCY_NAME}で永久 VIP を購入。"
@@ -311,6 +323,7 @@ _SECTIONS = (
     "maplestory",
     "points",
     "checkin",
+    "stocks",
     "vip",
     "games",
     "ping",

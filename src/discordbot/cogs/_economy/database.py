@@ -82,6 +82,7 @@ from discordbot.typings.economy import (
     PortfolioView,
     LoanLenderType,
     TransferResult,
+    WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
     LeaderboardEntry,
@@ -99,6 +100,7 @@ from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
+    OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
 
@@ -1030,6 +1032,92 @@ async def adjust_balance(
             )
         await session.commit()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
+
+
+async def apply_ordered_wallet_deltas(
+    user_id: int, name: str, deltas: Sequence[WalletDeltaLeg], avatar_url: str = ""
+) -> OrderedWalletDeltaResult | None:
+    """Applies ordered full-debit wallet deltas without netting.
+
+    This helper is for non-casino domains that need gross wallet accounting but
+    must reject insufficient funds instead of clamping a debit. Positive legs
+    increment ``total_earned`` and negative legs increment ``total_spent`` in
+    the order supplied by the caller. The transaction rolls back if any debit
+    cannot be applied in full.
+
+    Args:
+        user_id: Discord user ID whose wallet should be updated.
+        name: Last-seen Discord username to store on the wallet row.
+        deltas: Ordered signed wallet legs.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        The post-leg balance and applied deltas, or ``None`` when a full debit
+        cannot be covered.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    applied: list[int] = []
+    async with open_session() as session:
+        await _upsert_user_metadata_in_session(
+            session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+        )
+        balance = await _apply_ordered_wallet_deltas_in_session(
+            session=session, user_id=user_id, name=name, deltas=deltas, now=now, applied=applied
+        )
+        if balance is None:
+            await session.rollback()
+            return None
+        await session.commit()
+        return OrderedWalletDeltaResult(new_balance=balance, applied_deltas=tuple(applied))
+
+
+async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session helper carries identity and output accumulator
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    deltas: Sequence[WalletDeltaLeg],
+    now: datetime,
+    applied: list[int],
+) -> int | None:
+    """Applies ordered wallet legs inside the caller's economy transaction."""
+    balance_result = await session.execute(
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
+    )
+    balance = balance_result.scalar_one_or_none() or 0
+    effective_name = name or str(user_id)
+    for leg in deltas:
+        delta = leg.delta
+        if delta == 0:
+            applied.append(0)
+            continue
+        if delta > 0:
+            credit_result = await session.execute(
+                statement=_build_credit_upsert(
+                    user_id=user_id, name=effective_name, amount=delta, now=now
+                )
+            )
+            balance = credit_result.scalar_one()
+            applied.append(delta)
+            continue
+        debit = -delta
+        debit_result = await session.execute(
+            statement=update(UserWallet)
+            .where(UserWallet.user_id == user_id, UserWallet.balance >= debit)
+            .values(
+                balance=UserWallet.balance - debit,
+                total_spent=UserWallet.total_spent + debit,
+                name=effective_name,
+                updated_at=now,
+            )
+            .returning(UserWallet.balance)
+        )
+        new_balance = debit_result.scalar_one_or_none()
+        if new_balance is None:
+            return None
+        balance = new_balance
+        applied.append(delta)
+    return balance
 
 
 async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys

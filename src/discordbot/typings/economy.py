@@ -142,6 +142,24 @@ class BalanceAdjustmentResult(BaseModel):
     applied_delta: int
 
 
+class WalletDeltaLeg(BaseModel):
+    """One ordered wallet delta requested by another domain service."""
+
+    model_config = ConfigDict(frozen=True)
+
+    delta: int
+    reason: str = ""
+
+
+class OrderedWalletDeltaResult(BaseModel):
+    """Outcome of applying ordered wallet deltas without netting them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    new_balance: int
+    applied_deltas: tuple[int, ...]
+
+
 class JackpotSettlementRequest(BaseModel):
     """One player-side settlement against a shared jackpot pool.
 
@@ -381,7 +399,9 @@ __all__ = [
     "LoanProposalStatus",
     "LoanProposalView",
     "LossLeaderboardEntry",
+    "OrderedWalletDeltaResult",
     "PortfolioView",
     "TransferResult",
     "VipPurchaseResult",
+    "WalletDeltaLeg",
 ]
