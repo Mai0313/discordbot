@@ -139,10 +139,15 @@ class FakeInteraction:
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edits: list[OriginalEditPayload] = []
+        self.deleted_original = False
 
     async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
         """Records an edit to the deferred original response."""
         self.edits.append(kwargs)
+
+    async def delete_original_message(self) -> None:
+        """Records deletion of the deferred original response."""
+        self.deleted_original = True
 
 
 class FakeUser:
@@ -401,7 +406,7 @@ async def test_video_deliver_and_download_branches(
     success_content = interaction.followup.sent[0]["content"]
     assert isinstance(success_content, str)
     assert success_content.startswith("✅ 下載成功")
-    assert interaction.edits[-1]["content"] == "✅"
+    assert interaction.deleted_original is True
 
     downloader = DownloaderStub(
         results=[DownloadResultStub(filename=big), DownloadResultStub(filename=low)]
@@ -413,6 +418,7 @@ async def test_video_deliver_and_download_branches(
     )
     assert [call["quality"] for call in downloader.calls] == ["best", "low"]
     assert retry_interaction.followup.sent[-1]["file"] is not None
+    assert retry_interaction.deleted_original is True
 
     fail_interaction = FakeInteraction()
     monkeypatch.setattr(

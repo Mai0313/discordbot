@@ -110,17 +110,16 @@ class VideoCogs(commands.Cog):
     async def _deliver(
         self, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
     ) -> None:
-        """Sends the downloaded file as a fresh followup and collapses the placeholder.
+        """Sends the downloaded file as a fresh followup and deletes the placeholder.
 
         ``interaction.edit_original_message(content=…, file=…)`` drops
         ``content`` when a multipart file payload is attached, so we send the
-        file as a separate followup and then collapse the original placeholder
-        to a checkmark.
+        file as a separate followup and then remove the original placeholder.
         """
         body = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
         await interaction.followup.send(content=body, file=File(fp=file_path, filename=file_name))
         with contextlib.suppress(Exception):
-            await interaction.edit_original_message(content="✅")
+            await interaction.delete_original_message()
 
 
 # 註冊 Cog
