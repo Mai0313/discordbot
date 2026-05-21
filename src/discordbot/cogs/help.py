@@ -6,7 +6,6 @@ from nextcord.ext import commands
 
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
-    STOCK_ISSUE_MIN_BALANCE,
     BASE_CHECKIN_REWARD_AMOUNT,
     BASE_MESSAGE_REWARD_AMOUNT,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -57,9 +56,9 @@ _HELP_CONTENT = {
             "`/admin` run admin-only tax adjustments\n"
             f"`/credit` handles personal credit status, borrow requests with approval/rejection/cancel buttons, repayment, and collection; requests auto-reject after {LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds\n"
             f"`/central_bank` handles central-bank status, borrow requests with approval/rejection/cancel buttons, repayment, and collection; requests auto-reject after {LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds.\n"
-            f"`/stock` issue/buy/dividend/info player-issued shares; issuing requires balance above {STOCK_ISSUE_MIN_BALANCE:,} · `/portfolio` shows cash, debt, holdings, and net worth.\n"
+            "`/portfolio` shows cash, debt, and net worth.\n"
             "`/balance`, `/credit status`, `/central_bank status`, `/portfolio`, and `/vip` replies are private where personal data is involved. "
-            "`/give`, loan requests and settlements, stock market events, successful `/admin` tax adjustments, `/leaderboard`, "
+            "`/give`, loan requests and settlements, successful `/admin` tax adjustments, `/leaderboard`, "
             "`/loss_leaderboard`, and `/house` stay public and "
             "clean themselves up after 3 minutes."
         ),
@@ -150,14 +149,14 @@ _HELP_CONTENT = {
             f"**{CURRENCY_NAME}**\n"
             f"每則訊息會獲得 {BASE_MESSAGE_REWARD_AMOUNT:,} {CURRENCY_NAME}, "
             f"AI chat 回覆另外追加 token bonus, {CURRENCY_NAME}跨 server 共用\n"
-            "`/balance` 查餘額、債務、股票估值與淨資產 · `/leaderboard` 看全域前 10 名 · "
+            "`/balance` 查餘額、債務與淨資產 · `/leaderboard` 看全域前 10 名 · "
             "`/loss_leaderboard` 看今日輸局累計前 10 名\n"
             "`/give` 轉帳 · `/house` 看 Blackjack 莊家累積 P&L · `/admin` 管理員退稅/收稅\n"
             f"`/credit` 處理個人信貸狀態、借款申請、按鈕批准或拒絕、取消、還款與催收；申請 {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕\n"
             f"`/central_bank` 處理央行狀態、借款申請、按鈕批准或拒絕、取消、還款與催收；申請 {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕\n"
-            f"`/stock` 發行、購買、配息、查詢玩家股票；發行需要餘額大於 {STOCK_ISSUE_MIN_BALANCE:,} · `/portfolio` 查現金、債務、持股與淨資產\n"
+            "`/portfolio` 查現金、債務與淨資產\n"
             "`/balance`、`/credit status`、`/central_bank status`、`/portfolio`、`/vip` 涉及個人資料時會私密回覆\n"
-            "`/give`、信貸與央行借款的申請/還款/催收、股票市場事件、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
+            "`/give`、信貸與央行借款的申請/還款/催收、`/admin` 成功結果、`/leaderboard`、`/loss_leaderboard`、"
             "`/house` 維持公開, 3 分鐘後自動清掉"
         ),
         "checkin": (
@@ -249,9 +248,9 @@ _HELP_CONTENT = {
             "`/admin` admin-only tax adjustments\n"
             f"`/credit` personal credit status、borrow request buttons、repayment、collection。requests は {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後に auto-reject。\n"
             f"`/central_bank` central-bank status、borrow request buttons、repayment、collection、capacity。requests は {LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後に auto-reject。\n"
-            f"`/stock` player shares issue/buy/dividend/info。issue には balance {STOCK_ISSUE_MIN_BALANCE:,} 超が必要 · `/portfolio` cash、debt、holding、net worth。\n"
+            "`/portfolio` cash、debt、net worth。\n"
             "`/balance`、`/credit status`、`/central_bank status`、`/portfolio`、`/vip` は個人情報を含む場合 private reply です。"
-            "`/give`、loan requests and settlements、stock market events、successful `/admin` tax adjustments、`/leaderboard`、"
+            "`/give`、loan requests and settlements、successful `/admin` tax adjustments、`/leaderboard`、"
             "`/loss_leaderboard`、`/house` は公開のまま3分後に自動削除されます。"
         ),
         "checkin": (

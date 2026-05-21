@@ -22,7 +22,6 @@ from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
     PortfolioView,
-    DividendResult,
     LoanLenderType,
     AccountSnapshot,
     JackpotSnapshot,
@@ -30,12 +29,10 @@ from discordbot.typings.economy import (
     LoanContractView,
     LoanProposalKind,
     LoanProposalView,
-    StockProfileView,
     CentralBankStatus,
     LoanPaymentResult,
     LoanContractStatus,
     LoanProposalStatus,
-    StockPurchaseResult,
     LossLeaderboardEntry,
     LoanProposalAcceptResult,
 )
@@ -624,10 +621,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
-    monkeypatch.setattr(economy, "issue_stock", fake_issue_stock)
-    monkeypatch.setattr(economy, "buy_stock", fake_buy_stock)
-    monkeypatch.setattr(economy, "pay_stock_dividend", fake_pay_stock_dividend)
-    monkeypatch.setattr(economy, "get_stock_profile", fake_get_stock_profile)
     monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
@@ -668,17 +661,11 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
-    await EconomyCogs.stock_issue.callback(cog, interaction, shares=100, price=10)
-    await EconomyCogs.stock_buy.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), shares=5
-    )
-    await EconomyCogs.stock_dividend.callback(cog, interaction, amount=50)
-    await EconomyCogs.stock_info.callback(cog, interaction, member=FakeUser(user_id=2, name="bob"))
     await EconomyCogs.portfolio.callback(cog, interaction, member=None)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 22
-    assert len(scheduled) == 14
+    assert len(interaction.followup.sent) == 18
+    assert len(scheduled) == 10
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert "view" not in interaction.followup.sent[3]
@@ -692,9 +679,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[12].get("ephemeral") is not True
     assert interaction.followup.sent[13].get("ephemeral") is not True
     assert interaction.followup.sent[14].get("ephemeral") is True
-    assert interaction.followup.sent[16].get("ephemeral") is not True
-    assert interaction.followup.sent[17].get("ephemeral") is not True
-    assert interaction.followup.sent[18].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     borrow_embed = interaction.followup.sent[7]["embed"]
     assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
@@ -705,9 +689,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     central_bank_view = central_bank_payload["view"]
     assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
     assert central_bank_view.message is not None
-    stock_issue_payload = interaction.followup.sent[15]
-    assert stock_issue_payload.get("ephemeral") is not True
-    assert stock_issue_payload["embed"].title == "📈 股票發行完成"
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
@@ -1053,10 +1034,9 @@ async def fake_get_portfolio(user_id: int) -> PortfolioView:
         user_id=user_id,
         name="alice",
         balance=150,
-        stock_value=20,
         debt_principal=30,
         debt_interest=5,
-        net_worth=135,
+        net_worth=115,
     )
 
 
@@ -1242,42 +1222,6 @@ async def fake_get_central_bank_status(
     """Returns fake central-bank capacity."""
     return CentralBankStatus(
         total_positive_user_balance=1_000, outstanding_principal=100, available_credit=900
-    )
-
-
-async def fake_issue_stock(**_kwargs: Any) -> StockProfileView:  # noqa: ANN401 -- command facade double
-    """Returns a fake stock profile."""
-    return StockProfileView(
-        issuer_id=1,
-        issuer_name="alice",
-        total_shares=100,
-        treasury_shares=100,
-        issue_price=10,
-        sold_shares=0,
-    )
-
-
-async def fake_buy_stock(**_kwargs: Any) -> StockPurchaseResult:  # noqa: ANN401 -- command facade double
-    """Returns a fake stock purchase result."""
-    return StockPurchaseResult(
-        buyer_balance=100, issuer_balance=200, shares_bought=5, total_cost=50, treasury_shares=95
-    )
-
-
-async def fake_pay_stock_dividend(**_kwargs: Any) -> DividendResult:  # noqa: ANN401 -- command facade double
-    """Returns a fake dividend result."""
-    return DividendResult(distributed_amount=50, issuer_balance=100, recipient_count=1)
-
-
-async def fake_get_stock_profile(issuer_id: int) -> StockProfileView:
-    """Returns a fake stock profile."""
-    return StockProfileView(
-        issuer_id=issuer_id,
-        issuer_name="bob",
-        total_shares=100,
-        treasury_shares=95,
-        issue_price=10,
-        sold_shares=5,
     )
 
 

@@ -454,9 +454,6 @@ async def test_ensure_schema_bootstraps_current_databases(
             "loan_proposal": "PRAGMA table_info(loan_proposal)",
             "loan_contract": "PRAGMA table_info(loan_contract)",
             "casino_account": "PRAGMA table_info(casino_account)",
-            "stock_profile": "PRAGMA table_info(stock_profile)",
-            "stock_holding": "PRAGMA table_info(stock_holding)",
-            "stock_event": "PRAGMA table_info(stock_event)",
         }
         table_columns: dict[str, set[str]] = {}
         for table_name, query in column_queries.items():
@@ -485,9 +482,6 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_proposal",
         "loan_contract",
         "casino_account",
-        "stock_profile",
-        "stock_holding",
-        "stock_event",
     }
     assert global_state_tables == {"jackpot_pool"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
@@ -499,8 +493,6 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_proposal"
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
-    assert {"issuer_id", "issuer_name"} <= table_columns["stock_profile"]
-    assert {"issuer_id", "holder_id", "holder_name"} <= table_columns["stock_holding"]
     assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
     assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)

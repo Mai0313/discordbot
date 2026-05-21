@@ -1,4 +1,4 @@
-"""Tests for long-term lending, central bank lending, and player stocks."""
+"""Tests for long-term lending and central bank lending."""
 
 import asyncio
 from datetime import timedelta
@@ -6,23 +6,14 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select, update
 
-from discordbot.typings.economy import (
-    STOCK_ISSUE_MIN_BALANCE,
-    LOAN_PROPOSAL_TIMEOUT_SECONDS,
-    LoanProposalStatus,
-)
+from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS, LoanProposalStatus
 from discordbot.cogs._economy.database import (
     LoanContract,
     LoanProposal,
-    buy_stock,
-    get_account,
     get_balance,
-    issue_stock,
     open_session,
     _database_now,
-    get_portfolio,
     adjust_balance,
-    pay_stock_dividend,
     set_central_banker,
     accept_loan_proposal,
     repay_personal_loans,
@@ -263,56 +254,3 @@ async def test_forced_collection_without_amount_includes_accrued_interest() -> N
     assert result.principal_paid == 500
     assert result.closed_contract_ids == (accepted.contract.contract_id,)
     assert await get_balance(user_id=1) == 85
-
-
-async def test_stock_issue_buy_and_dividend_keep_account_totals_aligned() -> None:
-    """Stock purchase finances issuer and dividend pays sold-share holders."""
-    await _add_balance(user_id=3, name="almost", amount=STOCK_ISSUE_MIN_BALANCE)
-    assert await issue_stock(issuer_id=3, issuer_name="almost", shares=100, price=10) is None
-
-    await _add_balance(user_id=1, name="issuer", amount=STOCK_ISSUE_MIN_BALANCE + 1)
-    await _add_balance(user_id=2, name="buyer", amount=1_000)
-
-    profile = await issue_stock(issuer_id=1, issuer_name="issuer", shares=100, price=10)
-    assert profile is not None
-    purchase = await buy_stock(buyer_id=2, buyer_name="buyer", issuer_id=1, shares=5)
-    assert purchase is not None
-    assert purchase.total_cost == 50
-    assert purchase.treasury_shares == 95
-
-    dividend = await pay_stock_dividend(issuer_id=1, issuer_name="issuer", amount=100)
-    assert dividend is not None
-    assert dividend.distributed_amount == 100
-    assert dividend.recipient_count == 1
-    issuer = await get_account(user_id=1)
-    buyer = await get_account(user_id=2)
-    assert issuer is not None
-    assert buyer is not None
-    assert issuer.total_earned - issuer.total_spent == issuer.balance
-    assert buyer.total_earned - buyer.total_spent == buyer.balance
-    assert buyer.balance == 1_050
-
-
-async def test_stock_issue_uses_spendable_balance_not_net_worth() -> None:
-    """A negative net worth from debt does not block stock issuance when balance qualifies."""
-    await _add_balance(user_id=2, name="lender", amount=STOCK_ISSUE_MIN_BALANCE * 2)
-    proposal = await create_personal_loan_request(
-        borrower_id=1,
-        borrower_name="issuer",
-        lender_id=2,
-        lender_name="lender",
-        amount=STOCK_ISSUE_MIN_BALANCE * 2,
-    )
-    assert proposal is not None
-    accepted = await accept_loan_proposal(
-        proposal_id=proposal.proposal_id, actor_id=2, actor_name="lender"
-    )
-    assert accepted is not None
-    await adjust_balance(user_id=1, name="issuer", delta=-(STOCK_ISSUE_MIN_BALANCE - 1))
-    portfolio = await get_portfolio(user_id=1)
-
-    profile = await issue_stock(issuer_id=1, issuer_name="issuer", shares=100, price=10)
-
-    assert portfolio.balance == STOCK_ISSUE_MIN_BALANCE + 1
-    assert portfolio.net_worth < 0
-    assert profile is not None

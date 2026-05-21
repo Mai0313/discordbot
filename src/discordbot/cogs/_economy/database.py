@@ -35,8 +35,7 @@ log.
 
 Long-term lending lives in ``loan_proposal`` and ``loan_contract``. Personal
 loan requests debit the lender on acceptance, and central-bank loans mint
-borrower balance on approval. Stocks live in ``stock_profile``,
-``stock_holding``, and ``stock_event``.
+borrower balance on approval.
 
 Shared jackpot pools live in ``data/global_state.db`` because they are bot-wide
 state, not per-user economy rows. Runtime jackpot settlement coordinates writes
@@ -72,7 +71,6 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
-    STOCK_ISSUE_MIN_BALANCE,
     MAX_LOAN_MONTHLY_RATE_BPS,
     MIN_LOAN_MONTHLY_RATE_BPS,
     BASE_CHECKIN_REWARD_AMOUNT,
@@ -82,9 +80,7 @@ from discordbot.typings.economy import (
     CreditResult,
     CheckinResult,
     PortfolioView,
-    DividendResult,
     LoanLenderType,
-    StockEventKind,
     TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
@@ -93,14 +89,11 @@ from discordbot.typings.economy import (
     LoanContractView,
     LoanProposalKind,
     LoanProposalView,
-    StockHoldingView,
-    StockProfileView,
     CentralBankStatus,
     LoanPaymentResult,
     VipPurchaseResult,
     LoanContractStatus,
     LoanProposalStatus,
-    StockPurchaseResult,
     CentralBankerAccount,
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
@@ -351,59 +344,6 @@ class LoanContract(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
-
-
-class StockProfile(Base):
-    """A player-issued stock profile keyed by issuer Discord user ID."""
-
-    __tablename__ = "stock_profile"
-
-    issuer_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    issuer_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
-    issuer_avatar_url: Mapped[str] = mapped_column(String(length=2048), default="", nullable=False)
-    total_shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    treasury_shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    issue_price: Mapped[int] = mapped_column(Integer, nullable=False)
-    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_database_now, onupdate=_database_now
-    )
-
-
-class StockHolding(Base):
-    """Shares held by one user in one issuer's stock."""
-
-    __tablename__ = "stock_holding"
-    __table_args__ = (
-        Index("ix_stock_holding_holder", "holder_id"),
-        Index("ix_stock_holding_issuer", "issuer_id"),
-    )
-
-    issuer_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    holder_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    holder_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
-    holder_avatar_url: Mapped[str] = mapped_column(String(length=2048), default="", nullable=False)
-    shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_database_now, onupdate=_database_now
-    )
-
-
-class StockEvent(Base):
-    """Append-only stock event log for future corporate-action expansion."""
-
-    __tablename__ = "stock_event"
-    __table_args__ = (Index("ix_stock_event_issuer_created", "issuer_id", "created_at"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    kind: Mapped[str] = mapped_column(String(length=24), nullable=False)
-    issuer_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    actor_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    actor_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
-    shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    detail: Mapped[str] = mapped_column(String(length=512), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
 
 
 class JackpotPool(GlobalStateBase):
@@ -2439,18 +2379,6 @@ async def _reject_expired_loan_proposal_in_session(
     return _loan_proposal_view(proposal=proposal)
 
 
-def _stock_profile_view(profile: StockProfile) -> StockProfileView:
-    """Projects an ORM stock profile into an immutable API view."""
-    return StockProfileView(
-        issuer_id=profile.issuer_id,
-        issuer_name=profile.issuer_name,
-        total_shares=profile.total_shares,
-        treasury_shares=profile.treasury_shares,
-        issue_price=profile.issue_price,
-        sold_shares=profile.total_shares - profile.treasury_shares,
-    )
-
-
 def _loan_interest_delta(
     principal_remaining: int, monthly_rate_bps: int, last_accrued_at: datetime, now: datetime
 ) -> tuple[int, datetime]:
@@ -3188,44 +3116,13 @@ async def _portfolio_in_session(
     debt_principal = sum(contract.principal_remaining for contract in debt_contracts)
     debt_interest = sum(contract.interest_due for contract in debt_contracts)
 
-    holdings_result = await session.execute(
-        statement=select(
-            StockHolding.issuer_id,
-            StockProfile.issuer_name,
-            StockHolding.holder_id,
-            StockHolding.holder_name,
-            StockHolding.shares,
-            StockProfile.issue_price,
-        )
-        .join(StockProfile, StockProfile.issuer_id == StockHolding.issuer_id)
-        .where(StockHolding.holder_id == user_id, StockHolding.shares > 0)
-        .order_by(StockProfile.issuer_name)
-    )
-    holdings: list[StockHoldingView] = []
-    stock_value = 0
-    for row in holdings_result.all():
-        estimated_value = row[4] * row[5]
-        stock_value += estimated_value
-        holdings.append(
-            StockHoldingView(
-                issuer_id=row[0],
-                issuer_name=row[1],
-                holder_id=row[2],
-                holder_name=row[3],
-                shares=row[4],
-                issue_price=row[5],
-                estimated_value=estimated_value,
-            )
-        )
     return PortfolioView(
         user_id=user_id,
         name=name,
         balance=balance,
-        stock_value=stock_value,
         debt_principal=debt_principal,
         debt_interest=debt_interest,
-        net_worth=balance + stock_value - debt_principal - debt_interest,
-        holdings=tuple(holdings),
+        net_worth=balance - debt_principal - debt_interest,
     )
 
 
@@ -3237,253 +3134,3 @@ async def get_portfolio(user_id: int) -> PortfolioView:
         portfolio = await _portfolio_in_session(session=session, user_id=user_id, now=now)
         await session.commit()
         return portfolio
-
-
-async def issue_stock(
-    issuer_id: int, issuer_name: str, shares: int, price: int, issuer_avatar_url: str = ""
-) -> StockProfileView | None:
-    """Issues a first stock offering for a qualified player."""
-    await _ensure_schema()
-    if shares <= 0 or price <= 0:
-        return None
-    now = _database_now()
-    async with open_session() as session:
-        existing = await session.execute(
-            statement=select(StockProfile.issuer_id).where(StockProfile.issuer_id == issuer_id)
-        )
-        if existing.scalar_one_or_none() is not None:
-            return None
-        portfolio = await _portfolio_in_session(session=session, user_id=issuer_id, now=now)
-        if portfolio.balance <= STOCK_ISSUE_MIN_BALANCE:
-            return None
-        profile = StockProfile(
-            issuer_id=issuer_id,
-            issuer_name=issuer_name or str(issuer_id),
-            issuer_avatar_url=issuer_avatar_url,
-            total_shares=shares,
-            treasury_shares=shares,
-            issue_price=price,
-            issued_at=now,
-            updated_at=now,
-        )
-        session.add(profile)
-        session.add(
-            StockEvent(
-                kind=StockEventKind.ISSUE,
-                issuer_id=issuer_id,
-                actor_id=issuer_id,
-                actor_name=issuer_name or str(issuer_id),
-                shares=shares,
-                amount=shares * price,
-                detail="initial issue",
-                created_at=now,
-            )
-        )
-        await session.commit()
-        return _stock_profile_view(profile=profile)
-
-
-async def get_stock_profile(issuer_id: int) -> StockProfileView | None:
-    """Returns one issuer stock profile."""
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(StockProfile).where(StockProfile.issuer_id == issuer_id)
-        )
-        profile = result.scalar_one_or_none()
-        if profile is None:
-            return None
-        return _stock_profile_view(profile=profile)
-
-
-async def buy_stock(
-    buyer_id: int, buyer_name: str, issuer_id: int, shares: int, buyer_avatar_url: str = ""
-) -> StockPurchaseResult | None:
-    """Buys treasury shares from an issuer stock profile."""
-    await _ensure_schema()
-    if shares <= 0 or buyer_id == issuer_id:
-        return None
-    now = _database_now()
-    async with open_session() as session:
-        profile_result = await session.execute(
-            statement=select(StockProfile).where(StockProfile.issuer_id == issuer_id)
-        )
-        profile = profile_result.scalar_one_or_none()
-        if profile is None or profile.treasury_shares < shares:
-            return None
-        total_cost = shares * profile.issue_price
-        await _upsert_user_metadata_in_session(
-            session=session,
-            user_id=buyer_id,
-            name=buyer_name,
-            avatar_url=buyer_avatar_url,
-            now=now,
-        )
-        debit_values: dict[str, Any] = {
-            "balance": UserWallet.balance - total_cost,
-            "total_spent": UserWallet.total_spent + total_cost,
-            "updated_at": now,
-        }
-        if buyer_name:
-            debit_values["name"] = buyer_name
-        debit_result = await session.execute(
-            statement=update(UserWallet)
-            .where(UserWallet.user_id == buyer_id, UserWallet.balance >= total_cost)
-            .values(**debit_values)
-            .returning(UserWallet.balance)
-        )
-        buyer_balance = debit_result.scalar_one_or_none()
-        if buyer_balance is None:
-            await session.rollback()
-            return None
-        await _upsert_user_metadata_in_session(
-            session=session,
-            user_id=issuer_id,
-            name=profile.issuer_name,
-            avatar_url=profile.issuer_avatar_url,
-            now=now,
-        )
-        credit_result = await session.execute(
-            statement=_build_credit_upsert(
-                user_id=issuer_id,
-                name=profile.issuer_name,
-                avatar_url=profile.issuer_avatar_url,
-                amount=total_cost,
-                now=now,
-            )
-        )
-        issuer_balance = credit_result.scalar_one()
-        profile.treasury_shares -= shares
-        profile.updated_at = now
-        await session.execute(
-            statement=insert(StockHolding)
-            .values(
-                issuer_id=issuer_id,
-                holder_id=buyer_id,
-                holder_name=buyer_name or str(buyer_id),
-                holder_avatar_url=buyer_avatar_url,
-                shares=shares,
-                updated_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=["issuer_id", "holder_id"],
-                set_={
-                    "holder_name": buyer_name or str(buyer_id),
-                    "holder_avatar_url": buyer_avatar_url,
-                    "shares": StockHolding.shares + shares,
-                    "updated_at": now,
-                },
-            )
-        )
-        session.add(
-            StockEvent(
-                kind=StockEventKind.BUY,
-                issuer_id=issuer_id,
-                actor_id=buyer_id,
-                actor_name=buyer_name or str(buyer_id),
-                shares=shares,
-                amount=total_cost,
-                detail="treasury share purchase",
-                created_at=now,
-            )
-        )
-        await session.commit()
-        return StockPurchaseResult(
-            buyer_balance=buyer_balance,
-            issuer_balance=issuer_balance,
-            shares_bought=shares,
-            total_cost=total_cost,
-            treasury_shares=profile.treasury_shares,
-        )
-
-
-async def pay_stock_dividend(
-    issuer_id: int, issuer_name: str, amount: int, issuer_avatar_url: str = ""
-) -> DividendResult | None:
-    """Distributes a manual dividend across sold shares."""
-    await _ensure_schema()
-    if amount <= 0:
-        return None
-    now = _database_now()
-    async with open_session() as session:
-        profile_result = await session.execute(
-            statement=select(StockProfile).where(StockProfile.issuer_id == issuer_id)
-        )
-        profile = profile_result.scalar_one_or_none()
-        if profile is None:
-            return None
-        sold_shares = profile.total_shares - profile.treasury_shares
-        if sold_shares <= 0:
-            return None
-        holdings_result = await session.execute(
-            statement=select(StockHolding).where(
-                StockHolding.issuer_id == issuer_id, StockHolding.shares > 0
-            )
-        )
-        holdings = list(holdings_result.scalars().all())
-        payouts: list[tuple[StockHolding, int]] = []
-        for holding in holdings:
-            payout = amount * holding.shares // sold_shares
-            if payout > 0:
-                payouts.append((holding, payout))
-        distributed_amount = sum(payout for _holding, payout in payouts)
-        if distributed_amount <= 0:
-            return None
-
-        await _upsert_user_metadata_in_session(
-            session=session,
-            user_id=issuer_id,
-            name=issuer_name or profile.issuer_name,
-            avatar_url=issuer_avatar_url,
-            now=now,
-        )
-        debit_result = await session.execute(
-            statement=update(UserWallet)
-            .where(UserWallet.user_id == issuer_id, UserWallet.balance >= distributed_amount)
-            .values(
-                name=issuer_name or profile.issuer_name,
-                balance=UserWallet.balance - distributed_amount,
-                total_spent=UserWallet.total_spent + distributed_amount,
-                updated_at=now,
-            )
-            .returning(UserWallet.balance)
-        )
-        issuer_balance = debit_result.scalar_one_or_none()
-        if issuer_balance is None:
-            await session.rollback()
-            return None
-        for holding, payout in payouts:
-            await _upsert_user_metadata_in_session(
-                session=session,
-                user_id=holding.holder_id,
-                name=holding.holder_name,
-                avatar_url=holding.holder_avatar_url,
-                now=now,
-            )
-            await session.execute(
-                statement=_build_credit_upsert(
-                    user_id=holding.holder_id,
-                    name=holding.holder_name,
-                    avatar_url=holding.holder_avatar_url,
-                    amount=payout,
-                    now=now,
-                )
-            )
-        session.add(
-            StockEvent(
-                kind=StockEventKind.DIVIDEND,
-                issuer_id=issuer_id,
-                actor_id=issuer_id,
-                actor_name=issuer_name or profile.issuer_name,
-                shares=sold_shares,
-                amount=distributed_amount,
-                detail="manual dividend",
-                created_at=now,
-            )
-        )
-        await session.commit()
-        return DividendResult(
-            distributed_amount=distributed_amount,
-            issuer_balance=issuer_balance,
-            recipient_count=len(payouts),
-        )

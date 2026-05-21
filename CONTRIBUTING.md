@@ -116,7 +116,6 @@ def setup(bot: commands.Bot) -> None:
 - `credit_with_repayment` is the income path for message reward, chat reward, and casino payout. Long-term loans are repaid explicitly through loan helpers; passive income and gifts do not auto-repay debt.
 - Long-term loans live in `loan_proposal` and `loan_contract`. Personal credit requests are borrower-initiated and debit the lender on acceptance, and central-bank loans mint borrower balance through central-banker button approval.
 - Central banker access is stored on `UserAccount.is_central_banker` and managed out-of-band with `scripts/manage_central_banker.py`, separate from Discord-side economy admins.
-- Player-issued stocks live in `stock_profile`, `stock_holding`, and `stock_event`. The first version only sells issuer treasury shares and supports manual cash dividends to sold-share holders.
 - Casino settlement is atomic. Validate or clamp bets before play, then apply the signed result once through the settlement helpers. Player-side casino losses clamp at balance 0; dealer / house ledgers may still go negative.
 - Jackpot settlements coordinate writes across `economy.db` and `global_state.db`; ordinary exceptions roll both sessions back before either commit, but SQLite cannot make a hard crash between two database-file commits cross-file atomic.
 - Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.

@@ -12,7 +12,6 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
-    STOCK_ISSUE_MIN_BALANCE,
     BASE_CHECKIN_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -25,18 +24,14 @@ from discordbot.cogs._economy.database import (
     checkin,
     get_vip,
     transfer,
-    buy_stock,
     get_admin,
     top_losers,
     get_account,
     get_balance,
-    issue_stock,
     get_portfolio,
     adjust_balance,
     checkin_reward,
-    get_stock_profile,
     get_central_banker,
-    pay_stock_dividend,
     call_personal_loans,
     list_loan_contracts,
     accept_loan_proposal,
@@ -69,7 +64,6 @@ _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
 _CENTRAL_BANK_COLOR = 0x1ABC9C
-_STOCK_COLOR = 0x11806A
 _PORTFOLIO_COLOR = 0x95A5A6
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
@@ -748,10 +742,6 @@ class EconomyCogs(commands.Cog):
                     f"利息 {amount_code(amount=portfolio.debt_interest)}"
                 ),
                 inline=False,
-            )
-        if portfolio.stock_value > 0:
-            embed.add_field(
-                name="股票估值", value=amount_code(amount=portfolio.stock_value), inline=False
             )
         embed.add_field(name="淨資產", value=amount_code(amount=portfolio.net_worth), inline=False)
 
@@ -1621,260 +1611,12 @@ class EconomyCogs(commands.Cog):
         await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
-        name="stock",
-        description="Issue and manage player-issued stocks.",
-        name_localizations={Locale.zh_TW: "股票", Locale.ja: "株式"},
-        description_localizations={
-            Locale.zh_TW: "發行與管理玩家名義股票",
-            Locale.ja: "player-issued stocks を管理します。",
-        },
-        nsfw=False,
-    )
-    async def stock(self, interaction: Interaction) -> None:
-        """Slash command group for stock operations."""
-
-    @stock.subcommand(
-        name="issue",
-        description="Issue your first stock offering.",
-        name_localizations={Locale.zh_TW: "發行", Locale.ja: "発行"},
-        description_localizations={
-            Locale.zh_TW: "發行自己的第一檔股票",
-            Locale.ja: "自分の stock を発行します。",
-        },
-    )
-    async def stock_issue(
-        self,
-        interaction: Interaction,
-        shares: int = SlashOption(
-            name="shares",
-            description="Total shares to issue.",
-            name_localizations={Locale.zh_TW: "股數", Locale.ja: "株数"},
-            description_localizations={Locale.zh_TW: "總發行股數", Locale.ja: "発行株数。"},
-            required=True,
-            min_value=1,
-        ),
-        price: int = SlashOption(
-            name="price",
-            description=f"{CURRENCY_NAME} per share.",
-            name_localizations={Locale.zh_TW: "股價", Locale.ja: "価格"},
-            description_localizations={Locale.zh_TW: "每股價格", Locale.ja: "1株あたり価格。"},
-            required=True,
-            min_value=1,
-        ),
-    ) -> None:
-        """Issues a stock profile for a qualified player."""
-        if interaction.user is None:
-            return
-        user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
-        profile = await issue_stock(
-            issuer_id=user.id,
-            issuer_name=user.name,
-            issuer_avatar_url=user_avatar_url,
-            shares=shares,
-            price=price,
-        )
-        if profile is None:
-            portfolio = await get_portfolio(user_id=user.id)
-            await interaction.response.defer(ephemeral=True)
-            embed = Embed(
-                title="發行失敗",
-                description=(
-                    f"### 需要餘額大於 {bold_currency(amount=STOCK_ISSUE_MIN_BALANCE)}\n"
-                    f"目前餘額 {bold_currency(amount=portfolio.balance)}\n"
-                    "或你已經發行過股票"
-                ),
-                color=_ERROR_COLOR,
-            )
-            await _send_private_followup(interaction=interaction, embed=embed)
-            return
-        await interaction.response.defer()
-        embed = Embed(
-            title="📈 股票發行完成",
-            description=f"### {user.display_name}\n總股數 `{profile.total_shares:,}` · 每股 {amount_code(amount=profile.issue_price)}",
-            color=_STOCK_COLOR,
-        )
-        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-        await _send_expiring_followup(interaction=interaction, embed=embed)
-
-    @stock.subcommand(
-        name="buy",
-        description="Buy treasury shares from a player issuer.",
-        name_localizations={Locale.zh_TW: "購買", Locale.ja: "購入"},
-        description_localizations={
-            Locale.zh_TW: "購買指定玩家的未售出股數",
-            Locale.ja: "指定 player issuer の treasury shares を購入します。",
-        },
-    )
-    async def stock_buy(
-        self,
-        interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
-            name="member",
-            description="The stock issuer.",
-            name_localizations={Locale.zh_TW: "發行者", Locale.ja: "発行者"},
-            description_localizations={Locale.zh_TW: "股票發行者", Locale.ja: "stock issuer。"},
-            required=True,
-        ),
-        shares: int = SlashOption(
-            name="shares",
-            description="Shares to buy.",
-            name_localizations={Locale.zh_TW: "股數", Locale.ja: "株数"},
-            description_localizations={Locale.zh_TW: "要購買的股數", Locale.ja: "購入株数。"},
-            required=True,
-            min_value=1,
-        ),
-    ) -> None:
-        """Buys treasury shares from an issuer."""
-        if interaction.user is None:
-            return
-        user = interaction.user
-        guild = getattr(interaction, "guild", None)
-        user_avatar_url = await guild_avatar_url(user=user, guild=guild)
-        result = await buy_stock(
-            buyer_id=user.id,
-            buyer_name=user.name,
-            buyer_avatar_url=user_avatar_url,
-            issuer_id=member.id,
-            shares=shares,
-        )
-        if result is None:
-            await interaction.response.defer(ephemeral=True)
-            embed = Embed(
-                title="購買失敗",
-                description="### 股票不存在、未售出股數不足、餘額不足，或不能買自己的股票",
-                color=_ERROR_COLOR,
-            )
-            await _send_private_followup(interaction=interaction, embed=embed)
-            return
-        await interaction.response.defer()
-        issuer_avatar_url = await guild_avatar_url(user=member, guild=guild)
-        embed = Embed(
-            title="📈 股票購買完成",
-            description=(
-                f"### {user.mention} → {member.mention}\n"
-                f"買入 `{result.shares_bought:,}` 股 · 花費 {amount_code(amount=result.total_cost)}"
-            ),
-            color=_STOCK_COLOR,
-        )
-        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-        _set_optional_thumbnail(embed=embed, avatar_url=issuer_avatar_url)
-        embed.add_field(
-            name="餘額",
-            value=(
-                f"買方 {amount_code(amount=result.buyer_balance)}\n"
-                f"發行者 {amount_code(amount=result.issuer_balance)}"
-            ),
-            inline=False,
-        )
-        embed.add_field(name="剩餘未售出股數", value=f"`{result.treasury_shares:,}`", inline=False)
-        await _send_expiring_followup(interaction=interaction, embed=embed)
-
-    @stock.subcommand(
-        name="dividend",
-        description="Pay a manual dividend to sold-share holders.",
-        name_localizations={Locale.zh_TW: "配息", Locale.ja: "配当"},
-        description_localizations={
-            Locale.zh_TW: "從自己的餘額手動配息給持有人",
-            Locale.ja: "自分の balance から holder に dividend を払います。",
-        },
-    )
-    async def stock_dividend(
-        self,
-        interaction: Interaction,
-        amount: int = SlashOption(
-            name="amount",
-            description=f"Total {CURRENCY_NAME} dividend budget.",
-            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
-            description_localizations={Locale.zh_TW: "總配息預算", Locale.ja: "dividend 予算。"},
-            required=True,
-            min_value=1,
-        ),
-    ) -> None:
-        """Pays a manual stock dividend."""
-        if interaction.user is None:
-            return
-        user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
-        result = await pay_stock_dividend(
-            issuer_id=user.id,
-            issuer_name=user.name,
-            issuer_avatar_url=user_avatar_url,
-            amount=amount,
-        )
-        if result is None:
-            await interaction.response.defer(ephemeral=True)
-            embed = Embed(
-                title="配息失敗",
-                description="### 股票不存在、尚無已售出股數、餘額不足，或分配後金額為 0",
-                color=_ERROR_COLOR,
-            )
-            await _send_private_followup(interaction=interaction, embed=embed)
-            return
-        await interaction.response.defer()
-        embed = Embed(
-            title="💵 配息完成",
-            description=f"### {user.mention}\n實際配發 {currency_text(amount=result.distributed_amount)}",
-            color=_STOCK_COLOR,
-        )
-        embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
-        embed.add_field(name="收款人數", value=f"`{result.recipient_count:,}`", inline=True)
-        embed.add_field(
-            name="發行者餘額", value=amount_code(amount=result.issuer_balance), inline=True
-        )
-        await _send_expiring_followup(interaction=interaction, embed=embed)
-
-    @stock.subcommand(
-        name="info",
-        description="Show a player's stock profile.",
-        name_localizations={Locale.zh_TW: "資訊", Locale.ja: "情報"},
-        description_localizations={
-            Locale.zh_TW: "查看玩家股票資訊",
-            Locale.ja: "player stock profile を表示します。",
-        },
-    )
-    async def stock_info(
-        self,
-        interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
-            name="member",
-            description="The stock issuer.",
-            name_localizations={Locale.zh_TW: "發行者", Locale.ja: "発行者"},
-            description_localizations={Locale.zh_TW: "股票發行者", Locale.ja: "stock issuer。"},
-            required=True,
-        ),
-    ) -> None:
-        """Shows one stock profile."""
-        await interaction.response.defer()
-        profile = await get_stock_profile(issuer_id=member.id)
-        if profile is None:
-            embed = Embed(
-                title="股票資訊", description="### 這位玩家尚未發行股票", color=_ERROR_COLOR
-            )
-            await _send_expiring_followup(interaction=interaction, embed=embed)
-            return
-        embed = Embed(
-            title="📈 股票資訊",
-            description=f"### {member.display_name}\n每股 {amount_code(amount=profile.issue_price)}",
-            color=_STOCK_COLOR,
-        )
-        embed.add_field(name="總股數", value=f"`{profile.total_shares:,}`", inline=True)
-        embed.add_field(name="已售出", value=f"`{profile.sold_shares:,}`", inline=True)
-        embed.add_field(name="未售出", value=f"`{profile.treasury_shares:,}`", inline=True)
-        await _send_expiring_followup(interaction=interaction, embed=embed)
-
-    @nextcord.slash_command(
         name="portfolio",
-        description="Show wallet, debt, stock holdings, and estimated net worth.",
+        description="Show wallet, debt, and estimated net worth.",
         name_localizations={Locale.zh_TW: "投資組合", Locale.ja: "portfolio"},
         description_localizations={
-            Locale.zh_TW: "查看餘額、債務、持股與預估淨資產",
-            Locale.ja: "balance、debt、holding、estimated net worth を表示します。",
+            Locale.zh_TW: "查看餘額、債務與預估淨資產",
+            Locale.ja: "balance、debt、estimated net worth を表示します。",
         },
         nsfw=False,
     )
@@ -1906,9 +1648,6 @@ class EconomyCogs(commands.Cog):
         )
         embed.add_field(name="現金", value=amount_code(amount=portfolio.balance), inline=True)
         embed.add_field(
-            name="股票估值", value=amount_code(amount=portfolio.stock_value), inline=True
-        )
-        embed.add_field(
             name="債務",
             value=(
                 f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
@@ -1916,12 +1655,6 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        if portfolio.holdings:
-            holding_lines = [
-                f"**{holding.issuer_name}** `{holding.shares:,}` 股 · {amount_code(amount=holding.estimated_value)}"
-                for holding in portfolio.holdings[:8]
-            ]
-            embed.add_field(name="持股", value="\n".join(holding_lines), inline=False)
         await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(

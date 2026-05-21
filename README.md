@@ -26,7 +26,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, and use model-provided web tools when available.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
-- **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, issue player stocks, pay dividends, and view leaderboards.
+- **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies with AI dealer banter, public result embeds, and automatic cleanup.
 - **MapleStory Artale database**: `/maplestory` subcommands search monsters, equipment, scrolls, NPCs, quests, maps, item drops, and database stats.
 - **Localized commands**: slash command metadata and `/help` are localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language.
@@ -38,15 +38,14 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `@bot <message>`                                                 | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                              |
 | _Threads URL_                                                    | Automatically expands Threads posts and media.                                                                         |
 | `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord.                                                                        |
-| `/balance`                                                       | Privately shows your 虛擬歡樂豆 balance, debt, stock value, net worth, and VIP status.                                 |
+| `/balance`                                                       | Privately shows your 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                              |
 | `/checkin`                                                       | Claims the daily check-in reward.                                                                                      |
 | `/vip`                                                           | Buys permanent VIP perks.                                                                                              |
 | `/leaderboard`                                                   | Shows the global top balances.                                                                                         |
 | `/loss_leaderboard`                                              | Shows today's accumulated casino losses.                                                                               |
 | `/credit status\|borrow\|call\|repay`                            | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.     |
 | `/central_bank status\|borrow\|call\|repay`                      | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity. |
-| `/stock issue\|buy\|dividend\|info`                              | Issues player stock from spendable balance, buys treasury shares, pays dividends, and shows stock profiles.            |
-| `/portfolio [member]`                                            | Shows wallet, stock holdings, debt, and estimated net worth.                                                           |
+| `/portfolio [member]`                                            | Shows wallet, debt, and estimated net worth.                                                                           |
 | `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member.                                                                                |
 | `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments.                                                                                 |
 | `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby.                                                                                   |
@@ -113,7 +112,7 @@ For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_AP
 This bot stores runtime data locally under `data/`.
 
 - `messages.db`: human messages and this bot's replies, used for chat history and summaries.
-- `economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, stock profiles / holdings / events, and casino daily counters.
+- `economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, and casino daily counters.
 - `global_state.db`: bot-wide shared state such as jackpot pools.
 - `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public game or economy responses that should be cleaned up after restart.
 - `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.

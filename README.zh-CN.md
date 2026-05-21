@@ -26,7 +26,7 @@
 - **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、生成或编辑图片、生成短视频，并在可用时使用 model-provided web tools。
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频，文件太大时会自动 retry 低画质。
-- **虚拟欢乐豆与金融系统**：用户可从消息与 AI 回复获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款、发行玩家股票、配息，并查看排行榜。
+- **虚拟欢乐豆与金融系统**：用户可从消息与 AI 回复获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby，带 AI dealer 对话、公开结果 embed 与自动清理。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 与 `/help` 支持英文、繁体中文、日文。AI 回复会跟随用户语言。
@@ -38,15 +38,14 @@
 | `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。           |
 | _Threads URL_                                                    | 自动展开 Threads 贴文与媒体。                                        |
 | `/download_video <url> [quality]`                                | 下载视频并传回 Discord。                                             |
-| `/balance`                                                       | 私密显示你的虚拟欢乐豆余额、债务、股票估值、净资产与 VIP 状态。      |
+| `/balance`                                                       | 私密显示你的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                |
 | `/checkin`                                                       | 领取每日签到奖励。                                                   |
 | `/vip`                                                           | 购买永久 VIP 权益。                                                  |
 | `/leaderboard`                                                   | 显示全域余额排行榜。                                                 |
 | `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                         |
 | `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。       |
 | `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。 |
-| `/stock issue\|buy\|dividend\|info`                              | 依可用余额发行玩家股票、购买未售出股数、配息与查看股票信息。         |
-| `/portfolio [member]`                                            | 查看钱包、持股、债务与预估净资产。                                   |
+| `/portfolio [member]`                                            | 查看钱包、债务与预估净资产。                                         |
 | `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员。                                           |
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手动余额调整。                                            |
 | `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby。                                         |
@@ -113,7 +112,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 这个 bot 会把 runtime data 存在本地 `data/` 底下。
 
 - `messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
-- `economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约、股票发行资料、持股、事件，以及赌场每日统计。
+- `economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约，以及赌场每日统计。
 - `global_state.db`：bot-wide shared state，例如 jackpot pool。
 - `game_cleanup.db`：公开 game 或 economy response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，用于 bot 重启后的清理。
 - `model_prices.json`：缓存的 LiteLLM pricing metadata，用于 AI 回复费用估算。

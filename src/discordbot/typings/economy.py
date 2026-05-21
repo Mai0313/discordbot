@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 5_000
 BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 100_000
 VIP_PURCHASE_COST: Final[int] = 10_000_000
-STOCK_ISSUE_MIN_BALANCE: Final[int] = 10_000_000
 LOAN_PROPOSAL_TIMEOUT_SECONDS: Final[int] = 180
 DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
 MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
@@ -87,14 +86,6 @@ class LoanContractStatus(StrEnum):
 
     ACTIVE = "active"
     CLOSED = "closed"
-
-
-class StockEventKind(StrEnum):
-    """Stock ledger event kinds."""
-
-    ISSUE = "issue"
-    BUY = "buy"
-    DIVIDEND = "dividend"
 
 
 class AccountSnapshot(BaseModel):
@@ -383,68 +374,17 @@ class CentralBankStatus(BaseModel):
     available_credit: int
 
 
-class StockProfileView(BaseModel):
-    """Read-only stock profile for one issuer."""
-
-    model_config = ConfigDict(frozen=True)
-
-    issuer_id: int
-    issuer_name: str
-    total_shares: int
-    treasury_shares: int
-    issue_price: int
-    sold_shares: int
-
-
-class StockHoldingView(BaseModel):
-    """Read-only stock holding row."""
-
-    model_config = ConfigDict(frozen=True)
-
-    issuer_id: int
-    issuer_name: str
-    holder_id: int
-    holder_name: str
-    shares: int
-    issue_price: int
-    estimated_value: int
-
-
-class StockPurchaseResult(BaseModel):
-    """Outcome of buying issuer treasury shares."""
-
-    model_config = ConfigDict(frozen=True)
-
-    buyer_balance: int
-    issuer_balance: int
-    shares_bought: int
-    total_cost: int
-    treasury_shares: int
-
-
-class DividendResult(BaseModel):
-    """Outcome of a manual stock dividend."""
-
-    model_config = ConfigDict(frozen=True)
-
-    distributed_amount: int
-    issuer_balance: int
-    recipient_count: int
-
-
 class PortfolioView(BaseModel):
-    """Aggregated wallet, debt, and stock view."""
+    """Aggregated wallet and debt view."""
 
     model_config = ConfigDict(frozen=True)
 
     user_id: int
     name: str
     balance: int
-    stock_value: int
     debt_principal: int
     debt_interest: int
     net_worth: int
-    holdings: tuple[StockHoldingView, ...] = ()
 
 
 __all__ = [
@@ -455,7 +395,6 @@ __all__ = [
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
     "MIN_LOAN_MONTHLY_RATE_BPS",
-    "STOCK_ISSUE_MIN_BALANCE",
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
     "AdminAccount",
@@ -464,7 +403,6 @@ __all__ = [
     "CentralBankerAccount",
     "CheckinResult",
     "CreditResult",
-    "DividendResult",
     "JackpotSettlementBatchResult",
     "JackpotSettlementRequest",
     "JackpotSettlementResult",
@@ -480,10 +418,6 @@ __all__ = [
     "LoanProposalView",
     "LossLeaderboardEntry",
     "PortfolioView",
-    "StockEventKind",
-    "StockHoldingView",
-    "StockProfileView",
-    "StockPurchaseResult",
     "TransactionKind",
     "TransferResult",
     "VipPurchaseResult",
