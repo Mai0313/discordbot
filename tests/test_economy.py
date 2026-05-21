@@ -28,6 +28,7 @@ from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
     BASE_CHECKIN_REWARD_AMOUNT,
+    UserWallet,
     JackpotPool,
     UserAccount,
     AdminAccount,
@@ -240,6 +241,15 @@ async def _stored_avatar_url(user_id: int) -> str:
         return result.scalar_one()
 
 
+async def _stored_wallet_name(user_id: int) -> str:
+    """Reads the denormalized wallet name for one account."""
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(UserWallet.name).where(UserWallet.user_id == user_id)
+        )
+        return result.scalar_one()
+
+
 async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | None]:
     """Reads daily casino ``(loss, win, net, day_started_at)`` counters."""
     async with open_session() as session:
@@ -332,6 +342,7 @@ async def test_adjust_balance_refreshes_name() -> None:
     rows = await top_n(limit=1)
     assert rows[0].name == "alice_renamed"
     assert rows[0].avatar_url == ""
+    assert await _stored_wallet_name(user_id=42) == "alice_renamed"
 
 
 async def test_adjust_balance_stores_and_refreshes_avatar_url() -> None:
@@ -480,7 +491,9 @@ async def test_ensure_schema_bootstraps_current_databases(
     }
     assert global_state_tables == {"jackpot_pool"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
-    assert {"balance", "total_earned", "total_spent"} <= table_columns["user_wallet"]
+    assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
+        "user_wallet"
+    ]
     assert {"balance", "total_earned", "total_spent"}.isdisjoint(table_columns["user_account"])
     assert {"borrower_id", "borrower_name", "lender_id", "lender_name"} <= table_columns[
         "loan_proposal"
@@ -496,8 +509,95 @@ async def test_ensure_schema_bootstraps_current_databases(
         user_id=42, name="alice", amount=5, avatar_url="https://cdn.example/avatar.png"
     )
     assert await _stored_avatar_url(user_id=42) == "https://cdn.example/avatar.png"
+    assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
+    await engine.dispose()
+    await global_state_engine.dispose()
+
+
+async def test_ensure_schema_migrates_legacy_user_wallet_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy wallet rows gain and backfill the denormalized account name."""
+    db_path = tmp_path / "legacy-wallet.db"
+    global_state_db_path = tmp_path / "legacy-wallet-global-state.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                text="""
+                CREATE TABLE user_account (
+                    user_id INTEGER NOT NULL,
+                    name VARCHAR(128),
+                    avatar_url VARCHAR(2048) NOT NULL,
+                    updated_at DATETIME,
+                    is_vip BOOLEAN NOT NULL,
+                    last_checkin_at DATETIME,
+                    checkin_streak INTEGER NOT NULL,
+                    is_admin BOOLEAN NOT NULL,
+                    is_central_banker BOOLEAN NOT NULL DEFAULT 0,
+                    hide_from_leaderboard BOOLEAN NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id)
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                text="""
+                CREATE TABLE user_wallet (
+                    user_id INTEGER NOT NULL,
+                    balance INTEGER NOT NULL,
+                    total_earned INTEGER NOT NULL,
+                    total_spent INTEGER NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    PRIMARY KEY (user_id)
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                text="""
+                INSERT INTO user_account (
+                    user_id, name, avatar_url, updated_at, is_vip, last_checkin_at, checkin_streak, is_admin, is_central_banker, hide_from_leaderboard
+                )
+                VALUES (1, 'alice', '', '2026-05-21 00:00:00', 0, NULL, 0, 0, 0, 0)
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                text="""
+                INSERT INTO user_wallet (user_id, balance, total_earned, total_spent, updated_at)
+                VALUES
+                    (1, 100, 100, 0, '2026-05-21 00:00:00'),
+                    (2, 50, 50, 0, '2026-05-21 00:00:00')
+                """
+            )
+        )
+
+    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    monkeypatch.setattr(
+        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
+    )
+    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
+
+    await _ensure_schema()
+
+    async with open_session() as session:
+        result = await session.execute(statement=text(text="PRAGMA table_info(user_wallet)"))
+        wallet_columns = {row[1] for row in result.all()}
+        result = await session.execute(
+            statement=text(text="SELECT user_id, name FROM user_wallet ORDER BY user_id")
+        )
+        wallet_names = result.all()
+
+    assert "name" in wallet_columns
+    assert wallet_names == [(1, "alice"), (2, "2")]
     await engine.dispose()
     await global_state_engine.dispose()
 

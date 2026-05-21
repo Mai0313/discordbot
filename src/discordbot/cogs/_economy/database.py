@@ -236,6 +236,7 @@ class UserWallet(Base):
     )
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -540,6 +541,27 @@ async def _ensure_economy_schema_migrations(conn: Any) -> None:  # noqa: ANN401 
             )
         )
 
+    result = await conn.execute(text("PRAGMA table_info(user_wallet)"))
+    wallet_columns = {row[1] for row in result.all()}
+    if "name" not in wallet_columns:
+        await conn.execute(
+            text("ALTER TABLE user_wallet ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT ''")
+        )
+    await conn.execute(
+        text(
+            """
+            UPDATE user_wallet
+               SET name = COALESCE(
+                   (SELECT NULLIF(user_account.name, '')
+                      FROM user_account
+                     WHERE user_account.user_id = user_wallet.user_id),
+                   CAST(user_wallet.user_id AS TEXT)
+               )
+             WHERE name = ''
+            """
+        )
+    )
+
 
 async def _ensure_schema() -> None:
     """Bootstraps current economy and bot-wide state schemas once per engine."""
@@ -658,15 +680,23 @@ def _build_credit_upsert(
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    _ = (name, avatar_url)
+    _ = avatar_url
+    effective_name = name or str(user_id)
     stmt = insert(UserWallet).values(
-        user_id=user_id, balance=amount, total_earned=amount, total_spent=0, updated_at=now
+        user_id=user_id,
+        name=effective_name,
+        balance=amount,
+        total_earned=amount,
+        total_spent=0,
+        updated_at=now,
     )
     set_: dict[str, Any] = {
         "balance": UserWallet.balance + amount,
         "total_earned": UserWallet.total_earned + amount,
         "updated_at": now,
     }
+    if name:
+        set_["name"] = effective_name
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
         UserWallet.balance
     )
@@ -685,11 +715,13 @@ def _build_signed_delta_upsert(
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
     """
-    _ = (name, avatar_url)
+    _ = avatar_url
+    effective_name = name or str(user_id)
     initial_earned = max(delta, 0)
     initial_spent = max(-delta, 0)
     stmt = insert(UserWallet).values(
         user_id=user_id,
+        name=effective_name,
         balance=delta,
         total_earned=initial_earned,
         total_spent=initial_spent,
@@ -701,6 +733,8 @@ def _build_signed_delta_upsert(
         "total_spent": UserWallet.total_spent + initial_spent,
         "updated_at": now,
     }
+    if name:
+        set_["name"] = effective_name
     return stmt.on_conflict_do_update(index_elements=["user_id"], set_=set_).returning(
         UserWallet.balance
     )
@@ -814,6 +848,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
             insert_result = await _try_insert_clamped_positive_delta_in_session(
                 session=session,
                 user_id=user_id,
+                name=name,
                 avatar_url=avatar_url,
                 delta=delta,
                 kind=kind,
@@ -850,6 +885,7 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
 async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mirrors the caller's audit identity
     session: AsyncSession,
     user_id: int,
+    name: str,
     avatar_url: str,
     delta: int,
     kind: TransactionKind,
@@ -860,7 +896,14 @@ async def _try_insert_clamped_positive_delta_in_session(  # noqa: PLR0913 -- mir
     _ = (avatar_url, kind, note)
     insert_stmt = (
         insert(UserWallet)
-        .values(user_id=user_id, balance=delta, total_earned=delta, total_spent=0, updated_at=now)
+        .values(
+            user_id=user_id,
+            name=name or str(user_id),
+            balance=delta,
+            total_earned=delta,
+            total_spent=0,
+            updated_at=now,
+        )
         .on_conflict_do_nothing(index_elements=["user_id"])
         .returning(UserWallet.balance)
     )
@@ -883,7 +926,7 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     note: str | None = None,
 ) -> tuple[int, int] | None:
     """Attempts one conditional clamped update against an existing account."""
-    _ = (name, avatar_url, kind, note)
+    _ = (avatar_url, kind, note)
     if delta < 0 and current_balance <= 0:
         new_balance = current_balance
     elif delta < 0:
@@ -892,6 +935,8 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
         new_balance = current_balance + delta
     applied = new_balance - current_balance
     update_values: dict[str, Any] = {"balance": new_balance, "updated_at": now}
+    if name:
+        update_values["name"] = name
     if applied > 0:
         update_values["total_earned"] = UserWallet.total_earned + applied
     elif applied < 0:
@@ -1879,12 +1924,17 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 return None
 
             new_balance = balance - cost
+            wallet_values: dict[str, Any] = {
+                "balance": new_balance,
+                "total_spent": UserWallet.total_spent + cost,
+                "updated_at": now,
+            }
+            if name:
+                wallet_values["name"] = name
             wallet_result = await session.execute(
                 statement=update(UserWallet)
                 .where(UserWallet.user_id == user_id, UserWallet.balance == balance)
-                .values(
-                    balance=new_balance, total_spent=UserWallet.total_spent + cost, updated_at=now
-                )
+                .values(**wallet_values)
                 .returning(UserWallet.balance)
             )
             wallet_row = wallet_result.one_or_none()
@@ -2182,6 +2232,8 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
             "total_spent": UserWallet.total_spent + amount,
             "updated_at": now,
         }
+        if sender_name:
+            debit_values["name"] = sender_name
 
         debit_stmt = (
             update(UserWallet)
@@ -2744,6 +2796,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
                 now=now,
             )
             debit_values: dict[str, Any] = {
+                "name": actor_name or proposal.lender_name or str(actor_id),
                 "balance": UserWallet.balance - proposal.amount,
                 "total_spent": UserWallet.total_spent + proposal.amount,
                 "updated_at": now,
@@ -3266,14 +3319,17 @@ async def buy_stock(
             avatar_url=buyer_avatar_url,
             now=now,
         )
+        debit_values: dict[str, Any] = {
+            "balance": UserWallet.balance - total_cost,
+            "total_spent": UserWallet.total_spent + total_cost,
+            "updated_at": now,
+        }
+        if buyer_name:
+            debit_values["name"] = buyer_name
         debit_result = await session.execute(
             statement=update(UserWallet)
             .where(UserWallet.user_id == buyer_id, UserWallet.balance >= total_cost)
-            .values(
-                balance=UserWallet.balance - total_cost,
-                total_spent=UserWallet.total_spent + total_cost,
-                updated_at=now,
-            )
+            .values(**debit_values)
             .returning(UserWallet.balance)
         )
         buyer_balance = debit_result.scalar_one_or_none()
@@ -3385,6 +3441,7 @@ async def pay_stock_dividend(
             statement=update(UserWallet)
             .where(UserWallet.user_id == issuer_id, UserWallet.balance >= distributed_amount)
             .values(
+                name=issuer_name or profile.issuer_name,
                 balance=UserWallet.balance - distributed_amount,
                 total_spent=UserWallet.total_spent + distributed_amount,
                 updated_at=now,
