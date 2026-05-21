@@ -1276,6 +1276,17 @@ class FakeDealer:
         return "settled"
 
 
+def test_games_commands_are_grouped_under_games() -> None:
+    """Verifies casino games are registered as /games subcommands."""
+    assert GamesCogs.games.name == "games"
+    assert GamesCogs.games.name_localizations[nextcord.Locale.zh_TW] == "小遊戲"
+    assert set(GamesCogs.games.children) == {"blackjack", "dragon_gate"}
+    assert GamesCogs.blackjack.name == "blackjack"
+    assert GamesCogs.blackjack.name_localizations[nextcord.Locale.zh_TW] == "二十一點"
+    assert GamesCogs.dragon_gate.name == "dragon_gate"
+    assert GamesCogs.dragon_gate.name_localizations[nextcord.Locale.zh_TW] == "射龍門"
+
+
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")

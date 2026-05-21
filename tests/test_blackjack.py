@@ -1,4 +1,4 @@
-"""Tests for the /blackjack pure-rules module."""
+"""Tests for the Blackjack pure-rules module."""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 

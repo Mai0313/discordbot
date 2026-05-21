@@ -65,12 +65,24 @@ class MapleStoryCogs(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
-    # ── /maple_monster ──────────────────────────────────────────────
-
     @nextcord.slash_command(
-        name="maple_monster",
+        name="maplestory",
+        description="Search MapleStory Artale data.",
+        name_localizations={Locale.zh_TW: "楓之谷", Locale.ja: "メイプル"},
+        description_localizations={
+            Locale.zh_TW: "搜尋楓之谷 Artale 資料",
+            Locale.ja: "メイプルストーリー Artale データを検索します。",
+        },
+    )
+    async def maplestory(self, interaction: Interaction) -> None:
+        """Slash command group for MapleStory Artale data queries."""
+
+    # ── /maplestory monster ─────────────────────────────────────────
+
+    @maplestory.subcommand(
+        name="monster",
         description="Search for monster information in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷怪物", Locale.ja: "メイプルモンスター"},
+        name_localizations={Locale.zh_TW: "怪物", Locale.ja: "モンスター"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷怪物資訊",
             Locale.ja: "メイプルストーリーのモンスター情報を検索",
@@ -121,12 +133,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_equip ────────────────────────────────────────────────
+    # ── /maplestory equip ───────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_equip",
+    @maplestory.subcommand(
+        name="equip",
         description="Search for equipment in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷裝備", Locale.ja: "メイプル装備"},
+        name_localizations={Locale.zh_TW: "裝備", Locale.ja: "装備"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷裝備資訊",
             Locale.ja: "メイプルストーリーの装備情報を検索",
@@ -181,14 +193,14 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_scroll ───────────────────────────────────────────────
+    # ── /maplestory scroll ──────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_scroll",
+    @maplestory.subcommand(
+        name="scroll",
         description="Search for scrolls in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷捲軸", Locale.ja: "メイプル巻物"},
+        name_localizations={Locale.zh_TW: "卷軸", Locale.ja: "巻物"},
         description_localizations={
-            Locale.zh_TW: "搜尋楓之谷捲軸資訊",
+            Locale.zh_TW: "搜尋楓之谷卷軸資訊",
             Locale.ja: "メイプルストーリーの巻物情報を検索",
         },
     )
@@ -241,12 +253,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_npc ──────────────────────────────────────────────────
+    # ── /maplestory npc ─────────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_npc",
+    @maplestory.subcommand(
+        name="npc",
         description="Search for NPCs in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷npc", Locale.ja: "メイプルnpc"},
+        name_localizations={Locale.zh_TW: "npc", Locale.ja: "npc"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷 NPC 資訊",
             Locale.ja: "メイプルストーリーのNPC情報を検索",
@@ -296,12 +308,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_quest ────────────────────────────────────────────────
+    # ── /maplestory quest ───────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_quest",
+    @maplestory.subcommand(
+        name="quest",
         description="Search for quests in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷任務", Locale.ja: "メイプルクエスト"},
+        name_localizations={Locale.zh_TW: "任務", Locale.ja: "クエスト"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷任務資訊",
             Locale.ja: "メイプルストーリーのクエスト情報を検索",
@@ -354,12 +366,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_map ──────────────────────────────────────────────────
+    # ── /maplestory map ─────────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_map",
+    @maplestory.subcommand(
+        name="map",
         description="Search for maps in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷地圖", Locale.ja: "メイプルマップ"},
+        name_localizations={Locale.zh_TW: "地圖", Locale.ja: "マップ"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷地圖資訊",
             Locale.ja: "メイプルストーリーのマップ情報を検索",
@@ -414,12 +426,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_item ─────────────────────────────────────────────────
+    # ── /maplestory item ────────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_item",
+    @maplestory.subcommand(
+        name="item",
         description="Search for item drop sources in MapleStory",
-        name_localizations={Locale.zh_TW: "楓之谷物品", Locale.ja: "メイプルアイテム"},
+        name_localizations={Locale.zh_TW: "物品", Locale.ja: "アイテム"},
         description_localizations={
             Locale.zh_TW: "搜尋楓之谷物品的掉落來源",
             Locale.ja: "メイプルストーリーのアイテムドロップ元を検索",
@@ -480,12 +492,12 @@ class MapleStoryCogs(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
         return None
 
-    # ── /maple_stats ────────────────────────────────────────────────
+    # ── /maplestory stats ───────────────────────────────────────────
 
-    @nextcord.slash_command(
-        name="maple_stats",
+    @maplestory.subcommand(
+        name="stats",
         description="Get MapleStory database statistics",
-        name_localizations={Locale.zh_TW: "楓之谷統計", Locale.ja: "メイプル統計"},
+        name_localizations={Locale.zh_TW: "統計", Locale.ja: "統計"},
         description_localizations={
             Locale.zh_TW: "顯示楓之谷資料庫統計資訊",
             Locale.ja: "メイプルストーリーデータベース統計を表示",

@@ -719,7 +719,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME} Top 10",
-                description="### 尚未開張\n/blackjack 或 /dragon_gate 開局就會上榜",
+                description="### 尚未開張\n/games blackjack 或 /games dragon_gate 開局就會上榜",
                 color=_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
@@ -764,7 +764,7 @@ class EconomyCogs(commands.Cog):
         if not rows:
             embed = Embed(
                 title=f"💸 今日輸局累計 {CURRENCY_NAME}",
-                description="### 今天還沒有人輸錢\n/blackjack 或 /dragon_gate 開局就可能進榜",
+                description="### 今天還沒有人輸錢\n/games blackjack 或 /games dragon_gate 開局就可能進榜",
                 color=_LOSS_LEADERBOARD_COLOR,
             )
             await _send_expiring_followup(interaction=interaction, embed=embed)
