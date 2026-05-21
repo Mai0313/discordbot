@@ -65,7 +65,7 @@ class VideoCogs(commands.Cog):
             quality: The desired video quality.
         """
         await interaction.response.defer()
-        await interaction.edit_original_message(content="⏳ 正在下載影片，請稍候...")
+        await interaction.edit_original_message(content="-# 正在下載影片...")
 
         try:
             downloader = VideoDownloader(output_folder="./data/downloads")
@@ -82,18 +82,18 @@ class VideoCogs(commands.Cog):
 
                 if quality == "low":
                     await interaction.edit_original_message(
-                        content=f":x: 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                        content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                     )
                     return
 
                 await interaction.edit_original_message(
-                    content=f"⚠️ 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
+                    content=f"-# 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
                 )
                 with downloader.download(url=url, quality="low") as low_result:
                     file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
                     if low_result.filename.stat().st_size > _DISCORD_FILE_LIMIT_BYTES:
                         await interaction.edit_original_message(
-                            content=f":x: 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                            content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                         )
                         return
                     await self._deliver(
@@ -105,7 +105,7 @@ class VideoCogs(commands.Cog):
         except Exception:
             logfire.warn("Video download failed", _exc_info=True)
             with contextlib.suppress(Exception):
-                await interaction.edit_original_message(content=":x: 下載失敗\n檔案無法下載")
+                await interaction.edit_original_message(content="-# 檔案無法下載")
 
     async def _deliver(
         self, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
@@ -116,7 +116,7 @@ class VideoCogs(commands.Cog):
         ``content`` when a multipart file payload is attached, so we send the
         file as a separate followup and then remove the original placeholder.
         """
-        body = f"✅ 下載成功! 檔案大小: {file_size_mb:.1f}MB"
+        body = f"-# 檔案大小: {file_size_mb:.1f}MB"
         await interaction.followup.send(content=body, file=File(fp=file_path, filename=file_name))
         with contextlib.suppress(Exception):
             await interaction.delete_original_message()
