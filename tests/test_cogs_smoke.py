@@ -8,7 +8,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import nextcord
-from nextcord import File, Embed
+from nextcord import File, Embed, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot import cli
@@ -73,12 +73,15 @@ class DiscordPayload(TypedDict, total=False):
     wait: bool
     ephemeral: bool
     suppress: bool
+    allowed_mentions: AllowedMentions
 
 
 class OriginalEditPayload(TypedDict, total=False):
     """Payload captured from fake original interaction edits."""
 
     content: str
+    file: File
+    allowed_mentions: AllowedMentions
 
 
 class SelfTimeoutCall(TypedDict):
@@ -139,15 +142,10 @@ class FakeInteraction:
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edits: list[OriginalEditPayload] = []
-        self.deleted_original = False
 
     async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
         """Records an edit to the deferred original response."""
         self.edits.append(kwargs)
-
-    async def delete_original_message(self) -> None:
-        """Records deletion of the deferred original response."""
-        self.deleted_original = True
 
 
 class FakeUser:
@@ -401,12 +399,16 @@ async def test_video_deliver_and_download_branches(
 
     interaction = FakeInteraction()
     await cog._deliver(
-        interaction=interaction, file_size_mb=1.25, file_path=str(small), file_name=small.name
+        interaction=interaction,
+        file_size_mb=1.25,
+        file_path=small,
+        url="https://source.test/video",
     )
-    success_content = interaction.followup.sent[0]["content"]
+    success_content = interaction.edits[-1]["content"]
     assert isinstance(success_content, str)
-    assert success_content.startswith("✅ 下載成功")
-    assert interaction.deleted_original is True
+    assert success_content == "-# 檔案大小: 1.2MB\n-# 來源: <https://source.test/video>"
+    assert interaction.edits[-1]["file"] is not None
+    assert interaction.followup.sent == []
 
     downloader = DownloaderStub(
         results=[DownloadResultStub(filename=big), DownloadResultStub(filename=low)]
@@ -417,8 +419,9 @@ async def test_video_deliver_and_download_branches(
         cog, retry_interaction, url="https://x.test", quality="best"
     )
     assert [call["quality"] for call in downloader.calls] == ["best", "low"]
-    assert retry_interaction.followup.sent[-1]["file"] is not None
-    assert retry_interaction.deleted_original is True
+    assert retry_interaction.edits[-1]["file"] is not None
+    assert "來源: <https://x.test>" in retry_interaction.edits[-1]["content"]
+    assert retry_interaction.followup.sent == []
 
     fail_interaction = FakeInteraction()
     monkeypatch.setattr(

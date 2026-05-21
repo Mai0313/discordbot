@@ -1,10 +1,11 @@
 """Slash command cog for downloading videos through yt-dlp."""
 
+from pathlib import Path
 import contextlib
 
 import logfire
 import nextcord
-from nextcord import File, Locale, Interaction, SlashOption
+from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
@@ -75,8 +76,8 @@ class VideoCogs(commands.Cog):
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
-                        file_path=str(result.filename),
-                        file_name=result.filename.name,
+                        file_path=result.filename,
+                        url=url,
                     )
                     return
 
@@ -99,8 +100,8 @@ class VideoCogs(commands.Cog):
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
-                        file_path=str(low_result.filename),
-                        file_name=low_result.filename.name,
+                        file_path=low_result.filename,
+                        url=url,
                     )
         except Exception:
             logfire.warn("Video download failed", _exc_info=True)
@@ -108,18 +109,15 @@ class VideoCogs(commands.Cog):
                 await interaction.edit_original_message(content="-# 檔案無法下載")
 
     async def _deliver(
-        self, interaction: Interaction, file_size_mb: float, file_path: str, file_name: str
+        self, interaction: Interaction, file_size_mb: float, file_path: Path, url: str
     ) -> None:
-        """Sends the downloaded file as a fresh followup and deletes the placeholder.
-
-        ``interaction.edit_original_message(content=…, file=…)`` drops
-        ``content`` when a multipart file payload is attached, so we send the
-        file as a separate followup and then remove the original placeholder.
-        """
-        body = f"-# 檔案大小: {file_size_mb:.1f}MB"
-        await interaction.followup.send(content=body, file=File(fp=file_path, filename=file_name))
-        with contextlib.suppress(Exception):
-            await interaction.delete_original_message()
+        """Edits the deferred placeholder into the final downloaded file response."""
+        body = f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
+        await interaction.edit_original_message(
+            content=body,
+            file=File(fp=file_path, filename=file_path.name),
+            allowed_mentions=AllowedMentions.none(),
+        )
 
 
 # 註冊 Cog

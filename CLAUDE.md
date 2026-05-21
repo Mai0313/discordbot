@@ -99,7 +99,7 @@ make gen-docs                    # regenerate docs/ from sources
 ## Other Cogs
 
 - `parse_threads.py` watches for `threads.net` and `threads.com` URLs and uses reactions for status. It adds no reward beyond the global message reward.
-- `video.py` keeps progress text on the deferred original message and sends the final file via followup. Do not collapse file delivery into `edit_original_message`; Discord may drop content on multipart edits.
+- `video.py` keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
 - `auto_unmute.py` clears timeouts applied to the bot, finds the moderator from recent audit log entries, and replies in the last active human channel or the guild system channel.
 - `log_msg.py` logs human messages and this bot's own replies, never third-party bots. Streaming replies converge via UPSERT on `discord_message_id`.
 - `log_msg.py` owns module-level `_sql_engine`; do not move it to a per-message cached property.
