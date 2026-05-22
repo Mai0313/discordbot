@@ -95,7 +95,7 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the stock company maintenance CLI."""
-    asyncio.run(main=_async_main(argv=argv))
+    asyncio.run(_async_main(argv=argv))
 
 
 if __name__ == "__main__":
