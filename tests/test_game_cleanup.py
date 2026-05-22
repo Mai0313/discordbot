@@ -1,4 +1,4 @@
-"""Tests for casino game response cleanup helpers."""
+"""Tests for public response cleanup helpers."""
 
 from typing import TYPE_CHECKING, cast
 import asyncio
@@ -10,14 +10,14 @@ import nextcord
 from nextcord import Message, Interaction
 
 from discordbot.cogs import economy
-from discordbot.cogs._games.cleanup import (
-    GAME_RESPONSE_TTL_SECONDS,
-    PendingGameMessage,
-    track_game_message,
-    delete_game_message_after,
-    list_pending_game_messages,
-    delete_tracked_game_messages,
-    schedule_game_message_delete,
+from discordbot.utils.message_cleanup import (
+    PUBLIC_MESSAGE_TTL_SECONDS,
+    PendingPublicMessage,
+    track_public_message,
+    delete_public_message_after,
+    list_pending_public_messages,
+    delete_tracked_public_messages,
+    schedule_public_message_delete,
 )
 
 if TYPE_CHECKING:
@@ -209,26 +209,26 @@ class _UserStub:
 def isolated_cleanup_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keeps cleanup DB writes out of the real data directory."""
     monkeypatch.setattr(
-        "discordbot.cogs._games.cleanup._PENDING_GAME_MESSAGE_DB_PATH",
+        "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
         tmp_path / "game_cleanup.db",
     )
 
 
-async def test_delete_game_message_after_waits_then_deletes() -> None:
-    """Game response cleanup deletes the message after the configured delay."""
+async def test_delete_public_message_after_waits_then_deletes() -> None:
+    """Public response cleanup deletes the message after the configured delay."""
     message = _DeletableMessageStub()
 
-    await delete_game_message_after(message=cast("Message", message), delay=0)
+    await delete_public_message_after(message=cast("Message", message), delay=0)
 
     assert message.delete_calls == 1
 
 
-async def test_track_game_message_persists_message_identity() -> None:
-    """Game response tracking stores IDs plus readable guild/channel names."""
+async def test_track_public_message_persists_message_identity() -> None:
+    """Public response tracking stores IDs plus readable guild/channel names."""
     message = _DeletableMessageStub(
         message_id=10, channel_id=20, guild_name="Mai Server", channel_name="casino"
     )
-    expected = PendingGameMessage(
+    expected = PendingPublicMessage(
         channel_id=20,
         message_id=10,
         guild_name="Mai Server",
@@ -236,15 +236,15 @@ async def test_track_game_message_persists_message_identity() -> None:
         user_name="alice",
     )
 
-    record = await track_game_message(message=cast("Message", message), user_name="alice")
+    record = await track_public_message(message=cast("Message", message), user_name="alice")
 
     assert record == expected
-    assert await list_pending_game_messages() == [expected]
-    await track_game_message(message=cast("Message", message))
-    assert await list_pending_game_messages() == [expected]
+    assert await list_pending_public_messages() == [expected]
+    await track_public_message(message=cast("Message", message))
+    assert await list_pending_public_messages() == [expected]
 
 
-async def test_track_game_message_migrates_existing_cleanup_table(tmp_path: Path) -> None:
+async def test_track_public_message_migrates_existing_cleanup_table(tmp_path: Path) -> None:
     """Existing cleanup databases gain readable metadata columns on first write."""
     db_path = tmp_path / "game_cleanup.db"
     with sqlite3.connect(database=db_path) as conn:
@@ -261,7 +261,7 @@ async def test_track_game_message_migrates_existing_cleanup_table(tmp_path: Path
         message_id=30, channel_id=40, guild_name="Mai Server", channel_name="casino"
     )
 
-    await track_game_message(message=cast("Message", message), user_name="alice")
+    await track_public_message(message=cast("Message", message), user_name="alice")
 
     with sqlite3.connect(database=db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_game_message)")}
@@ -275,61 +275,63 @@ async def test_track_game_message_migrates_existing_cleanup_table(tmp_path: Path
     assert rows == [(30, 40, "Mai Server", "casino", "alice")]
 
 
-async def test_delete_game_message_after_forgets_successful_cleanup() -> None:
+async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
     """Successful TTL cleanup removes the persisted restart record."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_game_message(message=cast("Message", message))
+    await track_public_message(message=cast("Message", message))
 
-    await delete_game_message_after(message=cast("Message", message), delay=0)
+    await delete_public_message_after(message=cast("Message", message), delay=0)
 
     assert message.delete_calls == 1
-    assert await list_pending_game_messages() == []
+    assert await list_pending_public_messages() == []
 
 
-async def test_delete_tracked_game_messages_deletes_stale_restart_records() -> None:
+async def test_delete_tracked_public_messages_deletes_stale_restart_records() -> None:
     """Startup cleanup deletes persisted Discord messages and clears the records."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_game_message(message=cast("Message", message))
+    await track_public_message(message=cast("Message", message))
     bot = _BotStub()
 
-    await delete_tracked_game_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_public_messages(bot=cast("commands.Bot", bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
-    assert await list_pending_game_messages() == []
+    assert await list_pending_public_messages() == []
 
 
-async def test_delete_tracked_game_messages_skips_non_messageable_cached_channel() -> None:
+async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
     """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_game_message(message=cast("Message", message))
+    await track_public_message(message=cast("Message", message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())
 
-    await delete_tracked_game_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_public_messages(bot=cast("commands.Bot", bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
-    assert await list_pending_game_messages() == []
+    assert await list_pending_public_messages() == []
 
 
-async def test_delete_tracked_game_messages_keeps_unresolved_channel_records() -> None:
+async def test_delete_tracked_public_messages_keeps_unresolved_channel_records() -> None:
     """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_game_message(message=cast("Message", message))
+    await track_public_message(message=cast("Message", message))
 
-    await delete_tracked_game_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
+    await delete_tracked_public_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
 
-    assert await list_pending_game_messages() == [PendingGameMessage(channel_id=20, message_id=10)]
+    assert await list_pending_public_messages() == [
+        PendingPublicMessage(channel_id=20, message_id=10)
+    ]
 
 
 async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Game-related economy embeds must retrieve their message before cleanup."""
+    """Public economy embeds must retrieve their message before cleanup."""
     scheduled_messages: list[_SentFollowupMessageStub] = []
     scheduled_user_names: list[str | None] = []
 
-    def fake_schedule_game_message_delete(
+    def fake_schedule_public_message_delete(
         message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
     ) -> None:
         """Records the message scheduled for later deletion."""
@@ -338,8 +340,8 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
 
     monkeypatch.setattr(
         target=economy,
-        name="schedule_game_message_delete",
-        value=fake_schedule_game_message_delete,
+        name="schedule_public_message_delete",
+        value=fake_schedule_public_message_delete,
     )
     interaction = _InteractionStub()
     embed = nextcord.Embed(title="balance")
@@ -358,10 +360,10 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
 async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Personal economy embeds should not enter the game cleanup scheduler."""
+    """Personal economy embeds should not enter the public cleanup scheduler."""
     scheduled_messages: list[_SentFollowupMessageStub] = []
 
-    def fake_schedule_game_message_delete(
+    def fake_schedule_public_message_delete(
         message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
     ) -> None:
         """Records any unexpected scheduler calls."""
@@ -369,8 +371,8 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
 
     monkeypatch.setattr(
         target=economy,
-        name="schedule_game_message_delete",
-        value=fake_schedule_game_message_delete,
+        name="schedule_public_message_delete",
+        value=fake_schedule_public_message_delete,
     )
     interaction = _InteractionStub()
     embed = nextcord.Embed(title="balance")
@@ -382,18 +384,20 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     assert scheduled_messages == []
 
 
-async def test_delete_game_message_after_ignores_already_deleted_message() -> None:
+async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
     """Manual deletion before cleanup should not surface as a task failure."""
-    await delete_game_message_after(message=cast("Message", _AlreadyDeletedMessageStub()), delay=0)
+    await delete_public_message_after(
+        message=cast("Message", _AlreadyDeletedMessageStub()), delay=0
+    )
 
 
-async def test_schedule_game_message_delete_uses_default_ttl(
+async def test_schedule_public_message_delete_uses_default_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scheduling uses the shared three-minute TTL by default."""
     scheduled_delay: float | None = None
 
-    async def fake_delete_game_message_after(
+    async def fake_delete_public_message_after(
         message: Message, delay: float, user_name: str | None = None
     ) -> None:
         """Records the delay requested by the scheduler."""
@@ -401,10 +405,11 @@ async def test_schedule_game_message_delete_uses_default_ttl(
         scheduled_delay = delay
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.cleanup.delete_game_message_after", fake_delete_game_message_after
+        "discordbot.utils.message_cleanup.delete_public_message_after",
+        fake_delete_public_message_after,
     )
 
-    schedule_game_message_delete(message=cast("Message", _DeletableMessageStub()))
+    schedule_public_message_delete(message=cast("Message", _DeletableMessageStub()))
     await asyncio.sleep(delay=0)
 
-    assert scheduled_delay == GAME_RESPONSE_TTL_SECONDS
+    assert scheduled_delay == PUBLIC_MESSAGE_TTL_SECONDS

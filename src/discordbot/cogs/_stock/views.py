@@ -11,12 +11,16 @@ from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs._stock.chart import build_price_chart
-from discordbot.cogs._games.cleanup import track_game_message, forget_game_message
 from discordbot.cogs._stock.database import (
     get_stock_news,
     get_stock_detail,
     list_market_quotes,
     settle_stock_operation,
+)
+from discordbot.utils.message_cleanup import (
+    track_public_message,
+    delete_public_message,
+    forget_public_message,
 )
 from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._stock.presentation import (
@@ -78,15 +82,7 @@ class StockPublicView(View):
         """Deletes tracked public stock messages after 180 seconds without interaction."""
         if self.message is None or not self.delete_on_timeout:
             return
-        message_id = getattr(self.message, "id", None)
-        try:
-            await self.message.delete()
-        except nextcord.NotFound:
-            pass
-        except (nextcord.Forbidden, nextcord.HTTPException):
-            return
-        if isinstance(message_id, int):
-            await forget_game_message(message_id=message_id)
+        await delete_public_message(message=self.message)
 
 
 class _StockQuantitySubmission(BaseModel):
@@ -542,7 +538,7 @@ async def edit_stock_message(
         except nextcord.NotFound:
             message_id = getattr(target_message, "id", None)
             if isinstance(message_id, int):
-                await forget_game_message(message_id=message_id)
+                await forget_public_message(message_id=message_id)
     followup_kwargs: dict[str, object] = {"embed": embed, "view": view, "wait": True}
     if file is not None:
         followup_kwargs["file"] = file
@@ -550,7 +546,7 @@ async def edit_stock_message(
     if view is not None:
         view.bind_message(message=sent_message)
     user_name = getattr(require_stock_user(interaction=interaction), "name", None)
-    await track_game_message(message=sent_message, user_name=user_name)
+    await track_public_message(message=sent_message, user_name=user_name)
 
 
 __all__ = [

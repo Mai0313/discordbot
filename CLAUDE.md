@@ -59,7 +59,7 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Economy
 
-- SQLite files are separate: `data/messages.db` for message logs, `data/economy.db` for per-user 虛擬歡樂豆, `data/global_state.db` for bot-wide shared state such as jackpot pools, and `data/game_cleanup.db` for cleanup targets.
+- SQLite files are separate: `data/messages.db` for message logs, `data/economy.db` for per-user 虛擬歡樂豆, `data/global_state.db` for bot-wide shared state such as jackpot pools, and `data/game_cleanup.db` for public message cleanup targets.
 - `cogs/_economy/database.py` owns the module-level async engines `_engine` and `_global_state_engine`. Do not move them to `cached_property`; tests monkeypatch those engines and expect helpers to bind sessions directly from the current object.
 - `UserAccount` has no `guild_id`. Identity, VIP, check-ins, admin flags, central banker flags, and leaderboard visibility are cross-server by design. Spendable balances and gross totals live in `user_wallet`, which also denormalizes `name` for direct DB inspection; long-term loans live in `loan_proposal` and `loan_contract`; daily casino counters live in `casino_account`.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths use `utils.avatars.guild_avatar_url(...)` with guild context so guild avatars are stored when available, falling back to global `display_avatar`. Do not backfill existing avatar URLs; they refresh naturally on later writes.
@@ -106,7 +106,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"` in `data/global_state.db`. Do not route it through the house ledger.
 - Dragon Gate ante, losses, wins, leave refunds, and timeout refunds settle through jackpot helpers. Losses clamp at balance 0.
 - On Dragon Gate leave or timeout, positive per-player running delta is refunded into the pool unless the whole-pool win branch already cleared the jackpot.
-- Interactive game and lobby views use 180-second idle timeouts. Terminal public messages schedule deletion 180 seconds after settlement or send.
+- Interactive game and lobby views use 180-second idle timeouts. Terminal public messages schedule deletion 180 seconds after settlement or send through `utils.message_cleanup`; do not add cog-local delete/forget loops.
 - `build_dealer_talk_embed` is the dedicated dealer-talk embed. In-progress and final game messages may send multiple embeds in order `[dealer talk, main, history?]`.
 - Discord markdown headings render reliably only inside `embed.description`. Put card, total, and result sections there; use fields for auxiliary details.
 - Dealer identity comes from `bot.user`. The message is still sent by the bot account so `log_msg.py` records the speaker correctly.

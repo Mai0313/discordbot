@@ -117,7 +117,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 - `economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约，以及赌场每日统计。
 - `stock.db`：DB-managed 模拟 stock profile、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
 - `global_state.db`：bot-wide shared state，例如 jackpot pool。
-- `game_cleanup.db`：公开 game 或 economy response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，用于 bot 重启后的清理。
+- `game_cleanup.db`：公开 expiring response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，例如 game、economy 与 stock messages，用于 bot 重启后的清理。
 - `model_prices.json`：缓存的 LiteLLM pricing metadata，用于 AI 回复费用估算。
 - `downloads/` 与 `threads/`：临时 media scratch folders。
 

@@ -117,7 +117,7 @@ This bot stores runtime data locally under `data/`.
 - `economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, and casino daily counters.
 - `stock.db`: DB-managed simulated stock profiles, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
 - `global_state.db`: bot-wide shared state such as jackpot pools.
-- `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public game or economy responses that should be cleaned up after restart.
+- `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public expiring responses such as game, economy, and stock messages that should be cleaned up after restart.
 - `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.
 - `downloads/` and `threads/`: temporary media scratch folders.
 

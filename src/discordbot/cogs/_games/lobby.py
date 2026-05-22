@@ -12,7 +12,7 @@ from nextcord import Embed, Message, ButtonStyle, Interaction
 from nextcord.ui import Item, View, Button
 
 from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettlementBatchResult
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
+from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import apply_jackpot_settlement_batch
 from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
 
@@ -97,7 +97,7 @@ class BaseGameLobbyView(View):
         embed = self._build_lobby_embed(status="Lobby 已逾時")
         with contextlib.suppress(Exception):
             await self.message.edit(embed=embed, view=self)
-        schedule_game_message_delete(message=self.message, user_name=self.owner.account_name)
+        schedule_public_message_delete(message=self.message, user_name=self.owner.account_name)
 
     @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
     async def join(self, _button: Button, interaction: Interaction) -> None:

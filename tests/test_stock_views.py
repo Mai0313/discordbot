@@ -216,7 +216,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
 
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
     monkeypatch.setattr(stock, "_schedule_stock_news_refresh", fake_schedule_stock_news_refresh)
-    monkeypatch.setattr(stock, "track_game_message", fake_track)
+    monkeypatch.setattr(stock, "track_public_message", fake_track)
     cog = StockCogs(bot=SimpleNamespace())
     cog.__dict__["news_ai"] = SimpleNamespace(generate=lambda _profile: None)
     interaction = InteractionStub()
@@ -555,8 +555,8 @@ async def test_edit_stock_message_publicly_recovers_when_target_was_deleted(
         """Records the replacement cleanup row."""
         tracked.append(message)
 
-    monkeypatch.setattr(stock_views, "forget_game_message", fake_forget)
-    monkeypatch.setattr(stock_views, "track_game_message", fake_track)
+    monkeypatch.setattr(stock_views, "forget_public_message", fake_forget)
+    monkeypatch.setattr(stock_views, "track_public_message", fake_track)
     interaction = InteractionStub()
     interaction.response.deferred = True
     interaction.message = DeletedMessageStub()
@@ -579,22 +579,21 @@ async def test_edit_stock_message_publicly_recovers_when_target_was_deleted(
 async def test_stock_public_view_timeout_deletes_bound_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The active stock view deletes the public message after idle timeout."""
-    forgotten: list[int] = []
+    """The active stock view uses shared public-message cleanup after idle timeout."""
+    deleted: list[MessageStub] = []
 
-    async def fake_forget(message_id: int) -> None:
-        """Records forgotten cleanup rows."""
-        forgotten.append(message_id)
+    async def fake_delete(message: MessageStub) -> None:
+        """Records delegated public-message deletion."""
+        deleted.append(message)
 
-    monkeypatch.setattr(stock_views, "forget_game_message", fake_forget)
+    monkeypatch.setattr(stock_views, "delete_public_message", fake_delete)
     message = MessageStub()
     view = StockPublicView(owner_id=1)
     view.bind_message(message=message)
 
     await view.on_timeout()
 
-    assert message.deleted
-    assert forgotten == [message.id]
+    assert deleted == [message]
 
 
 def test_stock_readme_and_help_metadata_are_covered() -> None:

@@ -17,7 +17,7 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanLenderType,
 )
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
+from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     top_n,
     buy_vip,
@@ -113,7 +113,7 @@ async def _send_expiring_followup(
     else:
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
     user_name = interaction.user.name if interaction.user is not None else None
-    schedule_game_message_delete(message=message, user_name=user_name)
+    schedule_public_message_delete(message=message, user_name=user_name)
 
 
 async def _send_loan_request_followup(interaction: Interaction, embed: Embed, view: View) -> None:
@@ -199,7 +199,7 @@ class CentralBankLoanDecisionView(View):
         user_name = None
         if interaction is not None and interaction.user is not None:
             user_name = interaction.user.name
-        schedule_game_message_delete(message=message, user_name=user_name)
+        schedule_public_message_delete(message=message, user_name=user_name)
 
     async def on_timeout(self) -> None:
         """Rejects a stale central-bank request and cleans up its message."""
@@ -381,7 +381,7 @@ class CreditLoanDecisionView(View):
         user_name = None
         if interaction is not None and interaction.user is not None:
             user_name = interaction.user.name
-        schedule_game_message_delete(message=message, user_name=user_name)
+        schedule_public_message_delete(message=message, user_name=user_name)
 
     async def on_timeout(self) -> None:
         """Rejects a stale personal credit request and cleans up its message."""

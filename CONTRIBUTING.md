@@ -121,7 +121,7 @@ def setup(bot: commands.Bot) -> None:
 - Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.
 - `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and daily loss leaderboards omit rows where it is set; maintenance code should opt into hidden rows when it needs a true full-account sweep.
 - Blackjack house ledger and Dragon Gate jackpot pool are separate counterparties. Do not route Dragon Gate through the house ledger.
-- Interactive game and public economy responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, check-in, VIP, and admin-error replies are not tracked.
+- Interactive game, public economy, and public stock responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, check-in, VIP, and admin-error replies are not tracked.
 
 ## Tests And Quality Gates
 

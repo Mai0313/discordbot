@@ -21,7 +21,6 @@ from discordbot.typings.games import (
     BlackjackDealerStepSource,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
@@ -35,6 +34,7 @@ from discordbot.cogs._games.blackjack import (
     committed_wagers,
     is_five_card_twenty_one,
 )
+from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -1028,7 +1028,7 @@ class BlackjackView(View):
                 message=message, results=results, final_embed=final_embed
             )
         )
-        schedule_game_message_delete(message=message, user_name=self.author_name)
+        schedule_public_message_delete(message=message, user_name=self.author_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""

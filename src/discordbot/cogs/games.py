@@ -21,10 +21,10 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
-from discordbot.cogs._games.cleanup import (
-    track_game_message,
-    delete_tracked_game_messages,
-    schedule_game_message_delete,
+from discordbot.utils.message_cleanup import (
+    track_public_message,
+    delete_tracked_public_messages,
+    schedule_public_message_delete,
 )
 from discordbot.cogs._economy.database import get_balance
 from discordbot.cogs._games.dragon_gate import ANTE
@@ -102,11 +102,11 @@ class GamesCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Deletes stale game messages left by a previous bot process."""
+        """Deletes stale public messages left by a previous bot process."""
         if self._startup_cleanup_done:
             return
         self._startup_cleanup_done = True
-        await delete_tracked_game_messages(bot=self.bot)
+        await delete_tracked_public_messages(bot=self.bot)
 
     @staticmethod
     async def _identity_from_user(
@@ -271,7 +271,7 @@ class GamesCogs(commands.Cog):
                 embed=self._insufficient_balance_embed(balance=participant_result.balance),
                 wait=True,
             )
-            schedule_game_message_delete(message=message, user_name=interaction.user.name)
+            schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
         table_bet = owner.bet
@@ -301,7 +301,7 @@ class GamesCogs(commands.Cog):
             max_players=MAX_BLACKJACK_PLAYERS,
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
-        await track_game_message(message=message, user_name=owner.account_name)
+        await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 
     @games.subcommand(
@@ -337,7 +337,7 @@ class GamesCogs(commands.Cog):
                 ),
                 wait=True,
             )
-            schedule_game_message_delete(message=message, user_name=interaction.user.name)
+            schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
         dealer_identity = await self._dealer_identity(guild=getattr(interaction, "guild", None))
@@ -362,7 +362,7 @@ class GamesCogs(commands.Cog):
             owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
-        await track_game_message(message=message, user_name=owner.account_name)
+        await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 
 

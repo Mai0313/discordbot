@@ -14,8 +14,8 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._stock.news import StockNewsAI
 from discordbot.cogs._stock.views import StockMarketView, require_stock_user
-from discordbot.cogs._games.cleanup import track_game_message
 from discordbot.cogs._stock.database import list_market_quotes, ensure_due_stock_news
+from discordbot.utils.message_cleanup import track_public_message
 from discordbot.cogs._stock.presentation import build_market_embed
 
 
@@ -62,7 +62,7 @@ class StockCogs(commands.Cog):
             embed=build_market_embed(quotes=quotes), view=view, wait=True
         )
         view.bind_message(message=message)
-        await track_game_message(message=message, user_name=user.name)
+        await track_public_message(message=message, user_name=user.name)
 
 
 def _schedule_stock_news_refresh(news_ai: StockNewsAI) -> None:

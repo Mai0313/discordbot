@@ -17,7 +17,7 @@ from discordbot.cogs._games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
+from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
     get_jackpot_snapshot,
@@ -827,7 +827,7 @@ class DragonGateView(View):
                 history_embed=history_embed,
             )
         )
-        schedule_game_message_delete(message=message, user_name=self.owner.account_name)
+        schedule_public_message_delete(message=message, user_name=self.owner.account_name)
 
     async def _refresh_settlement_line_later(
         self,

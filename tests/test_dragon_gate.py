@@ -297,11 +297,11 @@ def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) 
 
     monkeypatch.setattr("discordbot.cogs._games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.schedule_game_message_delete",
+        "discordbot.cogs._games.dragon_gate_views.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.schedule_game_message_delete",
+        "discordbot.cogs._games.lobby.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 
@@ -683,7 +683,7 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         "discordbot.cogs._games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.schedule_game_message_delete",
+        "discordbot.cogs._games.lobby.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 
@@ -879,7 +879,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         "discordbot.cogs._games.dragon_gate_views.apply_jackpot_settlement", capped_settlement
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.schedule_game_message_delete",
+        "discordbot.cogs._games.dragon_gate_views.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 

@@ -603,10 +603,10 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     def record_scheduled(
         message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
     ) -> None:
-        """Records game cleanup scheduling from economy commands."""
+        """Records public cleanup scheduling from economy commands."""
         scheduled.append(message)
 
-    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
@@ -872,7 +872,7 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
 
     credit_message = FakeDiscordMessage()
     credit_view = economy.CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
@@ -961,7 +961,7 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     interaction = FakeInteraction(user=sender)
     interaction.guild = guild
     monkeypatch.setattr(economy, "transfer", record_transfer)
-    monkeypatch.setattr(economy, "schedule_game_message_delete", ignore_scheduled_game_message)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
 
     await EconomyCogs.give.callback(cog, interaction, member=receiver, amount=100)
@@ -990,7 +990,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "top_losers", daily_losses)
-    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1020,7 +1020,7 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "top_losers", no_daily_losses)
-    monkeypatch.setattr(economy, "schedule_game_message_delete", record_scheduled)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1239,7 +1239,7 @@ async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseR
     return VipPurchaseResult(new_balance=500_000, cost=VIP_PURCHASE_COST)
 
 
-def ignore_scheduled_game_message(
+def ignore_scheduled_public_message(
     message: FakeDiscordMessage, delay: float = 180, user_name: str | None = None
 ) -> None:
     """Ignores cleanup scheduling in command smoke tests."""
@@ -1300,7 +1300,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    monkeypatch.setattr(games, "schedule_game_message_delete", ignore_scheduled_game_message)
+    monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
@@ -1488,7 +1488,7 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
         """Records the bot passed to startup cleanup."""
         calls.append(bot)
 
-    monkeypatch.setattr(games, "delete_tracked_game_messages", record_cleanup)
+    monkeypatch.setattr(games, "delete_tracked_public_messages", record_cleanup)
     cog = GamesCogs(bot=bot)
 
     await cog.on_ready()
