@@ -57,13 +57,18 @@ BCAT_MAX_TICK_CHANGE_BPS = 450
 BCAT_NEWS_CADENCE_HOURS = 8
 
 
-def test_stock_news_prompt_and_fallback_templates_are_absurd() -> None:
-    """Stock news copy should stay fictional, goofy, and bounded for market impact."""
-    assert "absurd" in STOCK_NEWS_PROMPT
-    assert "flat tire" in STOCK_NEWS_PROMPT
-    assert any("爆胎" in template for template, _sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES)
+def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None:
+    """Stock news copy should stay fictional, safe, and bounded for market impact."""
+    assert "fictional" in STOCK_NEWS_PROMPT
+    assert "Do not claim this is real financial news" in STOCK_NEWS_PROMPT
+    assert "Do not mention real people" in STOCK_NEWS_PROMPT
+    assert "-180 to 180" in STOCK_NEWS_PROMPT
     assert all(
         -180 <= sentiment_bps <= 180 for _template, sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES
+    )
+    assert all(
+        "{name}" in template or "{symbol}" in template
+        for template, _sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES
     )
 
 
