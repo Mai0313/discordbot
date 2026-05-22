@@ -79,7 +79,7 @@ _HELP_CONTENT = {
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
         "stocks": (
             "**模擬股市**\n"
-            "`/stock` 開啟 market UI，可以看價格、news、position、chart，也能做 supply-limited buy、short、cover。"
+            "`/stock` 開啟 market UI，可以看價格、news、position、chart，也能建立受 supply cap 限制的 buy/short，或執行 sell/cover 出場。"
         ),
         "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
         "games": (
