@@ -510,6 +510,14 @@ async def upsert_stock_profile(
             existing.mean_reversion_bps = profile.mean_reversion_bps
             existing.max_tick_change_bps = profile.max_tick_change_bps
             existing.news_cadence_hours = profile.news_cadence_hours
+            if existing.price_cents != profile.price_cents:
+                existing.price_cents = profile.price_cents
+                await _upsert_price_tick(
+                    session=session,
+                    symbol=normalized_symbol,
+                    price_cents=profile.price_cents,
+                    created_at=tick_boundary(dt=effective_now),
+                )
             existing.updated_at = effective_now
         await session.commit()
         return _profile_view(profile=existing)
@@ -668,6 +676,19 @@ async def _insert_price_tick_or_existing(
         .limit(1)
     )
     return existing.scalar_one()
+
+
+async def _upsert_price_tick(
+    session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
+) -> None:
+    """Inserts or replaces the maintenance price tick for a boundary."""
+    await session.execute(
+        statement=insert(StockPriceTick)
+        .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
+        .on_conflict_do_update(
+            index_elements=["symbol", "created_at"], set_={"price_cents": price_cents}
+        )
+    )
 
 
 async def _news_rows_for_boundaries(

@@ -226,11 +226,43 @@ async def test_stock_profile_upsert_manages_database_company(stock_empty_db: Non
         )
     assert tick_count is not None
 
-    updated = await _upsert_bcat_profile(name="資料庫貓科技", category="DB managed")
+    updated = await _upsert_bcat_profile(
+        price_cents=12_345, name="資料庫貓科技", category="DB managed"
+    )
 
     assert updated.name == "資料庫貓科技"
     assert updated.category == "DB managed"
+    assert updated.price_cents == 12_345
     assert len(await stock_db.list_stock_profiles()) == 1
+    async with stock_db.open_stock_session() as session:
+        latest_tick = await session.scalar(
+            statement=select(stock_db.StockPriceTick)
+            .where(stock_db.StockPriceTick.symbol == BCAT_SYMBOL)
+            .order_by(stock_db.StockPriceTick.created_at.desc())
+            .limit(1)
+        )
+    assert latest_tick is not None
+    assert latest_tick.price_cents == 12_345
+
+
+def test_stock_profile_upsert_rejects_invalid_share_structure() -> None:
+    """DB-owned company payloads reject impossible share counts before persistence."""
+    with pytest.raises(ValueError, match="float_shares cannot exceed total_shares"):
+        StockProfileUpsert(
+            symbol="TEST",
+            name="Test Company",
+            category="Test",
+            price_cents=100,
+            total_shares=100,
+            float_shares=101,
+            base_volatility_bps=1,
+            volatility_amplifier_bps=100,
+            liquidity_shares=1,
+            fair_value_cents=100,
+            mean_reversion_bps=1,
+            max_tick_change_bps=1,
+            news_cadence_hours=8,
+        )
 
 
 async def test_stock_schema_migrates_mvp_profile_and_news_columns(

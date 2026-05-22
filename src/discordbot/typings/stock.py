@@ -1,8 +1,8 @@
 from enum import StrEnum
-from typing import Final
+from typing import Self, Final
 from datetime import datetime
 
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict, model_validator
 
 STOCK_TICK_SECONDS: Final[int] = 60 * 60
 MAX_TICKS_PER_INTERACTION: Final[int] = 24
@@ -78,6 +78,14 @@ class StockProfileUpsert(BaseModel):
     mean_reversion_bps: int = Field(ge=0)
     max_tick_change_bps: int = Field(ge=1)
     news_cadence_hours: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_share_structure(self) -> Self:
+        """Validates share counts that depend on each other."""
+        if self.float_shares > self.total_shares:
+            msg = "float_shares cannot exceed total_shares"
+            raise ValueError(msg)
+        return self
 
 
 class StockPositionView(BaseModel):
