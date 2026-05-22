@@ -31,7 +31,7 @@ from discordbot.cogs._stock.views import (
     StockPostTradeView,
     StockQuantityModal,
 )
-from discordbot.cogs._stock.presentation import build_settlement_embed
+from discordbot.cogs._stock.presentation import build_settlement_embed, build_stock_detail_embed
 
 BCAT_SYMBOL = "BCAT"
 BCAT_NAME = "破貓科技股份有限公司"
@@ -350,6 +350,17 @@ async def test_stock_detail_buttons_edit_same_public_message(
     await back.callback(back_interaction)
     assert isinstance(back_interaction.response.sent[0]["view"], StockMarketView)
     assert back_interaction.response.sent[0]["view"].owner_id == view.owner_id
+
+
+def test_stock_detail_embed_uses_localized_user_labels() -> None:
+    """The public stock detail embed avoids placeholder-like mixed UI labels."""
+    embed = build_stock_detail_embed(detail=_detail(), chart_filename="chart.png")
+
+    field_names = {field.name for field in embed.fields}
+    assert "目前操作使用者" in field_names
+    assert "可用資金" in field_names
+    assert "目前操作 user" not in field_names
+    assert "操作 user 資金" not in field_names
 
 
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:

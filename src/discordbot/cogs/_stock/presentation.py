@@ -74,11 +74,11 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
     )
     embed = Embed(title="📊 股票明細", description=description, color=DETAIL_COLOR)
     embed.add_field(
-        name="目前操作 user",
+        name="目前操作使用者",
         value=detail.position.user_name or str(detail.position.user_id),
         inline=True,
     )
-    embed.add_field(name="操作 user 資金", value=currency_text(amount=detail.balance), inline=True)
+    embed.add_field(name="可用資金", value=currency_text(amount=detail.balance), inline=True)
     embed.add_field(
         name="持股",
         value=(
