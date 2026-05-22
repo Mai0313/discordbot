@@ -1142,6 +1142,76 @@ async def test_stock_short_clamps_to_available_borrow(
     assert "借券" in blocked.error
 
 
+async def test_stock_pending_operations_reserve_supply(
+    stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-final operation legs reserve float and borrow capacity until reconciliation."""
+    await _upsert_illiquid_profile()
+    await adjust_balance(user_id=1, name="alice", delta=200_000)
+    await adjust_balance(user_id=2, name="bob", delta=1_000)
+    await adjust_balance(user_id=3, name="carol", delta=100_000_000)
+    await adjust_balance(user_id=4, name="dave", delta=1_000)
+    original_apply = stock_db.apply_ordered_wallet_deltas
+
+    async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
+        """Simulates uncertainty after the stock operation reserves market supply."""
+        raise RuntimeError("wallet unavailable")
+
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
+    pending_long = await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1,000",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    pending_short = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=3,
+        user_name="carol",
+        requested_action=StockAction.SHORT,
+        quantity=str(BCAT_FLOAT_SHARES),
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", original_apply)
+
+    blocked_long = await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=2,
+        user_name="bob",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    blocked_short = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=4,
+        user_name="dave",
+        requested_action=StockAction.SHORT,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    audits = {audit.symbol: audit for audit in await stock_db.list_stock_supply_audit()}
+
+    assert pending_long.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert pending_short.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert not blocked_long.success
+    assert "流通股" in blocked_long.error
+    assert not blocked_short.success
+    assert "借券" in blocked_short.error
+    assert audits["THIN"].long_shares == 1_000
+    assert audits["THIN"].available_long_shares == 0
+    assert audits["THIN"].non_final_operations == 1
+    assert audits[BCAT_SYMBOL].short_shares == BCAT_FLOAT_SHARES
+    assert audits[BCAT_SYMBOL].available_short_shares == 0
+    assert audits[BCAT_SYMBOL].non_final_operations == 1
+
+
 async def test_stock_cover_can_use_withheld_short_entry_value(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:

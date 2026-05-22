@@ -1166,22 +1166,67 @@ async def _public_position_views(
 
 async def _market_exposure(session: AsyncSession, profile: StockProfile) -> _StockMarketExposure:
     """Returns aggregate long and short exposure against the configured float."""
-    result = await session.execute(
+    return (await _market_exposures(session=session, profiles=(profile,)))[profile.symbol]
+
+
+async def _market_exposures(
+    session: AsyncSession, profiles: tuple[StockProfile, ...]
+) -> dict[str, _StockMarketExposure]:
+    """Returns aggregate exposure by symbol, reserving shares for non-final operations."""
+    profile_by_symbol = {profile.symbol: profile for profile in profiles}
+    if not profile_by_symbol:
+        return {}
+    symbols = tuple(profile_by_symbol)
+    exposure_totals = {symbol: {"long": 0, "short": 0} for symbol in symbols}
+
+    position_result = await session.execute(
         statement=select(
+            StockPosition.symbol,
             func.coalesce(func.sum(StockPosition.long_shares), 0),
             func.coalesce(func.sum(StockPosition.short_shares), 0),
-        ).where(StockPosition.symbol == profile.symbol)
+        )
+        .where(StockPosition.symbol.in_(symbols))
+        .group_by(StockPosition.symbol)
     )
-    long_shares, short_shares = result.one()
-    available_long_shares = max(profile.float_shares - int(long_shares), 0)
-    available_short_shares = max(profile.float_shares - int(short_shares), 0)
-    return _StockMarketExposure(
-        symbol=profile.symbol,
-        long_shares=int(long_shares),
-        short_shares=int(short_shares),
-        available_long_shares=available_long_shares,
-        available_short_shares=available_short_shares,
+    for symbol, long_shares, short_shares in position_result.all():
+        exposure_totals[symbol]["long"] = int(long_shares)
+        exposure_totals[symbol]["short"] = int(short_shares)
+
+    pending_result = await session.execute(
+        statement=select(
+            StockTradeLeg.symbol,
+            StockTradeLeg.leg_type,
+            func.coalesce(func.sum(StockTradeLeg.shares), 0),
+        )
+        .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
+        .where(
+            StockTradeLeg.symbol.in_(symbols),
+            StockTradeLeg.leg_type.in_((
+                StockTradeLegType.OPEN_LONG.value,
+                StockTradeLegType.OPEN_SHORT.value,
+            )),
+            StockOperation.status.notin_(_FINAL_OPERATION_STATUSES),
+        )
+        .group_by(StockTradeLeg.symbol, StockTradeLeg.leg_type)
     )
+    for symbol, leg_type, shares in pending_result.all():
+        if leg_type == StockTradeLegType.OPEN_LONG.value:
+            exposure_totals[symbol]["long"] += int(shares)
+        else:
+            exposure_totals[symbol]["short"] += int(shares)
+
+    exposures: dict[str, _StockMarketExposure] = {}
+    for symbol, profile in profile_by_symbol.items():
+        long_shares = exposure_totals[symbol]["long"]
+        short_shares = exposure_totals[symbol]["short"]
+        exposures[symbol] = _StockMarketExposure(
+            symbol=symbol,
+            long_shares=long_shares,
+            short_shares=short_shares,
+            available_long_shares=max(profile.float_shares - long_shares, 0),
+            available_short_shares=max(profile.float_shares - short_shares, 0),
+        )
+    return exposures
 
 
 async def _news_views(session: AsyncSession, symbol: str) -> tuple[StockNewsView, ...]:
