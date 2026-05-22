@@ -14,12 +14,15 @@ from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, _DISCORD_MESSAGE_LIMIT, ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.cogs._gen_reply.prompts import THREAD_TITLE_PROMPT
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from openai.types.responses.response_input_param import ResponseInputParam
 
 
 class FakeGuild:
@@ -162,15 +165,20 @@ class FakeResponses:
     def __init__(self) -> None:
         """Initializes recorded calls and default outputs."""
         self.create_streams: list[bool] = []
+        self.create_models: list[str] = []
+        self.create_instructions: list[str] = []
+        self.create_inputs: list[ResponseInputParam | str] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
+        self.thread_title_output = "Generated Thread Topic"
+        self.raise_on_thread_title = False
         self.output_parsed = SimpleNamespace(decision="SUMMARY")
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
         self,
         model: str,
         instructions: str,
-        input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
+        input: ResponseInputParam | str,  # noqa: A002 -- SDK parameter
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
@@ -179,7 +187,15 @@ class FakeResponses:
         tools: list[dict[str, str | dict[str, str]]] | None = None,
     ) -> SimpleNamespace:
         """Records streaming mode and returns configured output text."""
+        del reasoning, service_tier, extra_headers, extra_body, tools
+        self.create_models.append(model)
+        self.create_instructions.append(instructions)
+        self.create_inputs.append(input)
         self.create_streams.append(stream)
+        if instructions == THREAD_TITLE_PROMPT:
+            if self.raise_on_thread_title:
+                raise RuntimeError("thread title failed")
+            return SimpleNamespace(output_text=self.thread_title_output)
         return SimpleNamespace(output_text=self.output_text)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
@@ -359,7 +375,7 @@ async def test_handle_streaming_moves_long_reply_overflow_to_thread(
     """Verifies replies over Discord's content limit continue in a thread."""
     _stub_streaming_accounting(monkeypatch=monkeypatch)
     cog = _cog()
-    message = FakeMessage()
+    message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
     result = await cog._handle_streaming(
@@ -381,7 +397,13 @@ async def test_handle_streaming_moves_long_reply_overflow_to_thread(
     usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · +3 虛擬歡樂豆"
     assert result == f"{body}{usage_footer}"
     assert message.replies[0].content == body[:_DISCORD_MESSAGE_LIMIT]
-    assert message.replies[0].thread_name == "AI reply for Tester"
+    assert message.replies[0].thread_name == "Generated Thread Topic"
+    assert cog.client.responses.create_models == [cog.runtime_models.fast_model.name]
+    assert cog.client.responses.create_instructions == [THREAD_TITLE_PROMPT]
+    title_input = cog.client.responses.create_inputs[0]
+    assert isinstance(title_input, str)
+    assert "explain how long Discord replies are handled" in title_input
+    assert body[:1800] in title_input
     thread = message.replies[0].created_thread
     assert thread is not None
     assert thread.sent_messages == [
@@ -389,6 +411,35 @@ async def test_handle_streaming_moves_long_reply_overflow_to_thread(
         f"{body[_DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}",
     ]
     assert all(len(chunk) <= _DISCORD_MESSAGE_LIMIT for chunk in thread.sent_messages)
+
+
+async def test_handle_streaming_falls_back_to_author_thread_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies thread creation still works when title generation fails."""
+    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    cog = _cog()
+    cog.client.responses.raise_on_thread_title = True
+    message = FakeMessage()
+    body = "x" * 2500
+
+    await cog._handle_streaming(
+        responses=_stream_events_from(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta=body),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model=TEST_LLM_MODEL,
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+                    ),
+                ),
+            ]
+        ),
+        message=message,
+    )
+
+    assert message.replies[0].thread_name == "AI reply for Tester"
 
 
 async def test_handle_streaming_marks_web_search_from_call_event(

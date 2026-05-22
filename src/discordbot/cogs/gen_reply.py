@@ -33,6 +33,7 @@ from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
+    THREAD_TITLE_PROMPT,
 )
 from discordbot.cogs._economy.presentation import currency_text
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -54,6 +55,7 @@ _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 _USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
 _DISCORD_MESSAGE_LIMIT = 2000
 _DISCORD_THREAD_NAME_LIMIT = 100
+_THREAD_TITLE_CONTEXT_LIMIT = 1800
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -562,10 +564,45 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     @staticmethod
-    def _long_reply_thread_name(message: Message) -> str:
-        """Builds a bounded thread name for long AI replies."""
+    def _fallback_long_reply_thread_name(message: Message) -> str:
+        """Builds a bounded fallback thread name for long AI replies."""
         author_name = message.author.display_name or message.author.name
         return f"AI reply for {author_name}"[:_DISCORD_THREAD_NAME_LIMIT]
+
+    @staticmethod
+    def _sanitize_thread_name(title: str, fallback: str) -> str:
+        """Cleans model output into a Discord thread name."""
+        cleaned_title = " ".join(title.strip().split())
+        cleaned_title = cleaned_title.strip("\"'`“”「」『』")
+        if not cleaned_title:
+            return fallback
+        return cleaned_title[:_DISCORD_THREAD_NAME_LIMIT]
+
+    async def _long_reply_thread_name(self, message: Message, content: str) -> str:
+        """Generates a bounded thread name for long AI replies."""
+        fallback = self._fallback_long_reply_thread_name(message=message)
+        try:
+            user_content = await self._get_cleaned_content(message=message)
+            title_input = (
+                "User message:\n"
+                f"{user_content or '(no text)'}\n\n"
+                "AI reply preview:\n"
+                f"{content[:_THREAD_TITLE_CONTEXT_LIMIT]}"
+            )
+            fast_model = self.runtime_models.fast_model
+            responses = await self.client.responses.create(
+                model=fast_model.name,
+                instructions=THREAD_TITLE_PROMPT,
+                input=title_input,
+                reasoning=fast_model.reasoning,
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
+            )
+        except Exception:
+            logfire.warn("Failed to generate long AI reply thread name", _exc_info=True)
+            return fallback
+        return self._sanitize_thread_name(title=responses.output_text or "", fallback=fallback)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -605,21 +642,28 @@ class ReplyGeneratorCogs(commands.Cog):
             await reply.edit(content=preview)
         return reply, preview
 
-    async def _create_long_reply_thread(self, message: Message, reply: Message) -> Thread | None:
+    async def _create_long_reply_thread(
+        self, message: Message, reply: Message, title_context: str
+    ) -> Thread | None:
         """Creates a continuation thread for a long reply, returning None on fallback paths."""
         if message.guild is None:
             return None
         try:
-            return await reply.create_thread(name=self._long_reply_thread_name(message=message))
+            thread_name = await self._long_reply_thread_name(
+                message=message, content=title_context
+            )
+            return await reply.create_thread(name=thread_name)
         except Exception:
             logfire.warn("Failed to create long AI reply thread", _exc_info=True)
             return None
 
     async def _send_long_reply_chunks(
-        self, message: Message, reply: Message, chunks: list[str]
+        self, message: Message, reply: Message, chunks: list[str], title_context: str
     ) -> None:
         """Sends long-reply continuation chunks into a thread, or replies as fallback."""
-        thread = await self._create_long_reply_thread(message=message, reply=reply)
+        thread = await self._create_long_reply_thread(
+            message=message, reply=reply, title_context=title_context
+        )
         if thread is None:
             for chunk in chunks:
                 await message.reply(content=chunk)
@@ -646,7 +690,9 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             await reply.edit(content=parent_content)
         if thread_chunks:
-            await self._send_long_reply_chunks(message=message, reply=reply, chunks=thread_chunks)
+            await self._send_long_reply_chunks(
+                message=message, reply=reply, chunks=thread_chunks, title_context=content
+            )
         return reply
 
     async def _handle_streaming(  # noqa: C901 -- dispatches on multiple Responses API stream event types
