@@ -199,23 +199,23 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
 ) -> None:
     """The slash command sends public market list and tracks cleanup."""
     scheduled: list[MessageStub] = []
-    news_refreshes = 0
+    scheduled_news_refreshes: list[object] = []
 
-    async def fake_list_market_quotes() -> tuple[StockMarketQuote, ...]:
+    async def fake_list_market_quotes(refresh_news: bool = True) -> tuple[StockMarketQuote, ...]:
         """Returns one fake quote."""
+        assert refresh_news is False
         return (_quote(),)
 
-    async def fake_ensure_due_stock_news(**_kwargs: Any) -> None:  # noqa: ANN401
-        """Records news refresh attempts without touching the real stock DB."""
-        nonlocal news_refreshes
-        news_refreshes += 1
+    def fake_schedule_stock_news_refresh(news_ai: object) -> None:
+        """Records background news refresh scheduling."""
+        scheduled_news_refreshes.append(news_ai)
 
     async def fake_track(message: MessageStub, user_name: str | None = None) -> None:
         """Records cleanup tracking."""
         scheduled.append(message)
 
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
-    monkeypatch.setattr(stock, "ensure_due_stock_news", fake_ensure_due_stock_news)
+    monkeypatch.setattr(stock, "_schedule_stock_news_refresh", fake_schedule_stock_news_refresh)
     monkeypatch.setattr(stock, "track_game_message", fake_track)
     cog = StockCogs(bot=SimpleNamespace())
     cog.__dict__["news_ai"] = SimpleNamespace(generate=lambda _profile: None)
@@ -230,7 +230,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert interaction.followup.sent[0]["view"].message is scheduled[0]
     assert interaction.followup.sent[0]["view"].owner_id == interaction.user.id
     assert scheduled
-    assert news_refreshes == 1
+    assert scheduled_news_refreshes == [cog.news_ai]
 
 
 async def test_stock_command_raises_when_interaction_has_no_user(

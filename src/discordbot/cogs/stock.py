@@ -1,8 +1,10 @@
 """Slash command entry point for the simulated stock market."""
 
+import asyncio
 from functools import cached_property
 
 from openai import AsyncOpenAI
+import logfire
 import nextcord
 from nextcord import Locale, Interaction
 from pydantic import ValidationError
@@ -51,15 +53,30 @@ class StockCogs(commands.Cog):
         """Shows the public stock market list."""
         await interaction.response.defer()
         user = require_stock_user(interaction=interaction)
-        if self.news_ai is not None:
-            await ensure_due_stock_news(news_provider=self.news_ai.generate)
-        quotes = await list_market_quotes()
+        news_ai = self.news_ai
+        if news_ai is not None:
+            _schedule_stock_news_refresh(news_ai=news_ai)
+        quotes = await list_market_quotes(refresh_news=news_ai is None)
         view = StockMarketView(quotes=quotes, owner_id=user.id)
         message = await interaction.followup.send(
             embed=build_market_embed(quotes=quotes), view=view, wait=True
         )
         view.bind_message(message=message)
         await track_game_message(message=message, user_name=user.name)
+
+
+def _schedule_stock_news_refresh(news_ai: StockNewsAI) -> None:
+    """Starts a background stock news refresh without delaying the market UI."""
+    task = asyncio.create_task(ensure_due_stock_news(news_provider=news_ai.generate))
+    task.add_done_callback(_log_stock_news_refresh_failure)
+
+
+def _log_stock_news_refresh_failure(task: asyncio.Task[None]) -> None:
+    """Logs unexpected background stock news refresh failures."""
+    try:
+        task.result()
+    except Exception:
+        logfire.warn("Background stock news refresh failed", _exc_info=True)
 
 
 def setup(bot: commands.Bot) -> None:

@@ -975,10 +975,11 @@ async def advance_market_in_session(
 
 
 async def list_market_quotes(
-    now: datetime | None = None, rng: Random | None = None
+    now: datetime | None = None, rng: Random | None = None, refresh_news: bool = True
 ) -> tuple[StockMarketQuote, ...]:
     """Returns public market quotes after lazy advancement."""
-    await ensure_due_stock_news(now=now)
+    if refresh_news:
+        await ensure_due_stock_news(now=now)
     await _ensure_schema()
     async with open_stock_session() as session:
         symbols_result = await session.execute(
