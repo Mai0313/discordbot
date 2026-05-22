@@ -221,18 +221,23 @@ async def test_stock_public_view_rejects_non_owner_interaction() -> None:
     assert "只有發起者" in intruder.response.sent[0]["content"]
 
 
-async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Selecting a stock edits the public message into the detail flow."""
+async def test_stock_market_select_sends_private_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Selecting a stock opens a private detail flow."""
     selected: list[str] = []
     owners: list[int | None] = []
+    send_new_values: list[bool] = []
 
     async def fake_edit_stock_detail(
-        interaction: InteractionStub, symbol: str, owner_id: int | None = None
+        interaction: InteractionStub,
+        symbol: str,
+        owner_id: int | None = None,
+        send_new: bool = False,
     ) -> None:
         """Records selected stock detail requests."""
         selected.append(symbol)
         owners.append(owner_id)
-        await interaction.response.defer()
+        send_new_values.append(send_new)
+        await interaction.response.defer(ephemeral=True)
 
     monkeypatch.setattr(stock_views, "edit_stock_detail", fake_edit_stock_detail)
     view = StockMarketView(quotes=(_quote(),), owner_id=1)
@@ -244,14 +249,15 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
     assert selected == [BCAT_SYMBOL]
     assert interaction.user is not None
     assert owners == [interaction.user.id]
+    assert send_new_values == [True]
     assert interaction.response.deferred
-    assert not interaction.response.deferred_ephemeral
+    assert interaction.response.deferred_ephemeral
 
 
-async def test_stock_detail_buttons_edit_same_public_message(
+async def test_stock_detail_buttons_edit_same_private_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detail buttons edit the original public message instead of sending followups."""
+    """Detail buttons edit the original private message instead of sending followups."""
 
     async def fake_news(symbol: str) -> tuple:
         """Returns no fake news."""
@@ -279,6 +285,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
     await operate.callback(operate_interaction)
     assert isinstance(operate_interaction.response.sent[0]["view"], StockActionView)
     assert operate_interaction.response.sent[0]["view"].owner_id == view.owner_id
+    assert "股票操作" in operate_interaction.response.sent[0]["embed"].title
 
     news_interaction = InteractionStub()
     await news.callback(news_interaction)
@@ -289,6 +296,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
     await back.callback(back_interaction)
     assert isinstance(back_interaction.response.sent[0]["view"], StockMarketView)
     assert back_interaction.response.sent[0]["view"].owner_id == view.owner_id
+    assert back_interaction.response.sent[0]["view"].ephemeral is True
 
 
 async def test_stock_action_buttons_launch_text_input_modals() -> None:
@@ -345,10 +353,10 @@ async def test_stock_modal_rejects_non_owner_before_settlement(
     assert "只有發起者" in intruder.response.sent[0]["content"]
 
 
-async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
+async def test_stock_modal_reports_invalid_input_root_cause_in_private_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Invalid modal input edits the public message with the root-cause error."""
+    """Invalid modal input edits the private message with the root-cause error."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns the same invalid-format failure the service would return."""
@@ -373,7 +381,7 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     await modal.submit_quantity(interaction=interaction, raw_quantity="abc")
 
     assert interaction.response.deferred
-    assert not interaction.response.deferred_ephemeral
+    assert interaction.response.deferred_ephemeral
     embed = interaction.message.edits[0]["embed"]
     assert isinstance(embed, Embed)
     assert "股數格式錯誤" in embed.description
@@ -385,7 +393,7 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
 async def test_successful_stock_modal_edits_result_and_refresh_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful modal submission edits the public message with a refresh control."""
+    """Successful modal submission edits the private message with a refresh control."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns a successful fake settlement."""
@@ -426,6 +434,7 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
 
     await modal.submit_quantity(interaction=interaction, raw_quantity="1")
 
+    assert interaction.response.deferred_ephemeral
     assert "交易完成" in interaction.message.edits[0]["embed"].title
     assert "錢包變化" in interaction.message.edits[0]["embed"].description
     assert "Wallet" not in interaction.message.edits[0]["embed"].description

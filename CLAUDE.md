@@ -77,7 +77,7 @@ make gen-docs                    # regenerate docs/ from sources
 ## Stocks
 
 - Simulated stock state lives in `data/stock.db`; wallet cash remains in economy `user_wallet`. Do not store wallet balances in stock tables.
-- `/stock` sends one public market message. Stock selection, detail, action, news, validation, settlement, public position summaries, and recent trade history must update that same message; the active stock view deletes it after 180 idle seconds.
+- `/stock` sends one public market message. Stock selection from that message opens a private detail panel for balance, positions, actions, news, validation, settlement, position summaries, recent trade history, and the 7D chart. The public market view deletes its message after 180 idle seconds.
 - Stock tables that persist `user_id` also persist `user_name`. Public stock UI should display stored names instead of Discord IDs.
 - Stock settlement must go through `settle_stock_operation(...)`. Views must not split price reads, wallet reads, and position writes or import SQLAlchemy stock models directly.
 - Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.

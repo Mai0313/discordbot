@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Index, String, Integer, DateTime, or_, event, select, update
+from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -41,6 +41,8 @@ from discordbot.typings.stock import (
 from discordbot.typings.economy import WalletDeltaLeg
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
+    NEWS_SENTIMENT_DECAY_BPS,
+    NEWS_SENTIMENT_LIMIT_BPS,
     as_taipei,
     cash_ceil,
     clamp_bps,
@@ -69,6 +71,9 @@ _market_lock_refcounts: dict[str, int] = {}
 _market_locks_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _RECENT_TRADE_DAYS: Final[int] = 7
+_NEWS_SENTIMENT_LOOKBACK = timedelta(
+    seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
+)
 _FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
     StockOperationStatus.APPLIED.value,
     StockOperationStatus.FAILED.value,
@@ -288,6 +293,11 @@ def open_stock_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
+async def _begin_immediate(session: AsyncSession) -> None:
+    """Acquires SQLite's write lock before reading stock state for a mutation plan."""
+    await session.execute(statement=text("BEGIN IMMEDIATE"))
+
+
 async def _ensure_schema() -> None:
     """Bootstraps stock schema and seed data once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
@@ -504,7 +514,46 @@ async def _news_sentiment_bps(session: AsyncSession, symbol: str, at: datetime) 
         sentiment += decay_news_sentiment(
             sentiment_bps=news.sentiment_bps, ticks_elapsed=ticks_elapsed
         )
-    return clamp_bps(value=sentiment, lower=-300, upper=300)
+    return clamp_bps(
+        value=sentiment, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
+    )
+
+
+async def _news_rows_for_boundaries(
+    session: AsyncSession, symbol: str, boundaries: tuple[datetime, ...]
+) -> tuple[StockNews, ...]:
+    """Returns news rows needed to price an already selected boundary range."""
+    if not boundaries:
+        return ()
+    result = await session.execute(
+        statement=select(StockNews)
+        .where(
+            StockNews.symbol == symbol,
+            StockNews.created_at <= boundaries[-1],
+            StockNews.created_at >= boundaries[0] - _NEWS_SENTIMENT_LOOKBACK,
+        )
+        .order_by(StockNews.created_at.desc())
+    )
+    return tuple(result.scalars())
+
+
+def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime) -> int:
+    """Returns decayed news sentiment from prefetched rows."""
+    sentiment = 0
+    for news in news_rows:
+        if as_taipei(dt=news.created_at) > as_taipei(dt=at):
+            continue
+        ticks_elapsed = max(
+            int((tick_boundary(dt=at) - tick_boundary(dt=news.created_at)).total_seconds())
+            // STOCK_TICK_SECONDS,
+            0,
+        )
+        sentiment += decay_news_sentiment(
+            sentiment_bps=news.sentiment_bps, ticks_elapsed=ticks_elapsed
+        )
+    return clamp_bps(
+        value=sentiment, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
+    )
 
 
 async def _recent_pressure_bps(session: AsyncSession, symbol: str, at: datetime) -> int:
@@ -523,6 +572,44 @@ async def _recent_pressure_bps(session: AsyncSession, symbol: str, at: datetime)
     buy_shares = 0
     sell_shares = 0
     for leg_type, shares in result.all():
+        if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
+            buy_shares += shares
+        else:
+            sell_shares += shares
+    return pressure_from_volume(buy_shares=buy_shares, sell_shares=sell_shares)
+
+
+async def _pressure_rows_for_boundaries(
+    session: AsyncSession, symbol: str, boundaries: tuple[datetime, ...]
+) -> tuple[tuple[str, int, datetime], ...]:
+    """Returns trade-leg rows needed to price an already selected boundary range."""
+    if not boundaries:
+        return ()
+    result = await session.execute(
+        statement=select(StockTradeLeg.leg_type, StockTradeLeg.shares, StockTradeLeg.created_at)
+        .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
+        .where(
+            StockTradeLeg.symbol == symbol,
+            StockTradeLeg.created_at >= boundaries[0] - timedelta(days=_RECENT_TRADE_DAYS),
+            StockTradeLeg.created_at <= boundaries[-1],
+            StockOperation.status == StockOperationStatus.APPLIED.value,
+        )
+    )
+    return tuple((leg_type, shares, created_at) for leg_type, shares, created_at in result.all())
+
+
+def _recent_pressure_bps_from_rows(
+    pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime
+) -> int:
+    """Returns recent buy/sell pressure from prefetched trade legs."""
+    since = at - timedelta(days=_RECENT_TRADE_DAYS)
+    buy_shares = 0
+    sell_shares = 0
+    for leg_type, shares, created_at in pressure_rows:
+        if as_taipei(dt=created_at) < as_taipei(dt=since) or as_taipei(dt=created_at) > as_taipei(
+            dt=at
+        ):
+            continue
         if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
             buy_shares += shares
         else:
@@ -557,9 +644,16 @@ async def advance_market_in_session(
     else:
         current_price = latest_tick.price_cents
         previous_tick_at = latest_tick.created_at
-    for boundary in tick_boundaries_to_apply(latest_tick_at=previous_tick_at, now=effective_now):
-        news_sentiment = await _news_sentiment_bps(session=session, symbol=symbol, at=boundary)
-        pressure_bps = await _recent_pressure_bps(session=session, symbol=symbol, at=boundary)
+    boundaries = tick_boundaries_to_apply(latest_tick_at=previous_tick_at, now=effective_now)
+    news_rows = await _news_rows_for_boundaries(
+        session=session, symbol=symbol, boundaries=boundaries
+    )
+    pressure_rows = await _pressure_rows_for_boundaries(
+        session=session, symbol=symbol, boundaries=boundaries
+    )
+    for boundary in boundaries:
+        news_sentiment = _news_sentiment_bps_from_rows(news_rows=news_rows, at=boundary)
+        pressure_bps = _recent_pressure_bps_from_rows(pressure_rows=pressure_rows, at=boundary)
         next_price = calculate_next_price_cents(
             previous_price_cents=current_price,
             news_sentiment_bps=news_sentiment,
@@ -1163,6 +1257,7 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
         effective_now = now or _database_now()
         operation_id = str(uuid.uuid4())
         async with open_stock_session() as session, _market_lock(symbol=normalized_symbol):
+            await _begin_immediate(session=session)
             blocking_operation = await _blocking_operation(
                 session=session, symbol=normalized_symbol, user_id=user_id
             )

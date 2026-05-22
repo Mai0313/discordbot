@@ -70,7 +70,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**Simulated Stock Market** — `/stock`\n"
-            "Open the public BCAT market message. Stock selection, detail, news, buy/short operations, settlement results, public position summaries, and recent trade history all update that same message, which cleans itself up after 180 idle seconds. Only the user who opened the panel can operate its controls."
+            "Open the public BCAT market message. Selecting a stock opens a private detail panel for balance, positions, news, buy/short operations, settlement results, position summaries, and recent trade history. The public market message cleans itself up after 180 idle seconds. Only the user who opened the panel can operate its controls."
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -170,7 +170,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**模擬股市** — `/stock`（`/股票`）\n"
-            "開啟公開 BCAT market message；選股、detail、新聞、買入/做空、settlement result、公開部位摘要與近期交易紀錄都會更新同一則訊息，180 秒無互動後自動清理。只有開啟面板的 user 可以操作 controls。"
+            "開啟公開 BCAT market message；選股後會開 private detail panel 顯示資金、部位、新聞、買入/做空、settlement result、部位摘要與近期交易紀錄。公開 market message 180 秒無互動後自動清理，只有開啟面板的 user 可以操作 controls。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -268,7 +268,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場** — `/stock`\n"
-            "公開 BCAT market message で stock selection、detail、news、buy/short operations、settlement results、public position summaries、recent trade history を同じ message 上で更新し、180秒 idle で自動削除します。panel を開いた user だけが controls を操作できます。"
+            "公開 BCAT market message を開き、stock selection 後は private detail panel で balance、positions、news、buy/short operations、settlement results、position summaries、recent trade history を表示します。公開 message は180秒 idle で自動削除され、panel を開いた user だけが controls を操作できます。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"

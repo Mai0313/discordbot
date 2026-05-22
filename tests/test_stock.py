@@ -78,6 +78,10 @@ def test_stock_tick_helpers_noop_and_compress_backlog() -> None:
     backlog = tick_boundaries_to_apply(latest_tick_at=latest, now=latest + timedelta(hours=100))
     assert len(backlog) == MAX_TICKS_PER_INTERACTION
     assert backlog[-1] == tick_boundary(dt=latest + timedelta(hours=100))
+    compressed_day = tick_boundaries_to_apply(
+        latest_tick_at=latest, now=latest + timedelta(hours=25)
+    )
+    assert datetime(2026, 1, 2, 0, 0, tzinfo=TAIWAN_TIMEZONE) in compressed_day
 
 
 def test_stock_tick_boundary_treats_naive_datetime_as_taipei() -> None:
@@ -160,6 +164,34 @@ async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated
 
     assert quotes[0].profile.previous_close_price_cents == 10_000
     assert quotes[0].profile.day_open_price_cents > 0
+
+
+async def test_stock_compressed_day_rollover_materializes_midnight(
+    stock_isolated_db: None,
+) -> None:
+    """Compressed backlogs keep the actual midnight boundary for day-open pricing."""
+    await _set_bcat_price(price_cents=10_000)
+
+    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
+
+    midnight = datetime(2026, 1, 2, 0, 0, tzinfo=TAIWAN_TIMEZONE)
+    previous_close_at = datetime(2026, 1, 1, 23, 0, tzinfo=TAIWAN_TIMEZONE)
+    async with stock_db.open_stock_session() as session:
+        midnight_tick = await session.execute(
+            statement=select(stock_db.StockPriceTick.price_cents).where(
+                stock_db.StockPriceTick.symbol == BCAT_SYMBOL,
+                stock_db.StockPriceTick.created_at == midnight,
+            )
+        )
+        previous_close_tick = await session.execute(
+            statement=select(stock_db.StockPriceTick.price_cents).where(
+                stock_db.StockPriceTick.symbol == BCAT_SYMBOL,
+                stock_db.StockPriceTick.created_at == previous_close_at,
+            )
+        )
+
+    assert quotes[0].profile.day_open_price_cents == midnight_tick.scalar_one()
+    assert quotes[0].profile.previous_close_price_cents == previous_close_tick.scalar_one()
 
 
 async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(

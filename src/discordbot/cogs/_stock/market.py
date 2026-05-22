@@ -91,6 +91,51 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
     return max(next_price, 1)
 
 
+def _tick_boundaries_between(
+    latest_boundary: datetime, current_boundary: datetime
+) -> list[datetime]:
+    """Returns all hourly tick boundaries between two normalized endpoints."""
+    boundaries: list[datetime] = []
+    boundary = latest_boundary + timedelta(seconds=STOCK_TICK_SECONDS)
+    while boundary <= current_boundary:
+        boundaries.append(boundary)
+        boundary += timedelta(seconds=STOCK_TICK_SECONDS)
+    return boundaries
+
+
+def _compressed_required_boundaries(
+    latest_boundary: datetime, current_boundary: datetime, boundaries: list[datetime]
+) -> set[datetime]:
+    """Returns boundaries that must survive compression for day rollover correctness."""
+    selected = {current_boundary}
+    boundary_set = set(boundaries)
+    previous_boundary = latest_boundary
+    for boundary in boundaries:
+        if as_taipei(dt=boundary).date() != as_taipei(dt=previous_boundary).date():
+            selected.add(boundary)
+            if previous_boundary in boundary_set:
+                selected.add(previous_boundary)
+        previous_boundary = boundary
+    return selected
+
+
+def _fill_compressed_boundaries(
+    boundaries: list[datetime], selected: set[datetime]
+) -> tuple[datetime, ...]:
+    """Fills a compressed boundary set with even sampling plus recent fallbacks."""
+    total_steps = len(boundaries)
+    for index in range(MAX_TICKS_PER_INTERACTION):
+        source_index = (index + 1) * total_steps // MAX_TICKS_PER_INTERACTION - 1
+        selected.add(boundaries[source_index])
+        if len(selected) >= MAX_TICKS_PER_INTERACTION:
+            break
+    for boundary in reversed(boundaries):
+        if len(selected) >= MAX_TICKS_PER_INTERACTION:
+            break
+        selected.add(boundary)
+    return tuple(sorted(selected))
+
+
 def tick_boundaries_to_apply(latest_tick_at: datetime, now: datetime) -> tuple[datetime, ...]:
     """Returns tick boundaries that should be materialized for a lazy interaction."""
     latest_boundary = tick_boundary(dt=latest_tick_at)
@@ -98,20 +143,16 @@ def tick_boundaries_to_apply(latest_tick_at: datetime, now: datetime) -> tuple[d
     if current_boundary <= latest_boundary:
         return ()
 
-    boundaries: list[datetime] = []
-    boundary = latest_boundary + timedelta(seconds=STOCK_TICK_SECONDS)
-    while boundary <= current_boundary:
-        boundaries.append(boundary)
-        boundary += timedelta(seconds=STOCK_TICK_SECONDS)
+    boundaries = _tick_boundaries_between(
+        latest_boundary=latest_boundary, current_boundary=current_boundary
+    )
 
     if len(boundaries) <= MAX_TICKS_PER_INTERACTION:
         return tuple(boundaries)
 
-    total_steps = len(boundaries)
-    compressed: list[datetime] = []
-    for index in range(MAX_TICKS_PER_INTERACTION):
-        source_index = (index + 1) * total_steps // MAX_TICKS_PER_INTERACTION - 1
-        compressed.append(boundaries[source_index])
-    if compressed[-1] != current_boundary:
-        compressed[-1] = current_boundary
-    return tuple(dict.fromkeys(compressed))
+    selected = _compressed_required_boundaries(
+        latest_boundary=latest_boundary, current_boundary=current_boundary, boundaries=boundaries
+    )
+    if len(selected) >= MAX_TICKS_PER_INTERACTION:
+        return tuple(sorted(selected)[-MAX_TICKS_PER_INTERACTION:])
+    return _fill_compressed_boundaries(boundaries=boundaries, selected=selected)

@@ -27,7 +27,7 @@
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频，文件太大时会自动 retry 低画质。
 - **虚拟欢乐豆与金融系统**：用户可从消息与 AI 回复获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
-- **模拟股市**：`/stock` 开启一则公开 BCAT 市场消息，股票明细、交易、公开仓位摘要、近期交易记录、新闻与 7 日图表都在同一则消息更新，只有开启面板的 user 可以操作 controls。
+- **模拟股市**：`/stock` 开启一则公开 BCAT 市场消息，选股后会开 private detail panel 处理交易、仓位摘要、近期交易记录、新闻与 7 日图表，只有开启面板的 user 可以操作 controls。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby，带 AI dealer 对话、公开结果 embed 与自动清理。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 与 `/help` 支持英文、繁体中文、日文。AI 回复会跟随用户语言。
@@ -47,7 +47,7 @@
 | `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。       |
 | `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。 |
 | `/portfolio [member]`                                            | 查看钱包、债务与预估净资产。                                         |
-| `/stock`                                                         | 公开股票市场消息，明细、交易、记录同消息更新。                       |
+| `/stock`                                                         | 公开股票市场消息，明细、交易、记录走 private panel。                 |
 | `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员。                                           |
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手动余额调整。                                            |
 | `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby。                                         |

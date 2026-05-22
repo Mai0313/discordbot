@@ -37,7 +37,12 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
     title = "📈 模擬股市"
     if ephemeral:
         title += " · 個人列表"
-    description_parts = ["### 市場列表", "選擇股票後會在這則公開訊息更新股票明細。", ""]
+    detail_hint = (
+        "選擇股票後會在這則私人訊息更新股票明細。"
+        if ephemeral
+        else "選擇股票後會開啟只有你看得到的股票明細。"
+    )
+    description_parts = ["### 市場列表", detail_hint, ""]
     for quote in quotes:
         profile = quote.profile
         market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
@@ -48,12 +53,15 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
             f"市值 {amount_code(amount=market_cap)} {CURRENCY_NAME}"
         )
     embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
-    embed.set_footer(text="這則股票訊息 180 秒無互動後會自動清理")
+    footer = "這則股票訊息 180 秒無互動後會自動清理"
+    if ephemeral:
+        footer = "私人股票操作面板 180 秒無互動後會失效"
+    embed.set_footer(text=footer)
     return embed
 
 
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:
-    """Builds a public stock detail embed for the current interaction user."""
+    """Builds a private stock detail embed for the current interaction user."""
     profile = detail.quote.profile
     market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
     description = (
@@ -104,7 +112,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
 
 
 def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
-    """Builds a recent news embed for the public stock message."""
+    """Builds a recent news embed for the private stock message."""
     if news:
         lines = [
             f"**{item.headline}**\n市場情緒 `{signed_percent(bps=item.sentiment_bps)}`"
@@ -123,6 +131,18 @@ def build_tutorial_embed() -> Embed:
             "`買入 / 回補做空` 會先回補既有做空，剩餘數量才建立持股。\n"
             "`做空 / 賣出持股` 會先賣出既有持股，剩餘數量才建立做空。\n"
             "數量可以輸入整數或 `ALL`，實際價格與部位會在送出表單當下重新讀取。"
+        ),
+        color=DETAIL_COLOR,
+    )
+
+
+def build_action_prompt_embed(symbol: str) -> Embed:
+    """Builds the action selection prompt for a private stock message."""
+    return Embed(
+        title=f"🧾 {symbol} 股票操作",
+        description=(
+            "選擇 `買入 / 回補做空` 或 `做空 / 賣出持股`，"
+            "下一步會輸入股數。數量可以輸入整數或 `ALL`。"
         ),
         color=DETAIL_COLOR,
     )
