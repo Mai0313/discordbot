@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from datetime import datetime
 
+import pytest
 from nextcord import Embed, Locale
 
 from discordbot.cogs import stock
@@ -27,11 +28,9 @@ from discordbot.cogs._stock.views import (
     StockDetailView,
     StockMarketView,
     StockPublicView,
+    StockPostTradeView,
     StockQuantityModal,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class ResponseStub:
@@ -101,20 +100,20 @@ class MessageStub:
 class UserStub:
     """Minimal user stub."""
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: int = 1, name: str = "alice") -> None:
         """Initializes fake user identity."""
-        self.id = 1
-        self.name = "alice"
-        self.display_name = "Alice"
+        self.id = user_id
+        self.name = name
+        self.display_name = name.title()
         self.display_avatar = SimpleNamespace(url="https://example.test/avatar.png")
 
 
 class InteractionStub:
     """Minimal interaction stub."""
 
-    def __init__(self) -> None:
+    def __init__(self, user_id: int | None = 1, name: str = "alice") -> None:
         """Initializes fake Discord interaction pieces."""
-        self.user = UserStub()
+        self.user = UserStub(user_id=user_id, name=name) if user_id is not None else None
         self.guild = None
         self.response = ResponseStub()
         self.followup = FollowupStub()
@@ -179,29 +178,72 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     await StockCogs.stock.callback(cog, interaction)
 
     assert interaction.response.deferred
+    assert interaction.user is not None
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert isinstance(interaction.followup.sent[0]["view"], StockMarketView)
     assert interaction.followup.sent[0]["view"].message is scheduled[0]
+    assert interaction.followup.sent[0]["view"].owner_id == interaction.user.id
     assert scheduled
+
+
+async def test_stock_command_raises_when_interaction_has_no_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stock command fails loudly instead of creating an unowned public panel."""
+    called = False
+
+    async def fake_list_market_quotes() -> tuple[StockMarketQuote, ...]:
+        """Records unexpected market loading."""
+        nonlocal called
+        called = True
+        return (_quote(),)
+
+    monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
+    cog = StockCogs(bot=SimpleNamespace())
+    interaction = InteractionStub(user_id=None)
+
+    with pytest.raises(RuntimeError, match="missing Discord user identity"):
+        await StockCogs.stock.callback(cog, interaction)
+
+    assert interaction.response.deferred
+    assert not called
+    assert interaction.followup.sent == []
+
+
+async def test_stock_public_view_rejects_non_owner_interaction() -> None:
+    """Only the user who opened a public stock panel can operate its controls."""
+    view = StockMarketView(quotes=(_quote(),), owner_id=1)
+    intruder = InteractionStub(user_id=2, name="bob")
+
+    assert await view.interaction_check(interaction=InteractionStub(user_id=1)) is True
+    assert await view.interaction_check(interaction=intruder) is False
+    assert intruder.response.sent[0]["ephemeral"] is True
+    assert "只有發起者" in intruder.response.sent[0]["content"]
 
 
 async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.MonkeyPatch) -> None:
     """Selecting a stock edits the public message into the detail flow."""
     selected: list[str] = []
+    owners: list[int | None] = []
 
-    async def fake_send_stock_detail(interaction: InteractionStub, symbol: str) -> None:
+    async def fake_send_stock_detail(
+        interaction: InteractionStub, symbol: str, owner_id: int | None = None
+    ) -> None:
         """Records selected stock detail requests."""
         selected.append(symbol)
+        owners.append(owner_id)
         await interaction.response.defer()
 
     monkeypatch.setattr(stock_views, "send_stock_detail", fake_send_stock_detail)
-    view = StockMarketView(quotes=(_quote(),))
+    view = StockMarketView(quotes=(_quote(),), owner_id=1)
     interaction = InteractionStub()
     view.stock_select._selected_values = [BCAT_SYMBOL]
 
     await view.stock_select.callback(interaction)
 
     assert selected == [BCAT_SYMBOL]
+    assert interaction.user is not None
+    assert owners == [interaction.user.id]
     assert interaction.response.deferred
     assert not interaction.response.deferred_ephemeral
 
@@ -221,7 +263,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
 
     monkeypatch.setattr(stock_views, "get_stock_news", fake_news)
     monkeypatch.setattr(stock_views, "list_market_quotes", fake_quotes)
-    view = StockDetailView(symbol=BCAT_SYMBOL)
+    view = StockDetailView(symbol=BCAT_SYMBOL, owner_id=1)
 
     operate = next(
         child for child in view.children if getattr(child, "custom_id", "") == "stock:operate"
@@ -236,19 +278,22 @@ async def test_stock_detail_buttons_edit_same_public_message(
     operate_interaction = InteractionStub()
     await operate.callback(operate_interaction)
     assert isinstance(operate_interaction.response.sent[0]["view"], StockActionView)
+    assert operate_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
     news_interaction = InteractionStub()
     await news.callback(news_interaction)
     assert "近期新聞" in news_interaction.response.sent[0]["embed"].title
+    assert news_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
     back_interaction = InteractionStub()
     await back.callback(back_interaction)
     assert isinstance(back_interaction.response.sent[0]["view"], StockMarketView)
+    assert back_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
 
 async def test_stock_action_buttons_launch_text_input_modals() -> None:
     """Action buttons launch modals with TextInput quantity only."""
-    view = StockActionView(symbol=BCAT_SYMBOL)
+    view = StockActionView(symbol=BCAT_SYMBOL, owner_id=1)
     buy = next(child for child in view.children if getattr(child, "custom_id", "") == "stock:buy")
     short = next(
         child for child in view.children if getattr(child, "custom_id", "") == "stock:short"
@@ -261,7 +306,43 @@ async def test_stock_action_buttons_launch_text_input_modals() -> None:
 
     assert buy_interaction.response.modals[0].action == StockAction.BUY
     assert short_interaction.response.modals[0].action == StockAction.SHORT
+    assert buy_interaction.response.modals[0].owner_id == view.owner_id
+    assert short_interaction.response.modals[0].owner_id == view.owner_id
     assert isinstance(buy_interaction.response.modals[0].quantity, stock_views.TextInput)
+
+
+async def test_stock_modal_rejects_non_owner_before_settlement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copied or stale stock modal cannot submit for someone other than the panel owner."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
+        """Records unexpected settlement calls."""
+        calls.append(kwargs)
+        return StockSettlementResult(
+            success=False,
+            operation_id=None,
+            symbol=kwargs["symbol"],
+            requested_action=kwargs["requested_action"],
+            shares=0,
+            price_cents=10_000,
+            wallet_delta=0,
+            balance_after=100,
+            position=StockPositionView(symbol=kwargs["symbol"], user_id=2),
+            legs=(),
+            error="unexpected",
+        )
+
+    monkeypatch.setattr(stock_views, "settle_stock_operation", fake_settle_stock_operation)
+    modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
+    intruder = InteractionStub(user_id=2, name="bob")
+
+    await modal.submit_quantity(interaction=intruder, raw_quantity="1")
+
+    assert calls == []
+    assert intruder.response.sent[0]["ephemeral"] is True
+    assert "只有發起者" in intruder.response.sent[0]["content"]
 
 
 async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
@@ -286,7 +367,7 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
         )
 
     monkeypatch.setattr(stock_views, "settle_stock_operation", fake_settle_stock_operation)
-    modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY)
+    modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
     interaction = InteractionStub()
 
     await modal.submit_quantity(interaction=interaction, raw_quantity="abc")
@@ -297,6 +378,8 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     assert isinstance(embed, Embed)
     assert "股數格式錯誤" in embed.description
     assert isinstance(interaction.message.edits[0]["view"], StockActionView)
+    assert interaction.user is not None
+    assert interaction.message.edits[0]["view"].owner_id == interaction.user.id
 
 
 async def test_successful_stock_modal_edits_result_and_refresh_view(
@@ -338,7 +421,7 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
         )
 
     monkeypatch.setattr(stock_views, "settle_stock_operation", fake_settle_stock_operation)
-    modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY)
+    modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
     interaction = InteractionStub()
 
     await modal.submit_quantity(interaction=interaction, raw_quantity="1")
@@ -347,7 +430,9 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
     assert "錢包變化" in interaction.message.edits[0]["embed"].description
     assert "Wallet" not in interaction.message.edits[0]["embed"].description
     assert interaction.message.edits[0]["embed"].fields[0].name == "交易明細"
-    assert interaction.message.edits[0]["view"] is not None
+    assert isinstance(interaction.message.edits[0]["view"], StockPostTradeView)
+    assert interaction.user is not None
+    assert interaction.message.edits[0]["view"].owner_id == interaction.user.id
 
 
 async def test_stock_public_view_timeout_deletes_bound_message(
@@ -362,7 +447,7 @@ async def test_stock_public_view_timeout_deletes_bound_message(
 
     monkeypatch.setattr(stock_views, "forget_game_message", fake_forget)
     message = MessageStub()
-    view = StockPublicView()
+    view = StockPublicView(owner_id=1)
     view.bind_message(message=message)
 
     await view.on_timeout()

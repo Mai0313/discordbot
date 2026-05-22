@@ -177,6 +177,48 @@ async def test_stock_buy_long_debits_wallet_and_writes_ledger(
         assert leg.user_name == "alice"
 
 
+async def test_stock_trade_refreshes_last_seen_user_name(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """A stable user ID can update its stored display name on later trades."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000)
+    await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice_renamed",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1, 0, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert result.success
+    assert result.position.user_name == "alice_renamed"
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
+    assert detail.position.user_name == "alice_renamed"
+    async with stock_db.open_stock_session() as session:
+        position = await session.get(stock_db.StockPosition, (BCAT_SYMBOL, 1))
+        assert position is not None
+        assert position.user_name == "alice_renamed"
+        operation = await session.get(stock_db.StockOperation, result.operation_id)
+        assert operation is not None
+        assert operation.user_name == "alice_renamed"
+    async with open_session() as session:
+        wallet = await session.get(UserWallet, 1)
+        assert wallet is not None
+        assert wallet.name == "alice_renamed"
+
+
 async def test_stock_detail_shows_stock_level_trades_and_positions(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
