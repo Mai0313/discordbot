@@ -1,5 +1,7 @@
 """Localized help command content and embed builders."""
 
+from datetime import datetime
+
 import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
@@ -11,6 +13,12 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
+
+_EMBED_FIELD_VALUE_LIMIT = 1024
+_EMBED_FIELD_COUNT_LIMIT = 25
+_EMBED_TOTAL_LENGTH_LIMIT = 6000
+_MESSAGE_EMBED_COUNT_LIMIT = 10
+_HELP_FIELD_NAME = "\u200b"
 
 _HELP_CONTENT = {
     "default": {
@@ -330,6 +338,84 @@ _SECTIONS = (
 )
 
 
+def _split_field_value(value: str, limit: int = _EMBED_FIELD_VALUE_LIMIT) -> list[str]:
+    """Splits an embed field value without dropping any content."""
+    if len(value) <= limit:
+        return [value]
+
+    chunks: list[str] = []
+    remaining = value
+    while len(remaining) > limit:
+        newline_index = remaining.rfind("\n", 1, limit)
+        space_index = remaining.rfind(" ", 1, limit)
+        split_at = max(newline_index, space_index)
+
+        if split_at == -1:
+            chunks.append(remaining[:limit])
+            remaining = remaining[limit:]
+            continue
+
+        chunk_end = split_at + 1
+        chunks.append(remaining[:chunk_end])
+        remaining = remaining[chunk_end:]
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
+
+
+def _new_help_embed(
+    content: dict[str, str],
+    requester_name: str,
+    requester_avatar_url: str,
+    timestamp: datetime,
+    include_header: bool,
+) -> Embed:
+    embed = Embed(color=0x5865F2, timestamp=timestamp)
+    if include_header:
+        embed.title = content["title"]
+        embed.description = content["description"]
+
+    embed.set_footer(text=f"Requested by {requester_name}", icon_url=requester_avatar_url)
+    return embed
+
+
+def _build_help_embeds(
+    locale: Locale | str, requester_name: str, requester_avatar_url: str
+) -> list[Embed]:
+    """Builds Discord-limit-safe help embeds for the requested locale."""
+    content = _HELP_CONTENT.get(locale, _HELP_CONTENT["default"])
+    timestamp = nextcord.utils.utcnow()
+    embeds: list[Embed] = []
+    embed = _new_help_embed(
+        content=content,
+        requester_name=requester_name,
+        requester_avatar_url=requester_avatar_url,
+        timestamp=timestamp,
+        include_header=True,
+    )
+
+    for section in _SECTIONS:
+        for value in _split_field_value(value=content[section]):
+            if (
+                len(embed.fields) >= _EMBED_FIELD_COUNT_LIMIT
+                or len(embed) + len(_HELP_FIELD_NAME) + len(value) > _EMBED_TOTAL_LENGTH_LIMIT
+            ):
+                embeds.append(embed)
+                embed = _new_help_embed(
+                    content=content,
+                    requester_name=requester_name,
+                    requester_avatar_url=requester_avatar_url,
+                    timestamp=timestamp,
+                    include_header=False,
+                )
+            embed.add_field(name=_HELP_FIELD_NAME, value=value, inline=False)
+
+    embeds.append(embed)
+    return embeds
+
+
 class HelpCogs(commands.Cog):
     """Provides the localized help slash command.
 
@@ -363,25 +449,16 @@ class HelpCogs(commands.Cog):
         """
         await interaction.response.defer(ephemeral=True)
 
-        locale = interaction.locale
-        content = _HELP_CONTENT.get(locale, _HELP_CONTENT["default"])
-
-        embed = Embed(
-            title=content["title"],
-            description=content["description"],
-            color=0x5865F2,
-            timestamp=nextcord.utils.utcnow(),
+        embeds = _build_help_embeds(
+            locale=interaction.locale,
+            requester_name=interaction.user.display_name,
+            requester_avatar_url=interaction.user.display_avatar.url,
         )
 
-        for section in _SECTIONS:
-            embed.add_field(name="\u200b", value=content[section], inline=False)
-
-        embed.set_footer(
-            text=f"Requested by {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url,
-        )
-
-        await interaction.followup.send(embed=embed)
+        for index in range(0, len(embeds), _MESSAGE_EMBED_COUNT_LIMIT):
+            await interaction.followup.send(
+                embeds=embeds[index : index + _MESSAGE_EMBED_COUNT_LIMIT]
+            )
 
 
 def setup(bot: commands.Bot) -> None:

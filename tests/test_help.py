@@ -5,7 +5,16 @@ from pathlib import Path
 
 from nextcord import Locale
 
-from discordbot.cogs.help import _HELP_CONTENT
+from discordbot.cogs.help import (
+    _SECTIONS,
+    _HELP_CONTENT,
+    _EMBED_FIELD_COUNT_LIMIT,
+    _EMBED_FIELD_VALUE_LIMIT,
+    _EMBED_TOTAL_LENGTH_LIMIT,
+    _MESSAGE_EMBED_COUNT_LIMIT,
+    _build_help_embeds,
+    _split_field_value,
+)
 
 
 def _slash_command_names() -> set[str]:
@@ -36,3 +45,30 @@ def test_help_mentions_every_non_help_slash_command() -> None:
         )
         missing = sorted(f"/{command}" for command in commands if f"/{command}" not in body)
         assert not missing, f"{locale} help is missing slash commands: {missing}"
+
+
+def test_long_help_sections_are_split_without_hiding_content() -> None:
+    """Long help sections are split into Discord-safe fields without truncation."""
+    for locale in ("default", Locale.zh_TW, Locale.ja):
+        for section in _SECTIONS:
+            value = _HELP_CONTENT[locale][section]
+            chunks = _split_field_value(value=value)
+
+            assert "".join(chunks) == value
+            assert all(len(chunk) <= _EMBED_FIELD_VALUE_LIMIT for chunk in chunks)
+
+
+def test_help_embeds_fit_discord_limits() -> None:
+    """Generated help embeds stay within Discord's embed validation limits."""
+    for locale in ("default", Locale.zh_TW, Locale.ja):
+        embeds = _build_help_embeds(
+            locale=locale,
+            requester_name="tester",
+            requester_avatar_url="https://example.com/avatar.png",
+        )
+
+        assert len(embeds) <= _MESSAGE_EMBED_COUNT_LIMIT
+        for embed in embeds:
+            assert len(embed.fields) <= _EMBED_FIELD_COUNT_LIMIT
+            assert len(embed) <= _EMBED_TOTAL_LENGTH_LIMIT
+            assert all(len(field.value) <= _EMBED_FIELD_VALUE_LIMIT for field in embed.fields)
