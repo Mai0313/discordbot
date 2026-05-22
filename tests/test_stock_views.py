@@ -226,7 +226,7 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
     selected: list[str] = []
     owners: list[int | None] = []
 
-    async def fake_send_stock_detail(
+    async def fake_edit_stock_detail(
         interaction: InteractionStub, symbol: str, owner_id: int | None = None
     ) -> None:
         """Records selected stock detail requests."""
@@ -234,7 +234,7 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
         owners.append(owner_id)
         await interaction.response.defer()
 
-    monkeypatch.setattr(stock_views, "send_stock_detail", fake_send_stock_detail)
+    monkeypatch.setattr(stock_views, "edit_stock_detail", fake_edit_stock_detail)
     view = StockMarketView(quotes=(_quote(),), owner_id=1)
     interaction = InteractionStub()
     view.stock_select._selected_values = [BCAT_SYMBOL]

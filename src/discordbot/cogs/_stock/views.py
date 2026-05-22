@@ -117,7 +117,7 @@ class StockMarketView(StockPublicView):
             )
             return
         self.stop()
-        await send_stock_detail(interaction=interaction, symbol=symbol, owner_id=self.owner_id)
+        await edit_stock_detail(interaction=interaction, symbol=symbol, owner_id=self.owner_id)
 
     @nextcord.ui.button(
         label="教學", emoji="📘", style=ButtonStyle.secondary, custom_id="stock:tutorial", row=1
@@ -214,7 +214,7 @@ class StockNewsControlsView(StockPublicView):
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the public stock detail view."""
         self.stop()
-        await send_stock_detail(
+        await edit_stock_detail(
             interaction=interaction, symbol=self.symbol, owner_id=self.owner_id
         )
 
@@ -275,7 +275,7 @@ class StockActionView(StockPublicView):
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the public stock detail view."""
         self.stop()
-        await send_stock_detail(
+        await edit_stock_detail(
             interaction=interaction, symbol=self.symbol, owner_id=self.owner_id
         )
 
@@ -298,7 +298,7 @@ class StockPostTradeView(StockPublicView):
     async def refresh(self, _button: Button, interaction: Interaction) -> None:
         """Edits the public message into a fresh detail view."""
         self.stop()
-        await send_stock_detail(
+        await edit_stock_detail(
             interaction=interaction, symbol=self.symbol, owner_id=self.owner_id
         )
 
@@ -437,9 +437,6 @@ async def edit_stock_message(
     await interaction.followup.send(embed=embed, view=view, file=file, wait=True)
 
 
-send_stock_detail = edit_stock_detail
-
-
 __all__ = [
     "StockActionView",
     "StockDetailView",
@@ -452,5 +449,4 @@ __all__ = [
     "edit_stock_detail",
     "edit_stock_message",
     "require_stock_user",
-    "send_stock_detail",
 ]
