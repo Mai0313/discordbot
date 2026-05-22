@@ -644,15 +644,23 @@ async def list_stock_supply_audit() -> tuple[StockSupplyAuditView, ...]:
         result = await session.execute(
             statement=select(StockProfile).order_by(StockProfile.symbol.asc())
         )
-        audits: list[StockSupplyAuditView] = []
-        for profile in result.scalars():
-            exposure = await _market_exposure(session=session, profile=profile)
-            non_final_count = await session.scalar(
-                statement=select(func.count(StockOperation.operation_id)).where(
-                    StockOperation.symbol == profile.symbol,
+        profiles = tuple(result.scalars())
+        exposures = await _market_exposures(session=session, profiles=profiles)
+        symbols = tuple(profile.symbol for profile in profiles)
+        non_final_counts: dict[str, int] = {}
+        if symbols:
+            count_result = await session.execute(
+                statement=select(StockOperation.symbol, func.count(StockOperation.operation_id))
+                .where(
+                    StockOperation.symbol.in_(symbols),
                     StockOperation.status.notin_(_FINAL_OPERATION_STATUSES),
                 )
+                .group_by(StockOperation.symbol)
             )
+            non_final_counts = {symbol: int(count) for symbol, count in count_result.all()}
+        audits: list[StockSupplyAuditView] = []
+        for profile in profiles:
+            exposure = exposures[profile.symbol]
             audits.append(
                 StockSupplyAuditView(
                     symbol=profile.symbol,
@@ -665,7 +673,7 @@ async def list_stock_supply_audit() -> tuple[StockSupplyAuditView, ...]:
                     available_long_shares=exposure.available_long_shares,
                     available_short_shares=exposure.available_short_shares,
                     liquidity_shares=profile.liquidity_shares,
-                    non_final_operations=non_final_count or 0,
+                    non_final_operations=non_final_counts.get(profile.symbol, 0),
                 )
             )
         return tuple(audits)
