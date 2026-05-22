@@ -869,17 +869,19 @@ def _recent_pressure_bps_from_rows(
 ) -> int:
     """Returns recent buy/sell pressure from prefetched trade legs."""
     since = at - _ORDER_FLOW_LOOKBACK
-    net_shares = 0
+    net_shares = 0.0
+    at_taipei = as_taipei(dt=at)
+    since_taipei = as_taipei(dt=since)
+    total_seconds = _ORDER_FLOW_LOOKBACK.total_seconds()
     for leg_type, shares, created_at in pressure_rows:
-        if as_taipei(dt=created_at) < as_taipei(dt=since) or as_taipei(dt=created_at) > as_taipei(
-            dt=at
-        ):
+        created_at_taipei = as_taipei(dt=created_at)
+        if created_at_taipei < since_taipei or created_at_taipei > at_taipei:
             continue
-        age_seconds = max(int((as_taipei(dt=at) - as_taipei(dt=created_at)).total_seconds()), 0)
-        remaining_seconds = max(int(_ORDER_FLOW_LOOKBACK.total_seconds()) - age_seconds, 0)
+        age_seconds = max((at_taipei - created_at_taipei).total_seconds(), 0)
+        remaining_seconds = max(total_seconds - age_seconds, 0)
         if remaining_seconds <= 0:
             continue
-        decayed_shares = shares * remaining_seconds // int(_ORDER_FLOW_LOOKBACK.total_seconds())
+        decayed_shares = shares * remaining_seconds / total_seconds
         if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
             net_shares += decayed_shares
         else:

@@ -227,6 +227,22 @@ def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
     assert pressure_from_order_flow(net_shares=1_000, liquidity_shares=0) == 0
 
 
+def test_stock_order_flow_decay_preserves_small_trade_pressure() -> None:
+    """Small trades retain fractional decay before aggregate pressure conversion."""
+    at = datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE)
+    pressure_rows = (
+        (StockTradeLegType.OPEN_LONG.value, 1, at - timedelta(seconds=1)),
+        (StockTradeLegType.OPEN_LONG.value, 1, at - timedelta(seconds=1)),
+    )
+
+    assert (
+        stock_db._recent_pressure_bps_from_rows(
+            pressure_rows=pressure_rows, at=at, liquidity_shares=100
+        )
+        == 2
+    )
+
+
 async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: None) -> None:
     """Schema bootstrap creates stock tables but company rows are DB-managed."""
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))

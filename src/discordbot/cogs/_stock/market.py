@@ -55,12 +55,12 @@ def decay_news_sentiment(sentiment_bps: int, ticks_elapsed: int) -> int:
     return remaining if clamped >= 0 else -remaining
 
 
-def pressure_from_order_flow(net_shares: int, liquidity_shares: int) -> int:
+def pressure_from_order_flow(net_shares: float, liquidity_shares: int) -> int:
     """Converts decayed net order flow into bounded price pressure."""
     if liquidity_shares <= 0 or net_shares == 0:
         return 0
     return clamp_bps(
-        value=net_shares * PRESSURE_LIMIT_BPS // liquidity_shares,
+        value=round(net_shares * PRESSURE_LIMIT_BPS / liquidity_shares),
         lower=-PRESSURE_LIMIT_BPS,
         upper=PRESSURE_LIMIT_BPS,
     )
