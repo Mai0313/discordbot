@@ -485,9 +485,8 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
         news_rows = news_result.scalars().all()
     assert calls == 1
     assert len(news_rows) == 1
-    expected_bucket = (
-        int(datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE).timestamp())
-        // (BCAT_NEWS_CADENCE_HOURS * 60 * 60)
+    expected_bucket = int(datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE).timestamp()) // (
+        BCAT_NEWS_CADENCE_HOURS * 60 * 60
     )
     assert news_rows[0].id == f"bcat-{expected_bucket}"
     assert news_rows[0].headline == "BCAT 測試新聞"

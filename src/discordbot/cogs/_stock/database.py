@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 import logfire
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, func, select, update
+from sqlalchemy import Index, String, Integer, DateTime, or_, func, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -631,36 +631,9 @@ async def ensure_due_stock_news(
     effective_now = now or _database_now()
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
     async with _current_news_generation_lock():
-        async with open_stock_session() as session:
-            statement = select(StockProfile)
-            if normalized_symbols:
-                statement = statement.where(StockProfile.symbol.in_(normalized_symbols))
-            result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
-            profiles = tuple(result.scalars())
-            profile_symbols = tuple(profile.symbol for profile in profiles)
-            latest_news_by_symbol: dict[str, datetime] = {}
-            if profile_symbols:
-                latest_result = await session.execute(
-                    statement=select(StockNews.symbol, func.max(StockNews.created_at))
-                    .where(StockNews.symbol.in_(profile_symbols))
-                    .group_by(StockNews.symbol)
-                )
-                latest_news_by_symbol = {
-                    symbol: latest_at
-                    for symbol, latest_at in latest_result.all()
-                    if latest_at is not None
-                }
-            due_profiles: list[StockProfileView] = []
-            for profile in profiles:
-                latest_news_at = latest_news_by_symbol.get(profile.symbol)
-                cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
-                if (
-                    latest_news_at is not None
-                    and as_taipei(dt=effective_now) - as_taipei(dt=latest_news_at) < cadence
-                ):
-                    continue
-                due_profiles.append(_profile_view(profile=profile))
-
+        due_profiles = await _due_stock_profile_views(
+            normalized_symbols=normalized_symbols, now=effective_now
+        )
         if not due_profiles:
             return
 
@@ -691,6 +664,43 @@ async def ensure_due_stock_news(
                     session=session, profile=profile, generated=generated, now=effective_now
                 )
             await session.commit()
+
+
+async def _due_stock_profile_views(
+    normalized_symbols: tuple[str, ...] | None, now: datetime
+) -> tuple[StockProfileView, ...]:
+    """Returns stock profiles that need a fresh news row."""
+    async with open_stock_session() as session:
+        statement = select(StockProfile)
+        if normalized_symbols:
+            statement = statement.where(StockProfile.symbol.in_(normalized_symbols))
+        result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
+        profiles = tuple(result.scalars())
+        profile_symbols = tuple(profile.symbol for profile in profiles)
+        latest_news_by_symbol: dict[str, datetime] = {}
+        if profile_symbols:
+            latest_result = await session.execute(
+                statement=select(StockNews.symbol, func.max(StockNews.created_at))
+                .where(StockNews.symbol.in_(profile_symbols))
+                .group_by(StockNews.symbol)
+            )
+            latest_news_by_symbol = {
+                symbol: latest_at
+                for symbol, latest_at in latest_result.all()
+                if latest_at is not None
+            }
+
+        due_profiles: list[StockProfileView] = []
+        for profile in profiles:
+            latest_news_at = latest_news_by_symbol.get(profile.symbol)
+            cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
+            if (
+                latest_news_at is not None
+                and as_taipei(dt=now) - as_taipei(dt=latest_news_at) < cadence
+            ):
+                continue
+            due_profiles.append(_profile_view(profile=profile))
+        return tuple(due_profiles)
 
 
 async def _insert_generated_news(

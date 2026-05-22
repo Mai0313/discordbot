@@ -2,22 +2,25 @@
 
 import ast
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from pathlib import Path
-from typing import cast
 
-from nextcord import Locale
+from nextcord import Locale, Interaction
 
 from discordbot.cogs.help import (
     _SECTIONS,
-    HelpCogs,
     _HELP_CONTENT,
     _EMBED_FIELD_COUNT_LIMIT,
     _EMBED_FIELD_VALUE_LIMIT,
     _EMBED_TOTAL_LENGTH_LIMIT,
     _MESSAGE_EMBED_COUNT_LIMIT,
+    HelpCogs,
     _build_help_embeds,
     _split_field_value,
 )
+
+if TYPE_CHECKING:
+    from nextcord.ext import commands
 
 
 def _slash_command_names() -> set[str]:
@@ -109,8 +112,7 @@ async def test_help_followups_stay_ephemeral() -> None:
     )
 
     await HelpCogs.help.callback(
-        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())),
-        cast("Interaction", interaction),
+        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())), cast("Interaction", interaction)
     )
 
     assert interaction.response.deferred_ephemeral is True
