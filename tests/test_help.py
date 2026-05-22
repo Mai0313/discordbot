@@ -1,12 +1,15 @@
 """Tests for keeping the localized help guide aligned with slash commands."""
 
 import ast
+from types import SimpleNamespace
 from pathlib import Path
+from typing import cast
 
 from nextcord import Locale
 
 from discordbot.cogs.help import (
     _SECTIONS,
+    HelpCogs,
     _HELP_CONTENT,
     _EMBED_FIELD_COUNT_LIMIT,
     _EMBED_FIELD_VALUE_LIMIT,
@@ -72,3 +75,44 @@ def test_help_embeds_fit_discord_limits() -> None:
             assert len(embed.fields) <= _EMBED_FIELD_COUNT_LIMIT
             assert len(embed) <= _EMBED_TOTAL_LENGTH_LIMIT
             assert all(len(field.value) <= _EMBED_FIELD_VALUE_LIMIT for field in embed.fields)
+
+
+async def test_help_followups_stay_ephemeral() -> None:
+    """The help command keeps every response private."""
+
+    class ResponseStub:
+        """Records the initial deferred response."""
+
+        def __init__(self) -> None:
+            self.deferred_ephemeral = False
+
+        async def defer(self, ephemeral: bool = False) -> None:
+            self.deferred_ephemeral = ephemeral
+
+    class FollowupStub:
+        """Records followup payloads."""
+
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        async def send(self, **kwargs: object) -> None:
+            self.sent.append(kwargs)
+
+    interaction = SimpleNamespace(
+        locale=Locale.zh_TW,
+        user=SimpleNamespace(
+            display_name="tester",
+            display_avatar=SimpleNamespace(url="https://example.com/avatar.png"),
+        ),
+        response=ResponseStub(),
+        followup=FollowupStub(),
+    )
+
+    await HelpCogs.help.callback(
+        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())),
+        cast("Interaction", interaction),
+    )
+
+    assert interaction.response.deferred_ephemeral is True
+    assert interaction.followup.sent
+    assert all(payload["ephemeral"] is True for payload in interaction.followup.sent)
