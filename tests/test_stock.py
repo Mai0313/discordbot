@@ -117,6 +117,10 @@ async def stock_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
     stock_db._market_locks.clear()
     stock_db._market_lock_refcounts.clear()
     monkeypatch.setattr(stock_db, "_market_locks_loop", None)
+    monkeypatch.setattr(stock_db, "_news_generation_lock", None)
+    monkeypatch.setattr(stock_db, "_news_generation_lock_loop", None)
+    monkeypatch.setattr(stock_db, "_news_provider_semaphore", None)
+    monkeypatch.setattr(stock_db, "_news_provider_semaphore_loop", None)
     yield
     await engine.dispose()
 
@@ -462,9 +466,58 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
         news_rows = news_result.scalars().all()
     assert calls == 1
     assert len(news_rows) == 1
+    expected_bucket = (
+        int(datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE).timestamp())
+        // (BCAT_NEWS_CADENCE_HOURS * 60 * 60)
+    )
+    assert news_rows[0].id == f"bcat-{expected_bucket}"
     assert news_rows[0].headline == "BCAT 測試新聞"
     assert news_rows[0].source == "ai"
     assert news_rows[0].model == "test-model"
+
+
+async def test_stock_due_news_serializes_concurrent_provider_calls(
+    stock_isolated_db: None,
+) -> None:
+    """Concurrent news refreshes do not pay for duplicate provider calls."""
+    await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+    async with stock_db.open_stock_session() as session:
+        await session.execute(
+            statement=delete(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        await session.commit()
+    calls = 0
+
+    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+        """Returns one fake AI news item after yielding to the event loop."""
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return StockGeneratedNews(
+            headline=f"{profile.symbol} concurrent 測試新聞",
+            sentiment_bps=80,
+            source="ai",
+            model="test-model",
+        )
+
+    await asyncio.gather(
+        stock_db.ensure_due_stock_news(
+            news_provider=provider, symbols=(BCAT_SYMBOL,), now=datetime(2026, 1, 2)
+        ),
+        stock_db.ensure_due_stock_news(
+            news_provider=provider, symbols=(BCAT_SYMBOL,), now=datetime(2026, 1, 2)
+        ),
+    )
+
+    async with stock_db.open_stock_session() as session:
+        news_result = await session.execute(
+            statement=select(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        news_rows = news_result.scalars().all()
+    assert calls == 1
+    assert len(news_rows) == 1
+    assert news_rows[0].headline == "BCAT concurrent 測試新聞"
+    assert news_rows[0].source == "ai"
 
 
 async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated_db: None) -> None:

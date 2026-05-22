@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 import logfire
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
+from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, func, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -67,7 +67,12 @@ _operation_locks_loop: asyncio.AbstractEventLoop | None = None
 _market_locks: dict[str, asyncio.Lock] = {}
 _market_lock_refcounts: dict[str, int] = {}
 _market_locks_loop: asyncio.AbstractEventLoop | None = None
+_news_generation_lock: asyncio.Lock | None = None
+_news_generation_lock_loop: asyncio.AbstractEventLoop | None = None
+_news_provider_semaphore: asyncio.Semaphore | None = None
+_news_provider_semaphore_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
+_NEWS_PROVIDER_CONCURRENCY: Final[int] = 4
 _ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
     seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
@@ -246,6 +251,26 @@ def _current_schema_lock() -> asyncio.Lock:
         _schema_lock = asyncio.Lock()
         _schema_lock_loop = loop
     return _schema_lock
+
+
+def _current_news_generation_lock() -> asyncio.Lock:
+    """Returns the process-local stock news generation lock for this event loop."""
+    global _news_generation_lock, _news_generation_lock_loop  # noqa: PLW0603 -- loop-local singleton
+    loop = asyncio.get_running_loop()
+    if _news_generation_lock is None or _news_generation_lock_loop is not loop:
+        _news_generation_lock = asyncio.Lock()
+        _news_generation_lock_loop = loop
+    return _news_generation_lock
+
+
+def _current_news_provider_semaphore() -> asyncio.Semaphore:
+    """Returns the stock news provider concurrency limiter for this event loop."""
+    global _news_provider_semaphore, _news_provider_semaphore_loop  # noqa: PLW0603 -- loop-local singleton
+    loop = asyncio.get_running_loop()
+    if _news_provider_semaphore is None or _news_provider_semaphore_loop is not loop:
+        _news_provider_semaphore = asyncio.Semaphore(_NEWS_PROVIDER_CONCURRENCY)
+        _news_provider_semaphore_loop = loop
+    return _news_provider_semaphore
 
 
 @asynccontextmanager
@@ -602,74 +627,79 @@ async def ensure_due_stock_news(
     await _ensure_schema()
     effective_now = now or _database_now()
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
-    async with open_stock_session() as session:
-        statement = select(StockProfile)
-        if normalized_symbols:
-            statement = statement.where(StockProfile.symbol.in_(normalized_symbols))
-        result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
-        profiles = tuple(result.scalars())
-        due_profiles: list[StockProfileView] = []
-        for profile in profiles:
-            latest_result = await session.execute(
-                statement=select(StockNews.created_at)
-                .where(StockNews.symbol == profile.symbol)
-                .order_by(StockNews.created_at.desc())
-                .limit(1)
-            )
-            latest_news_at = latest_result.scalar_one_or_none()
-            cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
-            if (
-                latest_news_at is not None
-                and as_taipei(dt=effective_now) - as_taipei(dt=latest_news_at) < cadence
-            ):
-                continue
-            due_profiles.append(_profile_view(profile=profile))
+    async with _current_news_generation_lock():
+        async with open_stock_session() as session:
+            statement = select(StockProfile)
+            if normalized_symbols:
+                statement = statement.where(StockProfile.symbol.in_(normalized_symbols))
+            result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
+            profiles = tuple(result.scalars())
+            profile_symbols = tuple(profile.symbol for profile in profiles)
+            latest_news_by_symbol: dict[str, datetime] = {}
+            if profile_symbols:
+                latest_result = await session.execute(
+                    statement=select(StockNews.symbol, func.max(StockNews.created_at))
+                    .where(StockNews.symbol.in_(profile_symbols))
+                    .group_by(StockNews.symbol)
+                )
+                latest_news_by_symbol = {
+                    symbol: latest_at
+                    for symbol, latest_at in latest_result.all()
+                    if latest_at is not None
+                }
+            due_profiles: list[StockProfileView] = []
+            for profile in profiles:
+                latest_news_at = latest_news_by_symbol.get(profile.symbol)
+                cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
+                if (
+                    latest_news_at is not None
+                    and as_taipei(dt=effective_now) - as_taipei(dt=latest_news_at) < cadence
+                ):
+                    continue
+                due_profiles.append(_profile_view(profile=profile))
 
-    if not due_profiles:
-        return
+        if not due_profiles:
+            return
 
-    semaphore = asyncio.Semaphore(4)
+        async def generate_row(
+            profile: StockProfileView,
+        ) -> tuple[StockProfileView, StockGeneratedNews]:
+            """Generates one news row without holding a database transaction."""
+            generated: StockGeneratedNews | None = None
+            if news_provider is not None:
+                async with _current_news_provider_semaphore():
+                    try:
+                        generated = await news_provider(profile)
+                    except Exception:
+                        logfire.warn(
+                            "Stock news provider failed; using deterministic fallback",
+                            symbol=profile.symbol,
+                            _exc_info=True,
+                        )
+            if generated is None or not generated.headline.strip():
+                generated = _fallback_generated_news(profile=profile, now=effective_now)
+            return profile, generated
 
-    async def generate_row(
-        profile: StockProfileView,
-    ) -> tuple[StockProfileView, StockGeneratedNews]:
-        """Generates one news row without holding a database transaction."""
-        generated: StockGeneratedNews | None = None
-        if news_provider is not None:
-            async with semaphore:
-                try:
-                    generated = await news_provider(profile)
-                except Exception:
-                    logfire.warn(
-                        "Stock news provider failed; using deterministic fallback",
-                        symbol=profile.symbol,
-                        _exc_info=True,
-                    )
-        if generated is None or not generated.headline.strip():
-            generated = _fallback_generated_news(profile=profile, now=effective_now)
-        return profile, generated
+        rows = await asyncio.gather(*(generate_row(profile=profile) for profile in due_profiles))
 
-    rows = await asyncio.gather(*(generate_row(profile=profile) for profile in due_profiles))
-
-    async with open_stock_session() as session:
-        for profile, generated in rows:
-            await _insert_generated_news(
-                session=session, profile=profile, generated=generated, now=effective_now
-            )
-        await session.commit()
+        async with open_stock_session() as session:
+            for profile, generated in rows:
+                await _insert_generated_news(
+                    session=session, profile=profile, generated=generated, now=effective_now
+                )
+            await session.commit()
 
 
 async def _insert_generated_news(
     session: AsyncSession, profile: StockProfileView, generated: StockGeneratedNews, now: datetime
 ) -> None:
     """Persists one generated news row with a stable cadence-bucket ID."""
-    cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
-    bucket = int(as_taipei(dt=now).timestamp()) // cadence_seconds
+    bucket = _stock_news_bucket(profile=profile, now=now)
     source = generated.source or "template"
     await session.execute(
         statement=insert(StockNews)
         .values(
-            id=f"{profile.symbol.lower()}-{source}-{bucket}",
+            id=f"{profile.symbol.lower()}-{bucket}",
             symbol=profile.symbol,
             headline=generated.headline.strip()[:256],
             sentiment_bps=clamp_bps(
@@ -686,10 +716,15 @@ async def _insert_generated_news(
     )
 
 
+def _stock_news_bucket(profile: StockProfileView, now: datetime) -> int:
+    """Returns the cadence bucket for one stock news row."""
+    cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
+    return int(as_taipei(dt=now).timestamp()) // cadence_seconds
+
+
 def _fallback_generated_news(profile: StockProfileView, now: datetime) -> StockGeneratedNews:
     """Returns deterministic fictional news for a due stock profile."""
-    cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
-    bucket = int(as_taipei(dt=now).timestamp()) // cadence_seconds
+    bucket = _stock_news_bucket(profile=profile, now=now)
     seed = sum(ord(char) for char in profile.symbol) + bucket
     headline_template, sentiment_bps = STOCK_NEWS_FALLBACK_TEMPLATES[
         seed % len(STOCK_NEWS_FALLBACK_TEMPLATES)
