@@ -632,7 +632,9 @@ async def ensure_due_stock_news(
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
     async with _current_news_generation_lock():
         due_profiles = await _due_stock_profile_views(
-            normalized_symbols=normalized_symbols, now=effective_now
+            normalized_symbols=normalized_symbols,
+            now=effective_now,
+            allow_template_upgrade=news_provider is not None,
         )
         if not due_profiles:
             return
@@ -667,7 +669,7 @@ async def ensure_due_stock_news(
 
 
 async def _due_stock_profile_views(
-    normalized_symbols: tuple[str, ...] | None, now: datetime
+    normalized_symbols: tuple[str, ...] | None, now: datetime, allow_template_upgrade: bool = False
 ) -> tuple[StockProfileView, ...]:
     """Returns stock profiles that need a fresh news row."""
     async with open_stock_session() as session:
@@ -677,26 +679,37 @@ async def _due_stock_profile_views(
         result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
         profiles = tuple(result.scalars())
         profile_symbols = tuple(profile.symbol for profile in profiles)
-        latest_news_by_symbol: dict[str, datetime] = {}
+        latest_news_by_symbol: dict[str, tuple[datetime, str]] = {}
         if profile_symbols:
-            latest_result = await session.execute(
-                statement=select(StockNews.symbol, func.max(StockNews.created_at))
+            latest_news_subquery = (
+                select(StockNews.symbol, func.max(StockNews.created_at).label("latest_created_at"))
                 .where(StockNews.symbol.in_(profile_symbols))
                 .group_by(StockNews.symbol)
+                .subquery()
+            )
+            latest_result = await session.execute(
+                statement=select(StockNews.symbol, StockNews.created_at, StockNews.source).join(
+                    latest_news_subquery,
+                    (StockNews.symbol == latest_news_subquery.c.symbol)
+                    & (StockNews.created_at == latest_news_subquery.c.latest_created_at),
+                )
             )
             latest_news_by_symbol = {
-                symbol: latest_at
-                for symbol, latest_at in latest_result.all()
+                symbol: (latest_at, source)
+                for symbol, latest_at, source in latest_result.all()
                 if latest_at is not None
             }
 
         due_profiles: list[StockProfileView] = []
         for profile in profiles:
-            latest_news_at = latest_news_by_symbol.get(profile.symbol)
+            latest_news = latest_news_by_symbol.get(profile.symbol)
             cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
-            if (
-                latest_news_at is not None
-                and as_taipei(dt=now) - as_taipei(dt=latest_news_at) < cadence
+            if latest_news is None:
+                due_profiles.append(_profile_view(profile=profile))
+                continue
+            latest_news_at, latest_news_source = latest_news
+            if as_taipei(dt=now) - as_taipei(dt=latest_news_at) < cadence and (
+                not allow_template_upgrade or latest_news_source != "template"
             ):
                 continue
             due_profiles.append(_profile_view(profile=profile))

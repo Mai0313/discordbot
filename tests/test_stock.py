@@ -533,6 +533,41 @@ async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: 
     assert news_rows[0].model == "test-model"
 
 
+async def test_stock_due_news_upgrades_template_when_provider_available(
+    stock_isolated_db: None,
+) -> None:
+    """Provider-backed refreshes can upgrade fallback news before the next cadence."""
+    now = datetime(year=2026, month=1, day=2)
+    await stock_db.ensure_due_stock_news(symbols=(BCAT_SYMBOL,), now=now)
+    calls = 0
+
+    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+        """Returns one fake AI news item."""
+        nonlocal calls
+        calls += 1
+        return StockGeneratedNews(
+            headline=f"{profile.symbol} provider 升級新聞",
+            sentiment_bps=100,
+            source="ai",
+            model="test-model",
+        )
+
+    await stock_db.ensure_due_stock_news(
+        news_provider=provider, symbols=(BCAT_SYMBOL,), now=now + timedelta(hours=1)
+    )
+
+    async with stock_db.open_stock_session() as session:
+        news_result = await session.execute(
+            statement=select(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        news_rows = news_result.scalars().all()
+
+    assert calls == 1
+    assert len(news_rows) == 1
+    assert news_rows[0].headline == "BCAT provider 升級新聞"
+    assert news_rows[0].source == "ai"
+
+
 async def test_stock_due_news_serializes_concurrent_provider_calls(
     stock_isolated_db: None,
 ) -> None:
