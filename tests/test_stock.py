@@ -251,6 +251,25 @@ async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(
     assert len(tick_boundaries) == len(set(tick_boundaries))
 
 
+async def test_stock_market_advancement_starts_write_transaction(
+    stock_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Quote refreshes use a SQLite write transaction before market reads."""
+    original_begin_immediate = stock_db._begin_immediate
+    calls = 0
+
+    async def begin_immediate(session: AsyncSession) -> None:
+        nonlocal calls
+        calls += 1
+        await original_begin_immediate(session=session)
+
+    monkeypatch.setattr(stock_db, "_begin_immediate", begin_immediate)
+
+    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+
+    assert calls == len(quotes)
+
+
 async def test_stock_buy_long_debits_wallet_and_writes_ledger(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:

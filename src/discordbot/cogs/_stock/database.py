@@ -618,9 +618,15 @@ def _recent_pressure_bps_from_rows(
 
 
 async def advance_market_in_session(
-    session: AsyncSession, symbol: str, now: datetime | None = None, rng: Random | None = None
+    session: AsyncSession,
+    symbol: str,
+    now: datetime | None = None,
+    rng: Random | None = None,
+    begin_immediate: bool = True,
 ) -> StockMarketQuote:
     """Advances one stock lazily to the current tick boundary."""
+    if begin_immediate:
+        await _begin_immediate(session=session)
     effective_now = now or _database_now()
     effective_rng = rng or _PRODUCTION_RNG
     profile_result = await session.execute(
@@ -687,16 +693,14 @@ async def list_market_quotes(
     async with open_stock_session() as session:
         symbols_result = await session.execute(statement=select(StockProfile.symbol))
         symbols = tuple(symbols_result.scalars().all())
-        quotes: list[StockMarketQuote] = []
-        for symbol in symbols:
-            async with _market_lock(symbol=symbol):
-                quotes.append(
-                    await advance_market_in_session(
-                        session=session, symbol=symbol, now=now, rng=rng
-                    )
-                )
-                await session.commit()
-        return tuple(quotes)
+    quotes: list[StockMarketQuote] = []
+    for symbol in symbols:
+        async with open_stock_session() as session, _market_lock(symbol=symbol):
+            quotes.append(
+                await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
+            )
+            await session.commit()
+    return tuple(quotes)
 
 
 async def get_stock_detail(
@@ -1274,7 +1278,11 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
                     position=position,
                 )
             quote = await advance_market_in_session(
-                session=session, symbol=normalized_symbol, now=effective_now, rng=rng
+                session=session,
+                symbol=normalized_symbol,
+                now=effective_now,
+                rng=rng,
+                begin_immediate=False,
             )
             try:
                 parsed_quantity = _parse_quantity(
