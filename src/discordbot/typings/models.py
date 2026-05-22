@@ -115,7 +115,7 @@ class RuntimeModelCatalog(BaseModel):
         """
         if self.is_peak:
             return ModelSettings(name="gemini-flash-latest", effort="high")
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.5-flash", effort="high")
 
 
 class RouteDecision(BaseModel):
