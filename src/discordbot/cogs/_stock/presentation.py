@@ -130,7 +130,8 @@ def build_tutorial_embed() -> Embed:
         description=(
             "`買入 / 回補做空` 會先回補既有做空，剩餘數量才建立持股。\n"
             "`做空 / 賣出持股` 會先賣出既有持股，剩餘數量才建立做空。\n"
-            "數量可以輸入整數或 `ALL`，實際價格與部位會在送出表單當下重新讀取。"
+            "選擇操作後會跳出數量視窗，可以輸入整數或 `ALL`，實際價格與部位會在送出當下重新讀取。"
+            "如果輸入股數超過當下餘額可執行上限，會自動改用可執行的最大股數。"
         ),
         color=DETAIL_COLOR,
     )
@@ -146,7 +147,7 @@ def build_action_prompt_embed(detail: StockDetailViewData) -> Embed:
             f"當前每股價格：{format_price(price_cents=profile.price_cents)} {CURRENCY_NAME}\n"
             f"目前持有：{detail.position.long_shares:,} 股 | "
             f"目前做空：{detail.position.short_shares:,} 股\n\n"
-            "請先選擇操作，下一步會輸入股數。數量可以輸入整數或 `ALL`。"
+            "請先選擇操作，接著會跳出數量視窗，可輸入股數或 `ALL`。"
         ),
         color=DETAIL_COLOR,
     )

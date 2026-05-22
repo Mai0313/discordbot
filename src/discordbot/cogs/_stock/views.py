@@ -5,6 +5,7 @@ from typing import cast
 
 import nextcord
 from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
+from pydantic import BaseModel, ConfigDict, SkipValidation
 from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
@@ -77,6 +78,20 @@ class StockPublicView(View):
             return
         if isinstance(message_id, int):
             await forget_game_message(message_id=message_id)
+
+
+class _StockQuantitySubmission(BaseModel):
+    """Context shared by quantity modal submit paths."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    interaction: SkipValidation[Interaction]
+    symbol: str
+    action: StockAction
+    owner_id: int
+    raw_quantity: str
+    message: SkipValidation[Message | None] = None
+    parent: SkipValidation[StockPublicView | None] = None
 
 
 class StockMarketView(StockPublicView):
@@ -379,45 +394,32 @@ class StockQuantityModal(Modal):
 
     async def callback(self, interaction: Interaction) -> None:
         """Submits the quantity to the stock settlement service."""
-        await self.submit_quantity(
-            interaction=interaction, raw_quantity=str(self.quantity.value or "")
+        await submit_stock_quantity(
+            submission=_StockQuantitySubmission(
+                interaction=interaction,
+                symbol=self.symbol,
+                action=self.action,
+                owner_id=self.owner_id,
+                raw_quantity=str(self.quantity.value or ""),
+                message=self.message,
+                parent=self.parent,
+            )
         )
 
     async def submit_quantity(
         self, interaction: Interaction, raw_quantity: str, action: StockAction | None = None
     ) -> None:
         """Submits a raw quantity string to the stock settlement service."""
-        user = require_stock_user(interaction=interaction)
-        if self.owner_id != user.id:
-            await send_ephemeral_notice(
+        await submit_stock_quantity(
+            submission=_StockQuantitySubmission(
                 interaction=interaction,
-                content="這個股票面板只有發起者可以操作，請自己使用 `/stock` 開一個新的面板",
-                log_message="Failed to send stock modal owner mismatch notice",
+                symbol=self.symbol,
+                action=action or self.action,
+                owner_id=self.owner_id,
+                raw_quantity=raw_quantity,
+                message=self.message,
+                parent=self.parent,
             )
-            return
-        requested_action = action or self.action
-        await interaction.response.defer()
-        avatar_url = await guild_avatar_url(user=user, guild=getattr(interaction, "guild", None))
-        result = await settle_stock_operation(
-            symbol=self.symbol,
-            user_id=user.id,
-            user_name=user.name,
-            avatar_url=avatar_url,
-            requested_action=requested_action,
-            quantity=raw_quantity,
-        )
-        if self.parent is not None:
-            self.parent.stop()
-        view: StockPublicView = (
-            StockPostTradeView(symbol=self.symbol, owner_id=self.owner_id)
-            if result.success
-            else StockActionView(symbol=self.symbol, owner_id=self.owner_id)
-        )
-        await edit_stock_message(
-            interaction=interaction,
-            embed=build_settlement_embed(result=result),
-            view=view,
-            message=self.message,
         )
 
 
@@ -466,6 +468,42 @@ async def edit_stock_action_prompt(interaction: Interaction, symbol: str, owner_
         interaction=interaction,
         embed=build_action_prompt_embed(detail=detail),
         view=StockActionView(symbol=symbol, owner_id=owner_id),
+    )
+
+
+async def submit_stock_quantity(submission: _StockQuantitySubmission) -> None:
+    """Submits a stock quantity from either a dropdown preset or modal."""
+    interaction = submission.interaction
+    user = require_stock_user(interaction=interaction)
+    if submission.owner_id != user.id:
+        await send_ephemeral_notice(
+            interaction=interaction,
+            content="這個股票面板只有發起者可以操作，請自己使用 `/stock` 開一個新的面板",
+            log_message="Failed to send stock modal owner mismatch notice",
+        )
+        return
+    await interaction.response.defer()
+    avatar_url = await guild_avatar_url(user=user, guild=getattr(interaction, "guild", None))
+    result = await settle_stock_operation(
+        symbol=submission.symbol,
+        user_id=user.id,
+        user_name=user.name,
+        avatar_url=avatar_url,
+        requested_action=submission.action,
+        quantity=submission.raw_quantity,
+    )
+    if submission.parent is not None:
+        submission.parent.stop()
+    view: StockPublicView = (
+        StockPostTradeView(symbol=submission.symbol, owner_id=submission.owner_id)
+        if result.success
+        else StockActionView(symbol=submission.symbol, owner_id=submission.owner_id)
+    )
+    await edit_stock_message(
+        interaction=interaction,
+        embed=build_settlement_embed(result=result),
+        view=view,
+        message=submission.message,
     )
 
 
@@ -519,4 +557,5 @@ __all__ = [
     "edit_stock_detail",
     "edit_stock_message",
     "require_stock_user",
+    "submit_stock_quantity",
 ]

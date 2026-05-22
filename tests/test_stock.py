@@ -664,10 +664,10 @@ async def test_stock_detail_shows_stock_level_trades_and_positions(
     assert any(position.short_shares == 1 for position in detail.public_positions)
 
 
-async def test_stock_insufficient_buy_leaves_stock_untouched(
+async def test_stock_oversized_buy_defaults_to_affordable_all(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Insufficient funds do not mutate position or trade ledger."""
+    """Numeric buy requests above the spendable balance clamp to the affordable maximum."""
     await adjust_balance(user_id=1, name="alice", delta=100)
 
     result = await stock_db.settle_stock_operation(
@@ -680,8 +680,29 @@ async def test_stock_insufficient_buy_leaves_stock_untouched(
         rng=_rng(seed=1),
     )
 
+    assert result.success
+    assert result.shares == 1
+    assert result.balance_after == 0
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
+    assert detail.position.long_shares == 1
+
+
+async def test_stock_zero_affordable_buy_leaves_stock_untouched(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Oversized numeric requests still fail when the executable ALL quantity is zero."""
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
     assert not result.success
-    assert "餘額不足" in result.error
+    assert "股數必須是正整數" in result.error
     detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
     assert detail.position.long_shares == 0
     async with stock_db.open_stock_session() as session:
@@ -756,6 +777,28 @@ async def test_stock_short_round_trip_uses_collateral_and_integer_entry(
     assert covered.position.short_collateral == 0
     assert covered.position.short_entry_value == 0
     assert covered.position.realized_pnl == -1
+
+
+async def test_stock_oversized_short_defaults_to_affordable_all(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Numeric short requests above the collateral balance clamp to the affordable maximum."""
+    await adjust_balance(user_id=1, name="alice", delta=100)
+
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.SHORT,
+        quantity="2",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert result.success
+    assert result.shares == 1
+    assert result.balance_after == 0
+    assert result.position.short_shares == 1
 
 
 async def test_stock_cover_can_use_withheld_short_entry_value(

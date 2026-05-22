@@ -368,6 +368,7 @@ async def test_stock_action_dropdown_launches_quantity_modal() -> None:
     assert isinstance(interaction.response.modals[0].quantity, stock_views.TextInput)
     components = interaction.response.modals[0].to_dict()["components"]
     assert [row["components"][0]["type"] for row in components] == [4]
+    assert all(getattr(child, "custom_id", "") != "stock:quantity" for child in view.children)
 
 
 async def test_stock_modal_rejects_non_owner_before_settlement(

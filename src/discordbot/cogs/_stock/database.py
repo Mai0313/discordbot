@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 import logfire
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -208,6 +209,17 @@ class StockNews(Base):
 
 class _StockOperationPlan(StockSettlementResult):
     """Internal settlement plan before any database mutation."""
+
+
+class _StockExecutionSnapshot(BaseModel):
+    """Submit-time state needed to cap a requested quantity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: StockAction
+    price_cents: int
+    wallet_balance: int
+    position: StockPositionView
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -1069,11 +1081,76 @@ def _parse_quantity(
     return int(normalized)
 
 
+def _is_all_quantity(raw_quantity: str) -> bool:
+    """Returns whether the raw quantity uses the ALL shorthand."""
+    return raw_quantity.strip().replace(",", "").upper() in {"ALL", "全部", "MAX"}
+
+
 def _prorated_amount(total: int, shares: int, current_shares: int) -> int:
     """Returns a prorated integer basis amount, consuming dust on final close."""
     if shares >= current_shares:
         return total
     return total * shares // current_shares
+
+
+def _max_coverable_short_shares(
+    price_cents: int, wallet_balance: int, position: StockPositionView
+) -> int:
+    """Returns how many short shares can be covered from the submit-time state."""
+    low = 0
+    high = position.short_shares
+    while low < high:
+        shares = (low + high + 1) // 2
+        released_collateral = _prorated_amount(
+            total=position.short_collateral, shares=shares, current_shares=position.short_shares
+        )
+        released_entry_value = _prorated_amount(
+            total=position.short_entry_value, shares=shares, current_shares=position.short_shares
+        )
+        cover_cost = cash_ceil(cents=price_cents * shares)
+        if cover_cost <= wallet_balance + released_collateral + released_entry_value:
+            low = shares
+        else:
+            high = shares - 1
+    return low
+
+
+def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
+    """Returns the largest quantity that can pass balance validation."""
+    if snapshot.action == StockAction.SHORT:
+        sell_proceeds = cash_floor(cents=snapshot.price_cents * snapshot.position.long_shares)
+        cash_after_selling = snapshot.wallet_balance + sell_proceeds
+        return snapshot.position.long_shares + cash_after_selling * 100 // snapshot.price_cents
+
+    if snapshot.position.short_shares <= 0:
+        return snapshot.wallet_balance * 100 // snapshot.price_cents
+
+    coverable_shares = _max_coverable_short_shares(
+        price_cents=snapshot.price_cents,
+        wallet_balance=snapshot.wallet_balance,
+        position=snapshot.position,
+    )
+    if coverable_shares < snapshot.position.short_shares:
+        return coverable_shares
+    cover_cost = cash_ceil(cents=snapshot.price_cents * snapshot.position.short_shares)
+    cash_after_covering = (
+        snapshot.wallet_balance
+        + snapshot.position.short_collateral
+        + snapshot.position.short_entry_value
+        - cover_cost
+    )
+    return (
+        snapshot.position.short_shares + max(cash_after_covering, 0) * 100 // snapshot.price_cents
+    )
+
+
+def _clamp_quantity_to_available(
+    raw_quantity: str, parsed_quantity: int, snapshot: _StockExecutionSnapshot
+) -> int:
+    """Treats oversized numeric quantities as the submit-time executable maximum."""
+    if _is_all_quantity(raw_quantity=raw_quantity) or parsed_quantity <= 0:
+        return parsed_quantity
+    return min(parsed_quantity, _max_executable_quantity(snapshot=snapshot))
 
 
 def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit row
@@ -1536,6 +1613,16 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
                     position=position,
                     error="股數格式錯誤，請輸入正整數或 ALL",
                 )
+            parsed_quantity = _clamp_quantity_to_available(
+                raw_quantity=quantity,
+                parsed_quantity=parsed_quantity,
+                snapshot=_StockExecutionSnapshot(
+                    action=requested_action,
+                    price_cents=quote.profile.price_cents,
+                    wallet_balance=wallet_balance,
+                    position=position,
+                ),
+            )
 
             plan = _build_plan(
                 operation_id=operation_id,
