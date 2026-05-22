@@ -117,7 +117,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場**\n"
-            "`/stock` で market UI を開き、price、news、position、chart、supply-limited buy、short、cover を扱えます。"
+            "`/stock` で market UI を開き、price、news、position、chart、supply cap 付きの buy/short entry、sell/cover exit を扱えます。"
         ),
         "vip": (
             "**VIP**\n"
