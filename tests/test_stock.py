@@ -34,6 +34,7 @@ from discordbot.cogs._stock.market import (
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
+from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT, STOCK_NEWS_FALLBACK_TEMPLATES
 from discordbot.cogs._economy.database import (
     UserWallet,
     open_session,
@@ -54,6 +55,48 @@ BCAT_FAIR_VALUE_CENTS = 10_000
 BCAT_MEAN_REVERSION_BPS = 35
 BCAT_MAX_TICK_CHANGE_BPS = 450
 BCAT_NEWS_CADENCE_HOURS = 8
+
+
+def test_stock_news_prompt_and_fallback_templates_are_absurd() -> None:
+    """Stock news copy should stay fictional, goofy, and bounded for market impact."""
+    assert "absurd" in STOCK_NEWS_PROMPT
+    assert "flat tire" in STOCK_NEWS_PROMPT
+    assert any("爆胎" in template for template, _sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES)
+    assert all(
+        -180 <= sentiment_bps <= 180 for _template, sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES
+    )
+
+
+def test_stock_fallback_news_uses_absurd_templates() -> None:
+    """Deterministic fallback news should match the same goofy style as AI news."""
+    profile = StockProfileView(
+        symbol=BCAT_SYMBOL,
+        name=BCAT_NAME,
+        category=BCAT_CATEGORY,
+        price_cents=BCAT_INITIAL_PRICE_CENTS,
+        previous_close_price_cents=BCAT_INITIAL_PRICE_CENTS,
+        day_open_price_cents=BCAT_INITIAL_PRICE_CENTS,
+        total_shares=BCAT_TOTAL_SHARES,
+        float_shares=BCAT_FLOAT_SHARES,
+        base_volatility_bps=BCAT_BASE_VOLATILITY_BPS,
+        volatility_amplifier_bps=BCAT_VOLATILITY_AMPLIFIER_BPS,
+        liquidity_shares=BCAT_LIQUIDITY_SHARES,
+        fair_value_cents=BCAT_FAIR_VALUE_CENTS,
+        mean_reversion_bps=BCAT_MEAN_REVERSION_BPS,
+        max_tick_change_bps=BCAT_MAX_TICK_CHANGE_BPS,
+        news_cadence_hours=BCAT_NEWS_CADENCE_HOURS,
+        updated_at=datetime(2026, 1, 1),
+    )
+    generated = tuple(
+        stock_db._fallback_generated_news(
+            profile=profile,
+            now=datetime(2026, 1, 1) + timedelta(hours=BCAT_NEWS_CADENCE_HOURS * index),
+        )
+        for index in range(len(STOCK_NEWS_FALLBACK_TEMPLATES))
+    )
+    assert any("爆胎" in news.headline for news in generated)
+    assert all(news.source == "template" for news in generated)
+    assert all(-180 <= news.sentiment_bps <= 180 for news in generated)
 
 
 def _rng(seed: int) -> Random:

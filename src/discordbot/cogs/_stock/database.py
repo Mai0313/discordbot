@@ -51,6 +51,7 @@ from discordbot.cogs._stock.market import (
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
+from discordbot.cogs._stock.prompts import STOCK_NEWS_FALLBACK_TEMPLATES
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
@@ -690,17 +691,15 @@ def _fallback_generated_news(profile: StockProfileView, now: datetime) -> StockG
     cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
     bucket = int(as_taipei(dt=now).timestamp()) // cadence_seconds
     seed = sum(ord(char) for char in profile.symbol) + bucket
-    templates = (
-        (f"{profile.name} 新增 {profile.category} 試點計畫，市場評估成長空間", 70),
-        (f"{profile.symbol} 公布成本控管進度，法人上修短期信心", 45),
-        (f"{profile.name} 供應排程延後，短線交易轉趨保守", -55),
-        (f"{profile.symbol} 宣布維持資本支出節奏，股價反應中性", 10),
-        (f"{profile.name} 核心產品使用量放緩，市場等待下一季數據", -35),
-    )
-    headline, sentiment_bps = templates[seed % len(templates)]
-    direction = -1 if (seed // len(templates)) % 5 == 0 else 1
+    headline_template, sentiment_bps = STOCK_NEWS_FALLBACK_TEMPLATES[
+        seed % len(STOCK_NEWS_FALLBACK_TEMPLATES)
+    ]
     return StockGeneratedNews(
-        headline=headline, sentiment_bps=sentiment_bps * direction, source="template"
+        headline=headline_template.format(
+            name=profile.name, symbol=profile.symbol, category=profile.category
+        ),
+        sentiment_bps=sentiment_bps,
+        source="template",
     )
 
 

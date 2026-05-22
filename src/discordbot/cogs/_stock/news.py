@@ -10,14 +10,9 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.stock import StockProfileView, StockGeneratedNews
 from discordbot.typings.models import ModelSettings
+from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT
 
 STOCK_NEWS_AI_TIMEOUT_SECONDS = 4.0
-STOCK_NEWS_PROMPT = """
-You write one short fictional news headline for a Discord bot's simulated stock market.
-The company is virtual. Do not claim this is real financial news, real investment advice, or a real exchange event.
-Return one concise Traditional Chinese headline and a market sentiment value in basis points from -180 to 180.
-The headline should fit naturally in a Discord embed and should not include markdown.
-""".strip()
 
 
 class StockNewsDraft(BaseModel):
