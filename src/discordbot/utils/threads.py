@@ -36,7 +36,7 @@ class ThreadsURL(BaseModel):
         """The cleaned and normalised URL.
 
         Returns:
-            URL with ``threads.com`` hosts normalised to ``www.threads.net`` and
+            URL with `threads.com` hosts normalised to `www.threads.net` and
             query parameters removed.
         """
         parsed = urlparse(self.raw_url)
@@ -364,7 +364,7 @@ class Post(MediaContainer):
         """Whether this post is a reply to another post.
 
         Returns:
-            True when ``text_post_app_info.is_reply`` is set; False otherwise.
+            True when `text_post_app_info.is_reply` is set; False otherwise.
         """
         return bool(self.text_post_app_info and self.text_post_app_info.is_reply)
 
@@ -373,7 +373,7 @@ class Post(MediaContainer):
         """The username of the post being directly replied to.
 
         Returns:
-            Username from ``text_post_app_info.reply_to_author``, or an empty
+            Username from `text_post_app_info.reply_to_author`, or an empty
             string when this post is not a reply or the field is missing.
         """
         if self.text_post_app_info and self.text_post_app_info.reply_to_author:
@@ -558,7 +558,7 @@ class ThreadsDownloader(BaseModel):
 
     @staticmethod
     def _collect_threads(data: dict | list) -> list[ThreadData]:
-        """Collects every ``thread_items`` list found in a parsed SJS payload."""
+        """Collects every `thread_items` list found in a parsed SJS payload."""
         threads: list[ThreadData] = []
         for raw_items in ThreadsDownloader._find_keys(obj=data, key="thread_items"):
             if isinstance(raw_items, list):
@@ -578,7 +578,7 @@ class ThreadsDownloader(BaseModel):
     def _collect_direct_replies(
         threads: list[ThreadData], target_idx: int, target_author: str
     ) -> list[Post]:
-        """Returns the first post of each non-target branch whose reply is to ``target_author``."""
+        """Returns the first post of each non-target branch whose reply is to `target_author`."""
         replies: list[Post] = []
         for i, thread in enumerate(threads):
             if i == target_idx:
@@ -597,9 +597,9 @@ class ThreadsDownloader(BaseModel):
         """Parses the target post and its direct replies from the SJS script tags.
 
         Threads renders a single SJS block per post page that contains every
-        relevant ``thread_items`` list: one for the chain ending at the target,
+        relevant `thread_items` list: one for the chain ending at the target,
         and one per branch of replies. A branch's first post is a reply whose
-        ``reply_to_author`` identifies what it is replying to. We rely on this
+        `reply_to_author` identifies what it is replying to. We rely on this
         to filter out siblings (which point to the target's parent) when the
         target is itself a reply.
 
@@ -745,9 +745,9 @@ class ThreadsDownloader(BaseModel):
     def parse(self, url: str) -> Iterator[list[ThreadsOutput]]:
         """Parses a Threads post URL and yields the reply chain.
 
-        The yielded list is ordered ``[root, ..., direct_parent, target]``. The
+        The yielded list is ordered `[root, ..., direct_parent, target]`. The
         target post (last element) has its videos downloaded into
-        ``output_folder``; ancestor posts do not. Downloaded video files are
+        `output_folder`; ancestor posts do not. Downloaded video files are
         removed when the context manager exits.
 
         Args:
@@ -779,13 +779,13 @@ class ThreadsDownloader(BaseModel):
         in the order Threads renders them on the page (newest first). Nested
         replies (replies to replies) are deliberately omitted. No videos are
         downloaded by this method; callers that need local video files should
-        invoke ``parse`` on the specific reply URL instead.
+        invoke `parse` on the specific reply URL instead.
 
         Args:
             url: The Threads post URL.
 
         Returns:
-            Ordered list ``[target, reply_1, reply_2, ...]``. Empty when the
+            Ordered list `[target, reply_1, reply_2, ...]`. Empty when the
             target post cannot be found.
         """
         threads_url = ThreadsURL(raw_url=url)

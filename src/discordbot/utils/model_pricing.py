@@ -1,11 +1,11 @@
-"""Per-token pricing lookup, replacing the runtime dependency on ``litellm``.
+"""Per-token pricing lookup, replacing the runtime dependency on `litellm`.
 
-Mirrors what ``litellm.model_cost`` was doing for us: pulls the same upstream
+Mirrors what `litellm.model_cost` was doing for us: pulls the same upstream
 JSON (https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
 once per process, caches the parsed dict in memory, and stashes a copy at
-``data/model_prices.json`` so a subsequent restart can degrade gracefully
-when the network is down. Returns ``(0.0, 0.0)`` for unknown models — the
-reply footer then shows ``$0.00000000`` instead of an estimate.
+`data/model_prices.json` so a subsequent restart can degrade gracefully
+when the network is down. Returns `(0.0, 0.0)` for unknown models — the
+reply footer then shows `$0.00000000` instead of an estimate.
 """
 
 import json
@@ -64,7 +64,7 @@ def _fetch_upstream(timeout: int = 5) -> JsonRecord:
 
 
 def _load_disk_cache() -> JsonRecord:
-    """Loads the previous-run snapshot, or returns ``{}`` if unavailable."""
+    """Loads the previous-run snapshot, or returns `{}` if unavailable."""
     if not _CACHE_PATH.is_file():
         return {}
     try:
@@ -111,11 +111,11 @@ def _load_model_prices() -> dict[str, ModelPriceEntry]:
 
 
 def get_token_rates(model_name: str) -> tuple[float, float]:
-    """Returns ``(input_cost_per_token, output_cost_per_token)`` for ``model_name``.
+    """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`.
 
     Prefers the priority-tier rates when present (e.g. Gemini's burst pricing
-    via the ``*_priority`` suffix). Returns ``(0.0, 0.0)`` for unknown models
-    so the reply footer shows ``$0.00000000`` instead of an estimate.
+    via the `*_priority` suffix). Returns `(0.0, 0.0)` for unknown models
+    so the reply footer shows `$0.00000000` instead of an estimate.
 
     Args:
         model_name: Model identifier to look up in the cached price table.
@@ -138,19 +138,19 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
 
 
 def get_supported_modalities(model_name: str) -> set[str]:
-    """Returns the input modalities accepted by ``model_name``.
+    """Returns the input modalities accepted by `model_name`.
 
-    Reads ``supported_modalities`` from the cached LiteLLM price table. The
+    Reads `supported_modalities` from the cached LiteLLM price table. The
     field is unevenly populated upstream (Claude entries omit it entirely,
     some Gemini variants only set the per-modality booleans), so when it is
-    missing or empty we default to ``{"text", "image"}`` — the safe baseline
+    missing or empty we default to `{"text", "image"}` — the safe baseline
     that virtually every modern multimodal LLM accepts.
 
     Args:
         model_name: Model identifier to look up in the cached price table.
 
     Returns:
-        Set of modality strings (e.g. ``{"text", "image", "audio", "video"}``).
+        Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
     """
     info = _load_model_prices().get(model_name)
     if info is None:

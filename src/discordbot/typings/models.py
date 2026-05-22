@@ -1,5 +1,3 @@
-"""Typed model settings shared by the AI routing and reply pipeline."""
-
 from typing import Literal
 from datetime import UTC, datetime
 

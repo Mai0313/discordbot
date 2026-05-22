@@ -91,7 +91,7 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
-    """H1 heading combining the hand and its total, e.g. ``# 10♠  5♥ = 15``."""
+    """H1 heading combining the hand and its total, e.g. `# 10♠  5♥ = 15`."""
     if not cards:
         return ""
     spaced = render_hand(cards=cards).replace(" ", "  ")
@@ -241,7 +241,7 @@ def build_in_progress_embed(
 ) -> Embed:
     """Builds the shared Blackjack table embed while players are acting.
 
-    Pass ``force_show_hole=True`` during peek-reveal animations so the dealer
+    Pass `force_show_hole=True` during peek-reveal animations so the dealer
     hole card is uncovered even before the round reaches the dealer phase.
     """
     description_parts: list[str] = [

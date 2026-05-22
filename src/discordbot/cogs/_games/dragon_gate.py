@@ -1,11 +1,11 @@
 """Pure rules for 射龍門 (In-Between / Acey Deucey).
 
 The pot is no longer round-local: a single jackpot row in
-``data/economy.db`` is shared across every table of this game, so this
+`data/economy.db` is shared across every table of this game, so this
 module limits itself to rotation / pillar / direction state and emits a
-signed ``delta`` per turn. The view layer applies the delta atomically
+signed `delta` per turn. The view layer applies the delta atomically
 against the player row and the jackpot pool, then passes the updated
-pool back so ``current_min_bet`` / ``current_max_bet`` reflect the
+pool back so `current_min_bet` / `current_max_bet` reflect the
 post-settlement value.
 """
 
@@ -130,7 +130,7 @@ class DragonGateTurnResult(BaseModel):
 class DragonGateRound(BaseModel):
     """Mutable 射龍門 table state with rotating turns over a shared jackpot.
 
-    ``player_deltas`` is the **in-memory** running total of each player's
+    `player_deltas` is the **in-memory** running total of each player's
     wins minus losses since they joined the table (ante excluded; ante is
     already settled into the jackpot when the round starts). The view
     layer reads this on withdraw / timeout to decide whether to apply the
@@ -192,7 +192,7 @@ class DragonGateRound(BaseModel):
 
         The jackpot itself lives in the database and is not mutated here;
         the caller passes the current snapshot so the legal bet range can
-        be enforced. The returned ``delta`` is the signed change applied
+        be enforced. The returned `delta` is the signed change applied
         to the player's balance (and inverted into the jackpot) by the
         caller; this method only updates rotation state.
 
@@ -282,7 +282,7 @@ class DragonGateRound(BaseModel):
             The leaver's running delta at the moment of withdrawal.
 
         Raises:
-            DragonGateParticipantUnknownError: ``user_id`` is not seated
+            DragonGateParticipantUnknownError: `user_id` is not seated
                 at this table or has already withdrawn.
         """
         if not self.is_active(user_id=user_id):

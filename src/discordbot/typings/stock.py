@@ -1,5 +1,3 @@
-"""Pydantic models and enums for the simulated stock market domain."""
-
 from enum import StrEnum
 from typing import Final
 from datetime import datetime

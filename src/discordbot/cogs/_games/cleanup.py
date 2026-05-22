@@ -181,7 +181,7 @@ async def track_game_message(
 
     Returns:
         The persisted record, or `None` when the message object has no usable
-        ``channel.id`` / ``id`` pair.
+        `channel.id` / `id` pair.
     """
     record = _message_record(message=message, user_name=user_name)
     if record is None:

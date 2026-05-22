@@ -86,7 +86,7 @@ class GamesCogs(commands.Cog):
         """Returns the dealer identity from the bot user.
 
         Slash commands only fire after the gateway has connected, so
-        ``self.bot.user`` is guaranteed non-None at call time. We still fall
+        `self.bot.user` is guaranteed non-None at call time. We still fall
         back to a synthetic id / "莊家" name to keep type-narrowing clean and
         to avoid blowing up the round if Discord briefly returns no client
         user (e.g. mid-reconnect).

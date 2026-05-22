@@ -1,7 +1,7 @@
 """Image helpers previously sourced from autogen.agentchat.contrib.img_utils.
 
 Inlined to drop the autogen/ag2 runtime dependency. Trimmed to the input forms
-the bot actually uses: ``http(s)://`` URLs and ``data:image/...;base64,...`` URIs.
+the bot actually uses: `http(s)://` URLs and `data:image/...;base64,...` URIs.
 """
 
 from io import BytesIO
@@ -16,16 +16,16 @@ _DATA_URI_RE = re.compile(pattern=r"^data:image/(?:jpg|jpeg|png|gif|bmp|webp);ba
 
 
 def get_pil_image(image_file: str) -> Image.Image:
-    """Loads an image from an ``http(s)://`` URL or a base64 data URI.
+    """Loads an image from an `http(s)://` URL or a base64 data URI.
 
     Args:
-        image_file: ``http(s)://...`` URL or ``data:image/<mime>;base64,...`` URI.
+        image_file: `http(s)://...` URL or `data:image/<mime>;base64,...` URI.
 
     Returns:
         The decoded image, converted to RGB.
 
     Raises:
-        ValueError: ``image_file`` is neither an ``http(s)://`` URL nor a
+        ValueError: `image_file` is neither an `http(s)://` URL nor a
             recognised image data URI.
     """
     if image_file.startswith(("http://", "https://")):
@@ -54,7 +54,7 @@ def get_image_data(image_file: str, use_b64: Literal[False]) -> bytes:  # noqa: 
 def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
     """Returns the underlying bytes of an image (or base64-encoded form).
 
-    Fast path: when ``image_file`` is already a ``data:image/<mime>;base64,...``
+    Fast path: when `image_file` is already a `data:image/<mime>;base64,...`
     URI, the embedded payload is returned as-is — no PIL decode/encode round
     trip, no format change. JPEG stays JPEG, PNG stays PNG.
 
@@ -63,15 +63,15 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
 
     Args:
         image_file: URL or data URI.
-        use_b64: When ``True`` (default) return a base64 ``str``; when ``False``
-            return raw ``bytes``.
+        use_b64: When `True` (default) return a base64 `str`; when `False`
+            return raw `bytes`.
 
     Returns:
-        Base64-encoded image data when ``use_b64`` is True, otherwise raw image
+        Base64-encoded image data when `use_b64` is True, otherwise raw image
         bytes.
 
     Raises:
-        ValueError: ``image_file`` is not a supported URL or image data URI.
+        ValueError: `image_file` is not a supported URL or image data URI.
     """
     if match := _DATA_URI_RE.match(string=image_file):
         payload = image_file[match.end() :]
@@ -87,10 +87,10 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
 
 
 def convert_base64_to_data_uri(base64_image: str) -> str:
-    """Wraps a base64 image string in a ``data:image/<mime>;base64,...`` URI.
+    """Wraps a base64 image string in a `data:image/<mime>;base64,...` URI.
 
     Sniffs the MIME type from the first 12 decoded bytes (enough for every
-    format we recognise). Falls back to ``image/jpeg`` for unknown payloads.
+    format we recognise). Falls back to `image/jpeg` for unknown payloads.
 
     Args:
         base64_image: Base64-encoded image payload without a data URI prefix.

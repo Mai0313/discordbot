@@ -43,7 +43,7 @@ async def edit_message_with_retry(
     attempts: int = 3,
     **kwargs: Any,  # noqa: ANN401 -- transparent forwarder to Message.edit's heterogeneous kwargs
 ) -> Message:
-    """Edits ``message`` retrying transient Discord 5xx errors with backoff.
+    """Edits `message` retrying transient Discord 5xx errors with backoff.
 
     Cloudflare in front of discord.com occasionally returns 502/503/504 for a
     couple of seconds; the game-start edits must succeed or the lobby is left

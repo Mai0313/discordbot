@@ -32,14 +32,14 @@ def clamp_bps(value: int, lower: int, upper: int) -> int:
 
 
 def as_taipei(dt: datetime) -> datetime:
-    """Returns ``dt`` interpreted in Asia/Taipei."""
+    """Returns `dt` interpreted in Asia/Taipei."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=TAIWAN_TIMEZONE)
     return dt.astimezone(tz=TAIWAN_TIMEZONE)
 
 
 def tick_boundary(dt: datetime) -> datetime:
-    """Returns the tick-boundary timestamp at or before ``dt``."""
+    """Returns the tick-boundary timestamp at or before `dt`."""
     taipei_dt = as_taipei(dt=dt)
     seconds = int(taipei_dt.timestamp())
     boundary = seconds - (seconds % STOCK_TICK_SECONDS)

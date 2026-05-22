@@ -67,8 +67,8 @@ class DiscordBot(commands.Bot):
     async def on_ready(self) -> None:
         """Called when the bot is ready; performs first-time-only setup.
 
-        ``on_ready`` re-fires on every gateway reconnect/resume, so the body
-        is gated on ``_initial_setup_done`` to keep sync + status_task.start
+        `on_ready` re-fires on every gateway reconnect/resume, so the body
+        is gated on `_initial_setup_done` to keep sync + status_task.start
         idempotent.
         """
         if self._initial_setup_done:

@@ -37,7 +37,7 @@ def hand_value(cards: list[Card]) -> int:
 
     Aces start at 11 each and are demoted to 1 one at a time while the total
     is over 21. Returns the over-21 total when no aces remain to demote, so
-    callers can detect a bust by checking ``> 21``.
+    callers can detect a bust by checking `> 21`.
 
     Args:
         cards: Cards to evaluate.
@@ -133,7 +133,7 @@ def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
         cards: Cards to evaluate.
 
     Returns:
-        ``(is_soft, total)`` where total is the best Blackjack total.
+        `(is_soft, total)` where total is the best Blackjack total.
     """
     raw_total = 0
     aces = 0
@@ -177,7 +177,7 @@ def dealer_up_card(dealer: list[Card]) -> Card | None:
         dealer: Dealer's cards in draw order.
 
     Returns:
-        The visible card, or ``None`` if the dealer has not been dealt yet.
+        The visible card, or `None` if the dealer has not been dealt yet.
     """
     if not dealer:
         return None
@@ -187,9 +187,9 @@ def dealer_up_card(dealer: list[Card]) -> Card | None:
 class BlackjackHand(BaseModel):
     """Mutable state for one single-player Blackjack round.
 
-    Kept around as the input shape for ``settle()`` and a handful of legacy
-    callers; the multiplayer state machine lives on ``BlackjackRound`` and
-    its ``BlackjackHandState`` children.
+    Kept around as the input shape for `settle()` and a handful of legacy
+    callers; the multiplayer state machine lives on `BlackjackRound` and
+    its `BlackjackHandState` children.
 
     Attributes:
         rng: Random source; injectable for tests.
@@ -248,7 +248,7 @@ class BlackjackHandState(BaseModel):
 
     Split turns a single hand into two sibling hand states sharing one
     participant; otherwise a participant has exactly one entry in
-    ``BlackjackPlayerHand.hands``.
+    `BlackjackPlayerHand.hands`.
 
     Attributes:
         cards: Cards currently held in this hand.
@@ -285,21 +285,21 @@ class BlackjackHandState(BaseModel):
         return is_bust(cards=self.cards)
 
     def soft_total(self) -> tuple[bool, int]:
-        """Returns ``(is_soft, total)`` for this sub-hand."""
+        """Returns `(is_soft, total)` for this sub-hand."""
         return is_soft_total(cards=self.cards)
 
 
 class BlackjackPlayerHand(BaseModel):
     """Container for one participant's hands at a multiplayer table.
 
-    Holds the original ``GameParticipant`` plus one or more
-    ``BlackjackHandState`` rows. Split adds a second entry; everything else
+    Holds the original `GameParticipant` plus one or more
+    `BlackjackHandState` rows. Split adds a second entry; everything else
     keeps a single hand entry.
 
     Attributes:
         participant: Discord player and wager metadata.
         hands: All active sub-hands in display order.
-        insurance_bet: Insurance side bet amount, ``0`` when none was taken.
+        insurance_bet: Insurance side bet amount, `0` when none was taken.
         insurance_resolved: True once the player has made an insurance choice
             (yes or no) and the surrounding round phase has progressed past
             insurance.
@@ -442,16 +442,16 @@ def settle_hand(
     Surrender short-circuits to a half-bet refund. Five-card 21 is flagged
     before split-derived two-card 21 so split hands can still earn the
     five-card bonus. Split-derived two-card 21 is handled before the legacy
-    ``settle`` wrapper so it never counts as a natural Blackjack; every
+    `settle` wrapper so it never counts as a natural Blackjack; every
     other sub-hand uses the standard settlement logic.
 
     Args:
         hand: Finished sub-hand to settle.
         dealer: Final dealer cards.
-        rng: Random source kept for ``BlackjackHand``'s required field.
+        rng: Random source kept for `BlackjackHand`'s required field.
 
     Returns:
-        ``(outcome, delta)`` where delta is the signed point change for
+        `(outcome, delta)` where delta is the signed point change for
         this single hand.
     """
     if hand.surrendered:
@@ -531,12 +531,12 @@ class BlackjackRound(BaseModel):
         """Deals two cards to every player and two cards to the dealer.
 
         Dealer up-card drives the post-deal lifecycle:
-        - Up-card is Ace: enter ``insurance`` phase and let players decide
+        - Up-card is Ace: enter `insurance` phase and let players decide
           before peeking the hole card. The peek runs at the close of the
           insurance phase.
         - Up-card is a 10-value card: peek silently (no insurance offered);
           if the peek reveals a Blackjack the round settles immediately.
-        - Anything else: jump straight to ``player_actions``.
+        - Anything else: jump straight to `player_actions`.
         """
         for player in self.players:
             for hand in player.hands:
@@ -570,7 +570,7 @@ class BlackjackRound(BaseModel):
 
         Args:
             user_id: Discord user ID placing the insurance.
-            amount: Side-bet amount; must equal ``participant.bet // 2``.
+            amount: Side-bet amount; must equal `participant.bet // 2`.
         """
         if self.phase != "insurance":
             raise ValueError("Insurance is not currently offered")
@@ -697,7 +697,7 @@ class BlackjackRound(BaseModel):
         """Splits the active hand into two sibling sub-hands.
 
         Each sibling gets the matching original card plus one fresh draw.
-        Splitting Aces marks both siblings as ``is_split_aces`` and finishes
+        Splitting Aces marks both siblings as `is_split_aces` and finishes
         them after a single draw, matching standard house rules.
 
         Args:
@@ -755,7 +755,7 @@ class BlackjackRound(BaseModel):
         return dealer_visible_value(hand=hand)
 
     def dealer_is_soft_total(self) -> tuple[bool, int]:
-        """Returns ``(is_soft, total)`` for the dealer hand."""
+        """Returns `(is_soft, total)` for the dealer hand."""
         return is_soft_total(cards=self.dealer)
 
     def dealer_is_soft_17(self) -> bool:
@@ -783,15 +783,15 @@ class BlackjackRound(BaseModel):
     ) -> BlackjackHand:
         """Builds the single-player hand shape used by settlement helpers.
 
-        When ``hand_state`` is omitted, the player's first sub-hand is used
+        When `hand_state` is omitted, the player's first sub-hand is used
         so existing single-hand callers keep working unchanged.
 
         Args:
             player: Player whose hand should be wrapped.
-            hand_state: Specific sub-hand to wrap; defaults to ``hands[0]``.
+            hand_state: Specific sub-hand to wrap; defaults to `hands[0]`.
 
         Returns:
-            A ``BlackjackHand`` snapshot covering the chosen sub-hand and
+            A `BlackjackHand` snapshot covering the chosen sub-hand and
             the current dealer cards.
         """
         chosen = hand_state if hand_state is not None else player.hands[0]
@@ -824,8 +824,8 @@ class BlackjackRound(BaseModel):
         """Closes the insurance phase, peeks the hole card, and advances.
 
         Runs only once every player has either taken or declined insurance.
-        A natural Blackjack peek short-circuits the round to ``settled``; a
-        non-peek pushes the round into ``player_actions`` and auto-finishes
+        A natural Blackjack peek short-circuits the round to `settled`; a
+        non-peek pushes the round into `player_actions` and auto-finishes
         any player who was already dealt a natural Blackjack.
         """
         if self.phase != "insurance":
@@ -901,7 +901,7 @@ def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
     - natural Blackjack pays 1.5x (rounded to int);
     - regular win pays 1x;
     - push returns 0;
-    - loss returns ``-bet``.
+    - loss returns `-bet`.
 
     Args:
         hand: Finished Blackjack hand to settle.

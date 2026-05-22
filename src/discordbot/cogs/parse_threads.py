@@ -81,7 +81,7 @@ class ThreadsCogs(commands.Cog):
         """Builds a list of embeds for a Threads reply chain.
 
         Args:
-            results: Ordered chain ``[root, ..., direct_parent, target]``.
+            results: Ordered chain `[root, ..., direct_parent, target]`.
         """
         # Discord caps a single message at 10 embeds. We always keep the target post's main
         # embed; the rest of the budget is split between ancestor context (oldest → newest)

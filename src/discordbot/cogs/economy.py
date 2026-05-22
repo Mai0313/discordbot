@@ -868,7 +868,7 @@ class EconomyCogs(commands.Cog):
             min_value=1,
         ),
     ) -> None:
-        """Transfers points from the caller to ``member``.
+        """Transfers points from the caller to `member`.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -1153,7 +1153,7 @@ class EconomyCogs(commands.Cog):
             min_value=1,
         ),
     ) -> None:
-        """Pays down active personal loans owed to ``member``.
+        """Pays down active personal loans owed to `member`.
 
         Args:
             interaction: The interaction that triggered the command.

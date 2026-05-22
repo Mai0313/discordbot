@@ -106,7 +106,7 @@ def blackjack_detail_player(
 
     Returns:
         Short Chinese summary; for single-hand players this is shaped to
-        match the legacy ``blackjack_detail`` text.
+        match the legacy `blackjack_detail` text.
     """
     if len(hand_settlements) == 1 and insurance is None:
         only = hand_settlements[0]
@@ -167,7 +167,7 @@ def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early
         peeked_blackjack: Whether the dealer revealed a Blackjack via peek.
 
     Returns:
-        The explanation text, or ``None`` when no early-finish path applies.
+        The explanation text, or `None` when no early-finish path applies.
     """
     dealer_bj = is_blackjack(cards=dealer)
     if not player.hands:

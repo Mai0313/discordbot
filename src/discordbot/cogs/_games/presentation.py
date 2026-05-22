@@ -76,11 +76,11 @@ def card_line(cards_text: str) -> str:
 
     Single-space `A♠ K♥` becomes `# A♠  K♥` so each card breathes a bit
     more inside the heading. Empty strings are left alone so callers can
-    short-circuit without producing a stray ``#``.
+    short-circuit without producing a stray `#`.
 
     Args:
-        cards_text: Pre-rendered hand string (e.g. ``"A♠ K♥"`` or
-            ``"🂠 K♥"``).
+        cards_text: Pre-rendered hand string (e.g. `"A♠ K♥"` or
+            `"🂠 K♥"`).
 
     Returns:
         Markdown-ready H1 line for placement in an embed field value.
@@ -129,7 +129,7 @@ def lobby_participant_line(
         index: 1-based position in the join order.
         display_name: Player display name.
         bet: Optional bet amount to append as inline code.
-        is_allin: Whether to mark the row with an ``all-in`` suffix.
+        is_allin: Whether to mark the row with an `all-in` suffix.
 
     Returns:
         A single Markdown line for the lobby roster.
@@ -160,7 +160,7 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
         five_card_bonus: System-funded bonus from five-card 21.
 
     Returns:
-        ``-# 本局 +X · 餘額 Y`` style metadata, with an ``· all-in`` suffix
+        `-# 本局 +X · 餘額 Y` style metadata, with an `· all-in` suffix
         when the round was all-in.
     """
     segments = [f"本局 `{delta:+,}`"]
@@ -183,7 +183,7 @@ def player_result_title(outcome: SettleOutcome, player_total: int, dealer_total:
         dealer_total: Final dealer hand total.
 
     Returns:
-        Markdown H2 line such as ``## 🎉 你贏了 · 20 > 19``.
+        Markdown H2 line such as `## 🎉 你贏了 · 20 > 19`.
     """
     return f"## {player_result_inline(outcome=outcome, player_total=player_total, dealer_total=dealer_total)}"
 
