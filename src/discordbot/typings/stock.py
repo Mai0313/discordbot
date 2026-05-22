@@ -10,7 +10,7 @@ STOCK_HISTORY_DAYS: Final[int] = 7
 STOCK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 
 BCAT_SYMBOL: Final[str] = "BCAT"
-BCAT_NAME: Final[str] = "破貓股份有限公司"
+BCAT_NAME: Final[str] = "破貓科技股份有限公司"
 BCAT_CATEGORY: Final[str] = "迷因科技"
 BCAT_INITIAL_PRICE_CENTS: Final[int] = 10_000
 BCAT_TOTAL_SHARES: Final[int] = 1_000_000

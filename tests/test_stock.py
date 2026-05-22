@@ -7,11 +7,12 @@ from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import select, update, inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
+    BCAT_NAME,
     BCAT_SYMBOL,
     BCAT_INITIAL_PRICE_CENTS,
     MAX_TICKS_PER_INTERACTION,
@@ -116,9 +117,23 @@ async def test_stock_schema_seeds_bcat(stock_isolated_db: None) -> None:
 
     assert len(quotes) == 1
     assert quotes[0].profile.symbol == BCAT_SYMBOL
+    assert quotes[0].profile.name == BCAT_NAME
     assert quotes[0].profile.price_cents == BCAT_INITIAL_PRICE_CENTS
     news = await stock_db.get_stock_news(symbol=BCAT_SYMBOL)
     assert news
+    async with stock_db._engine.connect() as conn:
+        column_names = await conn.run_sync(
+            lambda sync_conn: {
+                table_name: [
+                    column["name"]
+                    for column in inspect(sync_conn).get_columns(table_name=table_name)
+                ]
+                for table_name in ("stock_position", "stock_operation", "stock_trade_leg")
+            }
+        )
+    assert column_names["stock_position"][:3] == ["symbol", "user_id", "user_name"]
+    assert column_names["stock_operation"][1:4] == ["symbol", "user_id", "user_name"]
+    assert column_names["stock_trade_leg"][3:6] == ["symbol", "user_id", "user_name"]
 
 
 async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated_db: None) -> None:

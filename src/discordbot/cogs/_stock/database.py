@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
+from sqlalchemy import Index, String, Integer, DateTime, or_, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -66,17 +66,6 @@ _operation_lock_refcounts: dict[tuple[int, str], int] = {}
 _operation_locks_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _RECENT_TRADE_DAYS: Final[int] = 7
-_MIGRATED_COLUMNS: Final[dict[str, dict[str, str]]] = {
-    "stock_position": {
-        "user_name": "ALTER TABLE stock_position ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
-    },
-    "stock_operation": {
-        "user_name": "ALTER TABLE stock_operation ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
-    },
-    "stock_trade_leg": {
-        "user_name": "ALTER TABLE stock_trade_leg ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
-    },
-}
 
 
 class Base(DeclarativeBase):
@@ -268,7 +257,6 @@ async def _ensure_schema() -> None:
             return
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            await _ensure_migrated_columns(conn=conn)
             now = _database_now()
             boundary = tick_boundary(dt=now)
             await conn.execute(
@@ -291,16 +279,6 @@ async def _ensure_schema() -> None:
             await _seed_initial_tick(conn=conn, now=boundary)
             await _seed_news(conn=conn, now=now)
         _schema_ready_for = _engine
-
-
-async def _ensure_migrated_columns(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Adds compatibility columns missing from earlier stock MVP databases."""
-    for table_name, column_ddls in _MIGRATED_COLUMNS.items():
-        result = await conn.execute(statement=text(text=f"PRAGMA table_info({table_name})"))
-        columns = {str(row[1]) for row in result.fetchall()}
-        for column_name, ddl in column_ddls.items():
-            if column_name not in columns:
-                await conn.execute(statement=text(text=ddl))
 
 
 async def _seed_initial_tick(conn: Any, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
