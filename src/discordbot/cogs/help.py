@@ -43,7 +43,7 @@ _HELP_CONTENT = {
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
         "stocks": (
             "**Simulated Stock Market**\n"
-            "`/stock` opens the market UI for prices, news, positions, charts, supply-limited buy, short, and cover actions."
+            "`/stock` opens the market UI for prices, news, positions, charts, supply-capped buy and short entries, plus sell and cover exits."
         ),
         "vip": (
             "**VIP**\n"
