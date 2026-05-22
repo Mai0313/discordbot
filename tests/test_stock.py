@@ -499,6 +499,40 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
     assert news_rows[0].model == "test-model"
 
 
+async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: None) -> None:
+    """AI news can replace deterministic fallback news in the same cadence bucket."""
+    profile = await _upsert_bcat_profile()
+    now = datetime(year=2026, month=1, day=2)
+
+    async with stock_db.open_stock_session() as session:
+        await stock_db._insert_generated_news(
+            session=session,
+            profile=profile,
+            generated=stock_db._fallback_generated_news(profile=profile, now=now),
+            now=now,
+        )
+        await stock_db._insert_generated_news(
+            session=session,
+            profile=profile,
+            generated=StockGeneratedNews(
+                headline="BCAT AI 升級新聞", sentiment_bps=90, source="ai", model="test-model"
+            ),
+            now=now + timedelta(hours=1),
+        )
+        await session.commit()
+
+        news_result = await session.execute(
+            statement=select(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        news_rows = news_result.scalars().all()
+
+    assert len(news_rows) == 1
+    assert news_rows[0].headline == "BCAT AI 升級新聞"
+    assert news_rows[0].sentiment_bps == 90
+    assert news_rows[0].source == "ai"
+    assert news_rows[0].model == "test-model"
+
+
 async def test_stock_due_news_serializes_concurrent_provider_calls(
     stock_isolated_db: None,
 ) -> None:

@@ -709,23 +709,33 @@ async def _insert_generated_news(
     """Persists one generated news row with a stable cadence-bucket ID."""
     bucket = _stock_news_bucket(profile=profile, now=now)
     source = generated.source or "template"
+    insert_statement = insert(StockNews).values(
+        id=f"{profile.symbol.lower()}-{bucket}",
+        symbol=profile.symbol,
+        headline=generated.headline.strip()[:256],
+        sentiment_bps=clamp_bps(
+            value=generated.sentiment_bps,
+            lower=-NEWS_SENTIMENT_LIMIT_BPS,
+            upper=NEWS_SENTIMENT_LIMIT_BPS,
+        ),
+        source=source,
+        model=generated.model,
+        expires_at=now + _NEWS_SENTIMENT_LOOKBACK,
+        created_at=now,
+    )
     await session.execute(
-        statement=insert(StockNews)
-        .values(
-            id=f"{profile.symbol.lower()}-{bucket}",
-            symbol=profile.symbol,
-            headline=generated.headline.strip()[:256],
-            sentiment_bps=clamp_bps(
-                value=generated.sentiment_bps,
-                lower=-NEWS_SENTIMENT_LIMIT_BPS,
-                upper=NEWS_SENTIMENT_LIMIT_BPS,
-            ),
-            source=source,
-            model=generated.model,
-            expires_at=now + _NEWS_SENTIMENT_LOOKBACK,
-            created_at=now,
+        statement=insert_statement.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "headline": insert_statement.excluded.headline,
+                "sentiment_bps": insert_statement.excluded.sentiment_bps,
+                "source": insert_statement.excluded.source,
+                "model": insert_statement.excluded.model,
+                "expires_at": insert_statement.excluded.expires_at,
+                "created_at": insert_statement.excluded.created_at,
+            },
+            where=(StockNews.source == "template") & (insert_statement.excluded.source == "ai"),
         )
-        .on_conflict_do_nothing(index_elements=["id"])
     )
 
 
