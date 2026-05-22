@@ -30,6 +30,7 @@ from discordbot.cogs._stock.presentation import (
 )
 
 MARKET_PAGE_SIZE = 25
+SELECT_OPTION_LABEL_LIMIT = 100
 
 
 def require_stock_user(interaction: Interaction) -> User | Member:
@@ -37,6 +38,14 @@ def require_stock_user(interaction: Interaction) -> User | Member:
     if interaction.user is None:
         raise RuntimeError("Stock interaction is missing Discord user identity")
     return interaction.user
+
+
+def _select_option_label(symbol: str, name: str) -> str:
+    """Returns a stock select label that fits Discord's option limit."""
+    label = f"{symbol} · {name}"
+    if len(label) <= SELECT_OPTION_LABEL_LIMIT:
+        return label
+    return f"{label[: SELECT_OPTION_LABEL_LIMIT - 3]}..."
 
 
 class StockPublicView(View):
@@ -111,7 +120,7 @@ class StockMarketView(StockPublicView):
         self._select = cast("StringSelect", self.stock_select)
         self._select.options = [
             SelectOption(
-                label=f"{quote.profile.symbol} · {quote.profile.name}",
+                label=_select_option_label(symbol=quote.profile.symbol, name=quote.profile.name),
                 value=quote.profile.symbol,
                 description=f"{quote.profile.category}",
             )

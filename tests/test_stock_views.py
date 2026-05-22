@@ -133,11 +133,11 @@ class InteractionStub:
         self.message = MessageStub()
 
 
-def _quote() -> StockMarketQuote:
+def _quote(name: str = BCAT_NAME) -> StockMarketQuote:
     """Builds a deterministic market quote."""
     profile = StockProfileView(
         symbol=BCAT_SYMBOL,
-        name=BCAT_NAME,
+        name=name,
         category="科技",
         price_cents=10_000,
         previous_close_price_cents=10_000,
@@ -293,6 +293,16 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
     assert owners == [interaction.user.id]
     assert interaction.response.deferred
     assert not interaction.response.deferred_ephemeral
+
+
+async def test_stock_market_select_truncates_long_company_names() -> None:
+    """The market dropdown keeps option labels inside Discord's limit."""
+    view = StockMarketView(quotes=(_quote(name="長" * 128),), owner_id=1)
+    option = view.stock_select.options[0]
+
+    assert len(option.label) == stock_views.SELECT_OPTION_LABEL_LIMIT
+    assert option.label.startswith(f"{BCAT_SYMBOL} · 長")
+    assert option.label.endswith("...")
 
 
 async def test_stock_detail_buttons_edit_same_public_message(
