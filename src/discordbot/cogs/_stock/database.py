@@ -1336,10 +1336,12 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
                 deltas=_wallet_delta_legs_for_plan(plan=plan),
             )
         except asyncio.CancelledError:
-            await _mark_operation(
-                operation_id=operation_id,
-                status=StockOperationStatus.RECONCILE_REQUIRED,
-                failure_reason="wallet delta cancelled after stock operation was planned",
+            await asyncio.shield(
+                _mark_operation(
+                    operation_id=operation_id,
+                    status=StockOperationStatus.RECONCILE_REQUIRED,
+                    failure_reason="wallet delta cancelled after stock operation was planned",
+                )
             )
             raise
         except Exception as exc:
