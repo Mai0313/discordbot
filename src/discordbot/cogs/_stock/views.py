@@ -25,6 +25,7 @@ from discordbot.cogs._stock.presentation import (
     build_tutorial_embed,
     build_settlement_embed,
     build_stock_detail_embed,
+    build_action_prompt_embed,
 )
 
 MARKET_PAGE_SIZE = 25
@@ -202,14 +203,10 @@ class StockDetailView(StockPublicView):
         label="操作股票", emoji="🧾", style=ButtonStyle.primary, custom_id="stock:operate", row=0
     )
     async def operate(self, _button: Button, interaction: Interaction) -> None:
-        """Opens the stock operation modal directly from the detail view."""
-        await interaction.response.send_modal(
-            modal=StockQuantityModal(
-                symbol=self.symbol,
-                message=interaction.message,
-                parent=self,
-                owner_id=self.owner_id,
-            )
+        """Shows action selection before opening the quantity modal."""
+        self.stop()
+        await edit_stock_action_prompt(
+            interaction=interaction, symbol=self.symbol, owner_id=self.owner_id
         )
 
     @nextcord.ui.button(
@@ -259,21 +256,38 @@ class StockNewsControlsView(StockPublicView):
 
 
 class StockActionView(StockPublicView):
-    """Retry controls shown after a failed stock operation."""
+    """Action dropdown shown before the quantity modal."""
 
     def __init__(self, symbol: str, owner_id: int) -> None:
         """Initializes action controls for one symbol."""
         super().__init__(owner_id=owner_id)
         self.symbol = symbol
 
-    @nextcord.ui.button(
-        label="重新操作股票", emoji="🧾", style=ButtonStyle.primary, custom_id="stock:retry", row=0
+    @nextcord.ui.string_select(
+        placeholder="選擇操作",
+        min_values=1,
+        max_values=1,
+        options=[
+            SelectOption(
+                label="買入",
+                value=StockAction.BUY.value,
+                description="買入股票，若已有做空會優先回補",
+            ),
+            SelectOption(
+                label="放空",
+                value=StockAction.SHORT.value,
+                description="放空股票，若已有持股會優先賣出",
+            ),
+        ],
+        custom_id="stock:action",
+        row=0,
     )
-    async def retry(self, _button: Button, interaction: Interaction) -> None:
-        """Opens the combined action and quantity modal again."""
+    async def action_select(self, select: StringSelect, interaction: Interaction) -> None:
+        """Opens the quantity modal for the selected operation."""
         await interaction.response.send_modal(
             modal=StockQuantityModal(
                 symbol=self.symbol,
+                action=StockAction(select.values[0]),
                 message=interaction.message,
                 parent=self,
                 owner_id=self.owner_id,
@@ -336,57 +350,41 @@ class StockPostTradeView(StockPublicView):
 
 
 class StockQuantityModal(Modal):
-    """Action and quantity modal for stock operations."""
+    """Quantity modal for stock operations."""
 
     def __init__(
         self,
         symbol: str,
         owner_id: int,
-        action: StockAction | None = None,
+        action: StockAction,
         message: Message | None = None,
         parent: StockPublicView | None = None,
     ) -> None:
-        """Initializes the modal with action selection and quantity input."""
+        """Initializes the modal with one quantity input."""
         super().__init__(title=f"股票操作：{symbol}")
         self.symbol = symbol
         self.action = action
         self.message = message
         self.parent = parent
         self.owner_id = owner_id
-        self.operation: TextInput = TextInput(
-            label="操作",
-            placeholder="輸入 買入 或 放空",
-            min_length=1,
-            max_length=16,
-            required=True,
-            default_value=self._operation_default(action=action),
-            row=0,
-        )
         self.quantity: TextInput = TextInput(
             label="數量",
             placeholder="請輸入股數，或輸入 ALL",
             min_length=1,
             max_length=16,
             required=True,
-            row=1,
+            row=0,
         )
-        self.add_item(item=self.operation)
         self.add_item(item=self.quantity)
 
     async def callback(self, interaction: Interaction) -> None:
-        """Submits the selected action and quantity to the stock settlement service."""
+        """Submits the quantity to the stock settlement service."""
         await self.submit_quantity(
-            interaction=interaction,
-            raw_action=str(self.operation.value or ""),
-            raw_quantity=str(self.quantity.value or ""),
+            interaction=interaction, raw_quantity=str(self.quantity.value or "")
         )
 
     async def submit_quantity(
-        self,
-        interaction: Interaction,
-        raw_quantity: str,
-        action: StockAction | None = None,
-        raw_action: str | None = None,
+        self, interaction: Interaction, raw_quantity: str, action: StockAction | None = None
     ) -> None:
         """Submits a raw quantity string to the stock settlement service."""
         user = require_stock_user(interaction=interaction)
@@ -397,18 +395,7 @@ class StockQuantityModal(Modal):
                 log_message="Failed to send stock modal owner mismatch notice",
             )
             return
-        requested_action = action or self._parse_action(raw_action=raw_action)
-        if requested_action is None:
-            await interaction.response.defer()
-            if self.parent is not None:
-                self.parent.stop()
-            await edit_stock_message(
-                interaction=interaction,
-                embed=build_error_embed(message="操作種類格式錯誤，請輸入 `買入` 或 `放空`"),
-                view=StockActionView(symbol=self.symbol, owner_id=self.owner_id),
-                message=self.message,
-            )
-            return
+        requested_action = action or self.action
         await interaction.response.defer()
         avatar_url = await guild_avatar_url(user=user, guild=getattr(interaction, "guild", None))
         result = await settle_stock_operation(
@@ -432,39 +419,6 @@ class StockQuantityModal(Modal):
             view=view,
             message=self.message,
         )
-
-    def _parse_action(self, raw_action: str | None) -> StockAction | None:
-        """Returns the operation from a user-entered modal field."""
-        if raw_action is None or not raw_action.strip():
-            return self.action
-        normalized = raw_action.strip().casefold().replace(" ", "")
-        action_by_alias = {
-            "買入": StockAction.BUY,
-            "買": StockAction.BUY,
-            "購買": StockAction.BUY,
-            "做多": StockAction.BUY,
-            "回補": StockAction.BUY,
-            "回補做空": StockAction.BUY,
-            "buy": StockAction.BUY,
-            "long": StockAction.BUY,
-            "cover": StockAction.BUY,
-            "放空": StockAction.SHORT,
-            "做空": StockAction.SHORT,
-            "賣出": StockAction.SHORT,
-            "賣": StockAction.SHORT,
-            "short": StockAction.SHORT,
-            "sell": StockAction.SHORT,
-        }
-        return action_by_alias.get(normalized)
-
-    @staticmethod
-    def _operation_default(action: StockAction | None) -> str | None:
-        """Returns the modal default text for a preselected operation."""
-        if action == StockAction.BUY:
-            return "買入"
-        if action == StockAction.SHORT:
-            return "放空"
-        return None
 
 
 async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int) -> None:
@@ -490,6 +444,28 @@ async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int
         embed=build_stock_detail_embed(detail=detail, chart_filename=filename),
         file=File(fp=BytesIO(chart_bytes), filename=filename),
         view=view,
+    )
+
+
+async def edit_stock_action_prompt(interaction: Interaction, symbol: str, owner_id: int) -> None:
+    """Shows the operation dropdown with fresh stock and position context."""
+    user = require_stock_user(interaction=interaction)
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    try:
+        detail = await get_stock_detail(symbol=symbol, user_id=user.id, user_name=user.name)
+    except ValueError:
+        quotes = await list_market_quotes()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_error_embed(message=f"找不到股票 `{symbol}`"),
+            view=StockMarketView(quotes=quotes, owner_id=owner_id),
+        )
+        return
+    await edit_stock_message(
+        interaction=interaction,
+        embed=build_action_prompt_embed(detail=detail),
+        view=StockActionView(symbol=symbol, owner_id=owner_id),
     )
 
 
@@ -539,6 +515,7 @@ __all__ = [
     "StockPublicView",
     "StockQuantityModal",
     "StockTutorialView",
+    "edit_stock_action_prompt",
     "edit_stock_detail",
     "edit_stock_message",
     "require_stock_user",

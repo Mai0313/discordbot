@@ -136,13 +136,17 @@ def build_tutorial_embed() -> Embed:
     )
 
 
-def build_action_prompt_embed(symbol: str) -> Embed:
+def build_action_prompt_embed(detail: StockDetailViewData) -> Embed:
     """Builds the action selection prompt for a public stock message."""
+    profile = detail.quote.profile
     return Embed(
-        title=f"🧾 {symbol} 股票操作",
+        title=f"🧾 {profile.symbol} 股票操作",
         description=(
-            "選擇 `買入 / 回補做空` 或 `做空 / 賣出持股`，"
-            "下一步會輸入股數。數量可以輸入整數或 `ALL`。"
+            f"股票代碼：{profile.symbol}\n"
+            f"當前每股價格：{format_price(price_cents=profile.price_cents)} {CURRENCY_NAME}\n"
+            f"目前持有：{detail.position.long_shares:,} 股 | "
+            f"目前做空：{detail.position.short_shares:,} 股\n\n"
+            "請先選擇操作，下一步會輸入股數。數量可以輸入整數或 `ALL`。"
         ),
         color=DETAIL_COLOR,
     )
