@@ -27,7 +27,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
-- **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock opens a private detail panel for trading, position summaries, recent trades, periodically refreshed news, and a 7D chart. Only the opener can operate that panel's controls.
+- **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading, position summaries, recent trades, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies with AI dealer banter, public result embeds, and automatic cleanup.
 - **MapleStory Artale database**: `/maplestory` subcommands search monsters, equipment, scrolls, NPCs, quests, maps, item drops, and database stats.
 - **Localized commands**: slash command metadata and `/help` are localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language.
@@ -47,7 +47,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/credit status\|borrow\|call\|repay`                            | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.     |
 | `/central_bank status\|borrow\|call\|repay`                      | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity. |
 | `/portfolio [member]`                                            | Shows wallet, debt, and estimated net worth.                                                                           |
-| `/stock`                                                         | Opens one public stock market message with private detail, trading, news, and history panels.                          |
+| `/stock`                                                         | Opens one public stock market message that edits in place for details, trading, news, and history.                     |
 | `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member.                                                                                |
 | `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments.                                                                                 |
 | `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby.                                                                                   |

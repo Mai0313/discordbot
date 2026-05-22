@@ -34,20 +34,11 @@ def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> 
 
 
 def build_market_embed(
-    quotes: tuple[StockMarketQuote, ...],
-    ephemeral: bool = False,
-    page_index: int = 0,
-    page_size: int = 25,
+    quotes: tuple[StockMarketQuote, ...], page_index: int = 0, page_size: int = 25
 ) -> Embed:
     """Builds the public market list embed."""
     title = "📈 模擬股市"
-    if ephemeral:
-        title += " · 個人列表"
-    detail_hint = (
-        "選擇股票後會在這則私人訊息更新股票明細。"
-        if ephemeral
-        else "選擇股票後會開啟只有你看得到的股票明細。"
-    )
+    detail_hint = "選擇股票後會在這則公開訊息更新股票明細。"
     description_parts = ["### 市場列表", detail_hint, ""]
     page_count = max((len(quotes) + page_size - 1) // page_size, 1)
     normalized_page = min(max(page_index, 0), page_count - 1)
@@ -63,8 +54,6 @@ def build_market_embed(
         )
     embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
     footer = "這則股票訊息 180 秒無互動後會自動清理"
-    if ephemeral:
-        footer = "私人股票操作面板 180 秒無互動後會失效"
     if page_count > 1:
         footer += f" · 第 {normalized_page + 1}/{page_count} 頁"
     embed.set_footer(text=footer)
@@ -72,7 +61,7 @@ def build_market_embed(
 
 
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:
-    """Builds a private stock detail embed for the current interaction user."""
+    """Builds a public stock detail embed for the current interaction user."""
     profile = detail.quote.profile
     market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
     description = (
@@ -85,11 +74,11 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
     )
     embed = Embed(title="📊 股票明細", description=description, color=DETAIL_COLOR)
     embed.add_field(
-        name="目前操作使用者",
+        name="目前操作 user",
         value=detail.position.user_name or str(detail.position.user_id),
         inline=True,
     )
-    embed.add_field(name="你的資金", value=currency_text(amount=detail.balance), inline=True)
+    embed.add_field(name="操作 user 資金", value=currency_text(amount=detail.balance), inline=True)
     embed.add_field(
         name="持股",
         value=(
@@ -123,7 +112,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
 
 
 def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
-    """Builds a recent news embed for the private stock message."""
+    """Builds a recent news embed for the public stock message."""
     if news:
         lines = [
             f"**{item.headline}**\n市場情緒 `{signed_percent(bps=item.sentiment_bps)}`"
@@ -148,7 +137,7 @@ def build_tutorial_embed() -> Embed:
 
 
 def build_action_prompt_embed(symbol: str) -> Embed:
-    """Builds the action selection prompt for a private stock message."""
+    """Builds the action selection prompt for a public stock message."""
     return Embed(
         title=f"🧾 {symbol} 股票操作",
         description=(
