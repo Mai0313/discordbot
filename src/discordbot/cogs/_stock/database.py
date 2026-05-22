@@ -9,21 +9,16 @@ import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
+import logfire
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Index, String, Integer, DateTime, or_, func, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.stock import (
-    BCAT_NAME,
-    BCAT_SYMBOL,
-    BCAT_CATEGORY,
-    BCAT_TOTAL_SHARES,
     STOCK_HISTORY_DAYS,
     STOCK_TICK_SECONDS,
-    BCAT_BASE_VOLATILITY_BPS,
-    BCAT_INITIAL_PRICE_CENTS,
-    BCAT_VOLATILITY_AMPLIFIER_BPS,
     StockAction,
     StockNewsView,
     StockMarketQuote,
@@ -31,7 +26,9 @@ from discordbot.typings.stock import (
     StockPositionView,
     StockTradeLegType,
     StockTradeLegView,
+    StockGeneratedNews,
     StockPriceTickView,
+    StockProfileUpsert,
     StockDetailViewData,
     StockOperationStatus,
     StockSettlementResult,
@@ -50,14 +47,15 @@ from discordbot.cogs._stock.market import (
     format_price,
     tick_boundary,
     decay_news_sentiment,
-    pressure_from_volume,
+    pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
+from discordbot.cogs._stock.prompts import STOCK_NEWS_FALLBACK_TEMPLATES
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import Callable, Awaitable, AsyncIterator
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/stock.db")
 _schema_ready_for: AsyncEngine | None = None
@@ -69,11 +67,21 @@ _operation_locks_loop: asyncio.AbstractEventLoop | None = None
 _market_locks: dict[str, asyncio.Lock] = {}
 _market_lock_refcounts: dict[str, int] = {}
 _market_locks_loop: asyncio.AbstractEventLoop | None = None
+_news_generation_lock: asyncio.Lock | None = None
+_news_generation_lock_loop: asyncio.AbstractEventLoop | None = None
+_news_provider_semaphore: asyncio.Semaphore | None = None
+_news_provider_semaphore_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
-_RECENT_TRADE_DAYS: Final[int] = 7
+_NEWS_PROVIDER_CONCURRENCY: Final[int] = 4
+_ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
     seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
 )
+_MIGRATION_DEFAULT_LIQUIDITY_SHARES: Final[int] = 25_000
+_MIGRATION_DEFAULT_FAIR_VALUE_CENTS: Final[int] = 10_000
+_MIGRATION_DEFAULT_MEAN_REVERSION_BPS: Final[int] = 35
+_MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS: Final[int] = 450
+_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS: Final[int] = 8
 _FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
     StockOperationStatus.APPLIED.value,
     StockOperationStatus.FAILED.value,
@@ -98,8 +106,14 @@ class StockProfile(Base):
     previous_close_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     day_open_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     total_shares: Mapped[int] = mapped_column(Integer, nullable=False)
+    float_shares: Mapped[int] = mapped_column(Integer, nullable=False)
     base_volatility_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     volatility_amplifier_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    liquidity_shares: Mapped[int] = mapped_column(Integer, nullable=False)
+    fair_value_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    mean_reversion_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_tick_change_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    news_cadence_hours: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -183,7 +197,7 @@ class StockPriceTick(Base):
 
 
 class StockNews(Base):
-    """Deterministic template news that can influence lazy ticks."""
+    """Stock news that can influence lazy ticks."""
 
     __tablename__ = "stock_news"
     __table_args__ = (Index("ix_stock_news_symbol_created", "symbol", "created_at"),)
@@ -192,11 +206,25 @@ class StockNews(Base):
     symbol: Mapped[str] = mapped_column(String(length=16), nullable=False)
     headline: Mapped[str] = mapped_column(String(length=256), nullable=False)
     sentiment_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(length=32), default="template", nullable=False)
+    model: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class _StockOperationPlan(StockSettlementResult):
     """Internal settlement plan before any database mutation."""
+
+
+class _StockExecutionSnapshot(BaseModel):
+    """Submit-time state needed to cap a requested quantity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: StockAction
+    price_cents: int
+    wallet_balance: int
+    position: StockPositionView
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -222,6 +250,26 @@ def _current_schema_lock() -> asyncio.Lock:
         _schema_lock = asyncio.Lock()
         _schema_lock_loop = loop
     return _schema_lock
+
+
+def _current_news_generation_lock() -> asyncio.Lock:
+    """Returns the process-local stock news generation lock for this event loop."""
+    global _news_generation_lock, _news_generation_lock_loop  # noqa: PLW0603 -- loop-local singleton
+    loop = asyncio.get_running_loop()
+    if _news_generation_lock is None or _news_generation_lock_loop is not loop:
+        _news_generation_lock = asyncio.Lock()
+        _news_generation_lock_loop = loop
+    return _news_generation_lock
+
+
+def _current_news_provider_semaphore() -> asyncio.Semaphore:
+    """Returns the stock news provider concurrency limiter for this event loop."""
+    global _news_provider_semaphore, _news_provider_semaphore_loop  # noqa: PLW0603 -- loop-local singleton
+    loop = asyncio.get_running_loop()
+    if _news_provider_semaphore is None or _news_provider_semaphore_loop is not loop:
+        _news_provider_semaphore = asyncio.Semaphore(_NEWS_PROVIDER_CONCURRENCY)
+        _news_provider_semaphore_loop = loop
+    return _news_provider_semaphore
 
 
 @asynccontextmanager
@@ -299,7 +347,7 @@ async def _begin_immediate(session: AsyncSession) -> None:
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps stock schema and seed data once per engine."""
+    """Bootstraps stock schema once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     if _schema_ready_for is _engine:
         return
@@ -308,63 +356,85 @@ async def _ensure_schema() -> None:
             return
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            now = _database_now()
-            boundary = tick_boundary(dt=now)
-            await conn.execute(
-                statement=insert(StockProfile)
-                .values(
-                    symbol=BCAT_SYMBOL,
-                    name=BCAT_NAME,
-                    category=BCAT_CATEGORY,
-                    price_cents=BCAT_INITIAL_PRICE_CENTS,
-                    previous_close_price_cents=BCAT_INITIAL_PRICE_CENTS,
-                    day_open_price_cents=BCAT_INITIAL_PRICE_CENTS,
-                    total_shares=BCAT_TOTAL_SHARES,
-                    base_volatility_bps=BCAT_BASE_VOLATILITY_BPS,
-                    volatility_amplifier_bps=BCAT_VOLATILITY_AMPLIFIER_BPS,
-                    created_at=now,
-                    updated_at=now,
-                )
-                .on_conflict_do_nothing(index_elements=["symbol"])
-            )
-            await _seed_initial_tick(conn=conn, now=boundary)
-            await _seed_news(conn=conn, now=now)
+            await _ensure_stock_schema_migrations(conn=conn)
         _schema_ready_for = _engine
 
 
-async def _seed_initial_tick(conn: Any, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Seeds the first BCAT price tick when the table is empty."""
-    existing_tick = await conn.execute(
-        statement=select(StockPriceTick.id).where(StockPriceTick.symbol == BCAT_SYMBOL).limit(1)
-    )
-    if existing_tick.scalar_one_or_none() is not None:
-        return
-    await conn.execute(
-        statement=insert(StockPriceTick)
-        .values(symbol=BCAT_SYMBOL, price_cents=BCAT_INITIAL_PRICE_CENTS, created_at=now)
-        .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
-    )
-
-
-async def _seed_news(conn: Any, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Seeds deterministic BCAT news rows."""
-    rows = (
-        ("bcat-seed-1", "BCAT 推出新的紙箱訂閱制，市場反應熱烈", 80, now - timedelta(hours=6)),
-        ("bcat-seed-2", "BCAT 董事會表示將控制罐罐成本，毛利率看升", 45, now - timedelta(days=1)),
-        ("bcat-seed-3", "BCAT 供應鏈短暫卡關，投資人觀望", -55, now - timedelta(days=2)),
-    )
-    for row_id, headline, sentiment_bps, created_at in rows:
+async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
+    """Applies lightweight in-place SQLite migrations for existing stock DB files."""
+    result = await conn.execute(text("PRAGMA table_info(stock_profile)"))
+    profile_columns = {row[1] for row in result.all()}
+    if "float_shares" not in profile_columns:
         await conn.execute(
-            statement=insert(StockNews)
-            .values(
-                id=row_id,
-                symbol=BCAT_SYMBOL,
-                headline=headline,
-                sentiment_bps=sentiment_bps,
-                created_at=created_at,
-            )
-            .on_conflict_do_nothing(index_elements=["id"])
+            text("ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT 0")
         )
+        await conn.execute(text("UPDATE stock_profile SET float_shares = total_shares"))
+    profile_migrations = {
+        "liquidity_shares": f"ALTER TABLE stock_profile ADD COLUMN liquidity_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_LIQUIDITY_SHARES}",
+        "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FAIR_VALUE_CENTS}",
+        "mean_reversion_bps": f"ALTER TABLE stock_profile ADD COLUMN mean_reversion_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MEAN_REVERSION_BPS}",
+        "max_tick_change_bps": f"ALTER TABLE stock_profile ADD COLUMN max_tick_change_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS}",
+        "news_cadence_hours": f"ALTER TABLE stock_profile ADD COLUMN news_cadence_hours INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS}",
+    }
+    for column, statement in profile_migrations.items():
+        if column not in profile_columns:
+            await conn.execute(text(statement))
+
+    result = await conn.execute(text("PRAGMA table_info(stock_news)"))
+    news_columns = {row[1] for row in result.all()}
+    news_migrations = {
+        "source": "ALTER TABLE stock_news ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'template'",
+        "model": "ALTER TABLE stock_news ADD COLUMN model VARCHAR(128) NOT NULL DEFAULT ''",
+        "expires_at": "ALTER TABLE stock_news ADD COLUMN expires_at DATETIME",
+    }
+    for column, statement in news_migrations.items():
+        if column not in news_columns:
+            await conn.execute(text(statement))
+    await _ensure_stock_price_tick_unique_index(conn=conn)
+
+
+async def _ensure_stock_price_tick_unique_index(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
+    """Ensures legacy price tick tables support ON CONFLICT by symbol and boundary."""
+    result = await conn.execute(text("PRAGMA index_list(stock_price_tick)"))
+    indexes = result.all()
+    for index in indexes:
+        index_name = index[1]
+        is_unique = bool(index[2])
+        if not is_unique:
+            continue
+        column_result = await conn.execute(
+            text(f"PRAGMA index_info({_quote_sqlite_identifier(identifier=index_name)})")
+        )
+        if tuple(row[2] for row in column_result.all()) == ("symbol", "created_at"):
+            return
+
+    await conn.execute(
+        text(
+            """
+            DELETE FROM stock_price_tick
+            WHERE rowid NOT IN (
+                SELECT MAX(rowid)
+                FROM stock_price_tick
+                GROUP BY symbol, created_at
+            )
+            """
+        )
+    )
+    await conn.execute(text("DROP INDEX IF EXISTS ix_stock_price_tick_symbol_created"))
+    await conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_stock_price_tick_symbol_created
+            ON stock_price_tick (symbol, created_at)
+            """
+        )
+    )
+
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Quotes a SQLite identifier for PRAGMA statements."""
+    escaped = identifier.replace('"', '""')
+    return f'"{escaped}"'
 
 
 def _profile_view(profile: StockProfile) -> StockProfileView:
@@ -377,8 +447,14 @@ def _profile_view(profile: StockProfile) -> StockProfileView:
         previous_close_price_cents=profile.previous_close_price_cents,
         day_open_price_cents=profile.day_open_price_cents,
         total_shares=profile.total_shares,
+        float_shares=profile.float_shares,
         base_volatility_bps=profile.base_volatility_bps,
         volatility_amplifier_bps=profile.volatility_amplifier_bps,
+        liquidity_shares=profile.liquidity_shares,
+        fair_value_cents=profile.fair_value_cents,
+        mean_reversion_bps=profile.mean_reversion_bps,
+        max_tick_change_bps=profile.max_tick_change_bps,
+        news_cadence_hours=profile.news_cadence_hours,
         updated_at=profile.updated_at,
     )
 
@@ -438,6 +514,9 @@ def _news_view(news: StockNews) -> StockNewsView:
         symbol=news.symbol,
         headline=news.headline,
         sentiment_bps=news.sentiment_bps,
+        source=news.source,
+        model=news.model,
+        expires_at=news.expires_at,
         created_at=news.created_at,
     )
 
@@ -462,6 +541,236 @@ def _quote_from_profile(profile: StockProfile, pressure_bps: int) -> StockMarket
         change_cents=change_cents,
         change_bps=change_bps,
         pressure_bps=pressure_bps,
+    )
+
+
+async def upsert_stock_profile(
+    profile: StockProfileUpsert, now: datetime | None = None
+) -> StockProfileView:
+    """Creates or updates a DB-owned stock profile from an explicit maintenance payload."""
+    await _ensure_schema()
+    effective_now = now or _database_now()
+    normalized_symbol = profile.symbol.strip().upper()
+    if not normalized_symbol:
+        msg = "Stock symbol cannot be empty"
+        raise ValueError(msg)
+    async with open_stock_session() as session:
+        existing = await session.get(entity=StockProfile, ident=normalized_symbol)
+        if existing is None:
+            existing = StockProfile(
+                symbol=normalized_symbol,
+                name=profile.name,
+                category=profile.category,
+                price_cents=profile.price_cents,
+                previous_close_price_cents=profile.price_cents,
+                day_open_price_cents=profile.price_cents,
+                total_shares=profile.total_shares,
+                float_shares=profile.float_shares,
+                base_volatility_bps=profile.base_volatility_bps,
+                volatility_amplifier_bps=profile.volatility_amplifier_bps,
+                liquidity_shares=profile.liquidity_shares,
+                fair_value_cents=profile.fair_value_cents,
+                mean_reversion_bps=profile.mean_reversion_bps,
+                max_tick_change_bps=profile.max_tick_change_bps,
+                news_cadence_hours=profile.news_cadence_hours,
+                created_at=effective_now,
+                updated_at=effective_now,
+            )
+            session.add(instance=existing)
+            await session.flush()
+            await _insert_price_tick_or_existing(
+                session=session,
+                symbol=normalized_symbol,
+                price_cents=profile.price_cents,
+                created_at=tick_boundary(dt=effective_now),
+            )
+        else:
+            existing.name = profile.name
+            existing.category = profile.category
+            existing.total_shares = profile.total_shares
+            existing.float_shares = profile.float_shares
+            existing.base_volatility_bps = profile.base_volatility_bps
+            existing.volatility_amplifier_bps = profile.volatility_amplifier_bps
+            existing.liquidity_shares = profile.liquidity_shares
+            existing.fair_value_cents = profile.fair_value_cents
+            existing.mean_reversion_bps = profile.mean_reversion_bps
+            existing.max_tick_change_bps = profile.max_tick_change_bps
+            existing.news_cadence_hours = profile.news_cadence_hours
+            if existing.price_cents != profile.price_cents:
+                existing.price_cents = profile.price_cents
+                await _upsert_price_tick(
+                    session=session,
+                    symbol=normalized_symbol,
+                    price_cents=profile.price_cents,
+                    created_at=tick_boundary(dt=effective_now),
+                )
+            existing.updated_at = effective_now
+        await session.commit()
+        return _profile_view(profile=existing)
+
+
+async def list_stock_profiles() -> tuple[StockProfileView, ...]:
+    """Lists DB-owned stock profiles without advancing market ticks."""
+    await _ensure_schema()
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=select(StockProfile).order_by(StockProfile.symbol.asc())
+        )
+        return tuple(_profile_view(profile=profile) for profile in result.scalars())
+
+
+async def ensure_due_stock_news(
+    news_provider: (
+        Callable[[StockProfileView], Awaitable[StockGeneratedNews | None]] | None
+    ) = None,
+    symbols: tuple[str, ...] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Creates due stock news rows, using AI when a provider is available."""
+    await _ensure_schema()
+    effective_now = now or _database_now()
+    normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
+    async with _current_news_generation_lock():
+        due_profiles = await _due_stock_profile_views(
+            normalized_symbols=normalized_symbols,
+            now=effective_now,
+            allow_template_upgrade=news_provider is not None,
+        )
+        if not due_profiles:
+            return
+
+        async def generate_row(
+            profile: StockProfileView,
+        ) -> tuple[StockProfileView, StockGeneratedNews]:
+            """Generates one news row without holding a database transaction."""
+            generated: StockGeneratedNews | None = None
+            if news_provider is not None:
+                async with _current_news_provider_semaphore():
+                    try:
+                        generated = await news_provider(profile)
+                    except Exception:
+                        logfire.warn(
+                            "Stock news provider failed; using deterministic fallback",
+                            symbol=profile.symbol,
+                            _exc_info=True,
+                        )
+            if generated is None or not generated.headline.strip():
+                generated = _fallback_generated_news(profile=profile, now=effective_now)
+            return profile, generated
+
+        rows = await asyncio.gather(*(generate_row(profile=profile) for profile in due_profiles))
+
+        async with open_stock_session() as session:
+            for profile, generated in rows:
+                await _insert_generated_news(
+                    session=session, profile=profile, generated=generated, now=effective_now
+                )
+            await session.commit()
+
+
+async def _due_stock_profile_views(
+    normalized_symbols: tuple[str, ...] | None, now: datetime, allow_template_upgrade: bool = False
+) -> tuple[StockProfileView, ...]:
+    """Returns stock profiles that need a fresh news row."""
+    async with open_stock_session() as session:
+        statement = select(StockProfile)
+        if normalized_symbols:
+            statement = statement.where(StockProfile.symbol.in_(normalized_symbols))
+        result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
+        profiles = tuple(result.scalars())
+        profile_symbols = tuple(profile.symbol for profile in profiles)
+        latest_news_by_symbol: dict[str, tuple[datetime, str]] = {}
+        if profile_symbols:
+            latest_news_subquery = (
+                select(StockNews.symbol, func.max(StockNews.created_at).label("latest_created_at"))
+                .where(StockNews.symbol.in_(profile_symbols))
+                .group_by(StockNews.symbol)
+                .subquery()
+            )
+            latest_result = await session.execute(
+                statement=select(StockNews.symbol, StockNews.created_at, StockNews.source).join(
+                    latest_news_subquery,
+                    (StockNews.symbol == latest_news_subquery.c.symbol)
+                    & (StockNews.created_at == latest_news_subquery.c.latest_created_at),
+                )
+            )
+            latest_news_by_symbol = {
+                symbol: (latest_at, source)
+                for symbol, latest_at, source in latest_result.all()
+                if latest_at is not None
+            }
+
+        due_profiles: list[StockProfileView] = []
+        for profile in profiles:
+            latest_news = latest_news_by_symbol.get(profile.symbol)
+            cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
+            if latest_news is None:
+                due_profiles.append(_profile_view(profile=profile))
+                continue
+            latest_news_at, latest_news_source = latest_news
+            if as_taipei(dt=now) - as_taipei(dt=latest_news_at) < cadence and (
+                not allow_template_upgrade or latest_news_source != "template"
+            ):
+                continue
+            due_profiles.append(_profile_view(profile=profile))
+        return tuple(due_profiles)
+
+
+async def _insert_generated_news(
+    session: AsyncSession, profile: StockProfileView, generated: StockGeneratedNews, now: datetime
+) -> None:
+    """Persists one generated news row with a stable cadence-bucket ID."""
+    bucket = _stock_news_bucket(profile=profile, now=now)
+    source = generated.source or "template"
+    insert_statement = insert(StockNews).values(
+        id=f"{profile.symbol.lower()}-{bucket}",
+        symbol=profile.symbol,
+        headline=generated.headline.strip()[:256],
+        sentiment_bps=clamp_bps(
+            value=generated.sentiment_bps,
+            lower=-NEWS_SENTIMENT_LIMIT_BPS,
+            upper=NEWS_SENTIMENT_LIMIT_BPS,
+        ),
+        source=source,
+        model=generated.model,
+        expires_at=now + _NEWS_SENTIMENT_LOOKBACK,
+        created_at=now,
+    )
+    await session.execute(
+        statement=insert_statement.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "headline": insert_statement.excluded.headline,
+                "sentiment_bps": insert_statement.excluded.sentiment_bps,
+                "source": insert_statement.excluded.source,
+                "model": insert_statement.excluded.model,
+                "expires_at": insert_statement.excluded.expires_at,
+                "created_at": insert_statement.excluded.created_at,
+            },
+            where=(StockNews.source == "template") & (insert_statement.excluded.source == "ai"),
+        )
+    )
+
+
+def _stock_news_bucket(profile: StockProfileView, now: datetime) -> int:
+    """Returns the cadence bucket for one stock news row."""
+    cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
+    return int(as_taipei(dt=now).timestamp()) // cadence_seconds
+
+
+def _fallback_generated_news(profile: StockProfileView, now: datetime) -> StockGeneratedNews:
+    """Returns deterministic fictional news for a due stock profile."""
+    bucket = _stock_news_bucket(profile=profile, now=now)
+    seed = sum(ord(char) for char in profile.symbol) + bucket
+    headline_template, sentiment_bps = STOCK_NEWS_FALLBACK_TEMPLATES[
+        seed % len(STOCK_NEWS_FALLBACK_TEMPLATES)
+    ]
+    return StockGeneratedNews(
+        headline=headline_template.format(
+            name=profile.name, symbol=profile.symbol, category=profile.category
+        ),
+        sentiment_bps=sentiment_bps,
+        source="template",
     )
 
 
@@ -496,26 +805,16 @@ async def _insert_price_tick_or_existing(
     return existing.scalar_one()
 
 
-async def _news_sentiment_bps(session: AsyncSession, symbol: str, at: datetime) -> int:
-    """Returns decayed deterministic news sentiment for a tick."""
-    result = await session.execute(
-        statement=select(StockNews)
-        .where(StockNews.symbol == symbol, StockNews.created_at <= at)
-        .order_by(StockNews.created_at.desc())
-        .limit(12)
-    )
-    sentiment = 0
-    for news in result.scalars():
-        ticks_elapsed = max(
-            int((tick_boundary(dt=at) - tick_boundary(dt=news.created_at)).total_seconds())
-            // STOCK_TICK_SECONDS,
-            0,
+async def _upsert_price_tick(
+    session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
+) -> None:
+    """Inserts or replaces the maintenance price tick for a boundary."""
+    await session.execute(
+        statement=insert(StockPriceTick)
+        .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
+        .on_conflict_do_update(
+            index_elements=["symbol", "created_at"], set_={"price_cents": price_cents}
         )
-        sentiment += decay_news_sentiment(
-            sentiment_bps=news.sentiment_bps, ticks_elapsed=ticks_elapsed
-        )
-    return clamp_bps(
-        value=sentiment, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
     )
 
 
@@ -531,6 +830,7 @@ async def _news_rows_for_boundaries(
             StockNews.symbol == symbol,
             StockNews.created_at <= boundaries[-1],
             StockNews.created_at >= boundaries[0] - _NEWS_SENTIMENT_LOOKBACK,
+            or_(StockNews.expires_at.is_(None), StockNews.expires_at >= boundaries[0]),
         )
         .order_by(StockNews.created_at.desc())
     )
@@ -542,6 +842,8 @@ def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime
     sentiment = 0
     for news in news_rows:
         if as_taipei(dt=news.created_at) > as_taipei(dt=at):
+            continue
+        if news.expires_at is not None and as_taipei(dt=news.expires_at) < as_taipei(dt=at):
             continue
         ticks_elapsed = max(
             int((tick_boundary(dt=at) - tick_boundary(dt=news.created_at)).total_seconds())
@@ -556,11 +858,13 @@ def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime
     )
 
 
-async def _recent_pressure_bps(session: AsyncSession, symbol: str, at: datetime) -> int:
+async def _recent_pressure_bps(
+    session: AsyncSession, symbol: str, at: datetime, liquidity_shares: int
+) -> int:
     """Returns recent buy/sell pressure from applied trade legs."""
-    since = at - timedelta(days=_RECENT_TRADE_DAYS)
+    since = at - _ORDER_FLOW_LOOKBACK
     result = await session.execute(
-        statement=select(StockTradeLeg.leg_type, StockTradeLeg.shares)
+        statement=select(StockTradeLeg.leg_type, StockTradeLeg.shares, StockTradeLeg.created_at)
         .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
         .where(
             StockTradeLeg.symbol == symbol,
@@ -569,14 +873,9 @@ async def _recent_pressure_bps(session: AsyncSession, symbol: str, at: datetime)
             StockOperation.status == StockOperationStatus.APPLIED.value,
         )
     )
-    buy_shares = 0
-    sell_shares = 0
-    for leg_type, shares in result.all():
-        if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
-            buy_shares += shares
-        else:
-            sell_shares += shares
-    return pressure_from_volume(buy_shares=buy_shares, sell_shares=sell_shares)
+    return _recent_pressure_bps_from_rows(
+        pressure_rows=tuple(result.all()), at=at, liquidity_shares=liquidity_shares
+    )
 
 
 async def _pressure_rows_for_boundaries(
@@ -590,7 +889,7 @@ async def _pressure_rows_for_boundaries(
         .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
         .where(
             StockTradeLeg.symbol == symbol,
-            StockTradeLeg.created_at >= boundaries[0] - timedelta(days=_RECENT_TRADE_DAYS),
+            StockTradeLeg.created_at >= boundaries[0] - _ORDER_FLOW_LOOKBACK,
             StockTradeLeg.created_at <= boundaries[-1],
             StockOperation.status == StockOperationStatus.APPLIED.value,
         )
@@ -599,22 +898,28 @@ async def _pressure_rows_for_boundaries(
 
 
 def _recent_pressure_bps_from_rows(
-    pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime
+    pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime, liquidity_shares: int
 ) -> int:
     """Returns recent buy/sell pressure from prefetched trade legs."""
-    since = at - timedelta(days=_RECENT_TRADE_DAYS)
-    buy_shares = 0
-    sell_shares = 0
+    since = at - _ORDER_FLOW_LOOKBACK
+    net_shares = 0.0
+    at_taipei = as_taipei(dt=at)
+    since_taipei = as_taipei(dt=since)
+    total_seconds = _ORDER_FLOW_LOOKBACK.total_seconds()
     for leg_type, shares, created_at in pressure_rows:
-        if as_taipei(dt=created_at) < as_taipei(dt=since) or as_taipei(dt=created_at) > as_taipei(
-            dt=at
-        ):
+        created_at_taipei = as_taipei(dt=created_at)
+        if created_at_taipei < since_taipei or created_at_taipei > at_taipei:
             continue
+        age_seconds = max((at_taipei - created_at_taipei).total_seconds(), 0)
+        remaining_seconds = max(total_seconds - age_seconds, 0)
+        if remaining_seconds <= 0:
+            continue
+        decayed_shares = shares * remaining_seconds / total_seconds
         if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
-            buy_shares += shares
+            net_shares += decayed_shares
         else:
-            sell_shares += shares
-    return pressure_from_volume(buy_shares=buy_shares, sell_shares=sell_shares)
+            net_shares -= decayed_shares
+    return pressure_from_order_flow(net_shares=net_shares, liquidity_shares=liquidity_shares)
 
 
 async def advance_market_in_session(
@@ -659,13 +964,18 @@ async def advance_market_in_session(
     )
     for boundary in boundaries:
         news_sentiment = _news_sentiment_bps_from_rows(news_rows=news_rows, at=boundary)
-        pressure_bps = _recent_pressure_bps_from_rows(pressure_rows=pressure_rows, at=boundary)
+        pressure_bps = _recent_pressure_bps_from_rows(
+            pressure_rows=pressure_rows, at=boundary, liquidity_shares=profile.liquidity_shares
+        )
         next_price = calculate_next_price_cents(
             previous_price_cents=current_price,
             news_sentiment_bps=news_sentiment,
             pressure_bps=pressure_bps,
             base_volatility_bps=profile.base_volatility_bps,
             volatility_amplifier_bps=profile.volatility_amplifier_bps,
+            fair_value_cents=profile.fair_value_cents,
+            mean_reversion_strength_bps=profile.mean_reversion_bps,
+            max_tick_change_bps=profile.max_tick_change_bps,
             rng=effective_rng,
         )
         rolls_over_day = as_taipei(dt=boundary).date() != as_taipei(dt=previous_tick_at).date()
@@ -681,17 +991,23 @@ async def advance_market_in_session(
     if current_price != profile.price_cents:
         profile.price_cents = current_price
         profile.updated_at = previous_tick_at
-    pressure_bps = await _recent_pressure_bps(session=session, symbol=symbol, at=effective_now)
+    pressure_bps = await _recent_pressure_bps(
+        session=session, symbol=symbol, at=effective_now, liquidity_shares=profile.liquidity_shares
+    )
     return _quote_from_profile(profile=profile, pressure_bps=pressure_bps)
 
 
 async def list_market_quotes(
-    now: datetime | None = None, rng: Random | None = None
+    now: datetime | None = None, rng: Random | None = None, refresh_news: bool = True
 ) -> tuple[StockMarketQuote, ...]:
     """Returns public market quotes after lazy advancement."""
+    if refresh_news:
+        await ensure_due_stock_news(now=now)
     await _ensure_schema()
     async with open_stock_session() as session:
-        symbols_result = await session.execute(statement=select(StockProfile.symbol))
+        symbols_result = await session.execute(
+            statement=select(StockProfile.symbol).order_by(StockProfile.symbol.asc())
+        )
         symbols = tuple(symbols_result.scalars().all())
     quotes: list[StockMarketQuote] = []
     for symbol in symbols:
@@ -711,6 +1027,7 @@ async def get_stock_detail(
     rng: Random | None = None,
 ) -> StockDetailViewData:
     """Returns a personal stock detail view after lazy advancement."""
+    await ensure_due_stock_news(symbols=(symbol,), now=now)
     await _ensure_schema()
     async with open_stock_session() as session, _market_lock(symbol=symbol):
         quote = await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
@@ -735,7 +1052,8 @@ async def get_stock_detail(
 
 
 async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
-    """Returns recent deterministic news for a stock."""
+    """Returns recent news for a stock."""
+    await ensure_due_stock_news(symbols=(symbol,))
     await _ensure_schema()
     async with open_stock_session() as session:
         return await _news_views(session=session, symbol=symbol)
@@ -836,11 +1154,76 @@ def _parse_quantity(
     return int(normalized)
 
 
+def _is_all_quantity(raw_quantity: str) -> bool:
+    """Returns whether the raw quantity uses the ALL shorthand."""
+    return raw_quantity.strip().replace(",", "").upper() in {"ALL", "全部", "MAX"}
+
+
 def _prorated_amount(total: int, shares: int, current_shares: int) -> int:
     """Returns a prorated integer basis amount, consuming dust on final close."""
     if shares >= current_shares:
         return total
     return total * shares // current_shares
+
+
+def _max_coverable_short_shares(
+    price_cents: int, wallet_balance: int, position: StockPositionView
+) -> int:
+    """Returns how many short shares can be covered from the submit-time state."""
+    low = 0
+    high = position.short_shares
+    while low < high:
+        shares = (low + high + 1) // 2
+        released_collateral = _prorated_amount(
+            total=position.short_collateral, shares=shares, current_shares=position.short_shares
+        )
+        released_entry_value = _prorated_amount(
+            total=position.short_entry_value, shares=shares, current_shares=position.short_shares
+        )
+        cover_cost = cash_ceil(cents=price_cents * shares)
+        if cover_cost <= wallet_balance + released_collateral + released_entry_value:
+            low = shares
+        else:
+            high = shares - 1
+    return low
+
+
+def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
+    """Returns the largest quantity that can pass balance validation."""
+    if snapshot.action == StockAction.SHORT:
+        sell_proceeds = cash_floor(cents=snapshot.price_cents * snapshot.position.long_shares)
+        cash_after_selling = snapshot.wallet_balance + sell_proceeds
+        return snapshot.position.long_shares + cash_after_selling * 100 // snapshot.price_cents
+
+    if snapshot.position.short_shares <= 0:
+        return snapshot.wallet_balance * 100 // snapshot.price_cents
+
+    coverable_shares = _max_coverable_short_shares(
+        price_cents=snapshot.price_cents,
+        wallet_balance=snapshot.wallet_balance,
+        position=snapshot.position,
+    )
+    if coverable_shares < snapshot.position.short_shares:
+        return coverable_shares
+    cover_cost = cash_ceil(cents=snapshot.price_cents * snapshot.position.short_shares)
+    cash_after_covering = (
+        snapshot.wallet_balance
+        + snapshot.position.short_collateral
+        + snapshot.position.short_entry_value
+        - cover_cost
+    )
+    return (
+        snapshot.position.short_shares + max(cash_after_covering, 0) * 100 // snapshot.price_cents
+    )
+
+
+def _clamp_quantity_to_available(
+    raw_quantity: str, parsed_quantity: int, snapshot: _StockExecutionSnapshot
+) -> int:
+    """Treats oversized numeric quantities as the submit-time executable maximum."""
+    if _is_all_quantity(raw_quantity=raw_quantity) or parsed_quantity <= 0:
+        return parsed_quantity
+    return min(parsed_quantity, _max_executable_quantity(snapshot=snapshot))
 
 
 def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit row
@@ -1303,6 +1686,16 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
                     position=position,
                     error="股數格式錯誤，請輸入正整數或 ALL",
                 )
+            parsed_quantity = _clamp_quantity_to_available(
+                raw_quantity=quantity,
+                parsed_quantity=parsed_quantity,
+                snapshot=_StockExecutionSnapshot(
+                    action=requested_action,
+                    price_cents=quote.profile.price_cents,
+                    wallet_balance=wallet_balance,
+                    position=position,
+                ),
+            )
 
             plan = _build_plan(
                 operation_id=operation_id,
@@ -1557,11 +1950,14 @@ __all__ = [
     "advance_market_in_session",
     "cash_ceil",
     "cash_floor",
+    "ensure_due_stock_news",
     "format_price",
     "get_stock_detail",
     "get_stock_news",
     "list_market_quotes",
     "list_reconciliation_operations",
+    "list_stock_profiles",
     "open_stock_session",
     "settle_stock_operation",
+    "upsert_stock_profile",
 ]

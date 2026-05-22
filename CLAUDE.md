@@ -77,11 +77,17 @@ make gen-docs                    # regenerate docs/ from sources
 ## Stocks
 
 - Simulated stock state lives in `data/stock.db`; wallet cash remains in economy `user_wallet`. Do not store wallet balances in stock tables.
-- `/stock` sends one public market message. Stock selection from that message opens a private detail panel for balance, positions, actions, news, validation, settlement, position summaries, recent trade history, and the 7D chart. The public market view deletes its message after 180 idle seconds.
+- `/stock` sends one public market message. Stock selection, balance, positions, actions, news, validation, settlement, position summaries, recent trade history, and the 7D chart all edit that same public message. Only the user who opened the stock message can operate its controls. The active stock view deletes its message after 180 idle seconds.
+- `stock_profile` is the source of truth for virtual company symbols, names, categories, prices, liquidity, volatility, fair value, mean reversion, tick caps, and news cadence. Do not hardcode company rows or seed companies from runtime code; use `uv run python scripts/manage_stock_company.py ...` or direct DB maintenance while the bot is stopped. Add stock schema migrations when changing persisted profile or news columns.
+- `stock_news` refreshes at most once per `news_cadence_hours` per symbol. `StockNewsAI` may use the existing `AsyncOpenAI` Responses API stack when LLM config is available, but database helpers must always have deterministic fallback news and must not block settlement on LLM failure.
+- Stock news AI prompts and fallback copy templates live in `src/discordbot/cogs/_stock/prompts.py`; keep generated news fictional, absurd, and harmless.
+- For Discord UI that needs precise layout beyond embed and Markdown limits, render a PNG with Pillow, attach it with `File`, then reference it from the embed via `attachment://...`. Use a CJK-capable font such as Noto Sans CJK for Traditional Chinese, and keep source data typed so the image renderer stays presentation-only.
+- Market pressure uses decayed order flow and per-stock liquidity. Do not reintroduce a multi-day aggregate pressure term that applies the same directional drift on every tick.
 - Stock tables that persist `user_id` also persist `user_name`. Public stock UI should display stored names instead of Discord IDs.
 - Stock settlement must go through `settle_stock_operation(...)`. Views must not split price reads, wallet reads, and position writes or import SQLAlchemy stock models directly.
 - Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.
 - Compound stock operations write one `stock_operation` and ordered `stock_trade_leg` rows. Do not net wallet legs before applying them through the public ordered economy helper.
+- Use `uv run python scripts/manage_stock_reconciliation.py list` to inspect non-final stock operations before manual repair.
 - Lazy market ticks advance on interaction. Long backlogs compress to at most `MAX_TICKS_PER_INTERACTION` ticks and still roll over Asia/Taipei day boundaries.
 
 ## Games

@@ -1,21 +1,14 @@
 from enum import StrEnum
-from typing import Final
+from typing import Self, Final
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict, model_validator
 
 STOCK_TICK_SECONDS: Final[int] = 60 * 60
 MAX_TICKS_PER_INTERACTION: Final[int] = 24
 STOCK_HISTORY_DAYS: Final[int] = 7
 STOCK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-
-BCAT_SYMBOL: Final[str] = "BCAT"
-BCAT_NAME: Final[str] = "破貓科技股份有限公司"
-BCAT_CATEGORY: Final[str] = "迷因科技"
-BCAT_INITIAL_PRICE_CENTS: Final[int] = 10_000
-BCAT_TOTAL_SHARES: Final[int] = 1_000_000
-BCAT_BASE_VOLATILITY_BPS: Final[int] = 70
-BCAT_VOLATILITY_AMPLIFIER_BPS: Final[int] = 150
+STOCK_NEWS_CADENCE_HOURS: Final[int] = 8
 
 
 class StockAction(StrEnum):
@@ -29,7 +22,6 @@ class StockOperationStatus(StrEnum):
     """Lifecycle states for a cross-database stock operation."""
 
     PENDING = "pending"
-    STOCK_APPLIED = "stock_applied"
     WALLET_APPLIED = "wallet_applied"
     APPLIED = "applied"
     FAILED = "failed"
@@ -57,9 +49,43 @@ class StockProfileView(BaseModel):
     previous_close_price_cents: int
     day_open_price_cents: int
     total_shares: int
+    float_shares: int
     base_volatility_bps: int
     volatility_amplifier_bps: int
+    liquidity_shares: int
+    fair_value_cents: int
+    mean_reversion_bps: int
+    max_tick_change_bps: int
+    news_cadence_hours: int
     updated_at: datetime
+
+
+class StockProfileUpsert(BaseModel):
+    """DB-owned stock profile payload for maintenance scripts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1, max_length=16)
+    name: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=64)
+    price_cents: int = Field(ge=1)
+    total_shares: int = Field(ge=1)
+    float_shares: int = Field(ge=0)
+    base_volatility_bps: int = Field(ge=0)
+    volatility_amplifier_bps: int = Field(ge=0)
+    liquidity_shares: int = Field(ge=1)
+    fair_value_cents: int = Field(ge=1)
+    mean_reversion_bps: int = Field(ge=0)
+    max_tick_change_bps: int = Field(ge=1)
+    news_cadence_hours: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_share_structure(self) -> Self:
+        """Validates share counts that depend on each other."""
+        if self.float_shares > self.total_shares:
+            msg = "float_shares cannot exceed total_shares"
+            raise ValueError(msg)
+        return self
 
 
 class StockPositionView(BaseModel):
@@ -111,14 +137,28 @@ class StockTradeLegView(BaseModel):
 
 
 class StockNewsView(BaseModel):
-    """Read-only deterministic stock news item."""
+    """Read-only stock news item."""
 
     model_config = ConfigDict(frozen=True)
 
     symbol: str
     headline: str
     sentiment_bps: int
+    source: str = "template"
+    model: str = ""
+    expires_at: datetime | None = None
     created_at: datetime
+
+
+class StockGeneratedNews(BaseModel):
+    """Generated stock news payload before persistence."""
+
+    model_config = ConfigDict(frozen=True)
+
+    headline: str
+    sentiment_bps: int
+    source: str
+    model: str = ""
 
 
 class StockPriceTickView(BaseModel):
@@ -193,25 +233,21 @@ class StockReconciliationOperation(BaseModel):
 
 
 __all__ = [
-    "BCAT_BASE_VOLATILITY_BPS",
-    "BCAT_CATEGORY",
-    "BCAT_INITIAL_PRICE_CENTS",
-    "BCAT_NAME",
-    "BCAT_SYMBOL",
-    "BCAT_TOTAL_SHARES",
-    "BCAT_VOLATILITY_AMPLIFIER_BPS",
     "MAX_TICKS_PER_INTERACTION",
     "STOCK_ACTION_TIMEOUT_SECONDS",
     "STOCK_HISTORY_DAYS",
+    "STOCK_NEWS_CADENCE_HOURS",
     "STOCK_TICK_SECONDS",
     "StockAction",
     "StockDetailViewData",
+    "StockGeneratedNews",
     "StockMarketQuote",
     "StockNewsView",
     "StockOperationStatus",
     "StockParticipantPositionView",
     "StockPositionView",
     "StockPriceTickView",
+    "StockProfileUpsert",
     "StockProfileView",
     "StockReconciliationOperation",
     "StockSettlementResult",

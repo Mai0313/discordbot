@@ -47,6 +47,7 @@ nav:
                   - chart: Reference/discordbot/cogs/_stock/chart.md
                   - database: Reference/discordbot/cogs/_stock/database.md
                   - market: Reference/discordbot/cogs/_stock/market.md
+                  - news: Reference/discordbot/cogs/_stock/news.md
                   - presentation: Reference/discordbot/cogs/_stock/presentation.md
                   - views: Reference/discordbot/cogs/_stock/views.md
               - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
@@ -81,6 +82,8 @@ nav:
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
       - manage_central_banker: Scripts/manage_central_banker.md
+      - manage_stock_company: Scripts/manage_stock_company.md
+      - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md

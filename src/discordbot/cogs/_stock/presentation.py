@@ -33,18 +33,17 @@ def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> 
     return f"{base_volatility_bps / 100:.2f}% x {volatility_amplifier_bps / 100:.2f}"
 
 
-def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = False) -> Embed:
+def build_market_embed(
+    quotes: tuple[StockMarketQuote, ...], page_index: int = 0, page_size: int = 25
+) -> Embed:
     """Builds the public market list embed."""
     title = "📈 模擬股市"
-    if ephemeral:
-        title += " · 個人列表"
-    detail_hint = (
-        "選擇股票後會在這則私人訊息更新股票明細。"
-        if ephemeral
-        else "選擇股票後會開啟只有你看得到的股票明細。"
-    )
+    detail_hint = "選擇股票後會在這則公開訊息更新股票明細。"
     description_parts = ["### 市場列表", detail_hint, ""]
-    for quote in quotes:
+    page_count = max((len(quotes) + page_size - 1) // page_size, 1)
+    normalized_page = min(max(page_index, 0), page_count - 1)
+    page_quotes = quotes[normalized_page * page_size : (normalized_page + 1) * page_size]
+    for quote in page_quotes:
         profile = quote.profile
         market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
         description_parts.append(
@@ -55,14 +54,14 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
         )
     embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
     footer = "這則股票訊息 180 秒無互動後會自動清理"
-    if ephemeral:
-        footer = "私人股票操作面板 180 秒無互動後會失效"
+    if page_count > 1:
+        footer += f" · 第 {normalized_page + 1}/{page_count} 頁"
     embed.set_footer(text=footer)
     return embed
 
 
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:
-    """Builds a private stock detail embed for the current interaction user."""
+    """Builds a public stock detail embed for the current interaction user."""
     profile = detail.quote.profile
     market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
     description = (
@@ -79,7 +78,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         value=detail.position.user_name or str(detail.position.user_id),
         inline=True,
     )
-    embed.add_field(name="你的資金", value=currency_text(amount=detail.balance), inline=True)
+    embed.add_field(name="可用資金", value=currency_text(amount=detail.balance), inline=True)
     embed.add_field(
         name="持股",
         value=(
@@ -113,7 +112,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
 
 
 def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
-    """Builds a recent news embed for the private stock message."""
+    """Builds a recent news embed for the public stock message."""
     if news:
         lines = [
             f"**{item.headline}**\n市場情緒 `{signed_percent(bps=item.sentiment_bps)}`"
@@ -131,19 +130,24 @@ def build_tutorial_embed() -> Embed:
         description=(
             "`買入 / 回補做空` 會先回補既有做空，剩餘數量才建立持股。\n"
             "`做空 / 賣出持股` 會先賣出既有持股，剩餘數量才建立做空。\n"
-            "數量可以輸入整數或 `ALL`，實際價格與部位會在送出表單當下重新讀取。"
+            "選擇操作後會跳出數量視窗，可以輸入整數或 `ALL`，實際價格與部位會在送出當下重新讀取。"
+            "如果輸入股數超過當下餘額可執行上限，會自動改用可執行的最大股數。"
         ),
         color=DETAIL_COLOR,
     )
 
 
-def build_action_prompt_embed(symbol: str) -> Embed:
-    """Builds the action selection prompt for a private stock message."""
+def build_action_prompt_embed(detail: StockDetailViewData) -> Embed:
+    """Builds the action selection prompt for a public stock message."""
+    profile = detail.quote.profile
     return Embed(
-        title=f"🧾 {symbol} 股票操作",
+        title=f"🧾 {profile.symbol} 股票操作",
         description=(
-            "選擇 `買入 / 回補做空` 或 `做空 / 賣出持股`，"
-            "下一步會輸入股數。數量可以輸入整數或 `ALL`。"
+            f"股票代碼：{profile.symbol}\n"
+            f"當前每股價格：{format_price(price_cents=profile.price_cents)} {CURRENCY_NAME}\n"
+            f"目前持有：{detail.position.long_shares:,} 股 | "
+            f"目前做空：{detail.position.short_shares:,} 股\n\n"
+            "請先選擇操作，接著會跳出數量視窗，可輸入股數或 `ALL`。"
         ),
         color=DETAIL_COLOR,
     )
