@@ -21,6 +21,7 @@ from discordbot.typings.stock import (
     StockPositionView,
     StockTradeLegType,
     StockTradeLegView,
+    StockOperationStatus,
     StockSettlementResult,
 )
 from discordbot.cogs._stock.views import (
@@ -31,6 +32,7 @@ from discordbot.cogs._stock.views import (
     StockPostTradeView,
     StockQuantityModal,
 )
+from discordbot.cogs._stock.presentation import build_settlement_embed
 
 
 class ResponseStub:
@@ -451,6 +453,29 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
     assert isinstance(interaction.message.edits[0]["view"], StockPostTradeView)
     assert interaction.user is not None
     assert interaction.message.edits[0]["view"].owner_id == interaction.user.id
+
+
+def test_failed_stock_settlement_title_does_not_depend_on_operation_id() -> None:
+    """Failed stock settlements with audit IDs are not reconciliation incidents."""
+    result = StockSettlementResult(
+        success=False,
+        operation_id="op-1",
+        symbol=BCAT_SYMBOL,
+        requested_action=StockAction.BUY,
+        shares=1,
+        price_cents=10_000,
+        wallet_delta=0,
+        balance_after=900,
+        position=StockPositionView(symbol=BCAT_SYMBOL, user_id=1, user_name="alice"),
+        legs=(),
+        status=StockOperationStatus.FAILED,
+        error="交易未完成，送出時餘額已不足，沒有變更股票部位",
+    )
+
+    embed = build_settlement_embed(result=result)
+
+    assert embed.title == "股票交易失敗"
+    assert embed.fields[0].name == "操作代碼"
 
 
 async def test_edit_stock_message_falls_back_when_target_was_deleted() -> None:

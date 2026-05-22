@@ -56,7 +56,11 @@ async def stock_isolated_db(
     monkeypatch.setattr(stock_db, "_engine", engine)
     monkeypatch.setattr(stock_db, "_schema_ready_for", None)
     stock_db._operation_locks.clear()
+    stock_db._operation_lock_refcounts.clear()
+    monkeypatch.setattr(stock_db, "_operation_locks_loop", None)
     stock_db._market_locks.clear()
+    stock_db._market_lock_refcounts.clear()
+    monkeypatch.setattr(stock_db, "_market_locks_loop", None)
     yield
     await engine.dispose()
 

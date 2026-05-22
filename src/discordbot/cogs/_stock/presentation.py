@@ -9,6 +9,7 @@ from discordbot.typings.stock import (
     StockTradeLegType,
     StockTradeLegView,
     StockDetailViewData,
+    StockOperationStatus,
     StockSettlementResult,
     StockParticipantPositionView,
 )
@@ -152,7 +153,7 @@ def build_settlement_embed(result: StockSettlementResult) -> Embed:
     """Builds a trade success or reconciliation/failure embed."""
     if not result.success:
         title = "股票交易失敗"
-        if result.operation_id:
+        if result.operation_id and result.status not in (None, StockOperationStatus.FAILED):
             title = "股票交易需要人工對帳"
         embed = Embed(title=title, description=result.error or "交易沒有完成", color=ERROR_COLOR)
         if result.operation_id:
