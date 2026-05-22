@@ -1379,10 +1379,12 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
         try:
             await _finalize_stock_side(plan=plan, now=effective_now)
         except asyncio.CancelledError:
-            await _mark_operation(
-                operation_id=operation_id,
-                status=StockOperationStatus.RECONCILE_REQUIRED,
-                failure_reason="stock finalization cancelled after wallet side was applied",
+            await asyncio.shield(
+                _mark_operation(
+                    operation_id=operation_id,
+                    status=StockOperationStatus.RECONCILE_REQUIRED,
+                    failure_reason="stock finalization cancelled after wallet side was applied",
+                )
             )
             raise
         except Exception as exc:
