@@ -131,7 +131,8 @@ def build_tutorial_embed() -> Embed:
             "`買入 / 回補做空` 會先回補既有做空，剩餘數量才建立持股。\n"
             "`做空 / 賣出持股` 會先賣出既有持股，剩餘數量才建立做空。\n"
             "選擇操作後會跳出數量視窗，可以輸入整數或 `ALL`，實際價格與部位會在送出當下重新讀取。"
-            "如果輸入股數超過當下餘額可執行上限，會自動改用可執行的最大股數。"
+            "如果輸入股數超過當下餘額、流通股或可借券上限，會自動改用可執行的最大股數。"
+            "大單會依照 liquidity 產生 execution slippage。"
         ),
         color=DETAIL_COLOR,
     )
@@ -234,7 +235,8 @@ def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
         name = leg.user_name or str(leg.user_id)
         lines.append(
             f"{name} · #{leg.leg_order} {_leg_type_label(leg_type=leg.leg_type)} "
-            f"`{leg.shares:,}` 股 · 錢包變化 {amount_code(amount=leg.wallet_delta, signed=True)} · "
+            f"`{leg.shares:,}` 股 · 成交價 `{format_price(price_cents=leg.price_cents)}` · "
+            f"錢包變化 {amount_code(amount=leg.wallet_delta, signed=True)} · "
             f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True)}"
         )
     return "\n".join(lines) if lines else "無"

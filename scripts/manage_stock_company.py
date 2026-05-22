@@ -14,7 +14,11 @@ from rich.table import Table
 from rich.console import Console
 
 from discordbot.typings.stock import StockProfileUpsert
-from discordbot.cogs._stock.database import list_stock_profiles, upsert_stock_profile
+from discordbot.cogs._stock.database import (
+    list_stock_profiles,
+    upsert_stock_profile,
+    list_stock_supply_audit,
+)
 
 console = Console()
 
@@ -26,6 +30,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(name="list", help="List stock company profile rows.")
+    subparsers.add_parser(name="audit", help="List stock supply and aggregate exposure.")
 
     upsert = subparsers.add_parser(
         name="upsert", help="Create or update one stock company profile row."
@@ -83,11 +88,44 @@ async def _list_profiles() -> None:
     console.print(table)
 
 
+async def _audit_supply() -> None:
+    """Prints stock supply and aggregate exposure."""
+    table = Table(title="Stock supply audit")
+    for column in (
+        "Symbol",
+        "Name",
+        "Float",
+        "Long",
+        "Short",
+        "Long Available",
+        "Short Available",
+        "Liquidity",
+        "Non-final Ops",
+    ):
+        table.add_column(column)
+    for audit in await list_stock_supply_audit():
+        table.add_row(
+            audit.symbol,
+            audit.name,
+            f"{audit.float_shares:,}",
+            f"{audit.long_shares:,}",
+            f"{audit.short_shares:,}",
+            f"{audit.available_long_shares:,}",
+            f"{audit.available_short_shares:,}",
+            f"{audit.liquidity_shares:,}",
+            str(audit.non_final_operations),
+        )
+    console.print(table)
+
+
 async def _async_main(argv: Sequence[str] | None = None) -> None:
     """Runs the CLI."""
     args = _parse_args(argv=argv)
     if args.command == "list":
         await _list_profiles()
+        return
+    if args.command == "audit":
+        await _audit_supply()
         return
     profile = await upsert_stock_profile(profile=_profile_from_args(args=args))
     console.print(f"Upserted stock company: [bold]{profile.symbol}[/bold] {profile.name}")

@@ -43,7 +43,7 @@ _HELP_CONTENT = {
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
         "stocks": (
             "**Simulated Stock Market**\n"
-            "`/stock` opens the market UI for prices, news, positions, charts, buy, short, and cover actions."
+            "`/stock` opens the market UI for prices, news, positions, charts, supply-capped buy and short entries, plus sell and cover exits."
         ),
         "vip": (
             "**VIP**\n"
@@ -79,7 +79,7 @@ _HELP_CONTENT = {
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
         "stocks": (
             "**模擬股市**\n"
-            "`/stock` 開啟 market UI，可以看價格、news、position、chart，也能 buy、short、cover。"
+            "`/stock` 開啟 market UI，可以看價格、news、position、chart，也能建立受 supply cap 限制的 buy/short，或執行 sell/cover 出場。"
         ),
         "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
         "games": (
@@ -117,7 +117,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場**\n"
-            "`/stock` で market UI を開き、price、news、position、chart、buy、short、cover を扱えます。"
+            "`/stock` で market UI を開き、price、news、position、chart、supply cap 付きの buy/short entry、sell/cover exit を扱えます。"
         ),
         "vip": (
             "**VIP**\n"

@@ -1,10 +1,18 @@
 """Tests for Threads URL parsing and media extraction."""
 
+import json
 from pathlib import Path
 
 import pytest
 
-from discordbot.utils.threads import Post, ThreadData, ThreadItem, ThreadsOutput, ThreadsDownloader
+from discordbot.utils.threads import (
+    Post,
+    ThreadData,
+    ThreadItem,
+    ThreadsURL,
+    ThreadsOutput,
+    ThreadsDownloader,
+)
 
 
 @pytest.fixture
@@ -66,6 +74,67 @@ def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
     assert second.video_paths == []
 
 
+def _thread_post_payload(
+    code: str, username: str, text: str, reply_to_username: str = ""
+) -> dict[str, object]:
+    """Returns a minimal Threads post payload with parser-relevant fields."""
+    return {
+        "post": {
+            "code": code,
+            "caption": {"text": text},
+            "user": {
+                "username": username,
+                "profile_pic_url": f"https://cdn.example/{username}.jpg",
+            },
+            "image_versions2": {"candidates": [{"url": f"https://cdn.example/{code}.jpg"}]},
+            "text_post_app_info": {
+                "direct_reply_count": 1,
+                "repost_count": 2,
+                "quote_count": 3,
+                "reshare_count": 4,
+                "is_reply": bool(reply_to_username),
+                "reply_to_author": (
+                    {"username": reply_to_username, "profile_pic_url": ""}
+                    if reply_to_username
+                    else None
+                ),
+            },
+            "like_count": 5,
+            "taken_at": 1_735_689_600,
+        }
+    }
+
+
+def _thread_html(post_code: str) -> str:
+    """Builds deterministic Threads SJS HTML for parser tests."""
+    payload = {
+        "require": [
+            {
+                "__bbox": {
+                    "result": {
+                        "data": {
+                            "thread_items": [
+                                _thread_post_payload(
+                                    code="ROOT", username="root_author", text="Root post"
+                                ),
+                                _thread_post_payload(
+                                    code=post_code,
+                                    username="target_author",
+                                    text=f"Target post {post_code}",
+                                    reply_to_username="root_author",
+                                ),
+                            ]
+                        }
+                    }
+                }
+            }
+        ]
+    }
+    return (
+        f'<html><script type="application/json" data-sjs>{json.dumps(obj=payload)}</script></html>'
+    )
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -79,11 +148,22 @@ def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
         "https://www.threads.com/@babe.0530/post/DXyk3qXGT6o",
     ],
 )
-def test_parse(downloader: ThreadsDownloader, url: str) -> None:
+def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies that parsing valid Threads URLs returns expected post data."""
+    threads_url = ThreadsURL(raw_url=url)
+    fetched_urls: list[str] = []
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Returns deterministic HTML for the requested Threads URL."""
+        fetched_urls.append(url)
+        return _thread_html(post_code=threads_url.post_code)
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+
     with downloader.parse(url=url) as results:
         assert results, "should yield at least one post"
         target = results[-1]
         assert target.text or target.image_urls or target.video_urls, "post should have content"
         assert target.author_name, "author_name should not be empty"
         assert target.taken_at is not None, "taken_at should not be None"
+    assert fetched_urls == [threads_url.clean_url]
