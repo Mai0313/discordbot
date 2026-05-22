@@ -33,7 +33,12 @@ def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> 
     return f"{base_volatility_bps / 100:.2f}% x {volatility_amplifier_bps / 100:.2f}"
 
 
-def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = False) -> Embed:
+def build_market_embed(
+    quotes: tuple[StockMarketQuote, ...],
+    ephemeral: bool = False,
+    page_index: int = 0,
+    page_size: int = 25,
+) -> Embed:
     """Builds the public market list embed."""
     title = "📈 模擬股市"
     if ephemeral:
@@ -44,7 +49,10 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
         else "選擇股票後會開啟只有你看得到的股票明細。"
     )
     description_parts = ["### 市場列表", detail_hint, ""]
-    for quote in quotes:
+    page_count = max((len(quotes) + page_size - 1) // page_size, 1)
+    normalized_page = min(max(page_index, 0), page_count - 1)
+    page_quotes = quotes[normalized_page * page_size : (normalized_page + 1) * page_size]
+    for quote in page_quotes:
         profile = quote.profile
         market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
         description_parts.append(
@@ -57,6 +65,8 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
     footer = "這則股票訊息 180 秒無互動後會自動清理"
     if ephemeral:
         footer = "私人股票操作面板 180 秒無互動後會失效"
+    if page_count > 1:
+        footer += f" · 第 {normalized_page + 1}/{page_count} 頁"
     embed.set_footer(text=footer)
     return embed
 

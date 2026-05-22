@@ -28,6 +28,8 @@ from discordbot.cogs._stock.presentation import (
     build_action_prompt_embed,
 )
 
+MARKET_PAGE_SIZE = 25
+
 
 def require_stock_user(interaction: Interaction) -> User | Member:
     """Returns the interaction user or fails before any stock state can be written."""
@@ -81,12 +83,21 @@ class StockMarketView(StockPublicView):
     """Stock select and tutorial controls for the market list."""
 
     def __init__(
-        self, quotes: tuple[StockMarketQuote, ...], owner_id: int, ephemeral: bool = False
+        self,
+        quotes: tuple[StockMarketQuote, ...],
+        owner_id: int,
+        ephemeral: bool = False,
+        page_index: int = 0,
     ) -> None:
         """Initializes market controls from quote rows."""
         super().__init__(owner_id=owner_id, delete_on_timeout=not ephemeral)
         self.quotes = quotes
         self.ephemeral = ephemeral
+        self.page_count = max((len(quotes) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE, 1)
+        self.page_index = min(max(page_index, 0), self.page_count - 1)
+        page_quotes = quotes[
+            self.page_index * MARKET_PAGE_SIZE : (self.page_index + 1) * MARKET_PAGE_SIZE
+        ]
         self._select = cast("StringSelect", self.stock_select)
         self._select.options = [
             SelectOption(
@@ -94,8 +105,12 @@ class StockMarketView(StockPublicView):
                 value=quote.profile.symbol,
                 description=f"{quote.profile.category}",
             )
-            for quote in quotes[:25]
+            for quote in page_quotes
         ] or [SelectOption(label="目前沒有股票", value="none", description="請稍後再試")]
+        self._previous_page = cast("Button", self.previous_page)
+        self._next_page = cast("Button", self.next_page)
+        self._previous_page.disabled = self.page_index <= 0
+        self._next_page.disabled = self.page_index >= self.page_count - 1
 
     @nextcord.ui.string_select(
         placeholder="選擇股票",
@@ -135,7 +150,21 @@ class StockMarketView(StockPublicView):
         )
 
     @nextcord.ui.button(
-        label="教學", emoji="📘", style=ButtonStyle.secondary, custom_id="stock:tutorial", row=1
+        label="上一頁", emoji="◀️", style=ButtonStyle.secondary, custom_id="stock:page:prev", row=1
+    )
+    async def previous_page(self, _button: Button, interaction: Interaction) -> None:
+        """Moves the market list to the previous page."""
+        await self._show_page(interaction=interaction, page_index=self.page_index - 1)
+
+    @nextcord.ui.button(
+        label="下一頁", emoji="▶️", style=ButtonStyle.secondary, custom_id="stock:page:next", row=1
+    )
+    async def next_page(self, _button: Button, interaction: Interaction) -> None:
+        """Moves the market list to the next page."""
+        await self._show_page(interaction=interaction, page_index=self.page_index + 1)
+
+    @nextcord.ui.button(
+        label="教學", emoji="📘", style=ButtonStyle.secondary, custom_id="stock:tutorial", row=2
     )
     async def tutorial(self, _button: Button, interaction: Interaction) -> None:
         """Shows the stock tutorial in the public stock message."""
@@ -144,6 +173,26 @@ class StockMarketView(StockPublicView):
             interaction=interaction,
             embed=build_tutorial_embed(),
             view=StockTutorialView(owner_id=self.owner_id, ephemeral=self.ephemeral),
+        )
+
+    async def _show_page(self, interaction: Interaction, page_index: int) -> None:
+        """Edits the market list to a bounded page index."""
+        self.stop()
+        normalized_page = min(max(page_index, 0), self.page_count - 1)
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_market_embed(
+                quotes=self.quotes,
+                ephemeral=self.ephemeral,
+                page_index=normalized_page,
+                page_size=MARKET_PAGE_SIZE,
+            ),
+            view=StockMarketView(
+                quotes=self.quotes,
+                owner_id=self.owner_id,
+                ephemeral=self.ephemeral,
+                page_index=normalized_page,
+            ),
         )
 
 

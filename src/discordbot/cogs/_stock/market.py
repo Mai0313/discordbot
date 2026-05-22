@@ -8,7 +8,7 @@ from discordbot.typings.stock import STOCK_TICK_SECONDS, MAX_TICKS_PER_INTERACTI
 TAIWAN_TIMEZONE = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 NEWS_SENTIMENT_DECAY_BPS = 20
 NEWS_SENTIMENT_LIMIT_BPS = 300
-PRESSURE_LIMIT_BPS = 100
+PRESSURE_LIMIT_BPS = 90
 
 
 def cash_ceil(cents: int) -> int:
@@ -55,16 +55,25 @@ def decay_news_sentiment(sentiment_bps: int, ticks_elapsed: int) -> int:
     return remaining if clamped >= 0 else -remaining
 
 
-def pressure_from_volume(buy_shares: int, sell_shares: int) -> int:
-    """Converts recent buy/sell volume into a bounded pressure value."""
-    total = buy_shares + sell_shares
-    if total <= 0:
+def pressure_from_order_flow(net_shares: int, liquidity_shares: int) -> int:
+    """Converts decayed net order flow into bounded price pressure."""
+    if liquidity_shares <= 0 or net_shares == 0:
         return 0
     return clamp_bps(
-        value=(buy_shares - sell_shares) * PRESSURE_LIMIT_BPS // total,
+        value=net_shares * PRESSURE_LIMIT_BPS // liquidity_shares,
         lower=-PRESSURE_LIMIT_BPS,
         upper=PRESSURE_LIMIT_BPS,
     )
+
+
+def mean_reversion_bps(
+    previous_price_cents: int, fair_value_cents: int, mean_reversion_strength_bps: int
+) -> int:
+    """Returns the bounded fair-value pull for the next tick."""
+    if previous_price_cents <= 0 or fair_value_cents <= 0 or mean_reversion_strength_bps <= 0:
+        return 0
+    fair_value_gap_bps = (fair_value_cents - previous_price_cents) * 10_000 // previous_price_cents
+    return fair_value_gap_bps * mean_reversion_strength_bps // 10_000
 
 
 def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes every market factor explicitly
@@ -73,12 +82,15 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
     pressure_bps: int,
     base_volatility_bps: int,
     volatility_amplifier_bps: int,
+    fair_value_cents: int,
+    mean_reversion_strength_bps: int,
+    max_tick_change_bps: int,
     rng: Random,
 ) -> int:
     """Calculates the next price using deterministic inputs plus seeded randomness."""
     volatility_width = max(base_volatility_bps * volatility_amplifier_bps // 100, 0)
     random_bps = rng.randint(-volatility_width, volatility_width) if volatility_width else 0
-    change_bps = (
+    raw_change_bps = (
         random_bps
         + clamp_bps(
             value=news_sentiment_bps,
@@ -86,7 +98,14 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
             upper=NEWS_SENTIMENT_LIMIT_BPS,
         )
         + clamp_bps(value=pressure_bps, lower=-PRESSURE_LIMIT_BPS, upper=PRESSURE_LIMIT_BPS)
+        + mean_reversion_bps(
+            previous_price_cents=previous_price_cents,
+            fair_value_cents=fair_value_cents,
+            mean_reversion_strength_bps=mean_reversion_strength_bps,
+        )
     )
+    change_limit = max(max_tick_change_bps, 1)
+    change_bps = clamp_bps(value=raw_change_bps, lower=-change_limit, upper=change_limit)
     next_price = previous_price_cents * (10_000 + change_bps) // 10_000
     return max(next_price, 1)
 

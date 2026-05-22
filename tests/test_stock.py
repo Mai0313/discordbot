@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy import select, update, inspect
+from sqlalchemy import text, delete, select, update, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.cogs._stock import database as stock_db
@@ -17,7 +17,9 @@ from discordbot.typings.stock import (
     BCAT_INITIAL_PRICE_CENTS,
     MAX_TICKS_PER_INTERACTION,
     StockAction,
+    StockProfileView,
     StockTradeLegType,
+    StockGeneratedNews,
     StockOperationStatus,
     StockSettlementResult,
 )
@@ -30,6 +32,7 @@ from discordbot.cogs._stock.market import (
     format_price,
     tick_boundary,
     decay_news_sentiment,
+    pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
@@ -104,6 +107,9 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
         pressure_bps=-20_000,
         base_volatility_bps=0,
         volatility_amplifier_bps=100,
+        fair_value_cents=100,
+        mean_reversion_strength_bps=0,
+        max_tick_change_bps=500,
         rng=_rng(seed=1),
     )
     second = calculate_next_price_cents(
@@ -112,6 +118,9 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
         pressure_bps=-20_000,
         base_volatility_bps=0,
         volatility_amplifier_bps=100,
+        fair_value_cents=100,
+        mean_reversion_strength_bps=0,
+        max_tick_change_bps=500,
         rng=_rng(seed=1),
     )
     assert first == second
@@ -120,14 +129,24 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
     assert decay_news_sentiment(sentiment_bps=-500, ticks_elapsed=20) == 0
 
 
+def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
+    """Order-flow pressure uses the liquidity bucket instead of saturating on tiny flow."""
+    assert pressure_from_order_flow(net_shares=0, liquidity_shares=25_000) == 0
+    assert pressure_from_order_flow(net_shares=12_500, liquidity_shares=25_000) == 45
+    assert pressure_from_order_flow(net_shares=25_000, liquidity_shares=25_000) == 90
+    assert pressure_from_order_flow(net_shares=-50_000, liquidity_shares=25_000) == -90
+    assert pressure_from_order_flow(net_shares=1_000, liquidity_shares=0) == 0
+
+
 async def test_stock_schema_seeds_bcat(stock_isolated_db: None) -> None:
     """Schema bootstrap creates stock tables and seeds BCAT."""
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
 
-    assert len(quotes) == 1
-    assert quotes[0].profile.symbol == BCAT_SYMBOL
-    assert quotes[0].profile.name == BCAT_NAME
-    assert quotes[0].profile.price_cents == BCAT_INITIAL_PRICE_CENTS
+    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
+    assert len(quotes) >= 5
+    assert bcat_quote.profile.name == BCAT_NAME
+    assert bcat_quote.profile.price_cents == BCAT_INITIAL_PRICE_CENTS
+    assert bcat_quote.profile.liquidity_shares > 0
     news = await stock_db.get_stock_news(symbol=BCAT_SYMBOL)
     assert news
     async with stock_db._engine.connect() as conn:
@@ -137,12 +156,135 @@ async def test_stock_schema_seeds_bcat(stock_isolated_db: None) -> None:
                     column["name"]
                     for column in inspect(sync_conn).get_columns(table_name=table_name)
                 ]
-                for table_name in ("stock_position", "stock_operation", "stock_trade_leg")
+                for table_name in (
+                    "stock_profile",
+                    "stock_position",
+                    "stock_operation",
+                    "stock_trade_leg",
+                    "stock_news",
+                )
             }
         )
+    assert "liquidity_shares" in column_names["stock_profile"]
     assert column_names["stock_position"][:3] == ["symbol", "user_id", "user_name"]
     assert column_names["stock_operation"][1:4] == ["symbol", "user_id", "user_name"]
     assert column_names["stock_trade_leg"][3:6] == ["symbol", "user_id", "user_name"]
+    assert "source" in column_names["stock_news"]
+
+
+async def test_stock_schema_migrates_mvp_profile_and_news_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Existing MVP stock DB files receive v2 profile and news columns."""
+    stock_db_path = tmp_path / "legacy_stock.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{stock_db_path}")
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE stock_profile (
+                    symbol VARCHAR(16) PRIMARY KEY,
+                    name VARCHAR(128) NOT NULL,
+                    category VARCHAR(64) NOT NULL,
+                    price_cents INTEGER NOT NULL,
+                    previous_close_price_cents INTEGER NOT NULL,
+                    day_open_price_cents INTEGER NOT NULL,
+                    total_shares INTEGER NOT NULL,
+                    base_volatility_bps INTEGER NOT NULL,
+                    volatility_amplifier_bps INTEGER NOT NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE stock_news (
+                    id VARCHAR(64) PRIMARY KEY,
+                    symbol VARCHAR(16) NOT NULL,
+                    headline VARCHAR(256) NOT NULL,
+                    sentiment_bps INTEGER NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO stock_profile (
+                    symbol, name, category, price_cents, previous_close_price_cents,
+                    day_open_price_cents, total_shares, base_volatility_bps,
+                    volatility_amplifier_bps, created_at, updated_at
+                )
+                VALUES (
+                    'BCAT', 'legacy', 'legacy', 10000, 10000, 10000,
+                    1000000, 70, 150, '2026-01-01 00:00:00', '2026-01-01 00:00:00'
+                )
+                """
+            )
+        )
+    monkeypatch.setattr(stock_db, "_engine", engine)
+    monkeypatch.setattr(stock_db, "_schema_ready_for", None)
+
+    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+
+    assert any(quote.profile.symbol == BCAT_SYMBOL for quote in quotes)
+    async with engine.connect() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                table_name: {
+                    column["name"]
+                    for column in inspect(sync_conn).get_columns(table_name=table_name)
+                }
+                for table_name in ("stock_profile", "stock_news")
+            }
+        )
+    assert "fair_value_cents" in columns["stock_profile"]
+    assert "source" in columns["stock_news"]
+    await engine.dispose()
+
+
+async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: None) -> None:
+    """Due news uses the provider once per cadence bucket and persists metadata."""
+    await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+    async with stock_db.open_stock_session() as session:
+        await session.execute(
+            statement=delete(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        await session.commit()
+    calls = 0
+
+    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+        """Returns one fake AI news item."""
+        nonlocal calls
+        calls += 1
+        return StockGeneratedNews(
+            headline=f"{profile.symbol} 測試新聞",
+            sentiment_bps=120,
+            source="ai",
+            model="test-model",
+        )
+
+    await stock_db.ensure_due_stock_news(
+        news_provider=provider, symbols=(BCAT_SYMBOL,), now=datetime(2026, 1, 2)
+    )
+    await stock_db.ensure_due_stock_news(
+        news_provider=provider, symbols=(BCAT_SYMBOL,), now=datetime(2026, 1, 2, 1)
+    )
+
+    async with stock_db.open_stock_session() as session:
+        news_result = await session.execute(
+            statement=select(stock_db.StockNews).where(stock_db.StockNews.symbol == BCAT_SYMBOL)
+        )
+        news_rows = news_result.scalars().all()
+    assert calls == 1
+    assert len(news_rows) == 1
+    assert news_rows[0].headline == "BCAT 測試新聞"
+    assert news_rows[0].source == "ai"
+    assert news_rows[0].model == "test-model"
 
 
 async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated_db: None) -> None:
@@ -166,8 +308,9 @@ async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated
 
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
 
-    assert quotes[0].profile.previous_close_price_cents == 10_000
-    assert quotes[0].profile.day_open_price_cents > 0
+    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
+    assert bcat_quote.profile.previous_close_price_cents == 10_000
+    assert bcat_quote.profile.day_open_price_cents > 0
 
 
 async def test_stock_compressed_day_rollover_materializes_midnight(
@@ -194,8 +337,9 @@ async def test_stock_compressed_day_rollover_materializes_midnight(
             )
         )
 
-    assert quotes[0].profile.day_open_price_cents == midnight_tick.scalar_one()
-    assert quotes[0].profile.previous_close_price_cents == previous_close_tick.scalar_one()
+    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
+    assert bcat_quote.profile.day_open_price_cents == midnight_tick.scalar_one()
+    assert bcat_quote.profile.previous_close_price_cents == previous_close_tick.scalar_one()
 
 
 async def test_stock_day_rollover_uses_persisted_boundary_price(
@@ -227,7 +371,8 @@ async def test_stock_day_rollover_uses_persisted_boundary_price(
 
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
 
-    assert quotes[0].profile.day_open_price_cents == persisted_open_price
+    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
+    assert bcat_quote.profile.day_open_price_cents == persisted_open_price
 
 
 async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(

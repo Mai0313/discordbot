@@ -141,8 +141,14 @@ def _quote() -> StockMarketQuote:
         previous_close_price_cents=10_000,
         day_open_price_cents=10_000,
         total_shares=1_000_000,
+        float_shares=650_000,
         base_volatility_bps=70,
         volatility_amplifier_bps=150,
+        liquidity_shares=25_000,
+        fair_value_cents=10_000,
+        mean_reversion_bps=35,
+        max_tick_change_bps=450,
+        news_cadence_hours=8,
         updated_at=datetime(2026, 1, 1),
     )
     return StockMarketQuote(profile=profile, change_cents=0, change_bps=0, pressure_bps=0)
@@ -172,18 +178,26 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
 ) -> None:
     """The slash command sends public market list and tracks cleanup."""
     scheduled: list[MessageStub] = []
+    news_refreshes = 0
 
     async def fake_list_market_quotes() -> tuple[StockMarketQuote, ...]:
         """Returns one fake quote."""
         return (_quote(),)
+
+    async def fake_ensure_due_stock_news(**_kwargs: Any) -> None:  # noqa: ANN401
+        """Records news refresh attempts without touching the real stock DB."""
+        nonlocal news_refreshes
+        news_refreshes += 1
 
     async def fake_track(message: MessageStub, user_name: str | None = None) -> None:
         """Records cleanup tracking."""
         scheduled.append(message)
 
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
+    monkeypatch.setattr(stock, "ensure_due_stock_news", fake_ensure_due_stock_news)
     monkeypatch.setattr(stock, "track_game_message", fake_track)
     cog = StockCogs(bot=SimpleNamespace())
+    cog.__dict__["news_ai"] = SimpleNamespace(generate=lambda _profile: None)
     interaction = InteractionStub()
 
     await StockCogs.stock.callback(cog, interaction)
@@ -195,6 +209,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert interaction.followup.sent[0]["view"].message is scheduled[0]
     assert interaction.followup.sent[0]["view"].owner_id == interaction.user.id
     assert scheduled
+    assert news_refreshes == 1
 
 
 async def test_stock_command_raises_when_interaction_has_no_user(
