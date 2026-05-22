@@ -97,6 +97,15 @@ class MessageStub:
         self.deleted = True
 
 
+class DeletedMessageStub(MessageStub):
+    """Message stub that has already been deleted remotely."""
+
+    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
+        """Raises the same exception nextcord emits for deleted messages."""
+        response = SimpleNamespace(status=404, reason="Not Found", headers={})
+        raise stock_views.nextcord.NotFound(response=response, message="missing")
+
+
 class UserStub:
     """Minimal user stub."""
 
@@ -442,6 +451,25 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
     assert isinstance(interaction.message.edits[0]["view"], StockPostTradeView)
     assert interaction.user is not None
     assert interaction.message.edits[0]["view"].owner_id == interaction.user.id
+
+
+async def test_edit_stock_message_falls_back_when_target_was_deleted() -> None:
+    """A stale stock message edit sends a private followup instead of dropping the result."""
+    interaction = InteractionStub()
+    interaction.response.deferred = True
+    interaction.message = DeletedMessageStub()
+    view = StockPostTradeView(symbol=BCAT_SYMBOL, owner_id=1)
+
+    await stock_views.edit_stock_message(
+        interaction=interaction,
+        embed=Embed(title="股票交易完成"),
+        view=view,
+        message=interaction.message,
+    )
+
+    assert interaction.followup.sent[0]["ephemeral"] is True
+    assert interaction.followup.sent[0]["view"] is view
+    assert view.message is not interaction.message
 
 
 async def test_stock_public_view_timeout_deletes_bound_message(

@@ -606,6 +606,35 @@ async def test_stock_reconciliation_blocks_later_trades(
     assert "未完成" in second.error
 
 
+async def test_stock_wallet_cancellation_marks_reconciliation(
+    stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelled wallet application leaves an explicit reconciliation marker."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000)
+
+    async def cancel_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
+        """Simulates cancellation while the wallet operation is in flight."""
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", cancel_wallet)
+
+    with pytest.raises(asyncio.CancelledError):
+        await stock_db.settle_stock_operation(
+            symbol=BCAT_SYMBOL,
+            user_id=1,
+            user_name="alice",
+            requested_action=StockAction.BUY,
+            quantity="1",
+            now=datetime(2026, 1, 1),
+            rng=_rng(seed=1),
+        )
+
+    pending = await stock_db.list_reconciliation_operations()
+    assert len(pending) == 1
+    assert pending[0].status == StockOperationStatus.RECONCILE_REQUIRED
+    assert "cancelled" in pending[0].failure_reason
+
+
 async def test_stock_wallet_reject_does_not_apply_position(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

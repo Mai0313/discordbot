@@ -468,11 +468,16 @@ async def edit_stock_message(
             view.bind_message(message=edited)
         return
     if target_message is not None:
-        await target_message.edit(**kwargs)
-        return
+        try:
+            await target_message.edit(**kwargs)
+            return
+        except nextcord.NotFound:
+            pass
     followup_kwargs: dict[str, object] = {"embed": embed, "view": view, "wait": True}
     if file is not None:
         followup_kwargs["file"] = file
+    if interaction.response.is_done():
+        followup_kwargs["ephemeral"] = True
     sent_message = await interaction.followup.send(**followup_kwargs)
     if view is not None:
         view.bind_message(message=sent_message)
