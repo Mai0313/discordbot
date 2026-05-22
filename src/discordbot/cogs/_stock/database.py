@@ -73,6 +73,9 @@ _MIGRATED_COLUMNS: Final[dict[str, dict[str, str]]] = {
     "stock_operation": {
         "user_name": "ALTER TABLE stock_operation ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
     },
+    "stock_trade_leg": {
+        "user_name": "ALTER TABLE stock_trade_leg ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
+    },
 }
 
 
@@ -153,6 +156,7 @@ class StockTradeLeg(Base):
     leg_order: Mapped[int] = mapped_column(Integer, nullable=False)
     symbol: Mapped[str] = mapped_column(String(length=16), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     leg_type: Mapped[str] = mapped_column(String(length=32), nullable=False)
     shares: Mapped[int] = mapped_column(Integer, nullable=False)
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -350,14 +354,16 @@ def _profile_view(profile: StockProfile) -> StockProfileView:
     )
 
 
-def _position_view(position: StockPosition | None, symbol: str, user_id: int) -> StockPositionView:
+def _position_view(
+    position: StockPosition | None, symbol: str, user_id: int, user_name: str = ""
+) -> StockPositionView:
     """Projects an ORM position into a typed view."""
     if position is None:
-        return StockPositionView(symbol=symbol, user_id=user_id)
+        return StockPositionView(symbol=symbol, user_id=user_id, user_name=user_name)
     return StockPositionView(
         symbol=position.symbol,
         user_id=position.user_id,
-        user_name=position.user_name,
+        user_name=position.user_name or user_name,
         long_shares=position.long_shares,
         long_cost_basis=position.long_cost_basis,
         short_shares=position.short_shares,
@@ -385,7 +391,7 @@ def _trade_leg_view(leg: StockTradeLeg, user_name: str = "") -> StockTradeLegVie
         leg_order=leg.leg_order,
         symbol=leg.symbol,
         user_id=leg.user_id,
-        user_name=user_name or str(leg.user_id),
+        user_name=leg.user_name or user_name or str(leg.user_id),
         leg_type=StockTradeLegType(leg.leg_type),
         shares=leg.shares,
         price_cents=leg.price_cents,
@@ -556,13 +562,19 @@ async def list_market_quotes(
 
 
 async def get_stock_detail(
-    symbol: str, user_id: int, now: datetime | None = None, rng: Random | None = None
+    symbol: str,
+    user_id: int,
+    user_name: str = "",
+    now: datetime | None = None,
+    rng: Random | None = None,
 ) -> StockDetailViewData:
     """Returns a personal stock detail view after lazy advancement."""
     await _ensure_schema()
     async with open_stock_session() as session:
         quote = await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
-        position = await _get_position_view(session=session, symbol=symbol, user_id=user_id)
+        position = await _get_position_view(
+            session=session, symbol=symbol, user_id=user_id, user_name=user_name
+        )
         recent_trades = await _recent_trade_views(session=session, symbol=symbol)
         public_positions = await _public_position_views(session=session, symbol=symbol)
         news = await _news_views(session=session, symbol=symbol)
@@ -588,7 +600,7 @@ async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
 
 
 async def _get_position_view(
-    session: AsyncSession, symbol: str, user_id: int
+    session: AsyncSession, symbol: str, user_id: int, user_name: str = ""
 ) -> StockPositionView:
     """Returns a position view inside the caller's stock session."""
     result = await session.execute(
@@ -596,7 +608,9 @@ async def _get_position_view(
             StockPosition.symbol == symbol, StockPosition.user_id == user_id
         )
     )
-    return _position_view(position=result.scalar_one_or_none(), symbol=symbol, user_id=user_id)
+    return _position_view(
+        position=result.scalar_one_or_none(), symbol=symbol, user_id=user_id, user_name=user_name
+    )
 
 
 async def _recent_trade_views(
@@ -973,7 +987,7 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
                 price_cents=price_cents,
                 balance=wallet_balance,
                 position=position,
-                error=f"餘額不足，需要 {collateral:,} 作為做空 collateral",
+                error=f"餘額不足，需要 {collateral:,} 作為做空擔保金",
             )
         entry_value = cash_floor(cents=price_cents * remaining)
         legs.append(
@@ -1112,7 +1126,7 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
                 update={
                     "success": False,
                     "status": StockOperationStatus.RECONCILE_REQUIRED,
-                    "error": f"交易狀態需要人工 reconciliation，operation_id={operation_id}",
+                    "error": f"交易狀態需要人工對帳，操作代碼={operation_id}",
                 }
             )
         if wallet_result is None:
@@ -1125,7 +1139,7 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
                 update={
                     "success": False,
                     "status": StockOperationStatus.RECONCILE_REQUIRED,
-                    "error": f"交易狀態需要人工 reconciliation，operation_id={operation_id}",
+                    "error": f"交易狀態需要人工對帳，操作代碼={operation_id}",
                 }
             )
 
@@ -1170,6 +1184,7 @@ async def _commit_stock_side(
                 leg_order=leg.leg_order,
                 symbol=leg.symbol,
                 user_id=leg.user_id,
+                user_name=leg.user_name,
                 leg_type=leg.leg_type.value,
                 shares=leg.shares,
                 price_cents=leg.price_cents,
@@ -1266,12 +1281,16 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
                     operation_id=operation.operation_id,
                     status=StockOperationStatus(operation.status),
                     user_id=operation.user_id,
+                    user_name=operation.user_name or str(operation.user_id),
                     symbol=operation.symbol,
                     requested_action=StockAction(operation.requested_action),
                     failure_reason=operation.failure_reason,
                     created_at=operation.created_at,
                     updated_at=operation.updated_at,
-                    legs=tuple(_trade_leg_view(leg=leg) for leg in leg_result.scalars()),
+                    legs=tuple(
+                        _trade_leg_view(leg=leg, user_name=operation.user_name)
+                        for leg in leg_result.scalars()
+                    ),
                 )
             )
         return tuple(output)

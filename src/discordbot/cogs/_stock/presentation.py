@@ -37,7 +37,7 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
     title = "📈 模擬股市"
     if ephemeral:
         title += " · 個人列表"
-    description_parts = ["### 市場列表", "選擇股票後會在這則公開訊息更新 detail view。", ""]
+    description_parts = ["### 市場列表", "選擇股票後會在這則公開訊息更新股票明細。", ""]
     for quote in quotes:
         profile = quote.profile
         market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
@@ -45,7 +45,7 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
             f"**{profile.symbol}** · {profile.name}\n"
             f"`{format_price(price_cents=profile.price_cents)}` "
             f"({signed_percent(bps=quote.change_bps)}) · "
-            f"Market cap {amount_code(amount=market_cap)} {CURRENCY_NAME}"
+            f"市值 {amount_code(amount=market_cap)} {CURRENCY_NAME}"
         )
     embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
     embed.set_footer(text="這則股票訊息 180 秒無互動後會自動清理")
@@ -60,11 +60,11 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         f"## {profile.symbol} · {profile.name}\n"
         f"### `{format_price(price_cents=profile.price_cents)}` "
         f"({signed_percent(bps=detail.quote.change_bps)})\n"
-        f"Category `{profile.category}` · Volatility "
+        f"分類 `{profile.category}` · 波動設定 "
         f"`{volatility_text(base_volatility_bps=profile.base_volatility_bps, volatility_amplifier_bps=profile.volatility_amplifier_bps)}`\n"
-        f"Market cap {amount_code(amount=market_cap)} {CURRENCY_NAME}"
+        f"市值 {amount_code(amount=market_cap)} {CURRENCY_NAME}"
     )
-    embed = Embed(title="📊 股票 detail", description=description, color=DETAIL_COLOR)
+    embed = Embed(title="📊 股票明細", description=description, color=DETAIL_COLOR)
     embed.add_field(
         name="目前操作使用者",
         value=detail.position.user_name or str(detail.position.user_id),
@@ -74,28 +74,26 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
     embed.add_field(
         name="持股",
         value=(
-            f"Long `{detail.position.long_shares:,}` 股\n"
-            f"Cost basis {amount_code(amount=detail.position.long_cost_basis)}"
+            f"持股數 `{detail.position.long_shares:,}` 股\n"
+            f"持股成本 {amount_code(amount=detail.position.long_cost_basis)}"
         ),
         inline=True,
     )
     embed.add_field(
         name="做空",
         value=(
-            f"Short `{detail.position.short_shares:,}` 股\n"
-            f"Collateral {amount_code(amount=detail.position.short_collateral)}"
+            f"做空股數 `{detail.position.short_shares:,}` 股\n"
+            f"做空擔保金 {amount_code(amount=detail.position.short_collateral)}"
         ),
         inline=True,
     )
     embed.add_field(
-        name="Realized PnL",
+        name="已實現損益",
         value=amount_code(amount=detail.position.realized_pnl, signed=True),
         inline=True,
     )
     embed.add_field(
-        name="7D buy/sell pressure",
-        value=signed_percent(bps=detail.quote.pressure_bps),
-        inline=True,
+        name="近 7 日買賣壓力", value=signed_percent(bps=detail.quote.pressure_bps), inline=True
     )
     embed.add_field(
         name="公開部位摘要", value=_position_summary_lines(detail=detail), inline=False
@@ -109,7 +107,7 @@ def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
     """Builds a recent news embed for the public stock message."""
     if news:
         lines = [
-            f"**{item.headline}**\nSentiment `{signed_percent(bps=item.sentiment_bps)}`"
+            f"**{item.headline}**\n市場情緒 `{signed_percent(bps=item.sentiment_bps)}`"
             for item in news
         ]
     else:
@@ -122,9 +120,9 @@ def build_tutorial_embed() -> Embed:
     return Embed(
         title="📘 模擬股市教學",
         description=(
-            "`買入 / 回補做空` 會先 cover 既有 short，剩餘數量才 open long。\n"
-            "`做空 / 賣出持股` 會先 sell 既有 long，剩餘數量才 open short。\n"
-            "數量可以輸入整數或 `ALL`，實際價格與部位會在 modal submit 當下重新讀取。"
+            "`買入 / 回補做空` 會先回補既有做空，剩餘數量才建立持股。\n"
+            "`做空 / 賣出持股` 會先賣出既有持股，剩餘數量才建立做空。\n"
+            "數量可以輸入整數或 `ALL`，實際價格與部位會在送出表單當下重新讀取。"
         ),
         color=DETAIL_COLOR,
     )
@@ -135,10 +133,10 @@ def build_settlement_embed(result: StockSettlementResult) -> Embed:
     if not result.success:
         title = "股票交易失敗"
         if result.operation_id:
-            title = "股票交易需要 reconciliation"
+            title = "股票交易需要人工對帳"
         embed = Embed(title=title, description=result.error or "交易沒有完成", color=ERROR_COLOR)
         if result.operation_id:
-            embed.add_field(name="operation_id", value=f"`{result.operation_id}`", inline=False)
+            embed.add_field(name="操作代碼", value=f"`{result.operation_id}`", inline=False)
         return embed
 
     action_label = _action_label(action=result.requested_action)
@@ -146,13 +144,13 @@ def build_settlement_embed(result: StockSettlementResult) -> Embed:
         f"### {action_label} {result.symbol}",
         f"成交股數 `{result.shares:,}`",
         f"成交價 `{format_price(price_cents=result.price_cents)}`",
-        f"Wallet delta {amount_code(amount=result.wallet_delta, signed=True)}",
+        f"錢包變化 {amount_code(amount=result.wallet_delta, signed=True)}",
         f"餘額 {amount_code(amount=result.balance_after)} {CURRENCY_NAME}",
     ]
     embed = Embed(title="股票交易完成", description="\n".join(lines), color=SUCCESS_COLOR)
-    embed.add_field(name="交易 legs", value=_leg_lines(legs=result.legs), inline=False)
+    embed.add_field(name="交易明細", value=_leg_lines(legs=result.legs), inline=False)
     if result.operation_id:
-        embed.set_footer(text=f"operation_id={result.operation_id}")
+        embed.set_footer(text=f"操作代碼: {result.operation_id}")
     return embed
 
 
@@ -199,8 +197,8 @@ def _position_summary_line(position: StockParticipantPositionView) -> str:
     """Formats one public position summary line."""
     name = position.user_name or str(position.user_id)
     return (
-        f"{name} · Long `{position.long_shares:,}` 股 · Short `{position.short_shares:,}` 股 · "
-        f"PnL {amount_code(amount=position.realized_pnl, signed=True)}"
+        f"{name} · 持股 `{position.long_shares:,}` 股 · 做空 `{position.short_shares:,}` 股 · "
+        f"損益 {amount_code(amount=position.realized_pnl, signed=True)}"
     )
 
 
@@ -211,7 +209,7 @@ def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
         name = leg.user_name or str(leg.user_id)
         lines.append(
             f"{name} · #{leg.leg_order} {_leg_type_label(leg_type=leg.leg_type)} "
-            f"`{leg.shares:,}` 股 · wallet {amount_code(amount=leg.wallet_delta, signed=True)} · "
-            f"PnL {amount_code(amount=leg.realized_pnl_delta, signed=True)}"
+            f"`{leg.shares:,}` 股 · 錢包變化 {amount_code(amount=leg.wallet_delta, signed=True)} · "
+            f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True)}"
         )
     return "\n".join(lines) if lines else "無"

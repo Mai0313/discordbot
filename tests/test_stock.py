@@ -172,6 +172,9 @@ async def test_stock_buy_long_debits_wallet_and_writes_ledger(
         assert operation is not None
         assert operation.status == StockOperationStatus.APPLIED.value
         assert operation.user_name == "alice"
+        leg_result = await session.execute(statement=select(stock_db.StockTradeLeg))
+        leg = leg_result.scalar_one()
+        assert leg.user_name == "alice"
 
 
 async def test_stock_detail_shows_stock_level_trades_and_positions(
@@ -199,8 +202,9 @@ async def test_stock_detail_shows_stock_level_trades_and_positions(
         rng=_rng(seed=1),
     )
 
-    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=3)
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=3, user_name="carol")
 
+    assert detail.position.user_name == "carol"
     assert {trade.user_name for trade in detail.recent_trades} == {"alice", "bob"}
     assert {position.user_name for position in detail.public_positions} == {"alice", "bob"}
     assert any(position.long_shares == 1 for position in detail.public_positions)
@@ -440,7 +444,9 @@ async def test_stock_reconciliation_helper_lists_non_final_operations(
     pending = await stock_db.list_reconciliation_operations()
     assert len(pending) == 1
     assert pending[0].operation_id == result.operation_id
+    assert pending[0].user_name == "alice"
     assert pending[0].legs[0].wallet_delta == -100
+    assert pending[0].legs[0].user_name == "alice"
 
 
 async def test_stock_success_records_wallet_applied_before_final_status(

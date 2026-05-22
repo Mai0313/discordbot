@@ -315,13 +315,16 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
             price_cents=10_000,
             wallet_delta=-100,
             balance_after=900,
-            position=StockPositionView(symbol=kwargs["symbol"], user_id=1, long_shares=1),
+            position=StockPositionView(
+                symbol=kwargs["symbol"], user_id=1, user_name="alice", long_shares=1
+            ),
             legs=(
                 StockTradeLegView(
                     operation_id="op-1",
                     leg_order=1,
                     symbol=kwargs["symbol"],
                     user_id=1,
+                    user_name="alice",
                     leg_type=StockTradeLegType.OPEN_LONG,
                     shares=1,
                     price_cents=10_000,
@@ -341,6 +344,9 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
     await modal.submit_quantity(interaction=interaction, raw_quantity="1")
 
     assert "交易完成" in interaction.message.edits[0]["embed"].title
+    assert "錢包變化" in interaction.message.edits[0]["embed"].description
+    assert "Wallet" not in interaction.message.edits[0]["embed"].description
+    assert interaction.message.edits[0]["embed"].fields[0].name == "交易明細"
     assert interaction.message.edits[0]["view"] is not None
 
 

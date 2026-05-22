@@ -183,6 +183,7 @@ class StockReconciliationOperation(BaseModel):
     operation_id: str
     status: StockOperationStatus
     user_id: int
+    user_name: str
     symbol: str
     requested_action: StockAction
     failure_reason: str

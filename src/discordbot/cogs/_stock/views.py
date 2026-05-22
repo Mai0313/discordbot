@@ -178,7 +178,7 @@ class StockNewsControlsView(StockPublicView):
         self.symbol = symbol
 
     @nextcord.ui.button(
-        label="返回 detail", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:news:back"
+        label="返回明細", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:news:back"
     )
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the public stock detail view."""
@@ -231,7 +231,7 @@ class StockActionView(StockPublicView):
         )
 
     @nextcord.ui.button(
-        label="返回 detail",
+        label="返回明細",
         emoji="↩️",
         style=ButtonStyle.secondary,
         custom_id="stock:action:back",
@@ -252,7 +252,7 @@ class StockPostTradeView(StockPublicView):
         self.symbol = symbol
 
     @nextcord.ui.button(
-        label="刷新 detail",
+        label="重新整理明細",
         emoji="🔄",
         style=ButtonStyle.secondary,
         custom_id="stock:refresh",
@@ -350,7 +350,9 @@ async def edit_stock_detail(interaction: Interaction, symbol: str) -> None:
     if not interaction.response.is_done():
         await interaction.response.defer()
     try:
-        detail = await get_stock_detail(symbol=symbol, user_id=interaction.user.id)
+        detail = await get_stock_detail(
+            symbol=symbol, user_id=interaction.user.id, user_name=interaction.user.name
+        )
     except ValueError:
         await edit_stock_message(
             interaction=interaction,
