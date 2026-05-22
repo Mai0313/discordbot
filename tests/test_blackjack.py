@@ -445,7 +445,7 @@ def test_is_pair_same_blackjack_value() -> None:
 
 
 def test_is_soft_total_when_ace_is_high() -> None:
-    """``is_soft_total`` returns True only while at least one Ace is 11."""
+    """`is_soft_total` returns True only while at least one Ace is 11."""
     soft, total = is_soft_total(cards=[Card(rank="A", suit="♠"), Card(rank="6", suit="♥")])
     assert (soft, total) == (True, 17)
 

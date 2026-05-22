@@ -73,7 +73,7 @@ class FakeThread:
 
 
 class FakeAuthor:
-    """Minimal stand-in for ``Message.author`` used by the streaming helper."""
+    """Minimal stand-in for `Message.author` used by the streaming helper."""
 
     def __init__(self, bot: bool = False, user_id: int = 12345) -> None:
         """Initializes the fake author with stable id and name fields."""
@@ -715,7 +715,7 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     """Verifies slow-model peak-hour and off-peak dispatch."""
 
     def model_snapshot_at(now: datetime) -> tuple[ModelSettings, bool, bool]:
-        """Returns peak-sensitive model settings with the catalog clock pinned to ``now``."""
+        """Returns peak-sensitive model settings with the catalog clock pinned to `now`."""
 
         def fixed_now(tz: object) -> datetime:
             """Returns the pinned timestamp."""

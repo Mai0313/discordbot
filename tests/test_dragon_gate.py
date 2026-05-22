@@ -180,7 +180,7 @@ class RiggedRandom(Random):
 class JackpotState:
     """In-memory simulator for jackpot settlement helpers used in view tests.
 
-    Each ``settle`` call mutates the simulated player balance and jackpot
+    Each `settle` call mutates the simulated player balance and jackpot
     snapshot, lets tests assert the running effect of multiple settlements
     without spinning up a real database.
     """
@@ -208,7 +208,7 @@ class JackpotState:
         player_avatar_url: str = "",
         expected_jackpot_generation: int | None = None,
     ) -> JackpotSettlementResult:
-        """Mocks ``apply_jackpot_settlement`` and tracks the call chain."""
+        """Mocks `apply_jackpot_settlement` and tracks the call chain."""
         assert game_id == GAME_ID
         self.balances.setdefault(player_id, self._initial_balance)
         starting_balance = self.balances[player_id]
@@ -247,7 +247,7 @@ class JackpotState:
     async def settle_batch(
         self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
     ) -> JackpotSettlementBatchResult:
-        """Mocks ``apply_jackpot_settlement_batch`` with the same state model."""
+        """Mocks `apply_jackpot_settlement_batch` with the same state model."""
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
         for settlement in settlements:
