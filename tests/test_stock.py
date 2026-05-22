@@ -259,6 +259,7 @@ def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
 def test_stock_execution_price_uses_order_size_and_liquidity() -> None:
     """Large orders execute away from the quote, bounded by the per-stock cap."""
     assert order_impact_bps(shares=0, liquidity_shares=10, max_impact_bps=1_000) == 0
+    assert order_impact_bps(shares=1, liquidity_shares=2, max_impact_bps=1) == 1
     assert order_impact_bps(shares=5, liquidity_shares=10, max_impact_bps=1_000) == 500
     assert order_impact_bps(shares=100, liquidity_shares=10, max_impact_bps=1_000) == 1_000
     assert (

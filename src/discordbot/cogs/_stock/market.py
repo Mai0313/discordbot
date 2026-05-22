@@ -70,9 +70,10 @@ def order_impact_bps(shares: int, liquidity_shares: int, max_impact_bps: int) ->
     """Converts an order size into bounded execution impact."""
     if shares <= 0 or liquidity_shares <= 0 or max_impact_bps <= 0:
         return 0
-    return clamp_bps(
-        value=round(shares * max_impact_bps / liquidity_shares), lower=0, upper=max_impact_bps
-    )
+    raw_impact, remainder = divmod(shares * max_impact_bps, liquidity_shares)
+    if remainder * 2 >= liquidity_shares:
+        raw_impact += 1
+    return clamp_bps(value=raw_impact, lower=0, upper=max_impact_bps)
 
 
 def execution_price_cents(
