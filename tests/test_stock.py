@@ -381,7 +381,7 @@ async def test_stock_schema_migrates_mvp_profile_and_news_columns(
                 )
                 VALUES (
                     'BCAT', 'legacy', 'legacy', 10000, 10000, 10000,
-                    1000000, 70, 150, '2026-01-01 00:00:00', '2026-01-01 00:00:00'
+                    500000, 70, 150, '2026-01-01 00:00:00', '2026-01-01 00:00:00'
                 )
                 """
             )
@@ -402,6 +402,9 @@ async def test_stock_schema_migrates_mvp_profile_and_news_columns(
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1, 1), rng=_rng(seed=1))
 
     assert any(quote.profile.symbol == BCAT_SYMBOL for quote in quotes)
+    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
+    assert bcat_quote.profile.total_shares == 500_000
+    assert bcat_quote.profile.float_shares == 500_000
     async with engine.connect() as conn:
         columns = await conn.run_sync(
             lambda sync_conn: {

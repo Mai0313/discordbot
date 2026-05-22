@@ -77,7 +77,6 @@ _ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
     seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
 )
-_MIGRATION_DEFAULT_FLOAT_SHARES: Final[int] = 1_000_000
 _MIGRATION_DEFAULT_LIQUIDITY_SHARES: Final[int] = 25_000
 _MIGRATION_DEFAULT_FAIR_VALUE_CENTS: Final[int] = 10_000
 _MIGRATION_DEFAULT_MEAN_REVERSION_BPS: Final[int] = 35
@@ -365,8 +364,12 @@ async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 --
     """Applies lightweight in-place SQLite migrations for existing stock DB files."""
     result = await conn.execute(text("PRAGMA table_info(stock_profile)"))
     profile_columns = {row[1] for row in result.all()}
+    if "float_shares" not in profile_columns:
+        await conn.execute(
+            text("ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT 0")
+        )
+        await conn.execute(text("UPDATE stock_profile SET float_shares = total_shares"))
     profile_migrations = {
-        "float_shares": f"ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FLOAT_SHARES}",
         "liquidity_shares": f"ALTER TABLE stock_profile ADD COLUMN liquidity_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_LIQUIDITY_SHARES}",
         "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FAIR_VALUE_CENTS}",
         "mean_reversion_bps": f"ALTER TABLE stock_profile ADD COLUMN mean_reversion_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MEAN_REVERSION_BPS}",
