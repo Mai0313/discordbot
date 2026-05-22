@@ -267,6 +267,43 @@ async def test_stock_short_round_trip_uses_collateral_and_integer_entry(
     assert covered.position.realized_pnl == -1
 
 
+async def test_stock_cover_can_use_withheld_short_entry_value(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Cover can consume withheld short proceeds when spendable balance is zero."""
+    await adjust_balance(user_id=1, name="alice", delta=100)
+    await _set_bcat_price(price_cents=10_000)
+    opened = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.SHORT,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    await _set_bcat_price(price_cents=20_000)
+
+    covered = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="ALL",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert opened.balance_after == 0
+    assert covered.success
+    assert covered.balance_after == 0
+    assert covered.wallet_delta == 0
+    assert covered.position.short_shares == 0
+    assert covered.position.short_collateral == 0
+    assert covered.position.short_entry_value == 0
+    assert covered.position.realized_pnl == -100
+
+
 async def test_stock_compound_operation_uses_ordered_wallet_legs(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
@@ -315,6 +352,8 @@ async def test_stock_concurrent_trades_do_not_reuse_stale_position(
     assert sum(result.success for result in results) == 1
     detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
     assert detail.position.long_shares == 1
+    assert stock_db._operation_locks == {}
+    assert stock_db._operation_lock_refcounts == {}
 
 
 async def asyncio_gather_stock_buys() -> tuple[StockSettlementResult, StockSettlementResult]:

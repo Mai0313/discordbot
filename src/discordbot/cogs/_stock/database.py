@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import uuid
 from random import Random, SystemRandom
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 import asyncio
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 
 from sqlalchemy import Index, String, Integer, DateTime, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
@@ -52,11 +53,15 @@ from discordbot.cogs._stock.market import (
 )
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/stock.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None
 _operation_locks: dict[tuple[int, str], asyncio.Lock] = {}
+_operation_lock_refcounts: dict[tuple[int, str], int] = {}
 _operation_locks_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _RECENT_TRADE_DAYS: Final[int] = 7
@@ -201,19 +206,36 @@ def _current_schema_lock() -> asyncio.Lock:
     return _schema_lock
 
 
-def _operation_lock(user_id: int, symbol: str) -> asyncio.Lock:
+@asynccontextmanager
+async def _operation_lock(user_id: int, symbol: str) -> AsyncIterator[None]:
     """Returns a per-user stock operation lock bound to the current event loop."""
     global _operation_locks_loop  # noqa: PLW0603 -- loop-local lock map
     loop = asyncio.get_running_loop()
     if _operation_locks_loop is not loop:
         _operation_locks.clear()
+        _operation_lock_refcounts.clear()
         _operation_locks_loop = loop
     key = (user_id, symbol)
     lock = _operation_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
         _operation_locks[key] = lock
-    return lock
+    _operation_lock_refcounts[key] = _operation_lock_refcounts.get(key, 0) + 1
+    acquired = False
+    try:
+        await lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            lock.release()
+        refcount = _operation_lock_refcounts.get(key, 1) - 1
+        if refcount <= 0:
+            _operation_lock_refcounts.pop(key, None)
+            if _operation_locks.get(key) is lock:
+                _operation_locks.pop(key, None)
+        else:
+            _operation_lock_refcounts[key] = refcount
 
 
 def open_stock_session() -> AsyncSession:
@@ -738,7 +760,10 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
             total=short_entry_value, shares=cover_shares, current_shares=short_shares
         )
         cover_cost = cash_ceil(cents=price_cents * cover_shares)
-        if cover_cost > released_collateral + wallet_balance + wallet_delta_total:
+        if (
+            cover_cost
+            > released_collateral + released_entry_value + wallet_balance + wallet_delta_total
+        ):
             return _insufficient_result(
                 symbol=symbol,
                 action=StockAction.BUY,
