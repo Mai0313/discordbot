@@ -43,7 +43,7 @@ from discordbot.cogs._economy.database import (
 
 BCAT_SYMBOL = "BCAT"
 BCAT_NAME = "破貓科技股份有限公司"
-BCAT_CATEGORY = "迷因科技"
+BCAT_CATEGORY = "科技"
 BCAT_INITIAL_PRICE_CENTS = 10_000
 BCAT_TOTAL_SHARES = 1_000_000
 BCAT_FLOAT_SHARES = 650_000

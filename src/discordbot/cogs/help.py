@@ -70,7 +70,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**Simulated Stock Market** — `/stock`\n"
-            "Open one public simulated market message with DB-managed virtual companies. Stock selection, balance, positions, news, buy/short operations, settlement results, position summaries, recent trade history, and the 7D chart all update that same public message. News refreshes periodically with AI when configured and deterministic fallback otherwise. The public stock message cleans itself up after 180 idle seconds. Only the user who opened it can operate its controls."
+            "Open one public simulated market message with DB-managed virtual companies. Stock selection, balance, positions, news, the buy/short operation modal, settlement results, position summaries, recent trade history, and the 7D chart all update that same public message. News refreshes periodically with AI when configured and deterministic fallback otherwise. The public stock message cleans itself up after 180 idle seconds. Only the user who opened it can operate its controls."
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -170,7 +170,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**模擬股市** — `/stock`（`/股票`）\n"
-            "開啟一則公開 simulated market message，內含 DB-managed virtual companies；選股、資金、部位、新聞、買入/做空、settlement result、部位摘要、近期交易紀錄與 7D chart 都會在同一則公開 message 內 edit 切換。news 會定期刷新，有 AI 設定時走 AI，否則走 deterministic fallback。公開 stock message 180 秒無互動後自動清理，只有發起 `/stock` 的 user 可以操作 controls。"
+            "開啟一則公開 simulated market message，內含 DB-managed virtual companies；選股、資金、部位、新聞、買入/做空 operation modal、settlement result、部位摘要、近期交易紀錄與 7D chart 都會在同一則公開 message 內 edit 切換。news 會定期刷新，有 AI 設定時走 AI，否則走 deterministic fallback。公開 stock message 180 秒無互動後自動清理，只有發起 `/stock` 的 user 可以操作 controls。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -268,7 +268,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場** — `/stock`\n"
-            "DB-managed virtual companies を含む1つの公開 simulated market message を開き、stock selection、balance、positions、news、buy/short operations、settlement results、position summaries、recent trade history、7D chart は同じ公開 message を edit して切り替えます。news は AI 設定があれば定期生成され、なければ deterministic fallback を使います。公開 stock message は180秒 idle で自動削除され、`/stock` を実行した user だけが controls を操作できます。"
+            "DB-managed virtual companies を含む1つの公開 simulated market message を開き、stock selection、balance、positions、news、buy/short operation modal、settlement results、position summaries、recent trade history、7D chart は同じ公開 message を edit して切り替えます。news は AI 設定があれば定期生成され、なければ deterministic fallback を使います。公開 stock message は180秒 idle で自動削除され、`/stock` を実行した user だけが controls を操作できます。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"

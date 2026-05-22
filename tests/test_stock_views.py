@@ -137,7 +137,7 @@ def _quote() -> StockMarketQuote:
     profile = StockProfileView(
         symbol=BCAT_SYMBOL,
         name=BCAT_NAME,
-        category="迷因科技",
+        category="科技",
         price_cents=10_000,
         previous_close_price_cents=10_000,
         day_open_price_cents=10_000,
@@ -304,9 +304,13 @@ async def test_stock_detail_buttons_edit_same_public_message(
 
     operate_interaction = InteractionStub()
     await operate.callback(operate_interaction)
-    assert isinstance(operate_interaction.response.sent[0]["view"], StockActionView)
-    assert operate_interaction.response.sent[0]["view"].owner_id == view.owner_id
-    assert "股票操作" in operate_interaction.response.sent[0]["embed"].title
+    assert operate_interaction.response.sent == []
+    assert isinstance(operate_interaction.response.modals[0], StockQuantityModal)
+    assert operate_interaction.response.modals[0].owner_id == view.owner_id
+    assert isinstance(operate_interaction.response.modals[0].operation, stock_views.TextInput)
+    assert isinstance(operate_interaction.response.modals[0].quantity, stock_views.TextInput)
+    components = operate_interaction.response.modals[0].to_dict()["components"]
+    assert [row["components"][0]["type"] for row in components] == [4, 4]
 
     news_interaction = InteractionStub()
     await news.callback(news_interaction)
@@ -319,24 +323,20 @@ async def test_stock_detail_buttons_edit_same_public_message(
     assert back_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
 
-async def test_stock_action_buttons_launch_text_input_modals() -> None:
-    """Action buttons launch modals with TextInput quantity only."""
+async def test_stock_retry_button_launches_combined_operation_modal() -> None:
+    """Retry button launches one modal with operation and quantity inputs."""
     view = StockActionView(symbol=BCAT_SYMBOL, owner_id=1)
-    buy = next(child for child in view.children if getattr(child, "custom_id", "") == "stock:buy")
-    short = next(
-        child for child in view.children if getattr(child, "custom_id", "") == "stock:short"
+    retry = next(
+        child for child in view.children if getattr(child, "custom_id", "") == "stock:retry"
     )
 
-    buy_interaction = InteractionStub()
-    await buy.callback(buy_interaction)
-    short_interaction = InteractionStub()
-    await short.callback(short_interaction)
+    interaction = InteractionStub()
+    await retry.callback(interaction)
 
-    assert buy_interaction.response.modals[0].action == StockAction.BUY
-    assert short_interaction.response.modals[0].action == StockAction.SHORT
-    assert buy_interaction.response.modals[0].owner_id == view.owner_id
-    assert short_interaction.response.modals[0].owner_id == view.owner_id
-    assert isinstance(buy_interaction.response.modals[0].quantity, stock_views.TextInput)
+    assert interaction.response.modals[0].action is None
+    assert interaction.response.modals[0].owner_id == view.owner_id
+    assert isinstance(interaction.response.modals[0].operation, stock_views.TextInput)
+    assert isinstance(interaction.response.modals[0].quantity, stock_views.TextInput)
 
 
 async def test_stock_modal_rejects_non_owner_before_settlement(
@@ -408,6 +408,38 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     assert isinstance(interaction.message.edits[0]["view"], StockActionView)
     assert interaction.user is not None
     assert interaction.message.edits[0]["view"].owner_id == interaction.user.id
+
+
+async def test_stock_modal_uses_entered_operation_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Modal submission passes the entered operation action to settlement."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
+        """Records the settlement payload and returns a successful fake settlement."""
+        calls.append(kwargs)
+        return StockSettlementResult(
+            success=True,
+            operation_id="op-1",
+            symbol=kwargs["symbol"],
+            requested_action=kwargs["requested_action"],
+            shares=1,
+            price_cents=10_000,
+            wallet_delta=100,
+            balance_after=1_100,
+            position=StockPositionView(
+                symbol=kwargs["symbol"], user_id=1, user_name="alice", short_shares=1
+            ),
+            legs=(),
+        )
+
+    monkeypatch.setattr(stock_views, "settle_stock_operation", fake_settle_stock_operation)
+    modal = StockQuantityModal(symbol=BCAT_SYMBOL, owner_id=1)
+    interaction = InteractionStub()
+
+    await modal.submit_quantity(interaction=interaction, raw_action="放空", raw_quantity="1")
+
+    assert calls[0]["requested_action"] == StockAction.SHORT
+    assert isinstance(interaction.message.edits[0]["view"], StockPostTradeView)
 
 
 async def test_successful_stock_modal_edits_result_and_refresh_view(
