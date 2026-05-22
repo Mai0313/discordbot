@@ -307,6 +307,26 @@ async def test_stock_schema_migrates_mvp_profile_and_news_columns(
         await conn.execute(
             text(
                 """
+                CREATE TABLE stock_price_tick (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol VARCHAR(16) NOT NULL,
+                    price_cents INTEGER NOT NULL,
+                    created_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE INDEX ix_stock_price_tick_symbol_created
+                ON stock_price_tick (symbol, created_at)
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
                 INSERT INTO stock_profile (
                     symbol, name, category, price_cents, previous_close_price_cents,
                     day_open_price_cents, total_shares, base_volatility_bps,
@@ -319,10 +339,20 @@ async def test_stock_schema_migrates_mvp_profile_and_news_columns(
                 """
             )
         )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO stock_price_tick (symbol, price_cents, created_at)
+                VALUES
+                    ('BCAT', 9900, '2026-01-01 00:00:00'),
+                    ('BCAT', 10000, '2026-01-01 00:00:00')
+                """
+            )
+        )
     monkeypatch.setattr(stock_db, "_engine", engine)
     monkeypatch.setattr(stock_db, "_schema_ready_for", None)
 
-    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1, 1), rng=_rng(seed=1))
 
     assert any(quote.profile.symbol == BCAT_SYMBOL for quote in quotes)
     async with engine.connect() as conn:
@@ -335,8 +365,22 @@ async def test_stock_schema_migrates_mvp_profile_and_news_columns(
                 for table_name in ("stock_profile", "stock_news")
             }
         )
+        index_result = await conn.execute(text("PRAGMA index_list(stock_price_tick)"))
+        duplicate_result = await conn.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM stock_price_tick
+                WHERE symbol = 'BCAT' AND created_at = '2026-01-01 00:00:00'
+                """
+            )
+        )
     assert "fair_value_cents" in columns["stock_profile"]
     assert "source" in columns["stock_news"]
+    assert any(
+        row[1] == "ix_stock_price_tick_symbol_created" and row[2] for row in index_result.all()
+    )
+    assert duplicate_result.scalar_one() == 1
     await engine.dispose()
 
 

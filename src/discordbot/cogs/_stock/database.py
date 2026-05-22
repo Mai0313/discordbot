@@ -349,6 +349,51 @@ async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 --
     for column, statement in news_migrations.items():
         if column not in news_columns:
             await conn.execute(text(statement))
+    await _ensure_stock_price_tick_unique_index(conn=conn)
+
+
+async def _ensure_stock_price_tick_unique_index(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
+    """Ensures legacy price tick tables support ON CONFLICT by symbol and boundary."""
+    result = await conn.execute(text("PRAGMA index_list(stock_price_tick)"))
+    indexes = result.all()
+    for index in indexes:
+        index_name = index[1]
+        is_unique = bool(index[2])
+        if not is_unique:
+            continue
+        column_result = await conn.execute(
+            text(f"PRAGMA index_info({_quote_sqlite_identifier(identifier=index_name)})")
+        )
+        if tuple(row[2] for row in column_result.all()) == ("symbol", "created_at"):
+            return
+
+    await conn.execute(
+        text(
+            """
+            DELETE FROM stock_price_tick
+            WHERE rowid NOT IN (
+                SELECT MAX(rowid)
+                FROM stock_price_tick
+                GROUP BY symbol, created_at
+            )
+            """
+        )
+    )
+    await conn.execute(text("DROP INDEX IF EXISTS ix_stock_price_tick_symbol_created"))
+    await conn.execute(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_stock_price_tick_symbol_created
+            ON stock_price_tick (symbol, created_at)
+            """
+        )
+    )
+
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Quotes a SQLite identifier for PRAGMA statements."""
+    escaped = identifier.replace('"', '""')
+    return f'"{escaped}"'
 
 
 def _profile_view(profile: StockProfile) -> StockProfileView:
