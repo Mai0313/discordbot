@@ -30,7 +30,7 @@ COMMON_PROMPT = """
     * the user provides a URL, names a specific external page, or asks you to verify something.
 * If search tools are unavailable or fail, say that you could not verify live information and clearly separate verified facts from memory-based assumptions.
 * For stable knowledge, math, translation, casual conversation, or code reasoning based only on provided context, answer directly without unnecessary search.
-* Remember you are going to response in a Discord channel, you can use markdown to make your answer more readable
+* Remember you are going to respond in a Discord channel. You can use markdown to make your answer more readable.
     * Answer with the depth the user asks for.
     * Do not omit important details just to fit a single Discord message.
     * Long replies can continue in a thread automatically, so feel free to be thorough when the question calls for it.
@@ -46,7 +46,7 @@ COMMON_PROMPT = """
 
 REPLY_PROMPT = f"""
 {PERSONA_CHOICES}
-* Your response should be clearly, and you should try to provide a straight answer.
+* Your response should be clear, and you should try to provide a straight answer.
 {COMMON_PROMPT}
 """
 

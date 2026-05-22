@@ -737,6 +737,8 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
+    assert peak_start[0].name == "gemini-flash-latest"
+    assert after_peak[0].name == "gemini-3.5-flash"
     assert peak_start[0] == peak_end[0]
     assert before_peak[0] == after_peak[0] == weekend[0]
     assert peak_start[0] != after_peak[0]

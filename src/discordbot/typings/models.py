@@ -105,8 +105,7 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and summaries.
 
-        Uses the flash model during UTC weekday 08:00 to 17:00 peak hours and
-        the pro model outside that peak window.
+        Uses `gemini-flash-latest` during UTC weekday 08:00 to 17:00 peak hours and `gemini-3.5-flash` outside that peak window.
 
         Callers: `_get_attachment_parts`, `_handle_message_reply`.
 
