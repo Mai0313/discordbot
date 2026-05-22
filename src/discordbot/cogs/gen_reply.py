@@ -116,14 +116,14 @@ class ReplyGeneratorCogs(commands.Cog):
         Falls back through the available text sources in this order: raw content
         with the bot mention stripped, embed-derived text, and system event
         description (for join/pin/thread-created style events). The author prefix
-        is added later in ``_process_single_message`` so it can be skipped for
-        ``role=assistant``.
+        is added later in `_process_single_message` so it can be skipped for
+        `role=assistant`.
 
-        For bot-authored messages, the trailing ``usage_footer`` appended by
-        ``_handle_streaming`` is stripped so history fed back as ``role=assistant``
+        For bot-authored messages, the trailing `usage_footer` appended by
+        `_handle_streaming` is stripped so history fed back as `role=assistant`
         does not teach the model to mimic the footer pattern.
 
-        Note: ``message.snapshots`` (Discord's forward feature) is intentionally
+        Note: `message.snapshots` (Discord's forward feature) is intentionally
         not walked here because that workflow is rare in practice. Add it back
         if forwarded messages become a common path.
         """
@@ -182,10 +182,10 @@ class ReplyGeneratorCogs(commands.Cog):
     def _required_modality(content_type: str) -> Literal["image", "video", "audio"]:
         """Maps a MIME type to the input modality the model must accept.
 
-        Document-style files (PDF / text / json / ...) collapse to ``image``
-        because LiteLLM's ``supported_modalities`` exposes no separate document
-        bucket, and every multimodal model that takes ``input_image`` also
-        accepts inline ``input_file`` payloads.
+        Document-style files (PDF / text / json / ...) collapse to `image`
+        because LiteLLM's `supported_modalities` exposes no separate document
+        bucket, and every multimodal model that takes `input_image` also
+        accepts inline `input_file` payloads.
         """
         if content_type.startswith("video/"):
             return "video"
@@ -204,8 +204,8 @@ class ReplyGeneratorCogs(commands.Cog):
         image-edit paths inherit the same gate so a text-only slow model
         produces zero attachment parts everywhere.
 
-        Note: ``message.snapshots`` (Discord's forward feature) is intentionally
-        not walked here for the same reason as in ``_get_cleaned_content``;
+        Note: `message.snapshots` (Discord's forward feature) is intentionally
+        not walked here for the same reason as in `_get_cleaned_content`;
         revisit if forwarded media becomes a common path.
         """
         slow_model = self.runtime_models.slow_model
@@ -534,7 +534,7 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> int | None:
         """Persists chat-reward points and returns the new balance, or None on DB failure.
 
-        Routed through ``credit_with_repayment`` so all income events share
+        Routed through `credit_with_repayment` so all income events share
         one balance-credit path. Long-term loans are repaid explicitly, so chat
         rewards land fully in the user's wallet.
         """

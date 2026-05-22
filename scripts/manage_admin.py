@@ -64,7 +64,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 async def grant_admin(user_id: int, name: str = "", avatar_url: str = "") -> AdminChange:
-    """Grants economy admin access to a Discord user."""
+    """Grants economy admin access to a Discord user.
+
+    Args:
+        user_id (int): Discord user ID to grant.
+        name (str): Display name to store when creating or updating the account.
+        avatar_url (str): Avatar URL to store when creating or updating the account.
+
+    Returns:
+        AdminChange: Applied flag state after the update.
+    """
     applied = await set_admin(user_id=user_id, name=name, avatar_url=avatar_url, is_admin=True)
     return AdminChange(
         user_id=user_id,
@@ -76,7 +85,15 @@ async def grant_admin(user_id: int, name: str = "", avatar_url: str = "") -> Adm
 
 
 async def revoke_admin(user_id: int, name: str = "") -> AdminChange:
-    """Revokes economy admin access from an existing Discord user."""
+    """Revokes economy admin access from an existing Discord user.
+
+    Args:
+        user_id (int): Discord user ID to revoke.
+        name (str): Display name to refresh if the account exists.
+
+    Returns:
+        AdminChange: Applied flag state after the update.
+    """
     applied = await set_admin(user_id=user_id, name=name, is_admin=False)
     return AdminChange(
         user_id=user_id,
@@ -88,7 +105,11 @@ async def revoke_admin(user_id: int, name: str = "") -> AdminChange:
 
 
 async def list_admin_accounts() -> list[AdminAccount]:
-    """Lists all economy admins."""
+    """Lists all economy admins.
+
+    Returns:
+        list[AdminAccount]: Current economy admin accounts.
+    """
     return await list_admins()
 
 
@@ -126,7 +147,11 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Runs the admin management CLI."""
+    """Runs the admin management CLI.
+
+    Args:
+        argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
+    """
     asyncio.run(main=_async_main(argv=argv))
 
 

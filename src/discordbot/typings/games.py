@@ -1,12 +1,3 @@
-"""Pydantic models and literals for the casino games domain.
-
-Pure data types live here so the rules engines in ``cogs/_games/`` and the
-slash-command surface in ``cogs/games.py`` can share them without circular
-imports. ``BlackjackHand`` is the only game-state type that intentionally
-stays in ``cogs/_games/blackjack.py`` because it owns mutating rules methods
-(``hit`` / ``stand`` / ``deal_initial``).
-"""
-
 from typing import Literal
 
 from pydantic import Field, BaseModel, ConfigDict
@@ -40,7 +31,7 @@ class Card(BaseModel):
     suit: str
 
     def __str__(self) -> str:
-        """Human-readable label like ``A♠``."""
+        """Human-readable label like `A♠`."""
         return f"{self.rank}{self.suit}"
 
 
@@ -115,7 +106,7 @@ class WagerSettlement(BaseModel):
         payout: Positive player credit from the round, excluding losses and pushes.
         new_balance: Player balance after applying the signed round delta.
         house_balance: Dealer ledger balance after applying the dealer-side settlement.
-        base_delta: Net point change before any VIP payout bonus. ``None`` for
+        base_delta: Net point change before any VIP payout bonus. `None` for
             legacy/manual test settlements that do not carry bonus details.
         vip_bonus: Extra points added by the VIP payout bonus.
         is_vip: Whether the VIP perk was active for this settlement.
@@ -148,8 +139,8 @@ class BlackjackHandSettlement(BaseModel):
     """Per-hand result for one sub-hand of a Blackjack player.
 
     Split turns a single participant into two settlement rows; otherwise
-    each player has exactly one ``BlackjackHandSettlement`` aggregated into
-    their ``BlackjackPlayerSettlement``.
+    each player has exactly one `BlackjackHandSettlement` aggregated into
+    their `BlackjackPlayerSettlement`.
 
     Attributes:
         cards: Cards held by this sub-hand at settlement time.
@@ -184,8 +175,8 @@ class BlackjackInsuranceSettlement(BaseModel):
     Attributes:
         bet: Insurance bet amount (half the original wager).
         won: True only when the dealer's hole-card peek was a Blackjack.
-        delta: Signed point change for this side bet (``+bet*2`` on win,
-            ``-bet`` on loss).
+        delta: Signed point change for this side bet (`+bet*2` on win,
+            `-bet` on loss).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -199,7 +190,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
     """Aggregated Blackjack settlement for one participant.
 
     Combines every sub-hand result plus any insurance side bet into a
-    single point delta and the one ``apply_round_settlement`` write that
+    single point delta and the one `apply_round_settlement` write that
     backs it.
 
     Attributes:
@@ -207,7 +198,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
             insurance preserve the hand outcome; insurance and multi-hand
             results collapse to win / lose / push by net base delta.
         hands: Per-hand settlements in display order.
-        insurance: Insurance side-bet result, or ``None`` when the player
+        insurance: Insurance side-bet result, or `None` when the player
             never took insurance.
         detail: Short game-state summary for the dealer AI prompt.
         five_card_bonus: Aggregate system-funded five-card 21 bonus.

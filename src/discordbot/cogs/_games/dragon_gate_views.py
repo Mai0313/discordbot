@@ -279,7 +279,7 @@ def build_dragon_gate_history_embed(
 ) -> Embed | None:
     """Builds an auxiliary embed with each turn's history and cumulative scoreboard.
 
-    Returns ``None`` when there is nothing to show (no history and zero deltas).
+    Returns `None` when there is nothing to show (no history and zero deltas).
     """
     has_deltas = any(
         round_state.player_delta(user_id=participant.user_id) != 0

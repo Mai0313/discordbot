@@ -37,13 +37,18 @@ nav:
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
-                  - views: Reference/discordbot/cogs/_gen_reply/views.md
               - _maplestory:
                   - constants: Reference/discordbot/cogs/_maplestory/constants.md
                   - embeds: Reference/discordbot/cogs/_maplestory/embeds.md
                   - models: Reference/discordbot/cogs/_maplestory/models.md
                   - service: Reference/discordbot/cogs/_maplestory/service.md
                   - views: Reference/discordbot/cogs/_maplestory/views.md
+              - _stock:
+                  - chart: Reference/discordbot/cogs/_stock/chart.md
+                  - database: Reference/discordbot/cogs/_stock/database.md
+                  - market: Reference/discordbot/cogs/_stock/market.md
+                  - presentation: Reference/discordbot/cogs/_stock/presentation.md
+                  - views: Reference/discordbot/cogs/_stock/views.md
               - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
               - economy: Reference/discordbot/cogs/economy.md
               - games: Reference/discordbot/cogs/games.md
@@ -52,6 +57,7 @@ nav:
               - log_msg: Reference/discordbot/cogs/log_msg.md
               - maplestory: Reference/discordbot/cogs/maplestory.md
               - parse_threads: Reference/discordbot/cogs/parse_threads.md
+              - stock: Reference/discordbot/cogs/stock.md
               - template: Reference/discordbot/cogs/template.md
               - video: Reference/discordbot/cogs/video.md
           - typings:
@@ -60,6 +66,7 @@ nav:
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
+              - stock: Reference/discordbot/typings/stock.md
           - utils:
               - avatars: Reference/discordbot/utils/avatars.md
               - downloader: Reference/discordbot/utils/downloader.md

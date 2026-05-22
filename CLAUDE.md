@@ -74,6 +74,16 @@ make gen-docs                    # regenerate docs/ from sources
 - Ephemeral economy embeds are for personal state and validation or permission failures: `/balance`, `/portfolio`, `/checkin`, `/vip`, `/credit status`, insufficient-balance failures, missing-loan failures, and permission errors.
 - `cli.py` grants the global 5,000-point message reward for every non-bot message. `gen_reply.py` adds token-based chat reward only after streamed AI replies. Other cogs should not invent action rewards.
 
+## Stocks
+
+- Simulated stock state lives in `data/stock.db`; wallet cash remains in economy `user_wallet`. Do not store wallet balances in stock tables.
+- `/stock` sends one public market message. Stock selection from that message opens a private detail panel for balance, positions, actions, news, validation, settlement, position summaries, recent trade history, and the 7D chart. The public market view deletes its message after 180 idle seconds.
+- Stock tables that persist `user_id` also persist `user_name`. Public stock UI should display stored names instead of Discord IDs.
+- Stock settlement must go through `settle_stock_operation(...)`. Views must not split price reads, wallet reads, and position writes or import SQLAlchemy stock models directly.
+- Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.
+- Compound stock operations write one `stock_operation` and ordered `stock_trade_leg` rows. Do not net wallet legs before applying them through the public ordered economy helper.
+- Lazy market ticks advance on interaction. Long backlogs compress to at most `MAX_TICKS_PER_INTERACTION` ticks and still roll over Asia/Taipei day boundaries.
+
 ## Games
 
 - Pure rules live in `cogs/_games/blackjack.py` and `cogs/_games/dragon_gate.py`; production uses `random.SystemRandom`, tests inject seeded `random.Random`.

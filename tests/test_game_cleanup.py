@@ -116,7 +116,7 @@ class _FetchMessageChannelStub:
 
 
 class _NonMessageableChannelStub:
-    """Channel shape without ``fetch_message`` used to exercise fallback paths."""
+    """Channel shape without `fetch_message` used to exercise fallback paths."""
 
     pass
 

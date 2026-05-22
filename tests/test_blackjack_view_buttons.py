@@ -1,7 +1,7 @@
-"""Button-state matrix and finalize-flow tests for ``BlackjackView``.
+"""Button-state matrix and finalize-flow tests for `BlackjackView`.
 
-Each test instantiates the view with a stubbed ``DealerAI`` and a
-deterministic ``BlackjackRound``, then asserts which action / insurance
+Each test instantiates the view with a stubbed `DealerAI` and a
+deterministic `BlackjackRound`, then asserts which action / insurance
 buttons are attached across the round lifecycle. The finalize-flow tests
 cover the regression fixes: early view stop, ephemeral notice on settled
 clicks, deterministic hits below 17, and AI dealer decisions at 17+.
@@ -66,7 +66,7 @@ def _make_view(round_state: BlackjackRound) -> BlackjackView:
 
 
 def _button_states(view: BlackjackView) -> dict[str, bool]:
-    """Returns ``{custom_id: disabled}`` for every button in the view."""
+    """Returns `{custom_id: disabled}` for every button in the view."""
     states: dict[str, bool] = {}
     for child in view.children:
         cid = getattr(child, "custom_id", None)
@@ -86,7 +86,7 @@ def _button_ids(view: BlackjackView) -> set[str]:
 
 
 def _button_rows(view: BlackjackView) -> dict[str, int | None]:
-    """Returns ``{custom_id: row}`` for every button in the view."""
+    """Returns `{custom_id: row}` for every button in the view."""
     rows: dict[str, int | None] = {}
     for child in view.children:
         cid = getattr(child, "custom_id", None)
@@ -151,7 +151,7 @@ async def test_player_actions_ace_ten_hides_split() -> None:
 
 
 async def test_player_actions_after_hit_disables_double_split_surrender() -> None:
-    """After a Hit, ``actions_taken`` > 0 locks the first-action-only buttons."""
+    """After a Hit, `actions_taken` > 0 locks the first-action-only buttons."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -299,7 +299,7 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
 
 
 async def test_build_in_progress_embed_force_show_hole_reveals_dealer_total() -> None:
-    """``force_show_hole=True`` flips the hole card face-up for peek reveal."""
+    """`force_show_hole=True` flips the hole card face-up for peek reveal."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],

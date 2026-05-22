@@ -12,8 +12,8 @@ def build_wager_participant(
 ) -> GameParticipant | None:
     """Builds a participant for a table stake under the requested wager mode.
 
-    ``clamp`` allows a lower-balance player to join by wagering their full balance.
-    ``exact`` requires the player to cover the full wager, which is used for antes.
+    `clamp` allows a lower-balance player to join by wagering their full balance.
+    `exact` requires the player to cover the full wager, which is used for antes.
     """
     if wager <= 0 or balance <= 0:
         return None

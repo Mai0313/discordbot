@@ -99,19 +99,19 @@ async def modify_balance(
 ) -> BalanceChange:
     """Applies a manual economy balance adjustment via the database API.
 
-    Routes the change through ``adjust_balance`` so admin edits are logged as
+    Routes the change through `adjust_balance` so admin edits are logged as
     manual adjustments instead of casino activity. Dry runs read the current
     state and compute the expected applied delta without writing.
 
     Args:
-        user_id: Discord user ID whose account should be adjusted.
-        name: Display name to store when creating or updating the account.
-        delta: Signed amount to add to the current balance.
-        allow_negative: Whether the resulting balance may go below zero.
-        dry_run: Whether to compute and return the change without committing it.
+        user_id (int): Discord user ID whose account should be adjusted.
+        name (str): Display name to store when creating or updating the account.
+        delta (int): Signed amount to add to the current balance.
+        allow_negative (bool): Whether the resulting balance may go below zero.
+        dry_run (bool): Whether to compute and return the change without committing it.
 
     Returns:
-        A `BalanceChange` summary describing the requested and applied change.
+        BalanceChange: Summary describing the requested and applied change.
     """
     account = await get_account(user_id=user_id)
     created = account is None
@@ -161,12 +161,12 @@ async def modify_all_balances(
     enumerate or update.
 
     Args:
-        delta: Signed amount to add to each existing balance.
-        allow_negative: Whether resulting balances may go below zero.
-        dry_run: Whether to compute the changes without committing them.
+        delta (int): Signed amount to add to each existing balance.
+        allow_negative (bool): Whether resulting balances may go below zero.
+        dry_run (bool): Whether to compute the changes without committing them.
 
     Returns:
-        A `BulkBalanceChange` summary for the requested operation.
+        BulkBalanceChange: Summary for the requested operation.
     """
     accounts = await top_n(limit=None, include_hidden=True)
     changes: list[BalanceChange] = []
@@ -246,7 +246,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     prints a human-readable summary to the console.
 
     Args:
-        argv: Optional argument sequence to parse instead of `sys.argv`.
+        argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
     asyncio.run(main=_async_main(argv=argv))
 

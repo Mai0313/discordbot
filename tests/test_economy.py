@@ -250,7 +250,7 @@ async def _stored_wallet_name(user_id: int) -> str:
 
 
 async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | None]:
-    """Reads daily casino ``(loss, win, net, day_started_at)`` counters."""
+    """Reads daily casino `(loss, win, net, day_started_at)` counters."""
     async with open_session() as session:
         result = await session.execute(
             statement=select(
@@ -1641,7 +1641,7 @@ async def test_checkin_updates_lifetime_totals() -> None:
 
 
 async def test_buy_vip_sets_flag_and_debits_balance() -> None:
-    """A successful purchase costs ``VIP_PURCHASE_COST`` and flips ``is_vip``."""
+    """A successful purchase costs `VIP_PURCHASE_COST` and flips `is_vip`."""
     await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 100)
     result = await buy_vip(user_id=1, name="alice")
     assert result is not None
@@ -1752,7 +1752,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
 
 
 async def test_top_losers_excludes_specified_users() -> None:
-    """``exclude_user_ids`` filters the house ledger out of the report."""
+    """`exclude_user_ids` filters the house ledger out of the report."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
         player_id=1,

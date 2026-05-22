@@ -70,7 +70,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 async def grant_central_banker(
     user_id: int, name: str = "", avatar_url: str = ""
 ) -> CentralBankerChange:
-    """Grants central banker access to a Discord user."""
+    """Grants central banker access to a Discord user.
+
+    Args:
+        user_id (int): Discord user ID to grant.
+        name (str): Display name to store when creating or updating the account.
+        avatar_url (str): Avatar URL to store when creating or updating the account.
+
+    Returns:
+        CentralBankerChange: Applied flag state after the update.
+    """
     applied = await set_central_banker(
         user_id=user_id, name=name, avatar_url=avatar_url, is_central_banker=True
     )
@@ -84,7 +93,15 @@ async def grant_central_banker(
 
 
 async def revoke_central_banker(user_id: int, name: str = "") -> CentralBankerChange:
-    """Revokes central banker access from an existing Discord user."""
+    """Revokes central banker access from an existing Discord user.
+
+    Args:
+        user_id (int): Discord user ID to revoke.
+        name (str): Display name to refresh if the account exists.
+
+    Returns:
+        CentralBankerChange: Applied flag state after the update.
+    """
     applied = await set_central_banker(user_id=user_id, name=name, is_central_banker=False)
     return CentralBankerChange(
         user_id=user_id,
@@ -96,7 +113,11 @@ async def revoke_central_banker(user_id: int, name: str = "") -> CentralBankerCh
 
 
 async def list_central_banker_accounts() -> list[CentralBankerAccount]:
-    """Lists all central bankers."""
+    """Lists all central bankers.
+
+    Returns:
+        list[CentralBankerAccount]: Current central banker accounts.
+    """
     return await list_central_bankers()
 
 
@@ -134,7 +155,11 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Runs the central banker management CLI."""
+    """Runs the central banker management CLI.
+
+    Args:
+        argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
+    """
     asyncio.run(main=_async_main(argv=argv))
 
 

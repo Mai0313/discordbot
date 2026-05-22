@@ -26,18 +26,18 @@ opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
 VIP, admin status, and leaderboard visibility are boolean columns on
-``user_account``. VIP bumps daily check-in rewards and the player's winning
+`user_account`. VIP bumps daily check-in rewards and the player's winning
 payout from games. The flag is permanent once set. Admin and central-banker
 status gate maintenance-only economy commands and are managed out-of-band by
-scripts. Daily casino counters live on ``casino_account`` so
+scripts. Daily casino counters live on `casino_account` so
 `/loss_leaderboard` can read current-day gross losses without scanning an audit
 log.
 
-Long-term lending lives in ``loan_proposal`` and ``loan_contract``. Personal
+Long-term lending lives in `loan_proposal` and `loan_contract`. Personal
 loan requests debit the lender on acceptance, and central-bank loans mint
 borrower balance on approval.
 
-Shared jackpot pools live in ``data/global_state.db`` because they are bot-wide
+Shared jackpot pools live in `data/global_state.db` because they are bot-wide
 state, not per-user economy rows. Runtime jackpot settlement coordinates writes
 across the economy and global-state DB sessions and rolls both back on ordinary
 errors before either commit; SQLite still cannot make a hard crash between two
@@ -82,6 +82,7 @@ from discordbot.typings.economy import (
     PortfolioView,
     LoanLenderType,
     TransferResult,
+    WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
     LeaderboardEntry,
@@ -99,6 +100,7 @@ from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
+    OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
 
@@ -129,14 +131,14 @@ def _database_now() -> datetime:
 
 
 def _as_taipei(dt: datetime) -> datetime:
-    """Returns ``dt`` re-interpreted in Asia/Taipei (treating naive as Taipei)."""
+    """Returns `dt` re-interpreted in Asia/Taipei (treating naive as Taipei)."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=TAIWAN_TIMEZONE)
     return dt.astimezone(tz=TAIWAN_TIMEZONE)
 
 
 def _taipei_midnight(now: datetime) -> datetime:
-    """Returns the most recent Asia/Taipei 00:00 boundary at or before ``now``."""
+    """Returns the most recent Asia/Taipei 00:00 boundary at or before `now`."""
     local = _as_taipei(dt=now)
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -175,9 +177,9 @@ class GlobalStateBase(DeclarativeBase):
 class UserAccount(Base):
     """Persistent identity, VIP, admin, and check-in state for a Discord user.
 
-    Spendable balance and lifetime gross totals live in ``user_wallet``. Debt
-    state lives in ``loan_contract`` and daily casino counters live in
-    ``casino_account``. ``last_checkin_at`` is nullable for users who have never
+    Spendable balance and lifetime gross totals live in `user_wallet`. Debt
+    state lives in `loan_contract` and daily casino counters live in
+    `casino_account`. `last_checkin_at` is nullable for users who have never
     checked in.
 
     Attributes:
@@ -185,11 +187,11 @@ class UserAccount(Base):
         name: Last-seen Discord username (refreshed on every write).
         avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
         updated_at: Taiwan-local timestamp of the last write.
-        is_vip: Permanent VIP flag toggled by a successful ``/vip`` purchase.
-        last_checkin_at: Timestamp of the latest ``/checkin`` payout; ``None``
+        is_vip: Permanent VIP flag toggled by a successful `/vip` purchase.
+        last_checkin_at: Timestamp of the latest `/checkin` payout; `None`
             for users who have never checked in.
-        checkin_streak: Consecutive-day streak (1..``CHECKIN_STREAK_CYCLE``),
-            persisted after the latest ``/checkin``. 0 means never checked in.
+        checkin_streak: Consecutive-day streak (1..`CHECKIN_STREAK_CYCLE`),
+            persisted after the latest `/checkin`. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
@@ -348,14 +350,14 @@ class LoanContract(Base):
 class JackpotPool(GlobalStateBase):
     """Per-game cumulative jackpot shared across every table of that game.
 
-    One row per game (keyed by ``game_id``). Wager flows update
-    ``pool_balance`` atomically while ``total_contributed`` /
-    ``total_claimed`` accumulate gross in/out flows so the seeded
+    One row per game (keyed by `game_id`). Wager flows update
+    `pool_balance` atomically while `total_contributed` /
+    `total_claimed` accumulate gross in/out flows so the seeded
     on-the-house amount stays distinguishable from organic player
     contributions.
 
     Attributes:
-        game_id: Stable game identifier (e.g. ``"dragon_gate"``); primary key.
+        game_id: Stable game identifier (e.g. `"dragon_gate"`); primary key.
         pool_balance: Current spendable jackpot for the game.
         total_contributed: Lifetime gross amount that flowed into the pool
             (positive deltas from player losses + ante).
@@ -443,7 +445,7 @@ def _current_loan_accept_lock() -> asyncio.Lock:
 
 
 async def _ensure_global_state_schema() -> None:
-    """Bootstraps bot-wide state in ``data/global_state.db``."""
+    """Bootstraps bot-wide state in `data/global_state.db`."""
     global _global_state_schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     if _global_state_schema_ready_for is _global_state_engine:
         return
@@ -534,12 +536,12 @@ def open_global_state_session() -> AsyncSession:
 def checkin_reward(streak: int, is_vip: bool) -> int:
     """Returns the gross check-in payout for a streak day.
 
-    The reward formula is ``BASE * (1 + (streak - 1) * 0.5)`` where ``streak``
-    is the 1..``CHECKIN_STREAK_CYCLE`` day in the cycle. VIP doubles the base
+    The reward formula is `BASE * (1 + (streak - 1) * 0.5)` where `streak`
+    is the 1..`CHECKIN_STREAK_CYCLE` day in the cycle. VIP doubles the base
     before the streak bonus.
 
     Args:
-        streak: Streak counter for this check-in (1..``CHECKIN_STREAK_CYCLE``).
+        streak: Streak counter for this check-in (1..`CHECKIN_STREAK_CYCLE`).
         is_vip: VIP status of the account at check-in time.
 
     Returns:
@@ -611,9 +613,9 @@ async def _upsert_user_metadata_in_session(
 def _build_credit_upsert(
     user_id: int, name: str, amount: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT that credits ``amount`` points into ``user_wallet``.
+    """UPSERT that credits `amount` points into `user_wallet`.
 
-    Caller guarantees ``amount > 0`` and refreshes ``user_account`` metadata
+    Caller guarantees `amount > 0` and refreshes `user_account` metadata
     separately.
 
     Returns:
@@ -643,7 +645,7 @@ def _build_credit_upsert(
 def _build_signed_delta_upsert(
     user_id: int, name: str, delta: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT applying a signed ``delta`` with NO clamp on wallet balance.
+    """UPSERT applying a signed `delta` with NO clamp on wallet balance.
 
     Used for the dealer's house-ledger row, which is allowed to go negative
     when the casino has paid out more than it took in. `total_earned` /
@@ -680,7 +682,7 @@ def _build_signed_delta_upsert(
 async def _apply_daily_casino_delta_in_session(
     session: AsyncSession, user_id: int, name: str, delta: int, now: datetime
 ) -> None:
-    """Accumulates current-day gross casino counters in ``casino_account``."""
+    """Accumulates current-day gross casino counters in `casino_account`."""
     if delta == 0:
         return
     today_midnight = _taipei_midnight(now=now)
@@ -724,7 +726,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
     Long-term loans are explicit repayment actions now, so passive income does
     not auto-repay debt. The public function name is preserved because message
     and chat reward callers are intentionally routed through one income facade.
-    Caller must guarantee ``amount > 0``.
+    Caller must guarantee `amount > 0`.
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -851,7 +853,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 ) -> int:
     """Applies a signed delta without clamping.
 
-    Used for dealer-side mirrors (``HOUSE_SETTLE``), which may run cumulative
+    Used for dealer-side mirrors (`HOUSE_SETTLE`), which may run cumulative
     negative P&L. Player-side losses use the clamped path instead.
     """
     await _upsert_user_metadata_in_session(
@@ -942,11 +944,11 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
 async def credit_with_repayment(
     user_id: int, name: str, amount: int, avatar_url: str = ""
 ) -> CreditResult:
-    """Credits ``amount`` to the user through the shared income path.
+    """Credits `amount` to the user through the shared income path.
 
     Long-term loans must be repaid with explicit repayment or collection
     commands. Message, chat, and casino payout income therefore lands fully in
-    balance and only increases ``total_earned``.
+    balance and only increases `total_earned`.
 
     Args:
         user_id: Discord user ID receiving the credit.
@@ -1030,6 +1032,92 @@ async def adjust_balance(
             )
         await session.commit()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
+
+
+async def apply_ordered_wallet_deltas(
+    user_id: int, name: str, deltas: Sequence[WalletDeltaLeg], avatar_url: str = ""
+) -> OrderedWalletDeltaResult | None:
+    """Applies ordered full-debit wallet deltas without netting.
+
+    This helper is for non-casino domains that need gross wallet accounting but
+    must reject insufficient funds instead of clamping a debit. Positive legs
+    increment `total_earned` and negative legs increment `total_spent` in
+    the order supplied by the caller. The transaction rolls back if any debit
+    cannot be applied in full.
+
+    Args:
+        user_id: Discord user ID whose wallet should be updated.
+        name: Last-seen Discord username to store on the wallet row.
+        deltas: Ordered signed wallet legs.
+        avatar_url: Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        The post-leg balance and applied deltas, or `None` when a full debit
+        cannot be covered.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    applied: list[int] = []
+    async with open_session() as session:
+        await _upsert_user_metadata_in_session(
+            session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
+        )
+        balance = await _apply_ordered_wallet_deltas_in_session(
+            session=session, user_id=user_id, name=name, deltas=deltas, now=now, applied=applied
+        )
+        if balance is None:
+            await session.rollback()
+            return None
+        await session.commit()
+        return OrderedWalletDeltaResult(new_balance=balance, applied_deltas=tuple(applied))
+
+
+async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session helper carries identity and output accumulator
+    session: AsyncSession,
+    user_id: int,
+    name: str,
+    deltas: Sequence[WalletDeltaLeg],
+    now: datetime,
+    applied: list[int],
+) -> int | None:
+    """Applies ordered wallet legs inside the caller's economy transaction."""
+    balance_result = await session.execute(
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
+    )
+    balance = balance_result.scalar_one_or_none() or 0
+    effective_name = name or str(user_id)
+    for leg in deltas:
+        delta = leg.delta
+        if delta == 0:
+            applied.append(0)
+            continue
+        if delta > 0:
+            credit_result = await session.execute(
+                statement=_build_credit_upsert(
+                    user_id=user_id, name=effective_name, amount=delta, now=now
+                )
+            )
+            balance = credit_result.scalar_one()
+            applied.append(delta)
+            continue
+        debit = -delta
+        debit_result = await session.execute(
+            statement=update(UserWallet)
+            .where(UserWallet.user_id == user_id, UserWallet.balance >= debit)
+            .values(
+                balance=UserWallet.balance - debit,
+                total_spent=UserWallet.total_spent + debit,
+                name=effective_name,
+                updated_at=now,
+            )
+            .returning(UserWallet.balance)
+        )
+        new_balance = debit_result.scalar_one_or_none()
+        if new_balance is None:
+            return None
+        balance = new_balance
+        applied.append(delta)
+    return balance
 
 
 async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
@@ -1129,16 +1217,16 @@ async def apply_blackjack_settlement(  # noqa: PLR0913 -- atomic settlement need
 
 
 async def get_jackpot_pool(game_id: str) -> int:
-    """Returns the current ``pool_balance`` for a game's shared jackpot.
+    """Returns the current `pool_balance` for a game's shared jackpot.
 
     Reading the seeded row is the canonical way to surface the current
     pool to a view (lobby start, every active-table refresh). Seeded pools
     are replenished before returning if an older process left them drained.
-    Returns ``0`` when the row hasn't been seeded yet so a freshly-introduced
+    Returns `0` when the row hasn't been seeded yet so a freshly-introduced
     game can short-circuit cleanly.
 
     Args:
-        game_id: Game identifier (e.g. ``"dragon_gate"``).
+        game_id: Game identifier (e.g. `"dragon_gate"`).
 
     Returns:
         The current pool balance in points.
@@ -1190,17 +1278,17 @@ async def _apply_jackpot_delta_in_session(
 ) -> tuple[JackpotSnapshot, bool]:
     """Applies a signed delta to a game's jackpot pool inside the caller's session.
 
-    Positive deltas accumulate ``total_contributed`` (player losses /
+    Positive deltas accumulate `total_contributed` (player losses /
     antes flowing into the pool); negative deltas accumulate
-    ``total_claimed`` with the absolute value (winning payouts flowing
+    `total_claimed` with the absolute value (winning payouts flowing
     out). Seeded pools are topped back up automatically after a drain, so
     the returned balance is always ready for the next table.
 
     Args:
-        session: Active SQLAlchemy session bound to ``_global_state_engine``.
+        session: Active SQLAlchemy session bound to `_global_state_engine`.
         game_id: Game identifier (jackpot row primary key).
-        delta: Signed point adjustment to apply to ``pool_balance``.
-        now: ``_database_now()`` value pinned for this transaction.
+        delta: Signed point adjustment to apply to `pool_balance`.
+        now: `_database_now()` value pinned for this transaction.
 
     Returns:
         A tuple containing the pool balance after the write and any automatic
@@ -1267,7 +1355,7 @@ async def _claim_jackpot_payout_in_session(
     expected_generation: int | None,
     now: datetime,
 ) -> tuple[int, JackpotSnapshot, bool]:
-    """Atomically claims up to ``amount`` from the requested jackpot generation."""
+    """Atomically claims up to `amount` from the requested jackpot generation."""
     if amount <= 0:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=now
@@ -1322,14 +1410,14 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
 ) -> JackpotSettlementResult:
     """Atomic player-and-jackpot settlement for a single wager event.
 
-    This is a convenience wrapper around ``apply_jackpot_settlement_batch``.
+    This is a convenience wrapper around `apply_jackpot_settlement_batch`.
 
     Args:
         player_id: Discord user ID for the player.
         player_account_name: Account name to store on the player row.
         player_delta: Signed net change for the player. Losses are written
             as a negative delta and the absolute value flows into the pool.
-        game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
+        game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
         player_avatar_url: Last-seen Discord avatar URL for the player.
         expected_jackpot_generation: Optional pool generation observed by the
             caller. Positive payouts only claim from this generation.
@@ -1400,7 +1488,7 @@ async def apply_jackpot_settlement_batch(
     but a hard crash between the two final commits is not cross-file atomic.
 
     Args:
-        game_id: Jackpot game identifier (e.g. ``"dragon_gate"``).
+        game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
         settlements: Player-side settlements to apply in order.
 
     Returns:
@@ -1522,17 +1610,17 @@ def _next_checkin_streak(
 ) -> int | None:
     """Returns the streak counter for the next check-in.
 
-    Returns ``None`` when the user has already checked in today.
+    Returns `None` when the user has already checked in today.
 
     Args:
-        last_checkin_at: Stored ``last_checkin_at`` (Taipei-naive) or ``None``.
+        last_checkin_at: Stored `last_checkin_at` (Taipei-naive) or `None`.
         current_streak: Currently-persisted streak counter.
         today_midnight: 00:00 Asia/Taipei for the request day.
         yesterday_midnight: 00:00 Asia/Taipei for the prior day.
         tomorrow_midnight: 00:00 Asia/Taipei for the next day.
 
     Returns:
-        The streak number to persist, or ``None`` if today is already done.
+        The streak number to persist, or `None` if today is already done.
     """
     if last_checkin_at is None:
         return 1
@@ -1552,7 +1640,7 @@ async def _insert_first_checkin_in_session(
 ) -> tuple[int, int, int, bool] | None:
     """Inserts a fresh user row crediting the day-1 check-in reward.
 
-    Returns ``None`` when another coroutine already inserted the row so
+    Returns `None` when another coroutine already inserted the row so
     the caller retries on the next loop iteration.
 
     Args:
@@ -1560,11 +1648,11 @@ async def _insert_first_checkin_in_session(
         user_id: Discord user ID checking in.
         name: Last-seen Discord username to store on the account.
         avatar_url: Last-seen Discord avatar URL to store when available.
-        now: ``_database_now()`` value pinned for this transaction.
+        now: `_database_now()` value pinned for this transaction.
 
     Returns:
-        ``(reward, balance_after, streak_after, vip_after)`` on success or
-        ``None`` when ``ON CONFLICT DO NOTHING`` rejected the insert.
+        `(reward, balance_after, streak_after, vip_after)` on success or
+        `None` when `ON CONFLICT DO NOTHING` rejected the insert.
     """
     new_streak = 1
     reward = checkin_reward(streak=new_streak, is_vip=False)
@@ -1605,7 +1693,7 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
 ) -> tuple[int, int, int, bool] | None:
     """Performs the conditional UPDATE for an existing account.
 
-    The WHERE clause pins ``last_checkin_at`` to the observed value so
+    The WHERE clause pins `last_checkin_at` to the observed value so
     concurrent check-ins cannot double-credit.
 
     Args:
@@ -1613,13 +1701,13 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
         user_id: Discord user ID checking in.
         name: Last-seen Discord username to refresh on the account.
         avatar_url: Last-seen Discord avatar URL to refresh when set.
-        now: ``_database_now()`` value pinned for this transaction.
-        new_streak: Streak counter chosen by ``_next_checkin_streak``.
+        now: `_database_now()` value pinned for this transaction.
+        new_streak: Streak counter chosen by `_next_checkin_streak`.
         row: Tuple returned by the prior SELECT.
 
     Returns:
-        ``(reward, balance_after, streak_after, vip_after)`` on success or
-        ``None`` when the conditional UPDATE matched zero rows.
+        `(reward, balance_after, streak_after, vip_after)` on success or
+        `None` when the conditional UPDATE matched zero rows.
     """
     last_checkin_at, _current_streak, is_vip, existing_name = row
     reward = checkin_reward(streak=new_streak, is_vip=is_vip)
@@ -1661,17 +1749,17 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
 async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResult | None:
     """Records a daily check-in and credits the streak-adjusted reward.
 
-    Returns ``None`` when the user has already checked in today (Taipei
+    Returns `None` when the user has already checked in today (Taipei
     local date). On first check-in or after a missed day the streak resets
     to 1; otherwise the streak advances by 1 and cycles back to 1 after
-    reaching ``CHECKIN_STREAK_CYCLE``. The reward is computed with
-    ``checkin_reward`` and persisted alongside the streak counter in the
+    reaching `CHECKIN_STREAK_CYCLE`. The reward is computed with
+    `checkin_reward` and persisted alongside the streak counter in the
     same write. VIP perks (2x base) read the persisted flag inside the
     same transaction so a freshly-bought VIP immediately applies on the
     next check-in.
 
     The SELECT-then-conditional-UPDATE pattern (gated on the
-    observed ``last_checkin_at`` value) prevents two parallel coroutines
+    observed `last_checkin_at` value) prevents two parallel coroutines
     from double-crediting. First-sight INSERTs use ``ON CONFLICT DO
     NOTHING`` to defer to whichever writer landed first; the loser falls
     through to the next retry with the freshly-visible row.
@@ -1682,7 +1770,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
-        ``CheckinResult`` describing the credit, or ``None`` when the user
+        `CheckinResult` describing the credit, or `None` when the user
         already checked in today.
     """
     await _ensure_schema()
@@ -1741,9 +1829,9 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
 
 
 async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
-    """Promotes the user to VIP after debiting ``VIP_PURCHASE_COST`` points.
+    """Promotes the user to VIP after debiting `VIP_PURCHASE_COST` points.
 
-    Returns ``None`` when the user is already VIP, has insufficient balance,
+    Returns `None` when the user is already VIP, has insufficient balance,
     or the retry budget for the conditional UPDATE was exhausted.
 
     Args:
@@ -1752,8 +1840,8 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
-        ``VipPurchaseResult`` describing the post-purchase balance, or
-        ``None`` when the purchase was rejected.
+        `VipPurchaseResult` describing the post-purchase balance, or
+        `None` when the purchase was rejected.
     """
     await _ensure_schema()
     now = _database_now()
@@ -1843,7 +1931,7 @@ async def get_vip(user_id: int) -> bool:
         user_id: Discord user ID to look up.
 
     Returns:
-        ``True`` when the account has ``is_vip`` set, else ``False``.
+        `True` when the account has `is_vip` set, else `False`.
     """
     await _ensure_schema()
     async with open_session() as session:
@@ -1860,7 +1948,7 @@ async def get_admin(user_id: int) -> bool:
         user_id: Discord user ID to look up.
 
     Returns:
-        ``True`` when the account has ``is_admin`` set, else ``False``.
+        `True` when the account has `is_admin` set, else `False`.
     """
     await _ensure_schema()
     async with open_session() as session:
@@ -1885,7 +1973,7 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
-        ``True`` when a row was created or updated; ``False`` when revoking a
+        `True` when a row was created or updated; `False` when revoking a
         missing user.
     """
     await _ensure_schema()
@@ -2130,20 +2218,20 @@ async def top_n(
 ) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
-    ``exclude_user_ids`` filters out specific accounts (notably the bot's
+    `exclude_user_ids` filters out specific accounts (notably the bot's
     own house ledger row) before applying the limit, so the leaderboard
-    always shows real players. The ``ix_user_wallet_balance`` index keeps
+    always shows real players. The `ix_user_wallet_balance` index keeps
     this query cheap even as the user table grows.
 
     Args:
-        limit: Maximum number of accounts to return, or ``None`` to return all
+        limit: Maximum number of accounts to return, or `None` to return all
             matching accounts.
         exclude_user_ids: User IDs to filter out before applying the limit.
         include_hidden: Whether to include accounts marked as hidden from
             public leaderboards.
 
     Returns:
-        Leaderboard entries ordered by balance descending. ``avatar_url`` is
+        Leaderboard entries ordered by balance descending. `avatar_url` is
         empty when the user has never been seen by an avatar-aware write path.
     """
     await _ensure_schema()
@@ -2173,9 +2261,9 @@ async def top_losers(
 ) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
-    The leaderboard reads persisted ``casino_account`` daily counters. Writes lazily reset stale
+    The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale
     counters at the first casino settlement after Taipei midnight, while this
-    query filters by today's ``day_started_at`` so yesterday's counters
+    query filters by today's `day_started_at` so yesterday's counters
     never leak into a new day.
 
     Args:
@@ -2185,7 +2273,7 @@ async def top_losers(
             public leaderboards.
 
     Returns:
-        Loss leaderboard entries ordered by loss descending. ``loss_amount``
+        Loss leaderboard entries ordered by loss descending. `loss_amount`
         is always positive.
     """
     await _ensure_schema()
@@ -2485,7 +2573,7 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
 
 
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
-    """Cancels a pending proposal created by ``actor_id``."""
+    """Cancels a pending proposal created by `actor_id`."""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2525,7 +2613,7 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
 async def reject_loan_proposal(
     proposal_id: int, actor_id: int, is_central_banker: bool = False
 ) -> LoanProposalView | None:
-    """Rejects a pending proposal when ``actor_id`` is allowed to decide it."""
+    """Rejects a pending proposal when `actor_id` is allowed to decide it."""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2846,7 +2934,7 @@ async def repay_personal_loans(
     amount: int,
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
-    """Repays active personal loans from ``borrower_id`` to ``lender_id``."""
+    """Repays active personal loans from `borrower_id` to `lender_id`."""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2879,7 +2967,7 @@ async def call_personal_loans(
     amount: int | None = None,
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
-    """Forcibly collects active personal loans owed to ``lender_id``."""
+    """Forcibly collects active personal loans owed to `lender_id`."""
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:

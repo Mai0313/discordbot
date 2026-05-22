@@ -1,10 +1,3 @@
-"""Pydantic models and enums for the economy domain.
-
-Pure type definitions live here so ``cogs/_economy/database.py`` can import
-them without pulling in ``cogs/`` modules. Lifecycle results are frozen so
-they cannot be mutated after they leave the database layer.
-"""
-
 from enum import StrEnum
 from typing import Final
 from datetime import datetime
@@ -142,6 +135,24 @@ class BalanceAdjustmentResult(BaseModel):
     applied_delta: int
 
 
+class WalletDeltaLeg(BaseModel):
+    """One ordered wallet delta requested by another domain service."""
+
+    model_config = ConfigDict(frozen=True)
+
+    delta: int
+    reason: str = ""
+
+
+class OrderedWalletDeltaResult(BaseModel):
+    """Outcome of applying ordered wallet deltas without netting them."""
+
+    model_config = ConfigDict(frozen=True)
+
+    new_balance: int
+    applied_deltas: tuple[int, ...]
+
+
 class JackpotSettlementRequest(BaseModel):
     """One player-side settlement against a shared jackpot pool.
 
@@ -237,7 +248,7 @@ class CheckinResult(BaseModel):
         new_balance: User balance after the payout.
         amount: Total amount credited for this check-in (base * streak bonus * VIP multiplier).
         streak: Streak counter persisted on the account after this check-in
-            (1..``CHECKIN_STREAK_CYCLE``).
+            (1..`CHECKIN_STREAK_CYCLE`).
         is_vip: VIP status of the account at check-in time, surfaced so the
             embed can label the bonus correctly.
     """
@@ -381,7 +392,9 @@ __all__ = [
     "LoanProposalStatus",
     "LoanProposalView",
     "LossLeaderboardEntry",
+    "OrderedWalletDeltaResult",
     "PortfolioView",
     "TransferResult",
     "VipPurchaseResult",
+    "WalletDeltaLeg",
 ]
