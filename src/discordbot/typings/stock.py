@@ -2,119 +2,13 @@ from enum import StrEnum
 from typing import Final
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 
 STOCK_TICK_SECONDS: Final[int] = 60 * 60
 MAX_TICKS_PER_INTERACTION: Final[int] = 24
 STOCK_HISTORY_DAYS: Final[int] = 7
 STOCK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-
-BCAT_SYMBOL: Final[str] = "BCAT"
-BCAT_NAME: Final[str] = "破貓科技股份有限公司"
-BCAT_CATEGORY: Final[str] = "迷因科技"
-BCAT_INITIAL_PRICE_CENTS: Final[int] = 10_000
-BCAT_TOTAL_SHARES: Final[int] = 1_000_000
-BCAT_FLOAT_SHARES: Final[int] = 650_000
-BCAT_BASE_VOLATILITY_BPS: Final[int] = 70
-BCAT_VOLATILITY_AMPLIFIER_BPS: Final[int] = 150
-BCAT_LIQUIDITY_SHARES: Final[int] = 25_000
-BCAT_MEAN_REVERSION_BPS: Final[int] = 35
-BCAT_MAX_TICK_CHANGE_BPS: Final[int] = 450
 STOCK_NEWS_CADENCE_HOURS: Final[int] = 8
-
-
-class StockCompanySeed(BaseModel):
-    """Seed profile for one virtual stock company."""
-
-    model_config = ConfigDict(frozen=True)
-
-    symbol: str
-    name: str
-    category: str
-    initial_price_cents: int
-    total_shares: int
-    float_shares: int
-    base_volatility_bps: int
-    volatility_amplifier_bps: int
-    liquidity_shares: int
-    fair_value_cents: int
-    mean_reversion_bps: int
-    max_tick_change_bps: int
-    news_cadence_hours: int = STOCK_NEWS_CADENCE_HOURS
-
-
-STOCK_COMPANY_SEEDS: Final[tuple[StockCompanySeed, ...]] = (
-    StockCompanySeed(
-        symbol=BCAT_SYMBOL,
-        name=BCAT_NAME,
-        category=BCAT_CATEGORY,
-        initial_price_cents=BCAT_INITIAL_PRICE_CENTS,
-        total_shares=BCAT_TOTAL_SHARES,
-        float_shares=BCAT_FLOAT_SHARES,
-        base_volatility_bps=BCAT_BASE_VOLATILITY_BPS,
-        volatility_amplifier_bps=BCAT_VOLATILITY_AMPLIFIER_BPS,
-        liquidity_shares=BCAT_LIQUIDITY_SHARES,
-        fair_value_cents=BCAT_INITIAL_PRICE_CENTS,
-        mean_reversion_bps=BCAT_MEAN_REVERSION_BPS,
-        max_tick_change_bps=BCAT_MAX_TICK_CHANGE_BPS,
-    ),
-    StockCompanySeed(
-        symbol="AURM",
-        name="晨曜能源股份有限公司",
-        category="再生能源",
-        initial_price_cents=8_800,
-        total_shares=1_800_000,
-        float_shares=1_100_000,
-        base_volatility_bps=45,
-        volatility_amplifier_bps=110,
-        liquidity_shares=60_000,
-        fair_value_cents=9_200,
-        mean_reversion_bps=45,
-        max_tick_change_bps=300,
-    ),
-    StockCompanySeed(
-        symbol="GLBX",
-        name="雲港物流控股",
-        category="物流運輸",
-        initial_price_cents=12_500,
-        total_shares=900_000,
-        float_shares=520_000,
-        base_volatility_bps=35,
-        volatility_amplifier_bps=100,
-        liquidity_shares=45_000,
-        fair_value_cents=12_200,
-        mean_reversion_bps=55,
-        max_tick_change_bps=260,
-    ),
-    StockCompanySeed(
-        symbol="QBIT",
-        name="量子豆資料系統",
-        category="雲端資料",
-        initial_price_cents=16_000,
-        total_shares=700_000,
-        float_shares=430_000,
-        base_volatility_bps=80,
-        volatility_amplifier_bps=140,
-        liquidity_shares=28_000,
-        fair_value_cents=15_500,
-        mean_reversion_bps=30,
-        max_tick_change_bps=520,
-    ),
-    StockCompanySeed(
-        symbol="NXTS",
-        name="星橋半導體",
-        category="半導體",
-        initial_price_cents=21_000,
-        total_shares=1_200_000,
-        float_shares=760_000,
-        base_volatility_bps=60,
-        volatility_amplifier_bps=125,
-        liquidity_shares=55_000,
-        fair_value_cents=21_800,
-        mean_reversion_bps=40,
-        max_tick_change_bps=380,
-    ),
-)
 
 
 class StockAction(StrEnum):
@@ -164,6 +58,26 @@ class StockProfileView(BaseModel):
     max_tick_change_bps: int
     news_cadence_hours: int
     updated_at: datetime
+
+
+class StockProfileUpsert(BaseModel):
+    """DB-owned stock profile payload for maintenance scripts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1, max_length=16)
+    name: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=64)
+    price_cents: int = Field(ge=1)
+    total_shares: int = Field(ge=1)
+    float_shares: int = Field(ge=0)
+    base_volatility_bps: int = Field(ge=0)
+    volatility_amplifier_bps: int = Field(ge=0)
+    liquidity_shares: int = Field(ge=1)
+    fair_value_cents: int = Field(ge=1)
+    mean_reversion_bps: int = Field(ge=0)
+    max_tick_change_bps: int = Field(ge=1)
+    news_cadence_hours: int = Field(ge=1)
 
 
 class StockPositionView(BaseModel):
@@ -311,25 +225,12 @@ class StockReconciliationOperation(BaseModel):
 
 
 __all__ = [
-    "BCAT_BASE_VOLATILITY_BPS",
-    "BCAT_CATEGORY",
-    "BCAT_FLOAT_SHARES",
-    "BCAT_INITIAL_PRICE_CENTS",
-    "BCAT_LIQUIDITY_SHARES",
-    "BCAT_MAX_TICK_CHANGE_BPS",
-    "BCAT_MEAN_REVERSION_BPS",
-    "BCAT_NAME",
-    "BCAT_SYMBOL",
-    "BCAT_TOTAL_SHARES",
-    "BCAT_VOLATILITY_AMPLIFIER_BPS",
     "MAX_TICKS_PER_INTERACTION",
     "STOCK_ACTION_TIMEOUT_SECONDS",
-    "STOCK_COMPANY_SEEDS",
     "STOCK_HISTORY_DAYS",
     "STOCK_NEWS_CADENCE_HOURS",
     "STOCK_TICK_SECONDS",
     "StockAction",
-    "StockCompanySeed",
     "StockDetailViewData",
     "StockGeneratedNews",
     "StockMarketQuote",
@@ -338,6 +239,7 @@ __all__ = [
     "StockParticipantPositionView",
     "StockPositionView",
     "StockPriceTickView",
+    "StockProfileUpsert",
     "StockProfileView",
     "StockReconciliationOperation",
     "StockSettlementResult",

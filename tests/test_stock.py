@@ -12,14 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
-    BCAT_NAME,
-    BCAT_SYMBOL,
-    BCAT_INITIAL_PRICE_CENTS,
     MAX_TICKS_PER_INTERACTION,
     StockAction,
     StockProfileView,
     StockTradeLegType,
     StockGeneratedNews,
+    StockProfileUpsert,
     StockOperationStatus,
     StockSettlementResult,
 )
@@ -43,6 +41,20 @@ from discordbot.cogs._economy.database import (
     apply_ordered_wallet_deltas,
 )
 
+BCAT_SYMBOL = "BCAT"
+BCAT_NAME = "破貓科技股份有限公司"
+BCAT_CATEGORY = "迷因科技"
+BCAT_INITIAL_PRICE_CENTS = 10_000
+BCAT_TOTAL_SHARES = 1_000_000
+BCAT_FLOAT_SHARES = 650_000
+BCAT_BASE_VOLATILITY_BPS = 70
+BCAT_VOLATILITY_AMPLIFIER_BPS = 150
+BCAT_LIQUIDITY_SHARES = 25_000
+BCAT_FAIR_VALUE_CENTS = 10_000
+BCAT_MEAN_REVERSION_BPS = 35
+BCAT_MAX_TICK_CHANGE_BPS = 450
+BCAT_NEWS_CADENCE_HOURS = 8
+
 
 def _rng(seed: int) -> Random:
     """Returns a deterministic test RNG."""
@@ -50,10 +62,8 @@ def _rng(seed: int) -> Random:
 
 
 @pytest.fixture
-async def stock_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Per-test SQLite file with the stock schema."""
+async def stock_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    """Per-test SQLite file with no stock company rows."""
     stock_db_path = tmp_path / "stock.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{stock_db_path}")
     monkeypatch.setattr(stock_db, "_engine", engine)
@@ -66,6 +76,38 @@ async def stock_isolated_db(
     monkeypatch.setattr(stock_db, "_market_locks_loop", None)
     yield
     await engine.dispose()
+
+
+@pytest.fixture
+async def stock_isolated_db(stock_empty_db: None) -> None:
+    """Per-test SQLite file with one DB-managed test stock."""
+    await _upsert_bcat_profile()
+
+
+async def _upsert_bcat_profile(
+    price_cents: int = BCAT_INITIAL_PRICE_CENTS,
+    name: str = BCAT_NAME,
+    category: str = BCAT_CATEGORY,
+) -> StockProfileView:
+    """Creates or updates the DB-owned BCAT test profile."""
+    return await stock_db.upsert_stock_profile(
+        profile=StockProfileUpsert(
+            symbol=BCAT_SYMBOL,
+            name=name,
+            category=category,
+            price_cents=price_cents,
+            total_shares=BCAT_TOTAL_SHARES,
+            float_shares=BCAT_FLOAT_SHARES,
+            base_volatility_bps=BCAT_BASE_VOLATILITY_BPS,
+            volatility_amplifier_bps=BCAT_VOLATILITY_AMPLIFIER_BPS,
+            liquidity_shares=BCAT_LIQUIDITY_SHARES,
+            fair_value_cents=BCAT_FAIR_VALUE_CENTS,
+            mean_reversion_bps=BCAT_MEAN_REVERSION_BPS,
+            max_tick_change_bps=BCAT_MAX_TICK_CHANGE_BPS,
+            news_cadence_hours=BCAT_NEWS_CADENCE_HOURS,
+        ),
+        now=datetime(2026, 1, 1),
+    )
 
 
 def test_stock_cash_rounding_and_price_format() -> None:
@@ -138,17 +180,11 @@ def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
     assert pressure_from_order_flow(net_shares=1_000, liquidity_shares=0) == 0
 
 
-async def test_stock_schema_seeds_bcat(stock_isolated_db: None) -> None:
-    """Schema bootstrap creates stock tables and seeds BCAT."""
+async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: None) -> None:
+    """Schema bootstrap creates stock tables but company rows are DB-managed."""
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
 
-    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
-    assert len(quotes) >= 5
-    assert bcat_quote.profile.name == BCAT_NAME
-    assert bcat_quote.profile.price_cents == BCAT_INITIAL_PRICE_CENTS
-    assert bcat_quote.profile.liquidity_shares > 0
-    news = await stock_db.get_stock_news(symbol=BCAT_SYMBOL)
-    assert news
+    assert quotes == ()
     async with stock_db._engine.connect() as conn:
         column_names = await conn.run_sync(
             lambda sync_conn: {
@@ -170,6 +206,31 @@ async def test_stock_schema_seeds_bcat(stock_isolated_db: None) -> None:
     assert column_names["stock_operation"][1:4] == ["symbol", "user_id", "user_name"]
     assert column_names["stock_trade_leg"][3:6] == ["symbol", "user_id", "user_name"]
     assert "source" in column_names["stock_news"]
+
+
+async def test_stock_profile_upsert_manages_database_company(stock_empty_db: None) -> None:
+    """Company profile data is created and updated through the stock DB."""
+    profile = await _upsert_bcat_profile()
+
+    assert profile.symbol == BCAT_SYMBOL
+    assert profile.name == BCAT_NAME
+    assert profile.price_cents == BCAT_INITIAL_PRICE_CENTS
+    assert profile.liquidity_shares == BCAT_LIQUIDITY_SHARES
+    profiles = await stock_db.list_stock_profiles()
+    assert tuple(profile.symbol for profile in profiles) == (BCAT_SYMBOL,)
+    async with stock_db.open_stock_session() as session:
+        tick_count = await session.scalar(
+            statement=select(stock_db.StockPriceTick).where(
+                stock_db.StockPriceTick.symbol == BCAT_SYMBOL
+            )
+        )
+    assert tick_count is not None
+
+    updated = await _upsert_bcat_profile(name="資料庫貓科技", category="DB managed")
+
+    assert updated.name == "資料庫貓科技"
+    assert updated.category == "DB managed"
+    assert len(await stock_db.list_stock_profiles()) == 1
 
 
 async def test_stock_schema_migrates_mvp_profile_and_news_columns(
@@ -293,9 +354,14 @@ async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated
     latest = datetime(2026, 1, 1, 23, 0)
     async with stock_db.open_stock_session() as session:
         await session.execute(
-            statement=update(stock_db.StockPriceTick)
-            .where(stock_db.StockPriceTick.symbol == BCAT_SYMBOL)
-            .values(created_at=latest, price_cents=10_000)
+            statement=delete(stock_db.StockPriceTick).where(
+                stock_db.StockPriceTick.symbol == BCAT_SYMBOL
+            )
+        )
+        session.add(
+            instance=stock_db.StockPriceTick(
+                symbol=BCAT_SYMBOL, created_at=latest, price_cents=10_000
+            )
         )
         await session.execute(
             statement=update(stock_db.StockProfile)

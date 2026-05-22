@@ -82,6 +82,7 @@ nav:
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
       - manage_central_banker: Scripts/manage_central_banker.md
+      - manage_stock_company: Scripts/manage_stock_company.md
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md

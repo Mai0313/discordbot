@@ -16,15 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.stock import (
-    BCAT_SYMBOL,
-    BCAT_TOTAL_SHARES,
     STOCK_HISTORY_DAYS,
     STOCK_TICK_SECONDS,
-    STOCK_COMPANY_SEEDS,
-    BCAT_INITIAL_PRICE_CENTS,
     StockAction,
     StockNewsView,
-    StockCompanySeed,
     StockMarketQuote,
     StockProfileView,
     StockPositionView,
@@ -32,6 +27,7 @@ from discordbot.typings.stock import (
     StockTradeLegView,
     StockGeneratedNews,
     StockPriceTickView,
+    StockProfileUpsert,
     StockDetailViewData,
     StockOperationStatus,
     StockSettlementResult,
@@ -74,6 +70,12 @@ _ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
     seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
 )
+_MIGRATION_DEFAULT_FLOAT_SHARES: Final[int] = 1_000_000
+_MIGRATION_DEFAULT_LIQUIDITY_SHARES: Final[int] = 25_000
+_MIGRATION_DEFAULT_FAIR_VALUE_CENTS: Final[int] = 10_000
+_MIGRATION_DEFAULT_MEAN_REVERSION_BPS: Final[int] = 35
+_MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS: Final[int] = 450
+_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS: Final[int] = 8
 _FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
     StockOperationStatus.APPLIED.value,
     StockOperationStatus.FAILED.value,
@@ -308,7 +310,7 @@ async def _begin_immediate(session: AsyncSession) -> None:
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps stock schema and seed data once per engine."""
+    """Bootstraps stock schema once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     if _schema_ready_for is _engine:
         return
@@ -318,12 +320,6 @@ async def _ensure_schema() -> None:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await _ensure_stock_schema_migrations(conn=conn)
-            now = _database_now()
-            boundary = tick_boundary(dt=now)
-            for seed in STOCK_COMPANY_SEEDS:
-                await _seed_profile(conn=conn, seed=seed, now=now)
-                await _seed_initial_tick(conn=conn, seed=seed, now=boundary)
-                await _seed_news(conn=conn, seed=seed, now=now)
         _schema_ready_for = _engine
 
 
@@ -332,12 +328,12 @@ async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 --
     result = await conn.execute(text("PRAGMA table_info(stock_profile)"))
     profile_columns = {row[1] for row in result.all()}
     profile_migrations = {
-        "float_shares": f"ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT {BCAT_TOTAL_SHARES}",
-        "liquidity_shares": "ALTER TABLE stock_profile ADD COLUMN liquidity_shares INTEGER NOT NULL DEFAULT 25000",
-        "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents INTEGER NOT NULL DEFAULT {BCAT_INITIAL_PRICE_CENTS}",
-        "mean_reversion_bps": "ALTER TABLE stock_profile ADD COLUMN mean_reversion_bps INTEGER NOT NULL DEFAULT 35",
-        "max_tick_change_bps": "ALTER TABLE stock_profile ADD COLUMN max_tick_change_bps INTEGER NOT NULL DEFAULT 450",
-        "news_cadence_hours": "ALTER TABLE stock_profile ADD COLUMN news_cadence_hours INTEGER NOT NULL DEFAULT 8",
+        "float_shares": f"ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FLOAT_SHARES}",
+        "liquidity_shares": f"ALTER TABLE stock_profile ADD COLUMN liquidity_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_LIQUIDITY_SHARES}",
+        "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FAIR_VALUE_CENTS}",
+        "mean_reversion_bps": f"ALTER TABLE stock_profile ADD COLUMN mean_reversion_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MEAN_REVERSION_BPS}",
+        "max_tick_change_bps": f"ALTER TABLE stock_profile ADD COLUMN max_tick_change_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS}",
+        "news_cadence_hours": f"ALTER TABLE stock_profile ADD COLUMN news_cadence_hours INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS}",
     }
     for column, statement in profile_migrations.items():
         if column not in profile_columns:
@@ -353,119 +349,6 @@ async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 --
     for column, statement in news_migrations.items():
         if column not in news_columns:
             await conn.execute(text(statement))
-
-
-async def _seed_profile(conn: Any, seed: StockCompanySeed, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Seeds or refreshes static profile settings for one virtual company."""
-    await conn.execute(
-        statement=insert(StockProfile)
-        .values(
-            symbol=seed.symbol,
-            name=seed.name,
-            category=seed.category,
-            price_cents=seed.initial_price_cents,
-            previous_close_price_cents=seed.initial_price_cents,
-            day_open_price_cents=seed.initial_price_cents,
-            total_shares=seed.total_shares,
-            float_shares=seed.float_shares,
-            base_volatility_bps=seed.base_volatility_bps,
-            volatility_amplifier_bps=seed.volatility_amplifier_bps,
-            liquidity_shares=seed.liquidity_shares,
-            fair_value_cents=seed.fair_value_cents,
-            mean_reversion_bps=seed.mean_reversion_bps,
-            max_tick_change_bps=seed.max_tick_change_bps,
-            news_cadence_hours=seed.news_cadence_hours,
-            created_at=now,
-            updated_at=now,
-        )
-        .on_conflict_do_update(
-            index_elements=["symbol"],
-            set_={
-                "name": seed.name,
-                "category": seed.category,
-                "total_shares": seed.total_shares,
-                "float_shares": seed.float_shares,
-                "base_volatility_bps": seed.base_volatility_bps,
-                "volatility_amplifier_bps": seed.volatility_amplifier_bps,
-                "liquidity_shares": seed.liquidity_shares,
-                "fair_value_cents": seed.fair_value_cents,
-                "mean_reversion_bps": seed.mean_reversion_bps,
-                "max_tick_change_bps": seed.max_tick_change_bps,
-                "news_cadence_hours": seed.news_cadence_hours,
-            },
-        )
-    )
-
-
-async def _seed_initial_tick(conn: Any, seed: StockCompanySeed, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Seeds the first price tick for a company when it has no tick history."""
-    existing_tick = await conn.execute(
-        statement=select(StockPriceTick.id).where(StockPriceTick.symbol == seed.symbol).limit(1)
-    )
-    if existing_tick.scalar_one_or_none() is not None:
-        return
-    await conn.execute(
-        statement=insert(StockPriceTick)
-        .values(symbol=seed.symbol, price_cents=seed.initial_price_cents, created_at=now)
-        .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
-    )
-
-
-async def _seed_news(conn: Any, seed: StockCompanySeed, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Seeds deterministic starter news rows for one virtual company."""
-    rows = _starter_news_rows(symbol=seed.symbol, name=seed.name, category=seed.category, now=now)
-    for row_id, headline, sentiment_bps, created_at in rows:
-        await conn.execute(
-            statement=insert(StockNews)
-            .values(
-                id=row_id,
-                symbol=seed.symbol,
-                headline=headline,
-                sentiment_bps=sentiment_bps,
-                source="seed",
-                model="",
-                expires_at=created_at + _NEWS_SENTIMENT_LOOKBACK,
-                created_at=created_at,
-            )
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
-
-
-def _starter_news_rows(
-    symbol: str, name: str, category: str, now: datetime
-) -> tuple[tuple[str, str, int, datetime], ...]:
-    """Returns deterministic starter news for one company."""
-    if symbol == BCAT_SYMBOL:
-        return (
-            ("bcat-seed-1", "BCAT 推出新的紙箱訂閱制，市場反應熱烈", 80, now - timedelta(hours=6)),
-            (
-                "bcat-seed-2",
-                "BCAT 董事會表示將控制罐罐成本，毛利率看升",
-                45,
-                now - timedelta(days=1),
-            ),
-            ("bcat-seed-3", "BCAT 供應鏈短暫卡關，投資人觀望", -55, now - timedelta(days=2)),
-        )
-    return (
-        (
-            f"{symbol.lower()}-seed-1",
-            f"{name} 發布 {category} 產品路線圖，市場等待後續數據",
-            35,
-            now - timedelta(hours=6),
-        ),
-        (
-            f"{symbol.lower()}-seed-2",
-            f"{symbol} 管理層表示將控制營運成本",
-            25,
-            now - timedelta(days=1),
-        ),
-        (
-            f"{symbol.lower()}-seed-3",
-            f"{name} 短期訂單能見度偏低，投資人轉為觀望",
-            -30,
-            now - timedelta(days=2),
-        ),
-    )
 
 
 def _profile_view(profile: StockProfile) -> StockProfileView:
@@ -573,6 +456,73 @@ def _quote_from_profile(profile: StockProfile, pressure_bps: int) -> StockMarket
         change_bps=change_bps,
         pressure_bps=pressure_bps,
     )
+
+
+async def upsert_stock_profile(
+    profile: StockProfileUpsert, now: datetime | None = None
+) -> StockProfileView:
+    """Creates or updates a DB-owned stock profile from an explicit maintenance payload."""
+    await _ensure_schema()
+    effective_now = now or _database_now()
+    normalized_symbol = profile.symbol.strip().upper()
+    if not normalized_symbol:
+        msg = "Stock symbol cannot be empty"
+        raise ValueError(msg)
+    async with open_stock_session() as session:
+        existing = await session.get(entity=StockProfile, ident=normalized_symbol)
+        if existing is None:
+            existing = StockProfile(
+                symbol=normalized_symbol,
+                name=profile.name,
+                category=profile.category,
+                price_cents=profile.price_cents,
+                previous_close_price_cents=profile.price_cents,
+                day_open_price_cents=profile.price_cents,
+                total_shares=profile.total_shares,
+                float_shares=profile.float_shares,
+                base_volatility_bps=profile.base_volatility_bps,
+                volatility_amplifier_bps=profile.volatility_amplifier_bps,
+                liquidity_shares=profile.liquidity_shares,
+                fair_value_cents=profile.fair_value_cents,
+                mean_reversion_bps=profile.mean_reversion_bps,
+                max_tick_change_bps=profile.max_tick_change_bps,
+                news_cadence_hours=profile.news_cadence_hours,
+                created_at=effective_now,
+                updated_at=effective_now,
+            )
+            session.add(instance=existing)
+            await session.flush()
+            await _insert_price_tick_or_existing(
+                session=session,
+                symbol=normalized_symbol,
+                price_cents=profile.price_cents,
+                created_at=tick_boundary(dt=effective_now),
+            )
+        else:
+            existing.name = profile.name
+            existing.category = profile.category
+            existing.total_shares = profile.total_shares
+            existing.float_shares = profile.float_shares
+            existing.base_volatility_bps = profile.base_volatility_bps
+            existing.volatility_amplifier_bps = profile.volatility_amplifier_bps
+            existing.liquidity_shares = profile.liquidity_shares
+            existing.fair_value_cents = profile.fair_value_cents
+            existing.mean_reversion_bps = profile.mean_reversion_bps
+            existing.max_tick_change_bps = profile.max_tick_change_bps
+            existing.news_cadence_hours = profile.news_cadence_hours
+            existing.updated_at = effective_now
+        await session.commit()
+        return _profile_view(profile=existing)
+
+
+async def list_stock_profiles() -> tuple[StockProfileView, ...]:
+    """Lists DB-owned stock profiles without advancing market ticks."""
+    await _ensure_schema()
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=select(StockProfile).order_by(StockProfile.symbol.asc())
+        )
+        return tuple(_profile_view(profile=profile) for profile in result.scalars())
 
 
 async def ensure_due_stock_news(
@@ -1780,6 +1730,8 @@ __all__ = [
     "get_stock_news",
     "list_market_quotes",
     "list_reconciliation_operations",
+    "list_stock_profiles",
     "open_stock_session",
     "settle_stock_operation",
+    "upsert_stock_profile",
 ]

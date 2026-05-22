@@ -1,0 +1,102 @@
+"""Manage simulated stock company rows in data/stock.db.
+
+Usage::
+
+    uv run python scripts/manage_stock_company.py list
+    uv run python scripts/manage_stock_company.py upsert --help
+"""
+
+import asyncio
+import argparse
+from collections.abc import Sequence
+
+from rich.table import Table
+from rich.console import Console
+
+from discordbot.typings.stock import StockProfileUpsert
+from discordbot.cogs._stock.database import list_stock_profiles, upsert_stock_profile
+
+console = Console()
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parses CLI arguments."""
+    parser = argparse.ArgumentParser(
+        description="Create, update, and list stock_profile rows in data/stock.db."
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(name="list", help="List stock company profile rows.")
+
+    upsert = subparsers.add_parser(
+        name="upsert", help="Create or update one stock company profile row."
+    )
+    upsert.add_argument("symbol")
+    upsert.add_argument("--name", required=True)
+    upsert.add_argument("--category", required=True)
+    upsert.add_argument("--price-cents", required=True, type=int)
+    upsert.add_argument("--total-shares", required=True, type=int)
+    upsert.add_argument("--float-shares", required=True, type=int)
+    upsert.add_argument("--base-volatility-bps", required=True, type=int)
+    upsert.add_argument("--volatility-amplifier-bps", required=True, type=int)
+    upsert.add_argument("--liquidity-shares", required=True, type=int)
+    upsert.add_argument("--fair-value-cents", required=True, type=int)
+    upsert.add_argument("--mean-reversion-bps", required=True, type=int)
+    upsert.add_argument("--max-tick-change-bps", required=True, type=int)
+    upsert.add_argument("--news-cadence-hours", required=True, type=int)
+    return parser.parse_args(args=argv)
+
+
+def _profile_from_args(args: argparse.Namespace) -> StockProfileUpsert:
+    """Builds a typed stock profile payload from CLI arguments."""
+    return StockProfileUpsert(
+        symbol=args.symbol,
+        name=args.name,
+        category=args.category,
+        price_cents=args.price_cents,
+        total_shares=args.total_shares,
+        float_shares=args.float_shares,
+        base_volatility_bps=args.base_volatility_bps,
+        volatility_amplifier_bps=args.volatility_amplifier_bps,
+        liquidity_shares=args.liquidity_shares,
+        fair_value_cents=args.fair_value_cents,
+        mean_reversion_bps=args.mean_reversion_bps,
+        max_tick_change_bps=args.max_tick_change_bps,
+        news_cadence_hours=args.news_cadence_hours,
+    )
+
+
+async def _list_profiles() -> None:
+    """Prints stock profiles."""
+    table = Table(title="Stock companies")
+    for column in ("Symbol", "Name", "Category", "Price", "Fair Value", "Liquidity", "News Hours"):
+        table.add_column(column)
+    for profile in await list_stock_profiles():
+        table.add_row(
+            profile.symbol,
+            profile.name,
+            profile.category,
+            str(profile.price_cents),
+            str(profile.fair_value_cents),
+            f"{profile.liquidity_shares:,}",
+            str(profile.news_cadence_hours),
+        )
+    console.print(table)
+
+
+async def _async_main(argv: Sequence[str] | None = None) -> None:
+    """Runs the CLI."""
+    args = _parse_args(argv=argv)
+    if args.command == "list":
+        await _list_profiles()
+        return
+    profile = await upsert_stock_profile(profile=_profile_from_args(args=args))
+    console.print(f"Upserted stock company: [bold]{profile.symbol}[/bold] {profile.name}")
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Runs the stock company maintenance CLI."""
+    asyncio.run(main=_async_main(argv=argv))
+
+
+if __name__ == "__main__":
+    main()

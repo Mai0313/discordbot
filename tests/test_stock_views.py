@@ -13,8 +13,6 @@ from discordbot.cogs import stock
 from discordbot.cogs.stock import StockCogs
 from discordbot.cogs._stock import views as stock_views
 from discordbot.typings.stock import (
-    BCAT_NAME,
-    BCAT_SYMBOL,
     StockAction,
     StockMarketQuote,
     StockProfileView,
@@ -33,6 +31,9 @@ from discordbot.cogs._stock.views import (
     StockQuantityModal,
 )
 from discordbot.cogs._stock.presentation import build_settlement_embed
+
+BCAT_SYMBOL = "BCAT"
+BCAT_NAME = "破貓科技股份有限公司"
 
 
 class ResponseStub:

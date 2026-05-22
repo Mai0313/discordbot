@@ -5,11 +5,11 @@ import asyncio
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.typings.stock import StockProfileView, StockGeneratedNews
 from discordbot.typings.models import ModelSettings
-from discordbot.typings.stock import StockGeneratedNews, StockProfileView
 
 STOCK_NEWS_AI_TIMEOUT_SECONDS = 4.0
 STOCK_NEWS_PROMPT = """
@@ -93,9 +93,4 @@ class StockNewsAI(BaseModel):
         )
 
 
-__all__ = [
-    "STOCK_NEWS_AI_TIMEOUT_SECONDS",
-    "STOCK_NEWS_PROMPT",
-    "StockNewsAI",
-    "StockNewsDraft",
-]
+__all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "STOCK_NEWS_PROMPT", "StockNewsAI", "StockNewsDraft"]
