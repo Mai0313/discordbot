@@ -66,6 +66,32 @@ def pressure_from_order_flow(net_shares: float, liquidity_shares: int) -> int:
     )
 
 
+def order_impact_bps(shares: int, liquidity_shares: int, max_impact_bps: int) -> int:
+    """Converts an order size into bounded execution impact."""
+    if shares <= 0 or liquidity_shares <= 0 or max_impact_bps <= 0:
+        return 0
+    return clamp_bps(
+        value=round(shares * max_impact_bps / liquidity_shares), lower=0, upper=max_impact_bps
+    )
+
+
+def execution_price_cents(
+    reference_price_cents: int,
+    shares: int,
+    liquidity_shares: int,
+    max_impact_bps: int,
+    is_buy: bool,
+) -> int:
+    """Returns a side-adjusted execution price for one order leg."""
+    reference_price = max(reference_price_cents, 1)
+    impact_bps = order_impact_bps(
+        shares=shares, liquidity_shares=liquidity_shares, max_impact_bps=max_impact_bps
+    )
+    if is_buy:
+        return max(reference_price * (10_000 + impact_bps) + 9_999, 1) // 10_000
+    return max(reference_price * max(10_000 - impact_bps, 1) // 10_000, 1)
+
+
 def mean_reversion_bps(
     previous_price_cents: int, fair_value_cents: int, mean_reversion_strength_bps: int
 ) -> int:

@@ -232,6 +232,24 @@ class StockReconciliationOperation(BaseModel):
     legs: tuple[StockTradeLegView, ...]
 
 
+class StockSupplyAuditView(BaseModel):
+    """Read-only stock supply and exposure snapshot for maintenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    name: str
+    price_cents: int
+    total_shares: int
+    float_shares: int
+    long_shares: int
+    short_shares: int
+    available_long_shares: int
+    available_short_shares: int
+    liquidity_shares: int
+    non_final_operations: int
+
+
 __all__ = [
     "MAX_TICKS_PER_INTERACTION",
     "STOCK_ACTION_TIMEOUT_SECONDS",
@@ -251,6 +269,7 @@ __all__ = [
     "StockProfileView",
     "StockReconciliationOperation",
     "StockSettlementResult",
+    "StockSupplyAuditView",
     "StockTradeLegType",
     "StockTradeLegView",
 ]

@@ -29,7 +29,9 @@ from discordbot.cogs._stock.market import (
     cash_floor,
     format_price,
     tick_boundary,
+    order_impact_bps,
     decay_news_sentiment,
+    execution_price_cents,
     pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
@@ -162,6 +164,28 @@ async def _upsert_bcat_profile(
     )
 
 
+async def _upsert_illiquid_profile() -> StockProfileView:
+    """Creates a stock whose small orders visibly move execution price."""
+    return await stock_db.upsert_stock_profile(
+        profile=StockProfileUpsert(
+            symbol="THIN",
+            name="薄量測試股份有限公司",
+            category="測試",
+            price_cents=10_000,
+            total_shares=1_000,
+            float_shares=1_000,
+            base_volatility_bps=0,
+            volatility_amplifier_bps=0,
+            liquidity_shares=10,
+            fair_value_cents=10_000,
+            mean_reversion_bps=0,
+            max_tick_change_bps=1_000,
+            news_cadence_hours=8,
+        ),
+        now=datetime(2026, 1, 1),
+    )
+
+
 def test_stock_cash_rounding_and_price_format() -> None:
     """Prices are cent-based and cash conversion is explicit."""
     assert cash_ceil(cents=10_001) == 101
@@ -232,6 +256,33 @@ def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
     assert pressure_from_order_flow(net_shares=1_000, liquidity_shares=0) == 0
 
 
+def test_stock_execution_price_uses_order_size_and_liquidity() -> None:
+    """Large orders execute away from the quote, bounded by the per-stock cap."""
+    assert order_impact_bps(shares=0, liquidity_shares=10, max_impact_bps=1_000) == 0
+    assert order_impact_bps(shares=5, liquidity_shares=10, max_impact_bps=1_000) == 500
+    assert order_impact_bps(shares=100, liquidity_shares=10, max_impact_bps=1_000) == 1_000
+    assert (
+        execution_price_cents(
+            reference_price_cents=10_000,
+            shares=10,
+            liquidity_shares=10,
+            max_impact_bps=1_000,
+            is_buy=True,
+        )
+        == 11_000
+    )
+    assert (
+        execution_price_cents(
+            reference_price_cents=10_000,
+            shares=10,
+            liquidity_shares=10,
+            max_impact_bps=1_000,
+            is_buy=False,
+        )
+        == 9_000
+    )
+
+
 def test_stock_order_flow_decay_preserves_small_trade_pressure() -> None:
     """Small trades retain fractional decay before aggregate pressure conversion."""
     at = datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE)
@@ -286,6 +337,9 @@ async def test_stock_profile_upsert_manages_database_company(stock_empty_db: Non
     assert profile.liquidity_shares == BCAT_LIQUIDITY_SHARES
     profiles = await stock_db.list_stock_profiles()
     assert tuple(profile.symbol for profile in profiles) == (BCAT_SYMBOL,)
+    audits = await stock_db.list_stock_supply_audit()
+    assert audits[0].available_long_shares == BCAT_FLOAT_SHARES
+    assert audits[0].available_short_shares == BCAT_FLOAT_SHARES
     async with stock_db.open_stock_session() as session:
         tick_count = await session.scalar(
             statement=select(stock_db.StockPriceTick).where(
@@ -875,10 +929,72 @@ async def test_stock_oversized_buy_defaults_to_affordable_all(
     assert detail.position.long_shares == 1
 
 
+async def test_stock_buy_clamps_to_remaining_float(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """New long exposure cannot exceed the DB-managed floating share supply."""
+    await adjust_balance(user_id=1, name="alice", delta=100_000_000)
+
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity=f"{BCAT_FLOAT_SHARES + 10:,}",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert result.success
+    assert result.shares == BCAT_FLOAT_SHARES
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
+    assert detail.position.long_shares == BCAT_FLOAT_SHARES
+    audits = await stock_db.list_stock_supply_audit()
+    bcat_audit = next(audit for audit in audits if audit.symbol == BCAT_SYMBOL)
+    assert bcat_audit.available_long_shares == 0
+
+    blocked = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert not blocked.success
+    assert "流通股" in blocked.error
+
+
+async def test_stock_large_buy_uses_execution_slippage(
+    stock_empty_db: None, economy_isolated_db: None
+) -> None:
+    """Buy-side settlement stores the execution price after liquidity impact."""
+    await _upsert_illiquid_profile()
+    await adjust_balance(user_id=1, name="alice", delta=2_000)
+
+    result = await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="10",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert result.success
+    assert result.price_cents == 11_000
+    assert result.legs[0].price_cents == 11_000
+    assert result.legs[0].wallet_delta == -1_100
+    assert result.balance_after == 900
+
+
 async def test_stock_zero_affordable_buy_leaves_stock_untouched(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Oversized numeric requests still fail when the executable ALL quantity is zero."""
+    """Oversized numeric requests still fail with the real root cause when nothing is executable."""
     result = await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
         user_id=1,
@@ -890,7 +1006,7 @@ async def test_stock_zero_affordable_buy_leaves_stock_untouched(
     )
 
     assert not result.success
-    assert "股數必須是正整數" in result.error
+    assert "餘額不足" in result.error
     detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
     assert detail.position.long_shares == 0
     async with stock_db.open_stock_session() as session:
@@ -987,6 +1103,43 @@ async def test_stock_oversized_short_defaults_to_affordable_all(
     assert result.shares == 1
     assert result.balance_after == 0
     assert result.position.short_shares == 1
+
+
+async def test_stock_short_clamps_to_available_borrow(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """New short exposure cannot exceed the DB-managed floating share supply."""
+    await adjust_balance(user_id=1, name="alice", delta=100_000_000)
+
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.SHORT,
+        quantity=str(BCAT_FLOAT_SHARES + 10),
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert result.success
+    assert result.shares == BCAT_FLOAT_SHARES
+    assert result.position.short_shares == BCAT_FLOAT_SHARES
+    audits = await stock_db.list_stock_supply_audit()
+    bcat_audit = next(audit for audit in audits if audit.symbol == BCAT_SYMBOL)
+    assert bcat_audit.available_short_shares == 0
+
+    blocked = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.SHORT,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert not blocked.success
+    assert "借券" in blocked.error
 
 
 async def test_stock_cover_can_use_withheld_short_entry_value(

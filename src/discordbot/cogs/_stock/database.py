@@ -31,6 +31,7 @@ from discordbot.typings.stock import (
     StockProfileUpsert,
     StockDetailViewData,
     StockOperationStatus,
+    StockSupplyAuditView,
     StockSettlementResult,
     StockParticipantPositionView,
     StockReconciliationOperation,
@@ -47,6 +48,7 @@ from discordbot.cogs._stock.market import (
     format_price,
     tick_boundary,
     decay_news_sentiment,
+    execution_price_cents,
     pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
@@ -223,8 +225,24 @@ class _StockExecutionSnapshot(BaseModel):
 
     action: StockAction
     price_cents: int
+    liquidity_shares: int
+    max_order_impact_bps: int
     wallet_balance: int
     position: StockPositionView
+    available_long_shares: int
+    available_short_shares: int
+
+
+class _StockMarketExposure(BaseModel):
+    """Aggregate market exposure for one symbol."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    long_shares: int
+    short_shares: int
+    available_long_shares: int
+    available_short_shares: int
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -617,6 +635,40 @@ async def list_stock_profiles() -> tuple[StockProfileView, ...]:
             statement=select(StockProfile).order_by(StockProfile.symbol.asc())
         )
         return tuple(_profile_view(profile=profile) for profile in result.scalars())
+
+
+async def list_stock_supply_audit() -> tuple[StockSupplyAuditView, ...]:
+    """Lists DB-owned stock supply and aggregate exposure without advancing ticks."""
+    await _ensure_schema()
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=select(StockProfile).order_by(StockProfile.symbol.asc())
+        )
+        audits: list[StockSupplyAuditView] = []
+        for profile in result.scalars():
+            exposure = await _market_exposure(session=session, profile=profile)
+            non_final_count = await session.scalar(
+                statement=select(func.count(StockOperation.operation_id)).where(
+                    StockOperation.symbol == profile.symbol,
+                    StockOperation.status.notin_(_FINAL_OPERATION_STATUSES),
+                )
+            )
+            audits.append(
+                StockSupplyAuditView(
+                    symbol=profile.symbol,
+                    name=profile.name,
+                    price_cents=profile.price_cents,
+                    total_shares=profile.total_shares,
+                    float_shares=profile.float_shares,
+                    long_shares=exposure.long_shares,
+                    short_shares=exposure.short_shares,
+                    available_long_shares=exposure.available_long_shares,
+                    available_short_shares=exposure.available_short_shares,
+                    liquidity_shares=profile.liquidity_shares,
+                    non_final_operations=non_final_count or 0,
+                )
+            )
+        return tuple(audits)
 
 
 async def ensure_due_stock_news(
@@ -1112,6 +1164,26 @@ async def _public_position_views(
     return tuple(_participant_position_view(position=position) for position in result.scalars())
 
 
+async def _market_exposure(session: AsyncSession, profile: StockProfile) -> _StockMarketExposure:
+    """Returns aggregate long and short exposure against the configured float."""
+    result = await session.execute(
+        statement=select(
+            func.coalesce(func.sum(StockPosition.long_shares), 0),
+            func.coalesce(func.sum(StockPosition.short_shares), 0),
+        ).where(StockPosition.symbol == profile.symbol)
+    )
+    long_shares, short_shares = result.one()
+    available_long_shares = max(profile.float_shares - int(long_shares), 0)
+    available_short_shares = max(profile.float_shares - int(short_shares), 0)
+    return _StockMarketExposure(
+        symbol=profile.symbol,
+        long_shares=int(long_shares),
+        short_shares=int(short_shares),
+        available_long_shares=available_long_shares,
+        available_short_shares=available_short_shares,
+    )
+
+
 async def _news_views(session: AsyncSession, symbol: str) -> tuple[StockNewsView, ...]:
     """Returns recent news views inside the caller's stock session."""
     result = await session.execute(
@@ -1166,8 +1238,98 @@ def _prorated_amount(total: int, shares: int, current_shares: int) -> int:
     return total * shares // current_shares
 
 
+def _buy_execution_price(
+    price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
+) -> int:
+    """Returns the execution price for a buy-side leg."""
+    return execution_price_cents(
+        reference_price_cents=price_cents,
+        shares=shares,
+        liquidity_shares=liquidity_shares,
+        max_impact_bps=max_impact_bps,
+        is_buy=True,
+    )
+
+
+def _sell_execution_price(
+    price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
+) -> int:
+    """Returns the execution price for a sell-side leg."""
+    return execution_price_cents(
+        reference_price_cents=price_cents,
+        shares=shares,
+        liquidity_shares=liquidity_shares,
+        max_impact_bps=max_impact_bps,
+        is_buy=False,
+    )
+
+
+def _buy_cost(price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int) -> int:
+    """Returns integer cash needed for a buy-side leg."""
+    execution_price = _buy_execution_price(
+        price_cents=price_cents,
+        shares=shares,
+        liquidity_shares=liquidity_shares,
+        max_impact_bps=max_impact_bps,
+    )
+    return cash_ceil(cents=execution_price * shares)
+
+
+def _sell_proceeds(
+    price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
+) -> int:
+    """Returns integer cash received from a sell-side leg."""
+    execution_price = _sell_execution_price(
+        price_cents=price_cents,
+        shares=shares,
+        liquidity_shares=liquidity_shares,
+        max_impact_bps=max_impact_bps,
+    )
+    return cash_floor(cents=execution_price * shares)
+
+
+def _max_affordable_buy_shares(
+    price_cents: int,
+    wallet_balance: int,
+    liquidity_shares: int,
+    max_impact_bps: int,
+    share_cap: int,
+) -> int:
+    """Returns the largest buy-side size affordable after execution impact."""
+    if wallet_balance <= 0 or share_cap <= 0:
+        return 0
+    low = 0
+    high = share_cap
+    while low < high:
+        shares = (low + high + 1) // 2
+        if (
+            _buy_cost(
+                price_cents=price_cents,
+                shares=shares,
+                liquidity_shares=liquidity_shares,
+                max_impact_bps=max_impact_bps,
+            )
+            <= wallet_balance
+        ):
+            low = shares
+        else:
+            high = shares - 1
+    return low
+
+
+def _max_collateralized_short_shares(price_cents: int, wallet_balance: int, share_cap: int) -> int:
+    """Returns the largest short size allowed by the reference-price collateral."""
+    if wallet_balance <= 0 or share_cap <= 0:
+        return 0
+    return min(share_cap, wallet_balance * 100 // price_cents)
+
+
 def _max_coverable_short_shares(
-    price_cents: int, wallet_balance: int, position: StockPositionView
+    price_cents: int,
+    wallet_balance: int,
+    position: StockPositionView,
+    liquidity_shares: int,
+    max_impact_bps: int,
 ) -> int:
     """Returns how many short shares can be covered from the submit-time state."""
     low = 0
@@ -1180,7 +1342,12 @@ def _max_coverable_short_shares(
         released_entry_value = _prorated_amount(
             total=position.short_entry_value, shares=shares, current_shares=position.short_shares
         )
-        cover_cost = cash_ceil(cents=price_cents * shares)
+        cover_cost = _buy_cost(
+            price_cents=price_cents,
+            shares=shares,
+            liquidity_shares=liquidity_shares,
+            max_impact_bps=max_impact_bps,
+        )
         if cover_cost <= wallet_balance + released_collateral + released_entry_value:
             low = shares
         else:
@@ -1191,39 +1358,75 @@ def _max_coverable_short_shares(
 def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
     """Returns the largest quantity that can pass balance validation."""
     if snapshot.action == StockAction.SHORT:
-        sell_proceeds = cash_floor(cents=snapshot.price_cents * snapshot.position.long_shares)
+        sell_proceeds = _sell_proceeds(
+            price_cents=snapshot.price_cents,
+            shares=snapshot.position.long_shares,
+            liquidity_shares=snapshot.liquidity_shares,
+            max_impact_bps=snapshot.max_order_impact_bps,
+        )
         cash_after_selling = snapshot.wallet_balance + sell_proceeds
-        return snapshot.position.long_shares + cash_after_selling * 100 // snapshot.price_cents
+        short_shares = _max_collateralized_short_shares(
+            price_cents=snapshot.price_cents,
+            wallet_balance=cash_after_selling,
+            share_cap=snapshot.available_short_shares,
+        )
+        return snapshot.position.long_shares + short_shares
 
     if snapshot.position.short_shares <= 0:
-        return snapshot.wallet_balance * 100 // snapshot.price_cents
+        return _max_affordable_buy_shares(
+            price_cents=snapshot.price_cents,
+            wallet_balance=snapshot.wallet_balance,
+            liquidity_shares=snapshot.liquidity_shares,
+            max_impact_bps=snapshot.max_order_impact_bps,
+            share_cap=snapshot.available_long_shares,
+        )
 
     coverable_shares = _max_coverable_short_shares(
         price_cents=snapshot.price_cents,
         wallet_balance=snapshot.wallet_balance,
         position=snapshot.position,
+        liquidity_shares=snapshot.liquidity_shares,
+        max_impact_bps=snapshot.max_order_impact_bps,
     )
     if coverable_shares < snapshot.position.short_shares:
         return coverable_shares
-    cover_cost = cash_ceil(cents=snapshot.price_cents * snapshot.position.short_shares)
+    cover_cost = _buy_cost(
+        price_cents=snapshot.price_cents,
+        shares=snapshot.position.short_shares,
+        liquidity_shares=snapshot.liquidity_shares,
+        max_impact_bps=snapshot.max_order_impact_bps,
+    )
     cash_after_covering = (
         snapshot.wallet_balance
         + snapshot.position.short_collateral
         + snapshot.position.short_entry_value
         - cover_cost
     )
-    return (
-        snapshot.position.short_shares + max(cash_after_covering, 0) * 100 // snapshot.price_cents
+    return snapshot.position.short_shares + _max_affordable_buy_shares(
+        price_cents=snapshot.price_cents,
+        wallet_balance=max(cash_after_covering, 0),
+        liquidity_shares=snapshot.liquidity_shares,
+        max_impact_bps=snapshot.max_order_impact_bps,
+        share_cap=snapshot.available_long_shares,
     )
 
 
-def _clamp_quantity_to_available(
-    raw_quantity: str, parsed_quantity: int, snapshot: _StockExecutionSnapshot
-) -> int:
+def _clamp_quantity_to_available(parsed_quantity: int, snapshot: _StockExecutionSnapshot) -> int:
     """Treats oversized numeric quantities as the submit-time executable maximum."""
-    if _is_all_quantity(raw_quantity=raw_quantity) or parsed_quantity <= 0:
+    if parsed_quantity <= 0:
         return parsed_quantity
     return min(parsed_quantity, _max_executable_quantity(snapshot=snapshot))
+
+
+def _max_quantity_error(snapshot: _StockExecutionSnapshot) -> str:
+    """Returns the clearest validation error when nothing is executable."""
+    if snapshot.action == StockAction.BUY:
+        if snapshot.position.short_shares <= 0 and snapshot.available_long_shares <= 0:
+            return "目前沒有可買入的流通股"
+        return "餘額不足，無法買入或回補股票"
+    if snapshot.position.long_shares <= 0 and snapshot.available_short_shares <= 0:
+        return "目前沒有可借券做空的股數"
+    return "餘額不足，無法賣出或建立做空部位"
 
 
 def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit row
@@ -1255,6 +1458,14 @@ def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit r
         realized_pnl_delta=realized_pnl_delta,
         created_at=now,
     )
+
+
+def _average_leg_price(legs: tuple[StockTradeLegView, ...], fallback_price_cents: int) -> int:
+    """Returns a share-weighted execution price for a result summary."""
+    total_shares = sum(leg.shares for leg in legs)
+    if total_shares <= 0:
+        return fallback_price_cents
+    return sum(leg.price_cents * leg.shares for leg in legs) // total_shares
 
 
 def _insufficient_result(  # noqa: PLR0913 -- failed results preserve the submit-time context
@@ -1289,8 +1500,12 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
     action: StockAction,
     quantity: int,
     price_cents: int,
+    liquidity_shares: int,
+    max_order_impact_bps: int,
     wallet_balance: int,
     position: StockPositionView,
+    available_long_shares: int,
+    available_short_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
     """Builds ordered stock and wallet mutations from the submit-time state."""
@@ -1311,8 +1526,11 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
             user_id=user_id,
             quantity=quantity,
             price_cents=price_cents,
+            liquidity_shares=liquidity_shares,
+            max_order_impact_bps=max_order_impact_bps,
             wallet_balance=wallet_balance,
             position=position,
+            available_long_shares=available_long_shares,
             now=now,
         )
     return _build_short_plan(
@@ -1321,8 +1539,11 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
         user_id=user_id,
         quantity=quantity,
         price_cents=price_cents,
+        liquidity_shares=liquidity_shares,
+        max_order_impact_bps=max_order_impact_bps,
         wallet_balance=wallet_balance,
         position=position,
+        available_short_shares=available_short_shares,
         now=now,
     )
 
@@ -1333,8 +1554,11 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
     user_id: int,
     quantity: int,
     price_cents: int,
+    liquidity_shares: int,
+    max_order_impact_bps: int,
     wallet_balance: int,
     position: StockPositionView,
+    available_long_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
     """Builds a buy/cover plan."""
@@ -1356,7 +1580,13 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
         released_entry_value = _prorated_amount(
             total=short_entry_value, shares=cover_shares, current_shares=short_shares
         )
-        cover_cost = cash_ceil(cents=price_cents * cover_shares)
+        cover_price_cents = _buy_execution_price(
+            price_cents=price_cents,
+            shares=cover_shares,
+            liquidity_shares=liquidity_shares,
+            max_impact_bps=max_order_impact_bps,
+        )
+        cover_cost = cash_ceil(cents=cover_price_cents * cover_shares)
         if (
             cover_cost
             > released_collateral + released_entry_value + wallet_balance + wallet_delta_total
@@ -1380,7 +1610,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
                 user_id=user_id,
                 leg_type=StockTradeLegType.COVER_SHORT,
                 shares=cover_shares,
-                price_cents=price_cents,
+                price_cents=cover_price_cents,
                 wallet_delta=wallet_delta,
                 basis_delta=-released_entry_value,
                 collateral_delta=-released_collateral,
@@ -1396,7 +1626,23 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
         remaining -= cover_shares
 
     if remaining > 0:
-        cost = cash_ceil(cents=price_cents * remaining)
+        if remaining > available_long_shares:
+            return _insufficient_result(
+                symbol=symbol,
+                action=StockAction.BUY,
+                quantity=quantity,
+                price_cents=price_cents,
+                balance=wallet_balance,
+                position=position,
+                error=f"目前可買入流通股只剩 {available_long_shares:,} 股",
+            )
+        open_price_cents = _buy_execution_price(
+            price_cents=price_cents,
+            shares=remaining,
+            liquidity_shares=liquidity_shares,
+            max_impact_bps=max_order_impact_bps,
+        )
+        cost = cash_ceil(cents=open_price_cents * remaining)
         if cost > wallet_balance + wallet_delta_total:
             return _insufficient_result(
                 symbol=symbol,
@@ -1415,7 +1661,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
                 user_id=user_id,
                 leg_type=StockTradeLegType.OPEN_LONG,
                 shares=remaining,
-                price_cents=price_cents,
+                price_cents=open_price_cents,
                 wallet_delta=-cost,
                 basis_delta=cost,
                 collateral_delta=0,
@@ -1443,7 +1689,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
         symbol=symbol,
         requested_action=StockAction.BUY,
         shares=quantity,
-        price_cents=price_cents,
+        price_cents=_average_leg_price(legs=tuple(legs), fallback_price_cents=price_cents),
         wallet_delta=wallet_delta_total,
         balance_after=wallet_balance + wallet_delta_total,
         position=final_position,
@@ -1458,8 +1704,11 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
     user_id: int,
     quantity: int,
     price_cents: int,
+    liquidity_shares: int,
+    max_order_impact_bps: int,
     wallet_balance: int,
     position: StockPositionView,
+    available_short_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
     """Builds a short/sell plan."""
@@ -1478,7 +1727,13 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
         released_basis = _prorated_amount(
             total=long_cost_basis, shares=sell_shares, current_shares=long_shares
         )
-        proceeds = cash_floor(cents=price_cents * sell_shares)
+        sell_price_cents = _sell_execution_price(
+            price_cents=price_cents,
+            shares=sell_shares,
+            liquidity_shares=liquidity_shares,
+            max_impact_bps=max_order_impact_bps,
+        )
+        proceeds = cash_floor(cents=sell_price_cents * sell_shares)
         realized = proceeds - released_basis
         legs.append(
             _leg_view(
@@ -1488,7 +1743,7 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
                 user_id=user_id,
                 leg_type=StockTradeLegType.SELL_LONG,
                 shares=sell_shares,
-                price_cents=price_cents,
+                price_cents=sell_price_cents,
                 wallet_delta=proceeds,
                 basis_delta=-released_basis,
                 collateral_delta=0,
@@ -1503,6 +1758,16 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
         remaining -= sell_shares
 
     if remaining > 0:
+        if remaining > available_short_shares:
+            return _insufficient_result(
+                symbol=symbol,
+                action=StockAction.SHORT,
+                quantity=quantity,
+                price_cents=price_cents,
+                balance=wallet_balance,
+                position=position,
+                error=f"目前可借券做空股數只剩 {available_short_shares:,} 股",
+            )
         collateral = cash_ceil(cents=price_cents * remaining)
         if collateral > wallet_balance + wallet_delta_total:
             return _insufficient_result(
@@ -1514,7 +1779,13 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
                 position=position,
                 error=f"餘額不足，需要 {collateral:,} 作為做空擔保金",
             )
-        entry_value = cash_floor(cents=price_cents * remaining)
+        short_price_cents = _sell_execution_price(
+            price_cents=price_cents,
+            shares=remaining,
+            liquidity_shares=liquidity_shares,
+            max_impact_bps=max_order_impact_bps,
+        )
+        entry_value = cash_floor(cents=short_price_cents * remaining)
         legs.append(
             _leg_view(
                 operation_id=operation_id,
@@ -1523,7 +1794,7 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
                 user_id=user_id,
                 leg_type=StockTradeLegType.OPEN_SHORT,
                 shares=remaining,
-                price_cents=price_cents,
+                price_cents=short_price_cents,
                 wallet_delta=-collateral,
                 basis_delta=entry_value,
                 collateral_delta=collateral,
@@ -1552,7 +1823,7 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
         symbol=symbol,
         requested_action=StockAction.SHORT,
         shares=quantity,
-        price_cents=price_cents,
+        price_cents=_average_leg_price(legs=tuple(legs), fallback_price_cents=price_cents),
         wallet_delta=wallet_delta_total,
         balance_after=wallet_balance + wallet_delta_total,
         position=final_position,
@@ -1628,7 +1899,94 @@ def _wallet_delta_legs_for_plan(plan: _StockOperationPlan) -> tuple[WalletDeltaL
     return tuple(deltas)
 
 
-async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary returns typed validation and lifecycle failures directly
+async def _build_submit_time_operation_plan(  # noqa: PLR0913 -- submit-time planning needs every locked snapshot input
+    session: AsyncSession,
+    normalized_symbol: str,
+    operation_id: str,
+    user_id: int,
+    requested_action: StockAction,
+    quantity: str,
+    wallet_balance: int,
+    position: StockPositionView,
+    effective_now: datetime,
+    rng: Random | None,
+) -> _StockOperationPlan | StockSettlementResult:
+    """Builds a submit-time operation plan from locked market and position state."""
+    quote = await advance_market_in_session(
+        session=session,
+        symbol=normalized_symbol,
+        now=effective_now,
+        rng=rng,
+        begin_immediate=False,
+    )
+    profile = await session.get(entity=StockProfile, ident=normalized_symbol)
+    if profile is None:
+        msg = f"Unknown stock symbol: {normalized_symbol}"
+        raise ValueError(msg)
+    exposure = await _market_exposure(session=session, profile=profile)
+    try:
+        parsed_quantity = _parse_quantity(
+            raw_quantity=quantity,
+            action=requested_action,
+            price_cents=quote.profile.price_cents,
+            wallet_balance=wallet_balance,
+            position=position,
+        )
+    except ValueError:
+        return _insufficient_result(
+            symbol=normalized_symbol,
+            action=requested_action,
+            quantity=0,
+            price_cents=quote.profile.price_cents,
+            balance=wallet_balance,
+            position=position,
+            error="股數格式錯誤，請輸入正整數或 ALL",
+        )
+    snapshot = _StockExecutionSnapshot(
+        action=requested_action,
+        price_cents=quote.profile.price_cents,
+        liquidity_shares=quote.profile.liquidity_shares,
+        max_order_impact_bps=quote.profile.max_tick_change_bps,
+        wallet_balance=wallet_balance,
+        position=position,
+        available_long_shares=exposure.available_long_shares,
+        available_short_shares=exposure.available_short_shares,
+    )
+    requested_quantity = parsed_quantity
+    parsed_quantity = _clamp_quantity_to_available(
+        parsed_quantity=parsed_quantity, snapshot=snapshot
+    )
+    if (
+        requested_quantity > 0 or _is_all_quantity(raw_quantity=quantity)
+    ) and parsed_quantity <= 0:
+        return _insufficient_result(
+            symbol=normalized_symbol,
+            action=requested_action,
+            quantity=parsed_quantity,
+            price_cents=quote.profile.price_cents,
+            balance=wallet_balance,
+            position=position,
+            error=_max_quantity_error(snapshot=snapshot),
+        )
+
+    return _build_plan(
+        operation_id=operation_id,
+        symbol=normalized_symbol,
+        user_id=user_id,
+        action=requested_action,
+        quantity=parsed_quantity,
+        price_cents=quote.profile.price_cents,
+        liquidity_shares=quote.profile.liquidity_shares,
+        max_order_impact_bps=quote.profile.max_tick_change_bps,
+        wallet_balance=wallet_balance,
+        position=position,
+        available_long_shares=exposure.available_long_shares,
+        available_short_shares=exposure.available_short_shares,
+        now=effective_now,
+    )
+
+
+async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns typed validation and lifecycle failures directly
     symbol: str,
     user_id: int,
     user_name: str,
@@ -1660,53 +2018,17 @@ async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary 
                     balance=wallet_balance,
                     position=position,
                 )
-            quote = await advance_market_in_session(
+            plan = await _build_submit_time_operation_plan(
                 session=session,
-                symbol=normalized_symbol,
-                now=effective_now,
-                rng=rng,
-                begin_immediate=False,
-            )
-            try:
-                parsed_quantity = _parse_quantity(
-                    raw_quantity=quantity,
-                    action=requested_action,
-                    price_cents=quote.profile.price_cents,
-                    wallet_balance=wallet_balance,
-                    position=position,
-                )
-            except ValueError:
-                await session.rollback()
-                return _insufficient_result(
-                    symbol=normalized_symbol,
-                    action=requested_action,
-                    quantity=0,
-                    price_cents=quote.profile.price_cents,
-                    balance=wallet_balance,
-                    position=position,
-                    error="股數格式錯誤，請輸入正整數或 ALL",
-                )
-            parsed_quantity = _clamp_quantity_to_available(
-                raw_quantity=quantity,
-                parsed_quantity=parsed_quantity,
-                snapshot=_StockExecutionSnapshot(
-                    action=requested_action,
-                    price_cents=quote.profile.price_cents,
-                    wallet_balance=wallet_balance,
-                    position=position,
-                ),
-            )
-
-            plan = _build_plan(
+                normalized_symbol=normalized_symbol,
                 operation_id=operation_id,
-                symbol=normalized_symbol,
                 user_id=user_id,
-                action=requested_action,
-                quantity=parsed_quantity,
-                price_cents=quote.profile.price_cents,
+                requested_action=requested_action,
+                quantity=quantity,
                 wallet_balance=wallet_balance,
                 position=position,
-                now=effective_now,
+                effective_now=effective_now,
+                rng=rng,
             )
             if not plan.success:
                 await session.rollback()
@@ -1957,6 +2279,7 @@ __all__ = [
     "list_market_quotes",
     "list_reconciliation_operations",
     "list_stock_profiles",
+    "list_stock_supply_audit",
     "open_stock_session",
     "settle_stock_operation",
     "upsert_stock_profile",
