@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from sqlalchemy import select, update, inspect
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
@@ -196,6 +196,38 @@ async def test_stock_compressed_day_rollover_materializes_midnight(
 
     assert quotes[0].profile.day_open_price_cents == midnight_tick.scalar_one()
     assert quotes[0].profile.previous_close_price_cents == previous_close_tick.scalar_one()
+
+
+async def test_stock_day_rollover_uses_persisted_boundary_price(
+    stock_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Day open follows the stored tick when a concurrent writer wins the boundary."""
+    await _set_bcat_price(price_cents=10_000)
+    original_insert_tick = stock_db._insert_price_tick_or_existing
+    midnight = datetime(2026, 1, 2, 0, 0, tzinfo=TAIWAN_TIMEZONE)
+    persisted_open_price = 12_345
+
+    async def insert_tick_after_concurrent_writer(
+        session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
+    ) -> int:
+        if created_at == midnight:
+            session.add(
+                instance=stock_db.StockPriceTick(
+                    symbol=symbol, price_cents=persisted_open_price, created_at=created_at
+                )
+            )
+            await session.flush()
+        return await original_insert_tick(
+            session=session, symbol=symbol, price_cents=price_cents, created_at=created_at
+        )
+
+    monkeypatch.setattr(
+        stock_db, "_insert_price_tick_or_existing", insert_tick_after_concurrent_writer
+    )
+
+    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
+
+    assert quotes[0].profile.day_open_price_cents == persisted_open_price
 
 
 async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(

@@ -662,12 +662,14 @@ async def advance_market_in_session(
             volatility_amplifier_bps=profile.volatility_amplifier_bps,
             rng=effective_rng,
         )
-        if as_taipei(dt=boundary).date() != as_taipei(dt=previous_tick_at).date():
+        rolls_over_day = as_taipei(dt=boundary).date() != as_taipei(dt=previous_tick_at).date()
+        if rolls_over_day:
             profile.previous_close_price_cents = current_price
-            profile.day_open_price_cents = next_price
         current_price = await _insert_price_tick_or_existing(
             session=session, symbol=symbol, price_cents=next_price, created_at=boundary
         )
+        if rolls_over_day:
+            profile.day_open_price_cents = current_price
         previous_tick_at = boundary
 
     if current_price != profile.price_cents:
