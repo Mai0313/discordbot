@@ -32,8 +32,8 @@ class StockOperationStatus(StrEnum):
     STOCK_APPLIED = "stock_applied"
     WALLET_APPLIED = "wallet_applied"
     APPLIED = "applied"
+    FAILED = "failed"
     RECONCILE_REQUIRED = "reconcile_required"
-    REVERSED = "reversed"
 
 
 class StockTradeLegType(StrEnum):

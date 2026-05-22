@@ -21,7 +21,7 @@ from discordbot.typings.stock import (
     StockOperationStatus,
     StockSettlementResult,
 )
-from discordbot.typings.economy import WalletDeltaLeg
+from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
 from discordbot.cogs._stock.chart import build_price_chart
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
@@ -56,6 +56,7 @@ async def stock_isolated_db(
     monkeypatch.setattr(stock_db, "_engine", engine)
     monkeypatch.setattr(stock_db, "_schema_ready_for", None)
     stock_db._operation_locks.clear()
+    stock_db._market_locks.clear()
     yield
     await engine.dispose()
 
@@ -159,6 +160,27 @@ async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated
 
     assert quotes[0].profile.previous_close_price_cents == 10_000
     assert quotes[0].profile.day_open_price_cents > 0
+
+
+async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(
+    stock_isolated_db: None,
+) -> None:
+    """Concurrent quote refreshes do not fork price history at the same tick."""
+    await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
+
+    await asyncio.gather(
+        stock_db.list_market_quotes(now=datetime(2026, 1, 1, 2), rng=_rng(seed=1)),
+        stock_db.list_market_quotes(now=datetime(2026, 1, 1, 2), rng=_rng(seed=1)),
+    )
+
+    async with stock_db.open_stock_session() as session:
+        result = await session.execute(
+            statement=select(stock_db.StockPriceTick.created_at).where(
+                stock_db.StockPriceTick.symbol == BCAT_SYMBOL
+            )
+        )
+    tick_boundaries = result.scalars().all()
+    assert len(tick_boundaries) == len(set(tick_boundaries))
 
 
 async def test_stock_buy_long_debits_wallet_and_writes_ledger(
@@ -397,6 +419,11 @@ async def test_stock_cover_can_use_withheld_short_entry_value(
     assert covered.position.short_collateral == 0
     assert covered.position.short_entry_value == 0
     assert covered.position.realized_pnl == -100
+    async with open_session() as session:
+        wallet = await session.get(UserWallet, 1)
+        assert wallet is not None
+        assert wallet.total_earned == 300
+        assert wallet.total_spent == 300
 
 
 async def test_stock_compound_operation_uses_ordered_wallet_legs(
@@ -481,9 +508,9 @@ async def test_stock_reconciliation_helper_lists_non_final_operations(
     """Wallet-side uncertainty is surfaced as a reconciliation operation."""
     await adjust_balance(user_id=1, name="alice", delta=1_000)
 
-    async def fail_wallet(**_kwargs: object) -> None:
+    async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
         """Simulates a wallet-side failure after stock commit."""
-        return
+        raise RuntimeError("wallet unavailable")
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
     result = await stock_db.settle_stock_operation(
@@ -504,6 +531,79 @@ async def test_stock_reconciliation_helper_lists_non_final_operations(
     assert pending[0].user_name == "alice"
     assert pending[0].legs[0].wallet_delta == -100
     assert pending[0].legs[0].user_name == "alice"
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
+    assert detail.position.long_shares == 0
+
+
+async def test_stock_reconciliation_blocks_later_trades(
+    stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-final operation blocks more trading for the same user and symbol."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000)
+    original_apply = stock_db.apply_ordered_wallet_deltas
+
+    async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
+        """Simulates uncertain wallet application."""
+        raise RuntimeError("wallet unavailable")
+
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
+    first = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", original_apply)
+
+    second = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert first.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert not second.success
+    assert second.operation_id == first.operation_id
+    assert "未完成" in second.error
+
+
+async def test_stock_wallet_reject_does_not_apply_position(
+    stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full-debit wallet rejection finalizes as failed without a stock position."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000)
+
+    async def reject_wallet(**_kwargs: object) -> None:
+        """Simulates a wallet race that makes the debit impossible."""
+        return
+
+    monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", reject_wallet)
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert not result.success
+    assert result.status == StockOperationStatus.FAILED
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
+    assert detail.position.long_shares == 0
+    assert await stock_db.list_reconciliation_operations() == ()
+    async with stock_db.open_stock_session() as session:
+        operation = await session.get(stock_db.StockOperation, result.operation_id)
+        assert operation is not None
+        assert operation.status == StockOperationStatus.FAILED.value
 
 
 async def test_stock_success_records_wallet_applied_before_final_status(
@@ -536,7 +636,11 @@ async def test_stock_success_records_wallet_applied_before_final_status(
     )
 
     assert result.success
-    assert statuses == [StockOperationStatus.WALLET_APPLIED, StockOperationStatus.APPLIED]
+    assert statuses == [StockOperationStatus.WALLET_APPLIED]
+    async with stock_db.open_stock_session() as session:
+        operation = await session.get(stock_db.StockOperation, result.operation_id)
+        assert operation is not None
+        assert operation.status == StockOperationStatus.APPLIED.value
 
 
 async def test_ordered_wallet_deltas_do_not_touch_casino_counters(

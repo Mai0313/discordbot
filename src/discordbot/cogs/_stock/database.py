@@ -64,8 +64,15 @@ _schema_lock_loop: asyncio.AbstractEventLoop | None = None
 _operation_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _operation_lock_refcounts: dict[tuple[int, str], int] = {}
 _operation_locks_loop: asyncio.AbstractEventLoop | None = None
+_market_locks: dict[str, asyncio.Lock] = {}
+_market_lock_refcounts: dict[str, int] = {}
+_market_locks_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _RECENT_TRADE_DAYS: Final[int] = 7
+_FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
+    StockOperationStatus.APPLIED.value,
+    StockOperationStatus.FAILED.value,
+)
 
 
 class Base(DeclarativeBase):
@@ -160,7 +167,9 @@ class StockPriceTick(Base):
     """Materialized price tick."""
 
     __tablename__ = "stock_price_tick"
-    __table_args__ = (Index("ix_stock_price_tick_symbol_created", "symbol", "created_at"),)
+    __table_args__ = (
+        Index("ix_stock_price_tick_symbol_created", "symbol", "created_at", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(length=16), nullable=False)
@@ -242,6 +251,38 @@ async def _operation_lock(user_id: int, symbol: str) -> AsyncIterator[None]:
             _operation_lock_refcounts[key] = refcount
 
 
+@asynccontextmanager
+async def _market_lock(symbol: str) -> AsyncIterator[None]:
+    """Returns a per-symbol market advancement lock bound to the current event loop."""
+    global _market_locks_loop  # noqa: PLW0603 -- loop-local lock map
+    loop = asyncio.get_running_loop()
+    if _market_locks_loop is not loop:
+        _market_locks.clear()
+        _market_lock_refcounts.clear()
+        _market_locks_loop = loop
+    key = symbol.upper()
+    lock = _market_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _market_locks[key] = lock
+    _market_lock_refcounts[key] = _market_lock_refcounts.get(key, 0) + 1
+    acquired = False
+    try:
+        await lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            lock.release()
+        refcount = _market_lock_refcounts.get(key, 1) - 1
+        if refcount <= 0:
+            _market_lock_refcounts.pop(key, None)
+            if _market_locks.get(key) is lock:
+                _market_locks.pop(key, None)
+        else:
+            _market_lock_refcounts[key] = refcount
+
+
 def open_stock_session() -> AsyncSession:
     """Creates an async session bound to the current stock database engine."""
     return AsyncSession(bind=_engine, expire_on_commit=False)
@@ -289,9 +330,9 @@ async def _seed_initial_tick(conn: Any, now: datetime) -> None:  # noqa: ANN401 
     if existing_tick.scalar_one_or_none() is not None:
         return
     await conn.execute(
-        statement=insert(StockPriceTick).values(
-            symbol=BCAT_SYMBOL, price_cents=BCAT_INITIAL_PRICE_CENTS, created_at=now
-        )
+        statement=insert(StockPriceTick)
+        .values(symbol=BCAT_SYMBOL, price_cents=BCAT_INITIAL_PRICE_CENTS, created_at=now)
+        .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
     )
 
 
@@ -425,6 +466,26 @@ async def _latest_tick(session: AsyncSession, symbol: str) -> StockPriceTick | N
     return result.scalar_one_or_none()
 
 
+async def _insert_price_tick_or_existing(
+    session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
+) -> int:
+    """Inserts a tick once and returns the persisted price for that boundary."""
+    result = await session.execute(
+        statement=insert(StockPriceTick)
+        .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
+        .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
+    )
+    if result.rowcount:
+        return price_cents
+    existing = await session.execute(
+        statement=select(StockPriceTick.price_cents)
+        .where(StockPriceTick.symbol == symbol, StockPriceTick.created_at == created_at)
+        .order_by(StockPriceTick.id.desc())
+        .limit(1)
+    )
+    return existing.scalar_one()
+
+
 async def _news_sentiment_bps(session: AsyncSession, symbol: str, at: datetime) -> int:
     """Returns decayed deterministic news sentiment for a tick."""
     result = await session.execute(
@@ -485,19 +546,18 @@ async def advance_market_in_session(
 
     latest_tick = await _latest_tick(session=session, symbol=symbol)
     if latest_tick is None:
-        latest_tick = StockPriceTick(
+        latest_tick_at = tick_boundary(dt=effective_now)
+        current_price = await _insert_price_tick_or_existing(
+            session=session,
             symbol=symbol,
             price_cents=profile.price_cents,
-            created_at=tick_boundary(dt=effective_now),
+            created_at=latest_tick_at,
         )
-        session.add(instance=latest_tick)
-        await session.flush()
-
-    current_price = latest_tick.price_cents
-    previous_tick_at = latest_tick.created_at
-    for boundary in tick_boundaries_to_apply(
-        latest_tick_at=latest_tick.created_at, now=effective_now
-    ):
+        previous_tick_at = latest_tick_at
+    else:
+        current_price = latest_tick.price_cents
+        previous_tick_at = latest_tick.created_at
+    for boundary in tick_boundaries_to_apply(latest_tick_at=previous_tick_at, now=effective_now):
         news_sentiment = await _news_sentiment_bps(session=session, symbol=symbol, at=boundary)
         pressure_bps = await _recent_pressure_bps(session=session, symbol=symbol, at=boundary)
         next_price = calculate_next_price_cents(
@@ -511,10 +571,9 @@ async def advance_market_in_session(
         if as_taipei(dt=boundary).date() != as_taipei(dt=previous_tick_at).date():
             profile.previous_close_price_cents = current_price
             profile.day_open_price_cents = next_price
-        session.add(
-            instance=StockPriceTick(symbol=symbol, price_cents=next_price, created_at=boundary)
+        current_price = await _insert_price_tick_or_existing(
+            session=session, symbol=symbol, price_cents=next_price, created_at=boundary
         )
-        current_price = next_price
         previous_tick_at = boundary
 
     if current_price != profile.price_cents:
@@ -531,11 +590,16 @@ async def list_market_quotes(
     await _ensure_schema()
     async with open_stock_session() as session:
         symbols_result = await session.execute(statement=select(StockProfile.symbol))
-        quotes = [
-            await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
-            for symbol in symbols_result.scalars()
-        ]
-        await session.commit()
+        symbols = tuple(symbols_result.scalars().all())
+        quotes: list[StockMarketQuote] = []
+        for symbol in symbols:
+            async with _market_lock(symbol=symbol):
+                quotes.append(
+                    await advance_market_in_session(
+                        session=session, symbol=symbol, now=now, rng=rng
+                    )
+                )
+                await session.commit()
         return tuple(quotes)
 
 
@@ -548,7 +612,7 @@ async def get_stock_detail(
 ) -> StockDetailViewData:
     """Returns a personal stock detail view after lazy advancement."""
     await _ensure_schema()
-    async with open_stock_session() as session:
+    async with open_stock_session() as session, _market_lock(symbol=symbol):
         quote = await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
         position = await _get_position_view(
             session=session, symbol=symbol, user_id=user_id, user_name=user_name
@@ -1014,7 +1078,74 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
     )
 
 
-async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade request are all needed
+async def _blocking_operation(
+    session: AsyncSession, symbol: str, user_id: int
+) -> StockOperation | None:
+    """Returns the oldest non-final operation that blocks new trades."""
+    result = await session.execute(
+        statement=select(StockOperation)
+        .where(
+            StockOperation.symbol == symbol,
+            StockOperation.user_id == user_id,
+            StockOperation.status.notin_(_FINAL_OPERATION_STATUSES),
+        )
+        .order_by(StockOperation.created_at.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _blocked_operation_result(
+    operation: StockOperation, action: StockAction, balance: int, position: StockPositionView
+) -> StockSettlementResult:
+    """Builds a failed result when a previous operation needs attention first."""
+    status = StockOperationStatus(operation.status)
+    return StockSettlementResult(
+        success=False,
+        operation_id=operation.operation_id,
+        symbol=operation.symbol,
+        requested_action=action,
+        shares=0,
+        price_cents=0,
+        wallet_delta=0,
+        balance_after=balance,
+        position=position,
+        legs=(),
+        status=status,
+        error=(
+            "仍有未完成的股票交易需要人工確認，"
+            f"操作代碼={operation.operation_id}，狀態={status.value}"
+        ),
+    )
+
+
+def _wallet_delta_legs_for_plan(plan: _StockOperationPlan) -> tuple[WalletDeltaLeg, ...]:
+    """Expands trade legs into ordered gross wallet movements."""
+    deltas: list[WalletDeltaLeg] = []
+    for leg in plan.legs:
+        reason_prefix = f"stock:{plan.operation_id}:{leg.leg_order}"
+        if leg.leg_type != StockTradeLegType.COVER_SHORT:
+            if leg.wallet_delta != 0:
+                deltas.append(WalletDeltaLeg(delta=leg.wallet_delta, reason=reason_prefix))
+            continue
+
+        released_collateral = -leg.collateral_delta
+        released_entry_value = -leg.basis_delta
+        cover_cost = released_entry_value - leg.realized_pnl_delta
+        if released_collateral:
+            deltas.append(
+                WalletDeltaLeg(delta=released_collateral, reason=f"{reason_prefix}:collateral")
+            )
+        if released_entry_value:
+            deltas.append(
+                WalletDeltaLeg(delta=released_entry_value, reason=f"{reason_prefix}:short_entry")
+            )
+        if cover_cost:
+            deltas.append(WalletDeltaLeg(delta=-cover_cost, reason=f"{reason_prefix}:cover"))
+    return tuple(deltas)
+
+
+async def settle_stock_operation(  # noqa: PLR0911, PLR0913 -- Service boundary returns typed validation and lifecycle failures directly
     symbol: str,
     user_id: int,
     user_name: str,
@@ -1031,12 +1162,22 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
         wallet_balance = await get_balance(user_id=user_id)
         effective_now = now or _database_now()
         operation_id = str(uuid.uuid4())
-        async with open_stock_session() as session:
-            quote = await advance_market_in_session(
-                session=session, symbol=normalized_symbol, now=effective_now, rng=rng
+        async with open_stock_session() as session, _market_lock(symbol=normalized_symbol):
+            blocking_operation = await _blocking_operation(
+                session=session, symbol=normalized_symbol, user_id=user_id
             )
             position = await _get_position_view(
                 session=session, symbol=normalized_symbol, user_id=user_id
+            )
+            if blocking_operation is not None:
+                return _blocked_operation_result(
+                    operation=blocking_operation,
+                    action=requested_action,
+                    balance=wallet_balance,
+                    position=position,
+                )
+            quote = await advance_market_in_session(
+                session=session, symbol=normalized_symbol, now=effective_now, rng=rng
             )
             try:
                 parsed_quantity = _parse_quantity(
@@ -1080,19 +1221,14 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
                     ),
                 }
             )
-            await _commit_stock_side(session=session, plan=plan, now=effective_now)
+            await _commit_pending_operation(session=session, plan=plan, now=effective_now)
 
         try:
             wallet_result = await apply_ordered_wallet_deltas(
                 user_id=user_id,
                 name=user_name,
                 avatar_url=avatar_url,
-                deltas=tuple(
-                    WalletDeltaLeg(
-                        delta=leg.wallet_delta, reason=f"stock:{operation_id}:{leg.leg_order}"
-                    )
-                    for leg in plan.legs
-                ),
+                deltas=_wallet_delta_legs_for_plan(plan=plan),
             )
         except Exception as exc:
             await _mark_operation(
@@ -1110,14 +1246,14 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
         if wallet_result is None:
             await _mark_operation(
                 operation_id=operation_id,
-                status=StockOperationStatus.RECONCILE_REQUIRED,
-                failure_reason="wallet delta failed after stock side was applied",
+                status=StockOperationStatus.FAILED,
+                failure_reason="wallet delta rejected before stock position was applied",
             )
             return plan.model_copy(
                 update={
                     "success": False,
-                    "status": StockOperationStatus.RECONCILE_REQUIRED,
-                    "error": f"交易狀態需要人工對帳，操作代碼={operation_id}",
+                    "status": StockOperationStatus.FAILED,
+                    "error": "交易未完成，送出時餘額已不足，沒有變更股票部位",
                 }
             )
 
@@ -1126,9 +1262,21 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
             status=StockOperationStatus.WALLET_APPLIED,
             failure_reason="",
         )
-        await _mark_operation(
-            operation_id=operation_id, status=StockOperationStatus.APPLIED, failure_reason=""
-        )
+        try:
+            await _finalize_stock_side(plan=plan, now=effective_now)
+        except Exception as exc:
+            await _mark_operation(
+                operation_id=operation_id,
+                status=StockOperationStatus.RECONCILE_REQUIRED,
+                failure_reason=f"stock finalization failed after wallet side was applied: {type(exc).__name__}",
+            )
+            return plan.model_copy(
+                update={
+                    "success": False,
+                    "status": StockOperationStatus.RECONCILE_REQUIRED,
+                    "error": f"交易狀態需要人工對帳，操作代碼={operation_id}",
+                }
+            )
         return plan.model_copy(
             update={
                 "status": StockOperationStatus.APPLIED,
@@ -1137,10 +1285,10 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
         )
 
 
-async def _commit_stock_side(
+async def _commit_pending_operation(
     session: AsyncSession, plan: _StockOperationPlan, now: datetime
 ) -> None:
-    """Commits stock position, operation, and trade legs before wallet mutation."""
+    """Commits the planned operation and legs before wallet mutation."""
     session.add(
         instance=StockOperation(
             operation_id=plan.operation_id or "",
@@ -1154,7 +1302,6 @@ async def _commit_stock_side(
             updated_at=now,
         )
     )
-    await _write_position(session=session, position=plan.position, now=now)
     for leg in plan.legs:
         session.add(
             instance=StockTradeLeg(
@@ -1174,12 +1321,19 @@ async def _commit_stock_side(
             )
         )
     await session.flush()
-    await session.execute(
-        statement=update(StockOperation)
-        .where(StockOperation.operation_id == plan.operation_id)
-        .values(status=StockOperationStatus.STOCK_APPLIED.value, updated_at=now)
-    )
     await session.commit()
+
+
+async def _finalize_stock_side(plan: _StockOperationPlan, now: datetime) -> None:
+    """Applies the stock position after wallet legs have committed."""
+    async with open_stock_session() as session:
+        await _write_position(session=session, position=plan.position, now=now)
+        await session.execute(
+            statement=update(StockOperation)
+            .where(StockOperation.operation_id == plan.operation_id)
+            .values(status=StockOperationStatus.APPLIED.value, updated_at=now)
+        )
+        await session.commit()
 
 
 async def _write_position(
@@ -1238,12 +1392,7 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
     async with open_stock_session() as session:
         result = await session.execute(
             statement=select(StockOperation)
-            .where(
-                StockOperation.status.notin_([
-                    StockOperationStatus.APPLIED.value,
-                    StockOperationStatus.REVERSED.value,
-                ])
-            )
+            .where(StockOperation.status.notin_(_FINAL_OPERATION_STATUSES))
             .order_by(StockOperation.created_at.asc())
         )
         operations = list(result.scalars())
