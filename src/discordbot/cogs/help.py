@@ -70,7 +70,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**Simulated Stock Market** — `/stock`\n"
-            "Open the public market list for BCAT, then select a stock for an ephemeral detail view with balance, long/short positions, recent trades, 7D chart, news, and buy/short operations."
+            "Open the public BCAT market message. Stock selection, detail, news, buy/short operations, settlement results, public position summaries, and recent trade history all update that same message, which cleans itself up after 180 idle seconds."
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -170,7 +170,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**模擬股市** — `/stock`（`/股票`）\n"
-            "開啟公開 market list，目前先支援 BCAT；選股後會進入 ephemeral detail view，顯示餘額、long/short 部位、近期交易、7D chart、新聞，以及買入/做空操作。"
+            "開啟公開 BCAT market message；選股、detail、新聞、買入/做空、settlement result、公開部位摘要與近期交易紀錄都會更新同一則訊息，180 秒無互動後自動清理。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"
@@ -268,7 +268,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場** — `/stock`\n"
-            "公開 market list から BCAT を選択し、ephemeral detail view で balance、long/short positions、recent trades、7D chart、news、buy/short operations を確認できます。"
+            "公開 BCAT market message で stock selection、detail、news、buy/short operations、settlement results、public position summaries、recent trade history を同じ message 上で更新し、180秒 idle で自動削除します。"
         ),
         "vip": (
             "**VIP** — `/vip`\n"

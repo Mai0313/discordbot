@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from sqlalchemy import Index, String, Integer, DateTime, event, select, update
+from sqlalchemy import Index, String, Integer, DateTime, or_, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -35,6 +35,7 @@ from discordbot.typings.stock import (
     StockDetailViewData,
     StockOperationStatus,
     StockSettlementResult,
+    StockParticipantPositionView,
     StockReconciliationOperation,
 )
 from discordbot.typings.economy import WalletDeltaLeg
@@ -65,6 +66,14 @@ _operation_lock_refcounts: dict[tuple[int, str], int] = {}
 _operation_locks_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _RECENT_TRADE_DAYS: Final[int] = 7
+_MIGRATED_COLUMNS: Final[dict[str, dict[str, str]]] = {
+    "stock_position": {
+        "user_name": "ALTER TABLE stock_position ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
+    },
+    "stock_operation": {
+        "user_name": "ALTER TABLE stock_operation ADD COLUMN user_name VARCHAR(128) NOT NULL DEFAULT ''"
+    },
+}
 
 
 class Base(DeclarativeBase):
@@ -98,6 +107,7 @@ class StockPosition(Base):
 
     symbol: Mapped[str] = mapped_column(String(length=16), primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     long_shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     long_cost_basis: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     short_shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -120,6 +130,7 @@ class StockOperation(Base):
     operation_id: Mapped[str] = mapped_column(String(length=36), primary_key=True)
     symbol: Mapped[str] = mapped_column(String(length=16), nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     requested_action: Mapped[str] = mapped_column(String(length=16), nullable=False)
     status: Mapped[str] = mapped_column(String(length=32), nullable=False)
     failure_reason: Mapped[str] = mapped_column(String(length=512), default="", nullable=False)
@@ -253,6 +264,7 @@ async def _ensure_schema() -> None:
             return
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await _ensure_migrated_columns(conn=conn)
             now = _database_now()
             boundary = tick_boundary(dt=now)
             await conn.execute(
@@ -275,6 +287,16 @@ async def _ensure_schema() -> None:
             await _seed_initial_tick(conn=conn, now=boundary)
             await _seed_news(conn=conn, now=now)
         _schema_ready_for = _engine
+
+
+async def _ensure_migrated_columns(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
+    """Adds compatibility columns missing from earlier stock MVP databases."""
+    for table_name, column_ddls in _MIGRATED_COLUMNS.items():
+        result = await conn.execute(statement=text(text=f"PRAGMA table_info({table_name})"))
+        columns = {str(row[1]) for row in result.fetchall()}
+        for column_name, ddl in column_ddls.items():
+            if column_name not in columns:
+                await conn.execute(statement=text(text=ddl))
 
 
 async def _seed_initial_tick(conn: Any, now: datetime) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
@@ -335,6 +357,7 @@ def _position_view(position: StockPosition | None, symbol: str, user_id: int) ->
     return StockPositionView(
         symbol=position.symbol,
         user_id=position.user_id,
+        user_name=position.user_name,
         long_shares=position.long_shares,
         long_cost_basis=position.long_cost_basis,
         short_shares=position.short_shares,
@@ -344,13 +367,25 @@ def _position_view(position: StockPosition | None, symbol: str, user_id: int) ->
     )
 
 
-def _trade_leg_view(leg: StockTradeLeg) -> StockTradeLegView:
+def _participant_position_view(position: StockPosition) -> StockParticipantPositionView:
+    """Projects a stock position into a public participant summary."""
+    return StockParticipantPositionView(
+        user_id=position.user_id,
+        user_name=position.user_name or str(position.user_id),
+        long_shares=position.long_shares,
+        short_shares=position.short_shares,
+        realized_pnl=position.realized_pnl,
+    )
+
+
+def _trade_leg_view(leg: StockTradeLeg, user_name: str = "") -> StockTradeLegView:
     """Projects an ORM trade leg into a typed view."""
     return StockTradeLegView(
         operation_id=leg.operation_id,
         leg_order=leg.leg_order,
         symbol=leg.symbol,
         user_id=leg.user_id,
+        user_name=user_name or str(leg.user_id),
         leg_type=StockTradeLegType(leg.leg_type),
         shares=leg.shares,
         price_cents=leg.price_cents,
@@ -528,7 +563,8 @@ async def get_stock_detail(
     async with open_stock_session() as session:
         quote = await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
         position = await _get_position_view(session=session, symbol=symbol, user_id=user_id)
-        recent_trades = await _recent_trade_views(session=session, symbol=symbol, user_id=user_id)
+        recent_trades = await _recent_trade_views(session=session, symbol=symbol)
+        public_positions = await _public_position_views(session=session, symbol=symbol)
         news = await _news_views(session=session, symbol=symbol)
         ticks = await _price_tick_views(session=session, symbol=symbol, now=now or _database_now())
         await session.commit()
@@ -538,6 +574,7 @@ async def get_stock_detail(
         balance=balance,
         position=position,
         recent_trades=recent_trades,
+        public_positions=public_positions,
         news=news,
         ticks=ticks,
     )
@@ -563,21 +600,42 @@ async def _get_position_view(
 
 
 async def _recent_trade_views(
-    session: AsyncSession, symbol: str, user_id: int
+    session: AsyncSession, symbol: str, user_id: int | None = None
 ) -> tuple[StockTradeLegView, ...]:
-    """Returns recent applied trade legs for one user and stock."""
+    """Returns recent applied trade legs for a stock, optionally scoped to one user."""
+    filters = [
+        StockTradeLeg.symbol == symbol,
+        StockOperation.status == StockOperationStatus.APPLIED.value,
+    ]
+    if user_id is not None:
+        filters.append(StockTradeLeg.user_id == user_id)
     result = await session.execute(
-        statement=select(StockTradeLeg)
+        statement=select(StockTradeLeg, StockOperation.user_name)
         .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
-        .where(
-            StockTradeLeg.symbol == symbol,
-            StockTradeLeg.user_id == user_id,
-            StockOperation.status == StockOperationStatus.APPLIED.value,
-        )
+        .where(*filters)
         .order_by(StockTradeLeg.created_at.desc(), StockTradeLeg.leg_order.desc())
         .limit(8)
     )
-    return tuple(_trade_leg_view(leg=leg) for leg in result.scalars())
+    return tuple(_trade_leg_view(leg=leg, user_name=user_name) for leg, user_name in result.all())
+
+
+async def _public_position_views(
+    session: AsyncSession, symbol: str
+) -> tuple[StockParticipantPositionView, ...]:
+    """Returns public stock-level non-zero position summaries."""
+    result = await session.execute(
+        statement=select(StockPosition)
+        .where(
+            StockPosition.symbol == symbol,
+            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+        )
+        .order_by(
+            (StockPosition.long_shares + StockPosition.short_shares).desc(),
+            StockPosition.updated_at.desc(),
+        )
+        .limit(8)
+    )
+    return tuple(_participant_position_view(position=position) for position in result.scalars())
 
 
 async def _news_views(session: AsyncSession, symbol: str) -> tuple[StockNewsView, ...]:
@@ -1022,6 +1080,14 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Discord identity and trade
             if not plan.success:
                 await session.rollback()
                 return plan
+            plan = plan.model_copy(
+                update={
+                    "position": plan.position.model_copy(update={"user_name": user_name}),
+                    "legs": tuple(
+                        leg.model_copy(update={"user_name": user_name}) for leg in plan.legs
+                    ),
+                }
+            )
             await _commit_stock_side(session=session, plan=plan, now=effective_now)
 
         try:
@@ -1088,6 +1154,7 @@ async def _commit_stock_side(
             operation_id=plan.operation_id or "",
             symbol=plan.symbol,
             user_id=plan.position.user_id,
+            user_name=plan.position.user_name,
             requested_action=plan.requested_action.value,
             status=StockOperationStatus.PENDING.value,
             failure_reason="",
@@ -1131,6 +1198,7 @@ async def _write_position(
         .values(
             symbol=position.symbol,
             user_id=position.user_id,
+            user_name=position.user_name,
             long_shares=position.long_shares,
             long_cost_basis=position.long_cost_basis,
             short_shares=position.short_shares,
@@ -1144,6 +1212,7 @@ async def _write_position(
             index_elements=["symbol", "user_id"],
             set_={
                 "long_shares": position.long_shares,
+                "user_name": position.user_name,
                 "long_cost_basis": position.long_cost_basis,
                 "short_shares": position.short_shares,
                 "short_entry_value": position.short_entry_value,

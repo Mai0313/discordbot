@@ -10,6 +10,7 @@ from discordbot.typings.stock import (
     StockTradeLegView,
     StockDetailViewData,
     StockSettlementResult,
+    StockParticipantPositionView,
 )
 from discordbot.cogs._stock.market import cash_floor, format_price
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
@@ -32,11 +33,11 @@ def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> 
 
 
 def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = False) -> Embed:
-    """Builds the public or ephemeral market list embed."""
+    """Builds the public market list embed."""
     title = "📈 模擬股市"
     if ephemeral:
         title += " · 個人列表"
-    description_parts = ["### 市場列表", "選擇股票後會開啟只有你看得到的 detail view。", ""]
+    description_parts = ["### 市場列表", "選擇股票後會在這則公開訊息更新 detail view。", ""]
     for quote in quotes:
         profile = quote.profile
         market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
@@ -47,12 +48,12 @@ def build_market_embed(quotes: tuple[StockMarketQuote, ...], ephemeral: bool = F
             f"Market cap {amount_code(amount=market_cap)} {CURRENCY_NAME}"
         )
     embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
-    embed.set_footer(text="公開 market list 會在 3 分鐘後自動清理，個人 detail 都是 ephemeral")
+    embed.set_footer(text="這則股票訊息 180 秒無互動後會自動清理")
     return embed
 
 
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:
-    """Builds a personal stock detail embed."""
+    """Builds a public stock detail embed for the current interaction user."""
     profile = detail.quote.profile
     market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
     description = (
@@ -64,6 +65,11 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         f"Market cap {amount_code(amount=market_cap)} {CURRENCY_NAME}"
     )
     embed = Embed(title="📊 股票 detail", description=description, color=DETAIL_COLOR)
+    embed.add_field(
+        name="目前操作使用者",
+        value=detail.position.user_name or str(detail.position.user_id),
+        inline=True,
+    )
     embed.add_field(name="你的資金", value=currency_text(amount=detail.balance), inline=True)
     embed.add_field(
         name="持股",
@@ -91,13 +97,16 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         value=signed_percent(bps=detail.quote.pressure_bps),
         inline=True,
     )
+    embed.add_field(
+        name="公開部位摘要", value=_position_summary_lines(detail=detail), inline=False
+    )
     embed.add_field(name="近期交易", value=_recent_trade_lines(detail=detail), inline=False)
     embed.set_image(url=f"attachment://{chart_filename}")
     return embed
 
 
 def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
-    """Builds an ephemeral recent news embed."""
+    """Builds a recent news embed for the public stock message."""
     if news:
         lines = [
             f"**{item.headline}**\nSentiment `{signed_percent(bps=item.sentiment_bps)}`"
@@ -109,7 +118,7 @@ def build_news_embed(news: tuple[StockNewsView, ...], symbol: str) -> Embed:
 
 
 def build_tutorial_embed() -> Embed:
-    """Builds a short ephemeral tutorial embed."""
+    """Builds a short tutorial embed for the public stock message."""
     return Embed(
         title="📘 模擬股市教學",
         description=(
@@ -177,12 +186,31 @@ def _recent_trade_lines(detail: StockDetailViewData) -> str:
     return _leg_lines(legs=detail.recent_trades[:5])
 
 
+def _position_summary_lines(detail: StockDetailViewData) -> str:
+    """Formats public non-zero stock positions."""
+    if not detail.public_positions:
+        return "尚無公開部位"
+    return "\n".join(
+        _position_summary_line(position=position) for position in detail.public_positions[:5]
+    )
+
+
+def _position_summary_line(position: StockParticipantPositionView) -> str:
+    """Formats one public position summary line."""
+    name = position.user_name or str(position.user_id)
+    return (
+        f"{name} · Long `{position.long_shares:,}` 股 · Short `{position.short_shares:,}` 股 · "
+        f"PnL {amount_code(amount=position.realized_pnl, signed=True)}"
+    )
+
+
 def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
     """Formats stock trade legs."""
     lines = []
     for leg in legs:
+        name = leg.user_name or str(leg.user_id)
         lines.append(
-            f"{leg.leg_order}. {_leg_type_label(leg_type=leg.leg_type)} "
+            f"{name} · #{leg.leg_order} {_leg_type_label(leg_type=leg.leg_type)} "
             f"`{leg.shares:,}` 股 · wallet {amount_code(amount=leg.wallet_delta, signed=True)} · "
             f"PnL {amount_code(amount=leg.realized_pnl_delta, signed=True)}"
         )

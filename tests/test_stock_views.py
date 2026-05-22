@@ -26,6 +26,7 @@ from discordbot.cogs._stock.views import (
     StockActionView,
     StockDetailView,
     StockMarketView,
+    StockPublicView,
     StockQuantityModal,
 )
 
@@ -50,6 +51,10 @@ class ResponseStub:
 
     async def send_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
         """Records a sent response."""
+        self.sent.append(kwargs)
+
+    async def edit_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
+        """Records an edited response."""
         self.sent.append(kwargs)
 
     async def send_modal(self, modal: StockQuantityModal) -> None:
@@ -81,6 +86,16 @@ class MessageStub:
         """Initializes fake message identity."""
         self.id = 123
         self.channel = SimpleNamespace(id=456)
+        self.edits: list[dict[str, Any]] = []
+        self.deleted = False
+
+    async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
+        """Records a message edit."""
+        self.edits.append(kwargs)
+
+    async def delete(self) -> None:
+        """Records message deletion."""
+        self.deleted = True
 
 
 class UserStub:
@@ -145,19 +160,19 @@ def test_stock_setup_is_sync_and_adds_cog_with_override() -> None:
 async def test_stock_command_sends_public_market_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The slash command sends public market list and schedules cleanup."""
+    """The slash command sends public market list and tracks cleanup."""
     scheduled: list[MessageStub] = []
 
     async def fake_list_market_quotes() -> tuple[StockMarketQuote, ...]:
         """Returns one fake quote."""
         return (_quote(),)
 
-    def fake_schedule(message: MessageStub, user_name: str | None = None) -> None:
-        """Records cleanup scheduling."""
+    async def fake_track(message: MessageStub, user_name: str | None = None) -> None:
+        """Records cleanup tracking."""
         scheduled.append(message)
 
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
-    monkeypatch.setattr(stock, "schedule_game_message_delete", fake_schedule)
+    monkeypatch.setattr(stock, "track_game_message", fake_track)
     cog = StockCogs(bot=SimpleNamespace())
     interaction = InteractionStub()
 
@@ -166,19 +181,18 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert interaction.response.deferred
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert isinstance(interaction.followup.sent[0]["view"], StockMarketView)
+    assert interaction.followup.sent[0]["view"].message is scheduled[0]
     assert scheduled
 
 
-async def test_stock_market_select_returns_ephemeral_detail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Selecting a stock opens the personal detail flow."""
+async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Selecting a stock edits the public message into the detail flow."""
     selected: list[str] = []
 
     async def fake_send_stock_detail(interaction: InteractionStub, symbol: str) -> None:
         """Records selected stock detail requests."""
         selected.append(symbol)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
     monkeypatch.setattr(stock_views, "send_stock_detail", fake_send_stock_detail)
     view = StockMarketView(quotes=(_quote(),))
@@ -188,13 +202,14 @@ async def test_stock_market_select_returns_ephemeral_detail(
     await view.stock_select.callback(interaction)
 
     assert selected == [BCAT_SYMBOL]
-    assert interaction.response.deferred_ephemeral
+    assert interaction.response.deferred
+    assert not interaction.response.deferred_ephemeral
 
 
-async def test_stock_detail_buttons_open_action_news_and_back_views(
+async def test_stock_detail_buttons_edit_same_public_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detail buttons produce ephemeral action, news, and market-list responses."""
+    """Detail buttons edit the original public message instead of sending followups."""
 
     async def fake_news(symbol: str) -> tuple:
         """Returns no fake news."""
@@ -220,17 +235,14 @@ async def test_stock_detail_buttons_open_action_news_and_back_views(
 
     operate_interaction = InteractionStub()
     await operate.callback(operate_interaction)
-    assert operate_interaction.response.sent[0]["ephemeral"] is True
     assert isinstance(operate_interaction.response.sent[0]["view"], StockActionView)
 
     news_interaction = InteractionStub()
     await news.callback(news_interaction)
-    assert news_interaction.response.sent[0]["ephemeral"] is True
     assert "近期新聞" in news_interaction.response.sent[0]["embed"].title
 
     back_interaction = InteractionStub()
     await back.callback(back_interaction)
-    assert back_interaction.response.sent[0]["ephemeral"] is True
     assert isinstance(back_interaction.response.sent[0]["view"], StockMarketView)
 
 
@@ -252,10 +264,10 @@ async def test_stock_action_buttons_launch_text_input_modals() -> None:
     assert isinstance(buy_interaction.response.modals[0].quantity, stock_views.TextInput)
 
 
-async def test_stock_modal_reports_invalid_input_root_cause(
+async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Invalid modal input returns an ephemeral error embed."""
+    """Invalid modal input edits the public message with the root-cause error."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns the same invalid-format failure the service would return."""
@@ -279,17 +291,18 @@ async def test_stock_modal_reports_invalid_input_root_cause(
 
     await modal.submit_quantity(interaction=interaction, raw_quantity="abc")
 
-    assert interaction.response.deferred_ephemeral
-    embed = interaction.followup.sent[0]["embed"]
+    assert interaction.response.deferred
+    assert not interaction.response.deferred_ephemeral
+    embed = interaction.message.edits[0]["embed"]
     assert isinstance(embed, Embed)
     assert "股數格式錯誤" in embed.description
-    assert interaction.followup.sent[0]["ephemeral"] is True
+    assert isinstance(interaction.message.edits[0]["view"], StockActionView)
 
 
-async def test_successful_stock_modal_returns_result_and_refresh_view(
+async def test_successful_stock_modal_edits_result_and_refresh_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful modal submission returns a settlement embed and refresh control."""
+    """Successful modal submission edits the public message with a refresh control."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns a successful fake settlement."""
@@ -327,9 +340,29 @@ async def test_successful_stock_modal_returns_result_and_refresh_view(
 
     await modal.submit_quantity(interaction=interaction, raw_quantity="1")
 
-    assert "交易完成" in interaction.followup.sent[0]["embed"].title
-    assert interaction.followup.sent[0]["ephemeral"] is True
-    assert interaction.followup.sent[0]["view"] is not None
+    assert "交易完成" in interaction.message.edits[0]["embed"].title
+    assert interaction.message.edits[0]["view"] is not None
+
+
+async def test_stock_public_view_timeout_deletes_bound_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The active stock view deletes the public message after idle timeout."""
+    forgotten: list[int] = []
+
+    async def fake_forget(message_id: int) -> None:
+        """Records forgotten cleanup rows."""
+        forgotten.append(message_id)
+
+    monkeypatch.setattr(stock_views, "forget_game_message", fake_forget)
+    message = MessageStub()
+    view = StockPublicView()
+    view.bind_message(message=message)
+
+    await view.on_timeout()
+
+    assert message.deleted
+    assert forgotten == [message.id]
 
 
 def test_stock_readme_and_help_metadata_are_covered() -> None:

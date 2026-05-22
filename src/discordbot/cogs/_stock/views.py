@@ -4,12 +4,13 @@ from io import BytesIO
 from typing import cast
 
 import nextcord
-from nextcord import File, ButtonStyle, Interaction, SelectOption
+from nextcord import File, Message, ButtonStyle, Interaction, SelectOption
 from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs._stock.chart import build_price_chart
+from discordbot.cogs._games.cleanup import forget_game_message
 from discordbot.cogs._stock.database import (
     get_stock_news,
     get_stock_detail,
@@ -26,12 +27,39 @@ from discordbot.cogs._stock.presentation import (
 )
 
 
-class StockMarketView(View):
+class StockPublicView(View):
+    """Base view for stock states that own the same public message."""
+
+    def __init__(self) -> None:
+        """Initializes public stock controls with an idle timeout."""
+        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
+        self.message: Message | None = None
+
+    def bind_message(self, message: Message | None) -> None:
+        """Records the public message this view should update or delete."""
+        self.message = message
+
+    async def on_timeout(self) -> None:
+        """Deletes the stock message after 180 seconds without interaction."""
+        if self.message is None:
+            return
+        message_id = getattr(self.message, "id", None)
+        try:
+            await self.message.delete()
+        except nextcord.NotFound:
+            pass
+        except (nextcord.Forbidden, nextcord.HTTPException):
+            return
+        if isinstance(message_id, int):
+            await forget_game_message(message_id=message_id)
+
+
+class StockMarketView(StockPublicView):
     """Stock select and tutorial controls for the market list."""
 
     def __init__(self, quotes: tuple[StockMarketQuote, ...], ephemeral: bool = False) -> None:
         """Initializes market controls from quote rows."""
-        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
+        super().__init__()
         self.quotes = quotes
         self.ephemeral = ephemeral
         self._select = cast("StringSelect", self.stock_select)
@@ -53,29 +81,53 @@ class StockMarketView(View):
         row=0,
     )
     async def stock_select(self, select: StringSelect, interaction: Interaction) -> None:
-        """Shows a personal detail view for the selected stock."""
+        """Shows a public detail view for the selected stock."""
         symbol = select.values[0]
         if symbol in {"loading", "none"}:
-            await interaction.response.send_message(
-                embed=build_error_embed(message="目前沒有可用的股票"), ephemeral=True
+            self.stop()
+            await edit_stock_message(
+                interaction=interaction,
+                embed=build_error_embed(message="目前沒有可用的股票"),
+                view=StockMarketView(quotes=self.quotes, ephemeral=self.ephemeral),
             )
             return
+        self.stop()
         await send_stock_detail(interaction=interaction, symbol=symbol)
 
     @nextcord.ui.button(
         label="教學", emoji="📘", style=ButtonStyle.secondary, custom_id="stock:tutorial", row=1
     )
     async def tutorial(self, _button: Button, interaction: Interaction) -> None:
-        """Shows the stock tutorial privately."""
-        await interaction.response.send_message(embed=build_tutorial_embed(), ephemeral=True)
+        """Shows the stock tutorial in the public stock message."""
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction, embed=build_tutorial_embed(), view=StockTutorialView()
+        )
 
 
-class StockDetailView(View):
+class StockTutorialView(StockPublicView):
+    """Tutorial controls for the public stock message."""
+
+    @nextcord.ui.button(
+        label="返回列表", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:tutorial:back"
+    )
+    async def back(self, _button: Button, interaction: Interaction) -> None:
+        """Returns to the public market list."""
+        quotes = await list_market_quotes()
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_market_embed(quotes=quotes),
+            view=StockMarketView(quotes=quotes),
+        )
+
+
+class StockDetailView(StockPublicView):
     """Personal detail controls for one stock."""
 
     def __init__(self, symbol: str) -> None:
         """Initializes detail controls for one symbol."""
-        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
+        super().__init__()
         self.symbol = symbol
 
     @nextcord.ui.button(
@@ -83,39 +135,63 @@ class StockDetailView(View):
     )
     async def operate(self, _button: Button, interaction: Interaction) -> None:
         """Opens the action selection view before the quantity modal."""
-        await interaction.response.send_message(
-            embed=build_tutorial_embed(), view=StockActionView(symbol=self.symbol), ephemeral=True
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_tutorial_embed(),
+            view=StockActionView(symbol=self.symbol),
         )
 
     @nextcord.ui.button(
         label="近期新聞", emoji="📰", style=ButtonStyle.secondary, custom_id="stock:news", row=0
     )
     async def news(self, _button: Button, interaction: Interaction) -> None:
-        """Shows recent deterministic news privately."""
+        """Shows recent deterministic news in the public stock message."""
         news = await get_stock_news(symbol=self.symbol)
-        await interaction.response.send_message(
-            embed=build_news_embed(news=news, symbol=self.symbol), ephemeral=True
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_news_embed(news=news, symbol=self.symbol),
+            view=StockNewsControlsView(symbol=self.symbol),
         )
 
     @nextcord.ui.button(
         label="返回列表", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:back", row=1
     )
     async def back(self, _button: Button, interaction: Interaction) -> None:
-        """Returns an ephemeral market list instead of editing the public message."""
+        """Returns to the public market list."""
         quotes = await list_market_quotes()
-        await interaction.response.send_message(
-            embed=build_market_embed(quotes=quotes, ephemeral=True),
-            view=StockMarketView(quotes=quotes, ephemeral=True),
-            ephemeral=True,
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_market_embed(quotes=quotes),
+            view=StockMarketView(quotes=quotes),
         )
 
 
-class StockActionView(View):
+class StockNewsControlsView(StockPublicView):
+    """Navigation controls shown with a stock news embed."""
+
+    def __init__(self, symbol: str) -> None:
+        """Initializes news controls for one symbol."""
+        super().__init__()
+        self.symbol = symbol
+
+    @nextcord.ui.button(
+        label="返回 detail", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:news:back"
+    )
+    async def back(self, _button: Button, interaction: Interaction) -> None:
+        """Returns to the public stock detail view."""
+        self.stop()
+        await send_stock_detail(interaction=interaction, symbol=self.symbol)
+
+
+class StockActionView(StockPublicView):
     """Action buttons shown before the quantity modal."""
 
     def __init__(self, symbol: str) -> None:
         """Initializes action controls for one symbol."""
-        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
+        super().__init__()
         self.symbol = symbol
 
     @nextcord.ui.button(
@@ -128,7 +204,12 @@ class StockActionView(View):
     async def buy(self, _button: Button, interaction: Interaction) -> None:
         """Opens a quantity modal for buy/cover."""
         await interaction.response.send_modal(
-            modal=StockQuantityModal(symbol=self.symbol, action=StockAction.BUY)
+            modal=StockQuantityModal(
+                symbol=self.symbol,
+                action=StockAction.BUY,
+                message=interaction.message,
+                parent=self,
+            )
         )
 
     @nextcord.ui.button(
@@ -141,16 +222,33 @@ class StockActionView(View):
     async def short(self, _button: Button, interaction: Interaction) -> None:
         """Opens a quantity modal for short/sell."""
         await interaction.response.send_modal(
-            modal=StockQuantityModal(symbol=self.symbol, action=StockAction.SHORT)
+            modal=StockQuantityModal(
+                symbol=self.symbol,
+                action=StockAction.SHORT,
+                message=interaction.message,
+                parent=self,
+            )
         )
 
+    @nextcord.ui.button(
+        label="返回 detail",
+        emoji="↩️",
+        style=ButtonStyle.secondary,
+        custom_id="stock:action:back",
+        row=1,
+    )
+    async def back(self, _button: Button, interaction: Interaction) -> None:
+        """Returns to the public stock detail view."""
+        self.stop()
+        await send_stock_detail(interaction=interaction, symbol=self.symbol)
 
-class StockPostTradeView(View):
+
+class StockPostTradeView(StockPublicView):
     """Refresh control shown after a submitted stock trade."""
 
     def __init__(self, symbol: str) -> None:
         """Initializes post-trade controls."""
-        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
+        super().__init__()
         self.symbol = symbol
 
     @nextcord.ui.button(
@@ -161,18 +259,44 @@ class StockPostTradeView(View):
         row=0,
     )
     async def refresh(self, _button: Button, interaction: Interaction) -> None:
-        """Sends a fresh personal detail view."""
+        """Edits the public message into a fresh detail view."""
+        self.stop()
         await send_stock_detail(interaction=interaction, symbol=self.symbol)
+
+    @nextcord.ui.button(
+        label="返回列表",
+        emoji="↩️",
+        style=ButtonStyle.secondary,
+        custom_id="stock:post:back",
+        row=0,
+    )
+    async def back(self, _button: Button, interaction: Interaction) -> None:
+        """Returns to the public market list."""
+        quotes = await list_market_quotes()
+        self.stop()
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_market_embed(quotes=quotes),
+            view=StockMarketView(quotes=quotes),
+        )
 
 
 class StockQuantityModal(Modal):
     """Quantity modal for stock operations."""
 
-    def __init__(self, symbol: str, action: StockAction) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        action: StockAction,
+        message: Message | None = None,
+        parent: StockPublicView | None = None,
+    ) -> None:
         """Initializes the modal with one TextInput."""
         super().__init__(title=f"{symbol} 股票操作")
         self.symbol = symbol
         self.action = action
+        self.message = message
+        self.parent = parent
         self.quantity: TextInput = TextInput(
             label="股數",
             placeholder="輸入正整數或 ALL",
@@ -192,7 +316,7 @@ class StockQuantityModal(Modal):
         """Submits a raw quantity string to the stock settlement service."""
         if interaction.user is None:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         avatar_url = await guild_avatar_url(
             user=interaction.user, guild=getattr(interaction, "guild", None)
         )
@@ -204,39 +328,84 @@ class StockQuantityModal(Modal):
             requested_action=self.action,
             quantity=raw_quantity,
         )
-        view = StockPostTradeView(symbol=self.symbol) if result.success else None
-        await interaction.followup.send(
-            embed=build_settlement_embed(result=result), view=view, ephemeral=True
+        if self.parent is not None:
+            self.parent.stop()
+        view: StockPublicView = (
+            StockPostTradeView(symbol=self.symbol)
+            if result.success
+            else StockActionView(symbol=self.symbol)
+        )
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_settlement_embed(result=result),
+            view=view,
+            message=self.message,
         )
 
 
-async def send_stock_detail(interaction: Interaction, symbol: str) -> None:
-    """Sends a personal stock detail view for an interaction."""
+async def edit_stock_detail(interaction: Interaction, symbol: str) -> None:
+    """Edits the public stock message into a detail view for one interaction."""
     if interaction.user is None:
         return
-    await interaction.response.defer(ephemeral=True)
+    if not interaction.response.is_done():
+        await interaction.response.defer()
     try:
         detail = await get_stock_detail(symbol=symbol, user_id=interaction.user.id)
     except ValueError:
-        await interaction.followup.send(
-            embed=build_error_embed(message=f"找不到股票 `{symbol}`"), ephemeral=True
+        await edit_stock_message(
+            interaction=interaction,
+            embed=build_error_embed(message=f"找不到股票 `{symbol}`"),
+            view=None,
         )
         return
     filename = f"{symbol.lower()}_7d.png"
     chart_bytes = build_price_chart(ticks=detail.ticks)
-    await interaction.followup.send(
+    await edit_stock_message(
+        interaction=interaction,
         embed=build_stock_detail_embed(detail=detail, chart_filename=filename),
         file=File(fp=BytesIO(chart_bytes), filename=filename),
         view=StockDetailView(symbol=symbol),
-        ephemeral=True,
     )
+
+
+async def edit_stock_message(
+    interaction: Interaction,
+    embed: nextcord.Embed,
+    view: StockPublicView | None,
+    file: File | None = None,
+    message: Message | None = None,
+) -> None:
+    """Edits the original public stock message for a component or modal interaction."""
+    target_message = message or interaction.message
+    if view is not None:
+        view.bind_message(message=target_message)
+    kwargs: dict[str, object] = {"embed": embed, "view": view, "attachments": []}
+    if file is not None:
+        kwargs["file"] = file
+    if not interaction.response.is_done():
+        edited = await interaction.response.edit_message(**kwargs)
+        if isinstance(edited, Message) and view is not None:
+            view.bind_message(message=edited)
+        return
+    if target_message is not None:
+        await target_message.edit(**kwargs)
+        return
+    await interaction.followup.send(embed=embed, view=view, file=file, wait=True)
+
+
+send_stock_detail = edit_stock_detail
 
 
 __all__ = [
     "StockActionView",
     "StockDetailView",
     "StockMarketView",
+    "StockNewsControlsView",
     "StockPostTradeView",
+    "StockPublicView",
     "StockQuantityModal",
+    "StockTutorialView",
+    "edit_stock_detail",
+    "edit_stock_message",
     "send_stock_detail",
 ]

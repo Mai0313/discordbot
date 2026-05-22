@@ -69,12 +69,25 @@ class StockPositionView(BaseModel):
 
     symbol: str
     user_id: int
+    user_name: str = ""
     long_shares: int = 0
     long_cost_basis: int = 0
     short_shares: int = 0
     short_entry_value: int = 0
     short_collateral: int = 0
     realized_pnl: int = 0
+
+
+class StockParticipantPositionView(BaseModel):
+    """Public stock-level position summary for one participant."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    user_name: str
+    long_shares: int
+    short_shares: int
+    realized_pnl: int
 
 
 class StockTradeLegView(BaseModel):
@@ -86,6 +99,7 @@ class StockTradeLegView(BaseModel):
     leg_order: int
     symbol: str
     user_id: int
+    user_name: str = ""
     leg_type: StockTradeLegType
     shares: int
     price_cents: int
@@ -137,6 +151,7 @@ class StockDetailViewData(BaseModel):
     balance: int
     position: StockPositionView
     recent_trades: tuple[StockTradeLegView, ...]
+    public_positions: tuple[StockParticipantPositionView, ...] = ()
     news: tuple[StockNewsView, ...]
     ticks: tuple[StockPriceTickView, ...]
 
@@ -193,6 +208,7 @@ __all__ = [
     "StockMarketQuote",
     "StockNewsView",
     "StockOperationStatus",
+    "StockParticipantPositionView",
     "StockPositionView",
     "StockPriceTickView",
     "StockProfileView",

@@ -77,7 +77,7 @@ make gen-docs                    # regenerate docs/ from sources
 ## Stocks
 
 - Simulated stock state lives in `data/stock.db`; wallet cash remains in economy `user_wallet`. Do not store wallet balances in stock tables.
-- `/stock` sends a public market list and schedules cleanup. Stock detail, action, news, validation, and settlement responses are ephemeral because they include personal financial data.
+- `/stock` sends one public market message. Stock selection, detail, action, news, validation, settlement, public position summaries, and recent trade history must update that same message; the active stock view deletes it after 180 idle seconds.
 - Stock settlement must go through `settle_stock_operation(...)`. Views must not split price reads, wallet reads, and position writes or import SQLAlchemy stock models directly.
 - Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.
 - Compound stock operations write one `stock_operation` and ordered `stock_trade_leg` rows. Do not net wallet legs before applying them through the public ordered economy helper.

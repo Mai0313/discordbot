@@ -171,6 +171,40 @@ async def test_stock_buy_long_debits_wallet_and_writes_ledger(
         operation = await session.get(stock_db.StockOperation, result.operation_id)
         assert operation is not None
         assert operation.status == StockOperationStatus.APPLIED.value
+        assert operation.user_name == "alice"
+
+
+async def test_stock_detail_shows_stock_level_trades_and_positions(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Stock detail exposes public trade history and non-zero positions across users."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000)
+    await adjust_balance(user_id=2, name="bob", delta=1_000)
+    await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=2,
+        user_name="bob",
+        requested_action=StockAction.SHORT,
+        quantity="1",
+        now=datetime(2026, 1, 1, 0, 1),
+        rng=_rng(seed=1),
+    )
+
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=3)
+
+    assert {trade.user_name for trade in detail.recent_trades} == {"alice", "bob"}
+    assert {position.user_name for position in detail.public_positions} == {"alice", "bob"}
+    assert any(position.long_shares == 1 for position in detail.public_positions)
+    assert any(position.short_shares == 1 for position in detail.public_positions)
 
 
 async def test_stock_insufficient_buy_leaves_stock_untouched(

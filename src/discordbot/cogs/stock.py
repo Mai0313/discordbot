@@ -5,7 +5,7 @@ from nextcord import Locale, Interaction
 from nextcord.ext import commands
 
 from discordbot.cogs._stock.views import StockMarketView
-from discordbot.cogs._games.cleanup import schedule_game_message_delete
+from discordbot.cogs._games.cleanup import track_game_message
 from discordbot.cogs._stock.database import list_market_quotes
 from discordbot.cogs._stock.presentation import build_market_embed
 
@@ -31,11 +31,13 @@ class StockCogs(commands.Cog):
         """Shows the public stock market list."""
         await interaction.response.defer()
         quotes = await list_market_quotes()
+        view = StockMarketView(quotes=quotes)
         message = await interaction.followup.send(
-            embed=build_market_embed(quotes=quotes), view=StockMarketView(quotes=quotes), wait=True
+            embed=build_market_embed(quotes=quotes), view=view, wait=True
         )
+        view.bind_message(message=message)
         user_name = interaction.user.name if interaction.user is not None else None
-        schedule_game_message_delete(message=message, user_name=user_name)
+        await track_game_message(message=message, user_name=user_name)
 
 
 def setup(bot: commands.Bot) -> None:
