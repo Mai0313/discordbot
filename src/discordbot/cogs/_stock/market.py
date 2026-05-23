@@ -7,6 +7,7 @@ from discordbot.typings.stock import STOCK_TICK_SECONDS, MAX_TICKS_PER_INTERACTI
 
 TAIWAN_TIMEZONE = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 NEWS_SENTIMENT_DECAY_BPS = 20
+NEWS_SENTIMENT_DECAY_SECONDS = 60 * 60
 NEWS_SENTIMENT_LIMIT_BPS = 300
 PRESSURE_LIMIT_BPS = 90
 
@@ -46,12 +47,13 @@ def tick_boundary(dt: datetime) -> datetime:
     return datetime.fromtimestamp(boundary, tz=UTC).astimezone(tz=TAIWAN_TIMEZONE)
 
 
-def decay_news_sentiment(sentiment_bps: int, ticks_elapsed: int) -> int:
-    """Applies linear per-tick news sentiment decay and clamps the result."""
+def decay_news_sentiment(sentiment_bps: int, elapsed_seconds: int) -> int:
+    """Applies linear time-based news sentiment decay and clamps the result."""
     clamped = clamp_bps(
         value=sentiment_bps, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
     )
-    remaining = max(abs(clamped) - ticks_elapsed * NEWS_SENTIMENT_DECAY_BPS, 0)
+    decay_bps = max(elapsed_seconds, 0) * NEWS_SENTIMENT_DECAY_BPS // NEWS_SENTIMENT_DECAY_SECONDS
+    remaining = max(abs(clamped) - decay_bps, 0)
     return remaining if clamped >= 0 else -remaining
 
 
@@ -140,7 +142,7 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
 def _tick_boundaries_between(
     latest_boundary: datetime, current_boundary: datetime
 ) -> list[datetime]:
-    """Returns all hourly tick boundaries between two normalized endpoints."""
+    """Returns all tick boundaries between two normalized endpoints."""
     boundaries: list[datetime] = []
     boundary = latest_boundary + timedelta(seconds=STOCK_TICK_SECONDS)
     while boundary <= current_boundary:

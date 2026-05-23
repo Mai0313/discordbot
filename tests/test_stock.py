@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
+    STOCK_TICK_SECONDS,
+    STOCK_NEWS_CADENCE_HOURS,
     MAX_TICKS_PER_INTERACTION,
     StockAction,
     StockProfileView,
@@ -56,7 +58,7 @@ BCAT_LIQUIDITY_SHARES = 25_000
 BCAT_FAIR_VALUE_CENTS = 10_000
 BCAT_MEAN_REVERSION_BPS = 35
 BCAT_MAX_TICK_CHANGE_BPS = 450
-BCAT_NEWS_CADENCE_HOURS = 8
+BCAT_NEWS_CADENCE_HOURS = STOCK_NEWS_CADENCE_HOURS
 
 
 def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None:
@@ -196,9 +198,10 @@ def test_stock_cash_rounding_and_price_format() -> None:
 def test_stock_tick_helpers_noop_and_compress_backlog() -> None:
     """Lazy ticks no-op inside one interval and compress long backlogs."""
     latest = datetime(2026, 1, 1, 0, 0)
-    assert (
-        tick_boundaries_to_apply(latest_tick_at=latest, now=latest + timedelta(minutes=59)) == ()
-    )
+    assert tick_boundaries_to_apply(latest_tick_at=latest, now=latest + timedelta(minutes=4)) == ()
+    assert tick_boundaries_to_apply(
+        latest_tick_at=latest, now=latest + timedelta(seconds=STOCK_TICK_SECONDS)
+    ) == (datetime(2026, 1, 1, 0, 5, tzinfo=TAIWAN_TIMEZONE),)
 
     backlog = tick_boundaries_to_apply(latest_tick_at=latest, now=latest + timedelta(hours=100))
     assert len(backlog) == MAX_TICKS_PER_INTERACTION
@@ -243,8 +246,8 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
     )
     assert first == second
     assert first >= 1
-    assert decay_news_sentiment(sentiment_bps=500, ticks_elapsed=3) == 240
-    assert decay_news_sentiment(sentiment_bps=-500, ticks_elapsed=20) == 0
+    assert decay_news_sentiment(sentiment_bps=500, elapsed_seconds=3 * 60 * 60) == 240
+    assert decay_news_sentiment(sentiment_bps=-500, elapsed_seconds=20 * 60 * 60) == 0
 
 
 def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
@@ -670,7 +673,7 @@ async def test_stock_due_news_serializes_concurrent_provider_calls(
 async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated_db: None) -> None:
     """Crossing Asia/Taipei midnight updates previous close and day open."""
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1, 12, 0), rng=_rng(seed=1))
-    latest = datetime(2026, 1, 1, 23, 0)
+    latest = datetime(2026, 1, 1, 23, 55)
     async with stock_db.open_stock_session() as session:
         await session.execute(
             statement=delete(stock_db.StockPriceTick).where(
@@ -707,7 +710,7 @@ async def test_stock_compressed_day_rollover_materializes_midnight(
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
 
     midnight = datetime(2026, 1, 2, 0, 0, tzinfo=TAIWAN_TIMEZONE)
-    previous_close_at = datetime(2026, 1, 1, 23, 0, tzinfo=TAIWAN_TIMEZONE)
+    previous_close_at = datetime(2026, 1, 1, 23, 55, tzinfo=TAIWAN_TIMEZONE)
     async with stock_db.open_stock_session() as session:
         midnight_tick = await session.execute(
             statement=select(stock_db.StockPriceTick.price_cents).where(

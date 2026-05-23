@@ -4,11 +4,11 @@ from datetime import datetime
 
 from pydantic import Field, BaseModel, ConfigDict, model_validator
 
-STOCK_TICK_SECONDS: Final[int] = 60 * 60
-MAX_TICKS_PER_INTERACTION: Final[int] = 24
+STOCK_TICK_SECONDS: Final[int] = 5 * 60
+MAX_TICKS_PER_INTERACTION: Final[int] = 12 * 24
 STOCK_HISTORY_DAYS: Final[int] = 7
 STOCK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-STOCK_NEWS_CADENCE_HOURS: Final[int] = 8
+STOCK_NEWS_CADENCE_HOURS: Final[int] = 4
 
 
 class StockAction(StrEnum):

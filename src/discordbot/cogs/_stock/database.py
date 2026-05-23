@@ -18,7 +18,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.stock import (
     STOCK_HISTORY_DAYS,
-    STOCK_TICK_SECONDS,
+    STOCK_NEWS_CADENCE_HOURS,
     StockAction,
     StockNewsView,
     StockMarketQuote,
@@ -41,6 +41,7 @@ from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
     NEWS_SENTIMENT_DECAY_BPS,
     NEWS_SENTIMENT_LIMIT_BPS,
+    NEWS_SENTIMENT_DECAY_SECONDS,
     as_taipei,
     cash_ceil,
     clamp_bps,
@@ -77,13 +78,14 @@ _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _NEWS_PROVIDER_CONCURRENCY: Final[int] = 4
 _ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
-    seconds=STOCK_TICK_SECONDS * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
+    seconds=NEWS_SENTIMENT_DECAY_SECONDS
+    * (NEWS_SENTIMENT_LIMIT_BPS // NEWS_SENTIMENT_DECAY_BPS + 1)
 )
 _MIGRATION_DEFAULT_LIQUIDITY_SHARES: Final[int] = 25_000
 _MIGRATION_DEFAULT_FAIR_VALUE_CENTS: Final[int] = 10_000
 _MIGRATION_DEFAULT_MEAN_REVERSION_BPS: Final[int] = 35
 _MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS: Final[int] = 450
-_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS: Final[int] = 8
+_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS: Final[int] = STOCK_NEWS_CADENCE_HOURS
 _FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
     StockOperationStatus.APPLIED.value,
     StockOperationStatus.FAILED.value,
@@ -905,13 +907,11 @@ def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime
             continue
         if news.expires_at is not None and as_taipei(dt=news.expires_at) < as_taipei(dt=at):
             continue
-        ticks_elapsed = max(
-            int((tick_boundary(dt=at) - tick_boundary(dt=news.created_at)).total_seconds())
-            // STOCK_TICK_SECONDS,
-            0,
+        elapsed_seconds = max(
+            int((tick_boundary(dt=at) - tick_boundary(dt=news.created_at)).total_seconds()), 0
         )
         sentiment += decay_news_sentiment(
-            sentiment_bps=news.sentiment_bps, ticks_elapsed=ticks_elapsed
+            sentiment_bps=news.sentiment_bps, elapsed_seconds=elapsed_seconds
         )
     return clamp_bps(
         value=sentiment, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS

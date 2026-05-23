@@ -90,7 +90,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.
 - Compound stock operations write one `stock_operation` and ordered `stock_trade_leg` rows. Do not net wallet legs before applying them through the public ordered economy helper.
 - Use `uv run python scripts/manage_stock_reconciliation.py list` to inspect non-final stock operations before manual repair. Use `uv run python scripts/manage_stock_company.py audit` to inspect float supply, aggregate exposure, and remaining long / short capacity.
-- Lazy market ticks advance on interaction. Long backlogs compress to at most `MAX_TICKS_PER_INTERACTION` ticks and still roll over Asia/Taipei day boundaries.
+- Lazy market ticks advance every 5 minutes on interaction. Long backlogs compress to at most `MAX_TICKS_PER_INTERACTION` ticks and still roll over Asia/Taipei day boundaries.
 
 ## Games
 
