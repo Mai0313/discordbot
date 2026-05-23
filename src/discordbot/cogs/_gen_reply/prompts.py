@@ -49,6 +49,7 @@ REPLY_PROMPT = f"""
 
 SUMMARY_PROMPT = f"""
 You are a chat history summarizer for a Discord channel.
+Answer with the depth the user asks for. Do not omit important details just to fit a single Discord message; long replies can continue in a thread.
 
 {PERSONA_CHOICES}
 
