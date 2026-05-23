@@ -22,6 +22,7 @@ from discordbot.typings.stock import (
     StockProfileUpsert,
     StockOperationStatus,
     StockSettlementResult,
+    StockNewsGenerationContext,
 )
 from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
 from discordbot.cogs._stock.chart import build_price_chart
@@ -67,6 +68,7 @@ def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None
     assert "Do not claim this is real financial news" in STOCK_NEWS_PROMPT
     assert "Do not mention real people" in STOCK_NEWS_PROMPT
     assert "-180 to 180" in STOCK_NEWS_PROMPT
+    assert "market context" in STOCK_NEWS_PROMPT
     assert all(
         -180 <= sentiment_bps <= 180 for _template, sentiment_bps in STOCK_NEWS_FALLBACK_TEMPLATES
     )
@@ -98,7 +100,7 @@ def test_stock_fallback_news_uses_absurd_templates() -> None:
     )
     generated = tuple(
         stock_db._fallback_generated_news(
-            profile=profile,
+            context=_bcat_news_context(profile=profile, change_bps=-250, pressure_bps=-80),
             now=datetime(2026, 1, 1) + timedelta(hours=BCAT_NEWS_CADENCE_HOURS * index),
         )
         for index in range(len(STOCK_NEWS_FALLBACK_TEMPLATES))
@@ -106,6 +108,17 @@ def test_stock_fallback_news_uses_absurd_templates() -> None:
     assert any("爆胎" in news.headline for news in generated)
     assert all(news.source == "template" for news in generated)
     assert all(-180 <= news.sentiment_bps <= 180 for news in generated)
+
+    bullish = stock_db._fallback_generated_news(
+        context=_bcat_news_context(profile=profile, change_bps=250, pressure_bps=80),
+        now=datetime(2026, 1, 1),
+    )
+    bearish = stock_db._fallback_generated_news(
+        context=_bcat_news_context(profile=profile, change_bps=-250, pressure_bps=-80),
+        now=datetime(2026, 1, 1),
+    )
+    assert bullish.sentiment_bps > 0
+    assert bearish.sentiment_bps < 0
 
 
 def _rng(seed: int) -> Random:
@@ -185,6 +198,23 @@ async def _upsert_illiquid_profile() -> StockProfileView:
             news_cadence_hours=8,
         ),
         now=datetime(2026, 1, 1),
+    )
+
+
+def _bcat_news_context(
+    profile: StockProfileView, change_bps: int = 0, pressure_bps: int = 0
+) -> StockNewsGenerationContext:
+    """Builds a deterministic BCAT news generation context."""
+    return StockNewsGenerationContext(
+        profile=profile,
+        change_cents=profile.price_cents * change_bps // 10_000,
+        change_bps=change_bps,
+        pressure_bps=pressure_bps,
+        buy_side_shares=0,
+        sell_side_shares=0,
+        net_order_shares=0,
+        recent_news_sentiment_bps=0,
+        lookback_hours=24,
     )
 
 
@@ -523,12 +553,12 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
         await session.commit()
     calls = 0
 
-    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+    async def provider(context: StockNewsGenerationContext) -> StockGeneratedNews:
         """Returns one fake AI news item."""
         nonlocal calls
         calls += 1
         return StockGeneratedNews(
-            headline=f"{profile.symbol} 測試新聞",
+            headline=f"{context.profile.symbol} 測試新聞",
             sentiment_bps=120,
             source="ai",
             model="test-model",
@@ -557,6 +587,86 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
     assert news_rows[0].model == "test-model"
 
 
+async def test_stock_news_provider_receives_market_context(stock_isolated_db: None) -> None:
+    """Generated news can react to daily movement, trade flow, and recent news."""
+    now = datetime(2026, 1, 2, 12, 0)
+    trade_at = now - timedelta(hours=1)
+    async with stock_db.open_stock_session() as session:
+        profile = await session.get(stock_db.StockProfile, BCAT_SYMBOL)
+        assert profile is not None
+        profile.price_cents = 11_000
+        profile.previous_close_price_cents = 10_000
+        session.add(
+            instance=stock_db.StockOperation(
+                operation_id="context-test-operation",
+                symbol=BCAT_SYMBOL,
+                user_id=1,
+                user_name="alice",
+                requested_action=StockAction.BUY.value,
+                status=StockOperationStatus.APPLIED.value,
+                failure_reason="",
+                created_at=trade_at,
+                updated_at=trade_at,
+            )
+        )
+        session.add(
+            instance=stock_db.StockTradeLeg(
+                operation_id="context-test-operation",
+                leg_order=1,
+                symbol=BCAT_SYMBOL,
+                user_id=1,
+                user_name="alice",
+                leg_type=StockTradeLegType.OPEN_LONG.value,
+                shares=BCAT_LIQUIDITY_SHARES,
+                price_cents=10_000,
+                wallet_delta=-25_000,
+                basis_delta=25_000,
+                collateral_delta=0,
+                realized_pnl_delta=0,
+                created_at=trade_at,
+            )
+        )
+        session.add(
+            instance=stock_db.StockNews(
+                id="bcat-context-template",
+                symbol=BCAT_SYMBOL,
+                headline="BCAT 舊新聞",
+                sentiment_bps=90,
+                source="template",
+                model="",
+                expires_at=now + timedelta(hours=1),
+                created_at=now - timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+
+    contexts: list[StockNewsGenerationContext] = []
+
+    async def provider(context: StockNewsGenerationContext) -> StockGeneratedNews:
+        """Records the market context passed to AI news."""
+        contexts.append(context)
+        return StockGeneratedNews(
+            headline=f"{context.profile.symbol} context 測試新聞",
+            sentiment_bps=120,
+            source="ai",
+            model="test-model",
+        )
+
+    await stock_db.ensure_due_stock_news(news_provider=provider, symbols=(BCAT_SYMBOL,), now=now)
+
+    assert len(contexts) == 1
+    context = contexts[0]
+    assert context.profile.symbol == BCAT_SYMBOL
+    assert context.change_bps == 1_000
+    assert context.change_cents == 1_000
+    assert context.buy_side_shares == BCAT_LIQUIDITY_SHARES
+    assert context.sell_side_shares == 0
+    assert context.net_order_shares == BCAT_LIQUIDITY_SHARES
+    assert context.pressure_bps > 0
+    assert context.latest_news_headline == "BCAT 舊新聞"
+    assert context.recent_news_sentiment_bps > 0
+
+
 async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: None) -> None:
     """AI news can replace deterministic fallback news in the same cadence bucket."""
     profile = await _upsert_bcat_profile()
@@ -566,7 +676,9 @@ async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: 
         await stock_db._insert_generated_news(
             session=session,
             profile=profile,
-            generated=stock_db._fallback_generated_news(profile=profile, now=now),
+            generated=stock_db._fallback_generated_news(
+                context=_bcat_news_context(profile=profile), now=now
+            ),
             now=now,
         )
         await stock_db._insert_generated_news(
@@ -599,12 +711,12 @@ async def test_stock_due_news_upgrades_template_when_provider_available(
     await stock_db.ensure_due_stock_news(symbols=(BCAT_SYMBOL,), now=now)
     calls = 0
 
-    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+    async def provider(context: StockNewsGenerationContext) -> StockGeneratedNews:
         """Returns one fake AI news item."""
         nonlocal calls
         calls += 1
         return StockGeneratedNews(
-            headline=f"{profile.symbol} provider 升級新聞",
+            headline=f"{context.profile.symbol} provider 升級新聞",
             sentiment_bps=100,
             source="ai",
             model="test-model",
@@ -638,13 +750,13 @@ async def test_stock_due_news_serializes_concurrent_provider_calls(
         await session.commit()
     calls = 0
 
-    async def provider(profile: StockProfileView) -> StockGeneratedNews:
+    async def provider(context: StockNewsGenerationContext) -> StockGeneratedNews:
         """Returns one fake AI news item after yielding to the event loop."""
         nonlocal calls
         calls += 1
         await asyncio.sleep(0)
         return StockGeneratedNews(
-            headline=f"{profile.symbol} concurrent 測試新聞",
+            headline=f"{context.profile.symbol} concurrent 測試新聞",
             sentiment_bps=80,
             source="ai",
             model="test-model",

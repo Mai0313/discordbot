@@ -33,6 +33,7 @@ from discordbot.typings.stock import (
     StockOperationStatus,
     StockSupplyAuditView,
     StockSettlementResult,
+    StockNewsGenerationContext,
     StockParticipantPositionView,
     StockReconciliationOperation,
 )
@@ -54,7 +55,11 @@ from discordbot.cogs._stock.market import (
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
-from discordbot.cogs._stock.prompts import STOCK_NEWS_FALLBACK_TEMPLATES
+from discordbot.cogs._stock.prompts import (
+    STOCK_NEWS_BEARISH_FALLBACK_TEMPLATES,
+    STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
+    STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
+)
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
@@ -245,6 +250,16 @@ class _StockMarketExposure(BaseModel):
     short_shares: int
     available_long_shares: int
     available_short_shares: int
+
+
+class _StockOrderFlowSummary(BaseModel):
+    """Recent order-flow summary for stock news context."""
+
+    model_config = ConfigDict(frozen=True)
+
+    buy_side_shares: int = 0
+    sell_side_shares: int = 0
+    pressure_bps: int = 0
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -683,7 +698,7 @@ async def list_stock_supply_audit() -> tuple[StockSupplyAuditView, ...]:
 
 async def ensure_due_stock_news(
     news_provider: (
-        Callable[[StockProfileView], Awaitable[StockGeneratedNews | None]] | None
+        Callable[[StockNewsGenerationContext], Awaitable[StockGeneratedNews | None]] | None
     ) = None,
     symbols: tuple[str, ...] | None = None,
     now: datetime | None = None,
@@ -693,47 +708,50 @@ async def ensure_due_stock_news(
     effective_now = now or _database_now()
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
     async with _current_news_generation_lock():
-        due_profiles = await _due_stock_profile_views(
+        due_contexts = await _due_stock_news_contexts(
             normalized_symbols=normalized_symbols,
             now=effective_now,
             allow_template_upgrade=news_provider is not None,
         )
-        if not due_profiles:
+        if not due_contexts:
             return
 
         async def generate_row(
-            profile: StockProfileView,
-        ) -> tuple[StockProfileView, StockGeneratedNews]:
+            context: StockNewsGenerationContext,
+        ) -> tuple[StockNewsGenerationContext, StockGeneratedNews]:
             """Generates one news row without holding a database transaction."""
             generated: StockGeneratedNews | None = None
             if news_provider is not None:
                 async with _current_news_provider_semaphore():
                     try:
-                        generated = await news_provider(profile)
+                        generated = await news_provider(context)
                     except Exception:
                         logfire.warn(
                             "Stock news provider failed; using deterministic fallback",
-                            symbol=profile.symbol,
+                            symbol=context.profile.symbol,
                             _exc_info=True,
                         )
             if generated is None or not generated.headline.strip():
-                generated = _fallback_generated_news(profile=profile, now=effective_now)
-            return profile, generated
+                generated = _fallback_generated_news(context=context, now=effective_now)
+            return context, generated
 
-        rows = await asyncio.gather(*(generate_row(profile=profile) for profile in due_profiles))
+        rows = await asyncio.gather(*(generate_row(context=context) for context in due_contexts))
 
         async with open_stock_session() as session:
-            for profile, generated in rows:
+            for context, generated in rows:
                 await _insert_generated_news(
-                    session=session, profile=profile, generated=generated, now=effective_now
+                    session=session,
+                    profile=context.profile,
+                    generated=generated,
+                    now=effective_now,
                 )
             await session.commit()
 
 
-async def _due_stock_profile_views(
+async def _due_stock_news_contexts(
     normalized_symbols: tuple[str, ...] | None, now: datetime, allow_template_upgrade: bool = False
-) -> tuple[StockProfileView, ...]:
-    """Returns stock profiles that need a fresh news row."""
+) -> tuple[StockNewsGenerationContext, ...]:
+    """Returns stock news generation contexts for profiles that need fresh news."""
     async with open_stock_session() as session:
         statement = select(StockProfile)
         if normalized_symbols:
@@ -741,7 +759,7 @@ async def _due_stock_profile_views(
         result = await session.execute(statement=statement.order_by(StockProfile.symbol.asc()))
         profiles = tuple(result.scalars())
         profile_symbols = tuple(profile.symbol for profile in profiles)
-        latest_news_by_symbol: dict[str, tuple[datetime, str]] = {}
+        latest_news_by_symbol: dict[str, tuple[datetime, str, str, int]] = {}
         if profile_symbols:
             latest_news_subquery = (
                 select(StockNews.symbol, func.max(StockNews.created_at).label("latest_created_at"))
@@ -750,32 +768,177 @@ async def _due_stock_profile_views(
                 .subquery()
             )
             latest_result = await session.execute(
-                statement=select(StockNews.symbol, StockNews.created_at, StockNews.source).join(
+                statement=select(
+                    StockNews.symbol,
+                    StockNews.created_at,
+                    StockNews.source,
+                    StockNews.headline,
+                    StockNews.sentiment_bps,
+                ).join(
                     latest_news_subquery,
                     (StockNews.symbol == latest_news_subquery.c.symbol)
                     & (StockNews.created_at == latest_news_subquery.c.latest_created_at),
                 )
             )
             latest_news_by_symbol = {
-                symbol: (latest_at, source)
-                for symbol, latest_at, source in latest_result.all()
+                symbol: (latest_at, source, headline, sentiment_bps)
+                for symbol, latest_at, source, headline, sentiment_bps in latest_result.all()
                 if latest_at is not None
             }
 
-        due_profiles: list[StockProfileView] = []
+        due_profiles: list[StockProfile] = []
         for profile in profiles:
             latest_news = latest_news_by_symbol.get(profile.symbol)
             cadence = timedelta(hours=max(profile.news_cadence_hours, 1))
             if latest_news is None:
-                due_profiles.append(_profile_view(profile=profile))
+                due_profiles.append(profile)
                 continue
-            latest_news_at, latest_news_source = latest_news
+            latest_news_at, latest_news_source, _headline, _sentiment_bps = latest_news
             if as_taipei(dt=now) - as_taipei(dt=latest_news_at) < cadence and (
                 not allow_template_upgrade or latest_news_source != "template"
             ):
                 continue
-            due_profiles.append(_profile_view(profile=profile))
-        return tuple(due_profiles)
+            due_profiles.append(profile)
+        if not due_profiles:
+            return ()
+        return await _stock_news_generation_contexts(
+            session=session,
+            profiles=tuple(due_profiles),
+            latest_news_by_symbol=latest_news_by_symbol,
+            now=now,
+        )
+
+
+async def _stock_news_generation_contexts(
+    session: AsyncSession,
+    profiles: tuple[StockProfile, ...],
+    latest_news_by_symbol: dict[str, tuple[datetime, str, str, int]],
+    now: datetime,
+) -> tuple[StockNewsGenerationContext, ...]:
+    """Builds DB-backed market context for stock news generation."""
+    symbols = tuple(profile.symbol for profile in profiles)
+    flow_summaries = await _order_flow_summaries_for_symbols(
+        session=session,
+        symbols=symbols,
+        at=now,
+        liquidity_by_symbol={profile.symbol: profile.liquidity_shares for profile in profiles},
+    )
+    news_rows_by_symbol = await _news_rows_by_symbol_for_context(
+        session=session, symbols=symbols, now=now
+    )
+    lookback_hours = max(int(_ORDER_FLOW_LOOKBACK.total_seconds() // 3600), 1)
+    contexts: list[StockNewsGenerationContext] = []
+    for profile in profiles:
+        flow = flow_summaries.get(profile.symbol, _StockOrderFlowSummary())
+        latest_news = latest_news_by_symbol.get(profile.symbol)
+        latest_news_headline = ""
+        latest_news_sentiment_bps = 0
+        if latest_news is not None:
+            _latest_at, _latest_source, latest_news_headline, latest_news_sentiment_bps = (
+                latest_news
+            )
+        change_cents = profile.price_cents - profile.previous_close_price_cents
+        change_bps = (
+            change_cents * 10_000 // profile.previous_close_price_cents
+            if profile.previous_close_price_cents > 0
+            else 0
+        )
+        contexts.append(
+            StockNewsGenerationContext(
+                profile=_profile_view(profile=profile),
+                change_cents=change_cents,
+                change_bps=change_bps,
+                pressure_bps=flow.pressure_bps,
+                buy_side_shares=flow.buy_side_shares,
+                sell_side_shares=flow.sell_side_shares,
+                net_order_shares=flow.buy_side_shares - flow.sell_side_shares,
+                recent_news_sentiment_bps=_news_sentiment_bps_from_rows(
+                    news_rows=tuple(news_rows_by_symbol.get(profile.symbol, ())), at=now
+                ),
+                latest_news_headline=latest_news_headline,
+                latest_news_sentiment_bps=latest_news_sentiment_bps,
+                lookback_hours=lookback_hours,
+            )
+        )
+    return tuple(contexts)
+
+
+async def _order_flow_summaries_for_symbols(
+    session: AsyncSession,
+    symbols: tuple[str, ...],
+    at: datetime,
+    liquidity_by_symbol: dict[str, int],
+) -> dict[str, _StockOrderFlowSummary]:
+    """Returns recent order-flow summaries keyed by symbol."""
+    if not symbols:
+        return {}
+    since = at - _ORDER_FLOW_LOOKBACK
+    result = await session.execute(
+        statement=select(
+            StockTradeLeg.symbol,
+            StockTradeLeg.leg_type,
+            StockTradeLeg.shares,
+            StockTradeLeg.created_at,
+        )
+        .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
+        .where(
+            StockTradeLeg.symbol.in_(symbols),
+            StockTradeLeg.created_at >= since,
+            StockTradeLeg.created_at <= at,
+            StockOperation.status == StockOperationStatus.APPLIED.value,
+        )
+    )
+    rows_by_symbol: dict[str, list[tuple[str, int, datetime]]] = {symbol: [] for symbol in symbols}
+    for symbol, leg_type, shares, created_at in result.all():
+        rows_by_symbol.setdefault(symbol, []).append((leg_type, shares, created_at))
+    return {
+        symbol: _order_flow_summary_from_rows(
+            pressure_rows=tuple(rows), at=at, liquidity_shares=liquidity_by_symbol.get(symbol, 0)
+        )
+        for symbol, rows in rows_by_symbol.items()
+    }
+
+
+def _order_flow_summary_from_rows(
+    pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime, liquidity_shares: int
+) -> _StockOrderFlowSummary:
+    """Summarizes recent order flow for stock news context."""
+    buy_side_shares = 0
+    sell_side_shares = 0
+    for leg_type, shares, _created_at in pressure_rows:
+        if leg_type in (StockTradeLegType.OPEN_LONG.value, StockTradeLegType.COVER_SHORT.value):
+            buy_side_shares += shares
+        else:
+            sell_side_shares += shares
+    return _StockOrderFlowSummary(
+        buy_side_shares=buy_side_shares,
+        sell_side_shares=sell_side_shares,
+        pressure_bps=_recent_pressure_bps_from_rows(
+            pressure_rows=pressure_rows, at=at, liquidity_shares=liquidity_shares
+        ),
+    )
+
+
+async def _news_rows_by_symbol_for_context(
+    session: AsyncSession, symbols: tuple[str, ...], now: datetime
+) -> dict[str, tuple[StockNews, ...]]:
+    """Returns recent news rows keyed by symbol for generation context."""
+    if not symbols:
+        return {}
+    result = await session.execute(
+        statement=select(StockNews)
+        .where(
+            StockNews.symbol.in_(symbols),
+            StockNews.created_at <= now,
+            StockNews.created_at >= now - _NEWS_SENTIMENT_LOOKBACK,
+            or_(StockNews.expires_at.is_(None), StockNews.expires_at >= now),
+        )
+        .order_by(StockNews.created_at.desc())
+    )
+    rows_by_symbol: dict[str, list[StockNews]] = {symbol: [] for symbol in symbols}
+    for news in result.scalars():
+        rows_by_symbol.setdefault(news.symbol, []).append(news)
+    return {symbol: tuple(rows) for symbol, rows in rows_by_symbol.items()}
 
 
 async def _insert_generated_news(
@@ -820,13 +983,21 @@ def _stock_news_bucket(profile: StockProfileView, now: datetime) -> int:
     return int(as_taipei(dt=now).timestamp()) // cadence_seconds
 
 
-def _fallback_generated_news(profile: StockProfileView, now: datetime) -> StockGeneratedNews:
+def _fallback_generated_news(
+    context: StockNewsGenerationContext, now: datetime
+) -> StockGeneratedNews:
     """Returns deterministic fictional news for a due stock profile."""
+    profile = context.profile
     bucket = _stock_news_bucket(profile=profile, now=now)
-    seed = sum(ord(char) for char in profile.symbol) + bucket
-    headline_template, sentiment_bps = STOCK_NEWS_FALLBACK_TEMPLATES[
-        seed % len(STOCK_NEWS_FALLBACK_TEMPLATES)
-    ]
+    templates = _fallback_templates_for_context(context=context)
+    seed = (
+        sum(ord(char) for char in profile.symbol)
+        + bucket
+        + context.buy_side_shares
+        + context.sell_side_shares
+        + abs(context.pressure_bps) * 7
+    )
+    headline_template, sentiment_bps = templates[seed % len(templates)]
     return StockGeneratedNews(
         headline=headline_template.format(
             name=profile.name, symbol=profile.symbol, category=profile.category
@@ -834,6 +1005,20 @@ def _fallback_generated_news(profile: StockProfileView, now: datetime) -> StockG
         sentiment_bps=sentiment_bps,
         source="template",
     )
+
+
+def _fallback_templates_for_context(
+    context: StockNewsGenerationContext,
+) -> tuple[tuple[str, int], ...]:
+    """Chooses fallback templates from the same market context used by AI news."""
+    signal_bps = (
+        context.change_bps // 2 + context.pressure_bps + context.recent_news_sentiment_bps // 3
+    )
+    if signal_bps >= 50:
+        return STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES
+    if signal_bps <= -50:
+        return STOCK_NEWS_BEARISH_FALLBACK_TEMPLATES
+    return STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES
 
 
 async def _latest_tick(session: AsyncSession, symbol: str) -> StockPriceTick | None:

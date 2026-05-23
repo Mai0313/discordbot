@@ -8,7 +8,7 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.typings.stock import StockProfileView, StockGeneratedNews
+from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT
 
@@ -36,14 +36,25 @@ class StockNewsAI(BaseModel):
     client: SkipValidation[AsyncOpenAI]
     model: ModelSettings
 
-    async def generate(self, profile: StockProfileView) -> StockGeneratedNews | None:
+    async def generate(self, context: StockNewsGenerationContext) -> StockGeneratedNews | None:
         """Returns one generated news item, or `None` when the LLM path fails."""
+        profile = context.profile
         user_text = (
             f"Symbol: {profile.symbol}\n"
             f"Company: {profile.name}\n"
             f"Category: {profile.category}\n"
             f"Price: {profile.price_cents / 100:.2f}\n"
-            f"Daily change bps anchor is not available; write a plausible fictional event."
+            f"Daily price change: {_signed_percent(bps=context.change_bps)} "
+            f"({context.change_cents / 100:+.2f})\n"
+            f"Recent order flow window: {context.lookback_hours} hours\n"
+            f"Buy-side shares: {context.buy_side_shares:,}\n"
+            f"Sell-side shares: {context.sell_side_shares:,}\n"
+            f"Net order shares: {context.net_order_shares:+,}\n"
+            f"Order pressure: {_signed_percent(bps=context.pressure_bps)} "
+            f"({_pressure_label(pressure_bps=context.pressure_bps)})\n"
+            f"Existing news sentiment now: {_signed_percent(bps=context.recent_news_sentiment_bps)}\n"
+            f"Latest previous headline: {context.latest_news_headline or 'None'}\n"
+            "Write a plausible fictional event that fits this context."
         )
         try:
             async with asyncio.timeout(delay=STOCK_NEWS_AI_TIMEOUT_SECONDS):
@@ -86,6 +97,24 @@ class StockNewsAI(BaseModel):
             source="ai",
             model=self.model.name,
         )
+
+
+def _signed_percent(bps: int) -> str:
+    """Formats basis points as a signed percent."""
+    return f"{bps / 100:+.2f}%"
+
+
+def _pressure_label(pressure_bps: int) -> str:
+    """Returns a compact order-flow label for the AI prompt."""
+    if pressure_bps >= 60:
+        return "strong buy pressure"
+    if pressure_bps >= 20:
+        return "buy pressure"
+    if pressure_bps <= -60:
+        return "strong sell pressure"
+    if pressure_bps <= -20:
+        return "sell pressure"
+    return "balanced"
 
 
 __all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "STOCK_NEWS_PROMPT", "StockNewsAI", "StockNewsDraft"]

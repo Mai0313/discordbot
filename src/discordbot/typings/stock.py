@@ -161,6 +161,24 @@ class StockGeneratedNews(BaseModel):
     model: str = ""
 
 
+class StockNewsGenerationContext(BaseModel):
+    """Market context passed to a stock news generator."""
+
+    model_config = ConfigDict(frozen=True)
+
+    profile: StockProfileView
+    change_cents: int
+    change_bps: int
+    pressure_bps: int
+    buy_side_shares: int
+    sell_side_shares: int
+    net_order_shares: int
+    recent_news_sentiment_bps: int
+    latest_news_headline: str = ""
+    latest_news_sentiment_bps: int = 0
+    lookback_hours: int
+
+
 class StockPriceTickView(BaseModel):
     """Read-only stock price tick."""
 
@@ -260,6 +278,7 @@ __all__ = [
     "StockDetailViewData",
     "StockGeneratedNews",
     "StockMarketQuote",
+    "StockNewsGenerationContext",
     "StockNewsView",
     "StockOperationStatus",
     "StockParticipantPositionView",
