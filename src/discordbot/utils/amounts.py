@@ -13,11 +13,13 @@ def compact_amount(amount: int, signed: bool = False) -> str:
         if abs_amount >= threshold:
             value = Decimal(abs_amount) / Decimal(threshold)
             formatted = _compact_decimal(value=value)
+            display_suffix = suffix
             if formatted == "10,000" and unit_index > 0:
-                threshold, suffix = _COMPACT_UNITS[unit_index - 1]
-                value = Decimal(abs_amount) / Decimal(threshold)
+                rollover_threshold, rollover_suffix = _COMPACT_UNITS[unit_index - 1]
+                value = Decimal(abs_amount) / Decimal(rollover_threshold)
                 formatted = _compact_decimal(value=value)
-            return f"{sign}{formatted}{suffix}"
+                display_suffix = rollover_suffix
+            return f"{sign}{formatted}{display_suffix}"
     return f"{amount:+,}" if signed and amount != 0 else f"{amount:,}"
 
 
