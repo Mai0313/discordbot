@@ -87,7 +87,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Execution price uses order-size slippage from `liquidity_shares`, capped by `max_tick_change_bps`. Store and display the per-leg execution `price_cents`; do not settle large orders at the quote price.
 - Stock tables that persist `user_id` also persist `user_name`. Public stock UI should display stored names instead of Discord IDs.
 - Stock settlement must go through `settle_stock_operation(...)`. Views must not split price reads, wallet reads, and position writes or import SQLAlchemy stock models directly.
-- Stock money uses `price_cents: int`; wallet deltas stay integer `CURRENCY_NAME`. Use `cash_ceil(...)` and `cash_floor(...)` for conversion.
+- Stock persisted money and share quantity columns use decimal string storage and are parsed to Python `int` for arithmetic so they do not inherit SQLite's 64-bit integer ceiling. Wallet deltas stay integer `CURRENCY_NAME`; use `cash_ceil(...)` and `cash_floor(...)` for conversion.
 - Compound stock operations write one `stock_operation` and ordered `stock_trade_leg` rows. Do not net wallet legs before applying them through the public ordered economy helper.
 - Use `uv run python scripts/manage_stock_reconciliation.py list` to inspect non-final stock operations before manual repair. Use `uv run python scripts/manage_stock_company.py audit` to inspect float supply, aggregate exposure, and remaining long / short capacity.
 - Lazy market ticks advance every 5 minutes on interaction. Long backlogs compress to at most `MAX_TICKS_PER_INTERACTION` ticks and still roll over Asia/Taipei day boundaries.

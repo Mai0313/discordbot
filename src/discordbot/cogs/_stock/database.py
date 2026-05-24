@@ -62,6 +62,10 @@ from discordbot.cogs._stock.prompts import (
     STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
 )
+from discordbot.utils.stored_integer import (
+    StoredInteger,
+    configure_sqlite_stored_integer_functions,
+)
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
@@ -113,15 +117,15 @@ class StockProfile(Base):
     symbol: Mapped[str] = mapped_column(String(length=16), primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), nullable=False)
     category: Mapped[str] = mapped_column(String(length=64), nullable=False)
-    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    previous_close_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    day_open_price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    total_shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    float_shares: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    previous_close_price_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    day_open_price_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    total_shares: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    float_shares: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
     base_volatility_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     volatility_amplifier_bps: Mapped[int] = mapped_column(Integer, nullable=False)
-    liquidity_shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    fair_value_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    liquidity_shares: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    fair_value_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
     mean_reversion_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     max_tick_change_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     news_cadence_hours: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -137,12 +141,12 @@ class StockPosition(Base):
     symbol: Mapped[str] = mapped_column(String(length=16), primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
-    long_shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    long_cost_basis: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    short_shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    short_entry_value: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    short_collateral: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    realized_pnl: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    long_shares: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    long_cost_basis: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    short_shares: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    short_entry_value: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    short_collateral: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    realized_pnl: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -184,12 +188,12 @@ class StockTradeLeg(Base):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     user_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     leg_type: Mapped[str] = mapped_column(String(length=32), nullable=False)
-    shares: Mapped[int] = mapped_column(Integer, nullable=False)
-    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    wallet_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    basis_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    collateral_delta: Mapped[int] = mapped_column(Integer, nullable=False)
-    realized_pnl_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    shares: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    price_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    wallet_delta: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    basis_delta: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    collateral_delta: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    realized_pnl_delta: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -203,7 +207,7 @@ class StockPriceTick(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(length=16), nullable=False)
-    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_cents: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -264,14 +268,39 @@ class _StockOrderFlowSummary(BaseModel):
     pressure_bps: int = 0
 
 
-@event.listens_for(_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
+def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     """Configures SQLite for stock storage."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
+    configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
     cursor.close()
+
+
+@event.listens_for(_engine.sync_engine, "connect")
+def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
+    """Configures SQLite for stock storage."""
+    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+
+
+def _configure_sqlite_on_checkout(
+    dbapi_connection: object, _connection_record: object, _connection_proxy: object
+) -> None:
+    """Configures pooled connections from test-swapped engines."""
+    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+
+
+def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
+    """Installs SQLite connection hooks on the active engine."""
+    if not event.contains(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite):
+        event.listen(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite)
+    if not event.contains(
+        target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
+    ):
+        event.listen(
+            target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
+        )
 
 
 def _database_now() -> datetime:
@@ -375,6 +404,7 @@ async def _market_lock(symbol: str) -> AsyncIterator[None]:
 
 def open_stock_session() -> AsyncSession:
     """Creates an async session bound to the current stock database engine."""
+    _ensure_sqlite_hooks(engine=_engine)
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
@@ -386,6 +416,7 @@ async def _begin_immediate(session: AsyncSession) -> None:
 async def _ensure_schema() -> None:
     """Bootstraps stock schema once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    _ensure_sqlite_hooks(engine=_engine)
     if _schema_ready_for is _engine:
         return
     async with _current_schema_lock():
@@ -403,12 +434,14 @@ async def _ensure_stock_schema_migrations(conn: Any) -> None:  # noqa: ANN401 --
     profile_columns = {row[1] for row in result.all()}
     if "float_shares" not in profile_columns:
         await conn.execute(
-            text("ALTER TABLE stock_profile ADD COLUMN float_shares INTEGER NOT NULL DEFAULT 0")
+            text("ALTER TABLE stock_profile ADD COLUMN float_shares TEXT NOT NULL DEFAULT '0'")
         )
-        await conn.execute(text("UPDATE stock_profile SET float_shares = total_shares"))
+        await conn.execute(
+            text("UPDATE stock_profile SET float_shares = CAST(total_shares AS TEXT)")
+        )
     profile_migrations = {
-        "liquidity_shares": f"ALTER TABLE stock_profile ADD COLUMN liquidity_shares INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_LIQUIDITY_SHARES}",
-        "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_FAIR_VALUE_CENTS}",
+        "liquidity_shares": f"ALTER TABLE stock_profile ADD COLUMN liquidity_shares TEXT NOT NULL DEFAULT '{_MIGRATION_DEFAULT_LIQUIDITY_SHARES}'",
+        "fair_value_cents": f"ALTER TABLE stock_profile ADD COLUMN fair_value_cents TEXT NOT NULL DEFAULT '{_MIGRATION_DEFAULT_FAIR_VALUE_CENTS}'",
         "mean_reversion_bps": f"ALTER TABLE stock_profile ADD COLUMN mean_reversion_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MEAN_REVERSION_BPS}",
         "max_tick_change_bps": f"ALTER TABLE stock_profile ADD COLUMN max_tick_change_bps INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_MAX_TICK_CHANGE_BPS}",
         "news_cadence_hours": f"ALTER TABLE stock_profile ADD COLUMN news_cadence_hours INTEGER NOT NULL DEFAULT {_MIGRATION_DEFAULT_NEWS_CADENCE_HOURS}",
@@ -1315,18 +1348,20 @@ async def get_stock_portfolio(
         result = await session.execute(
             statement=select(StockPosition, StockProfile)
             .join(StockProfile, StockProfile.symbol == StockPosition.symbol)
-            .where(
-                StockPosition.user_id == user_id,
-                or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
-            )
-            .order_by(
-                (StockPosition.long_shares + StockPosition.short_shares).desc(),
-                StockPosition.symbol.asc(),
-            )
+            .where(StockPosition.user_id == user_id)
+            .order_by(StockPosition.symbol.asc())
+        )
+        position_rows = [
+            (position, profile)
+            for position, profile in result.all()
+            if _has_open_position(position=position)
+        ]
+        position_rows.sort(
+            key=lambda row: (-_position_share_total(position=row[0]), row[0].symbol)
         )
         holdings = tuple(
             _portfolio_holding_view(position=position, profile=profile)
-            for position, profile in result.all()
+            for position, profile in position_rows
         )
     return StockPortfolioView(
         user_id=user_id,
@@ -1385,30 +1420,44 @@ async def _public_position_views(
     """Returns public stock-level non-zero position summaries."""
     result = await session.execute(
         statement=select(StockPosition)
-        .where(
-            StockPosition.symbol == symbol,
-            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
-        )
-        .order_by(
-            (StockPosition.long_shares + StockPosition.short_shares).desc(),
-            StockPosition.updated_at.desc(),
-        )
-        .limit(8)
+        .where(StockPosition.symbol == symbol)
+        .order_by(StockPosition.updated_at.desc())
     )
-    return tuple(_participant_position_view(position=position) for position in result.scalars())
+    positions = [
+        position for position in result.scalars() if _has_open_position(position=position)
+    ]
+    positions.sort(
+        key=lambda position: (
+            _position_share_total(position=position),
+            as_taipei(dt=position.updated_at),
+        ),
+        reverse=True,
+    )
+    return tuple(_participant_position_view(position=position) for position in positions[:8])
 
 
 async def _user_position_symbols(session: AsyncSession, user_id: int) -> tuple[str, ...]:
     """Returns symbols where the user has a non-zero position."""
-    result = await session.execute(
-        statement=select(StockPosition.symbol)
-        .where(
-            StockPosition.user_id == user_id,
-            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
-        )
-        .order_by(StockPosition.symbol.asc())
+    positions = await session.execute(
+        statement=select(StockPosition).where(StockPosition.user_id == user_id)
     )
-    return tuple(result.scalars())
+    return tuple(
+        sorted(
+            position.symbol
+            for position in positions.scalars()
+            if _has_open_position(position=position)
+        )
+    )
+
+
+def _has_open_position(position: StockPosition) -> bool:
+    """Returns whether a persisted stock position carries exposure."""
+    return position.long_shares > 0 or position.short_shares > 0
+
+
+def _position_share_total(position: StockPosition) -> int:
+    """Returns total long and short shares for ordering display rows."""
+    return position.long_shares + position.short_shares
 
 
 def _portfolio_holding_view(
@@ -1463,23 +1512,15 @@ async def _market_exposures(
 
     position_result = await session.execute(
         statement=select(
-            StockPosition.symbol,
-            func.coalesce(func.sum(StockPosition.long_shares), 0),
-            func.coalesce(func.sum(StockPosition.short_shares), 0),
-        )
-        .where(StockPosition.symbol.in_(symbols))
-        .group_by(StockPosition.symbol)
+            StockPosition.symbol, StockPosition.long_shares, StockPosition.short_shares
+        ).where(StockPosition.symbol.in_(symbols))
     )
     for symbol, long_shares, short_shares in position_result.all():
-        exposure_totals[symbol]["long"] = int(long_shares)
-        exposure_totals[symbol]["short"] = int(short_shares)
+        exposure_totals[symbol]["long"] += long_shares
+        exposure_totals[symbol]["short"] += short_shares
 
     pending_result = await session.execute(
-        statement=select(
-            StockTradeLeg.symbol,
-            StockTradeLeg.leg_type,
-            func.coalesce(func.sum(StockTradeLeg.shares), 0),
-        )
+        statement=select(StockTradeLeg.symbol, StockTradeLeg.leg_type, StockTradeLeg.shares)
         .join(StockOperation, StockOperation.operation_id == StockTradeLeg.operation_id)
         .where(
             StockTradeLeg.symbol.in_(symbols),
@@ -1489,13 +1530,12 @@ async def _market_exposures(
             )),
             StockOperation.status.notin_(_FINAL_OPERATION_STATUSES),
         )
-        .group_by(StockTradeLeg.symbol, StockTradeLeg.leg_type)
     )
     for symbol, leg_type, shares in pending_result.all():
         if leg_type == StockTradeLegType.OPEN_LONG.value:
-            exposure_totals[symbol]["long"] += int(shares)
+            exposure_totals[symbol]["long"] += shares
         else:
-            exposure_totals[symbol]["short"] += int(shares)
+            exposure_totals[symbol]["short"] += shares
 
     exposures: dict[str, _StockMarketExposure] = {}
     for symbol, profile in profile_by_symbol.items():
