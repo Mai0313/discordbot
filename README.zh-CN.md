@@ -46,7 +46,7 @@
 | `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                         |
 | `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。       |
 | `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。 |
-| `/portfolio [member]`                                            | 查看钱包、债务与预估净资产。                                         |
+| `/portfolio [member]`                                            | 查看钱包、债务、stock holdings 与预估净资产。                         |
 | `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。    |
 | `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员。                                           |
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手动余额调整。                                            |

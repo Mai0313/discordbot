@@ -18,6 +18,7 @@ from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import BlackjackDealerDecision
+from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
@@ -616,6 +617,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
+    monkeypatch.setattr(economy, "get_stock_portfolio", fake_get_stock_portfolio)
     monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
     monkeypatch.setattr(economy, "repay_personal_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_personal_loans", fake_call_personal_loans)
@@ -700,6 +702,14 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     central_bank_view = central_bank_payload["view"]
     assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
     assert central_bank_view.message is not None
+    portfolio_embed = interaction.followup.sent[15]["embed"]
+    assert "315 虛擬歡樂豆" in portfolio_embed.description
+    assert any(
+        field.name == "股票淨值" and "`200`" in field.value for field in portfolio_embed.fields
+    )
+    assert any(
+        field.name == "股票部位" and "BCAT" in field.value for field in portfolio_embed.fields
+    )
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
@@ -1049,6 +1059,33 @@ async def fake_get_portfolio(user_id: int) -> PortfolioView:
         debt_principal=30,
         debt_interest=5,
         net_worth=115,
+    )
+
+
+async def fake_get_stock_portfolio(user_id: int) -> StockPortfolioView:
+    """Returns a stable fake stock portfolio."""
+    return StockPortfolioView(
+        user_id=user_id,
+        holdings=(
+            StockPortfolioHolding(
+                symbol="BCAT",
+                name="破貓科技",
+                price_cents=10_000,
+                long_shares=2,
+                long_cost_basis=200,
+                long_market_value=200,
+                short_shares=0,
+                short_entry_value=0,
+                short_collateral=0,
+                short_cover_cost=0,
+                equity_value=200,
+                unrealized_pnl=0,
+                realized_pnl=25,
+            ),
+        ),
+        equity_value=200,
+        unrealized_pnl=0,
+        realized_pnl=25,
     )
 
 

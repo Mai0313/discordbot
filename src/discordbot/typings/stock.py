@@ -214,6 +214,38 @@ class StockDetailViewData(BaseModel):
     ticks: tuple[StockPriceTickView, ...]
 
 
+class StockPortfolioHolding(BaseModel):
+    """One current stock position row for a user's portfolio."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    name: str
+    price_cents: int
+    long_shares: int
+    long_cost_basis: int
+    long_market_value: int
+    short_shares: int
+    short_entry_value: int
+    short_collateral: int
+    short_cover_cost: int
+    equity_value: int
+    unrealized_pnl: int
+    realized_pnl: int
+
+
+class StockPortfolioView(BaseModel):
+    """Current stock portfolio value for one user."""
+
+    model_config = ConfigDict(frozen=True)
+
+    user_id: int
+    holdings: tuple[StockPortfolioHolding, ...]
+    equity_value: int
+    unrealized_pnl: int
+    realized_pnl: int
+
+
 class StockSettlementResult(BaseModel):
     """Result returned by the one stock settlement helper."""
 
@@ -282,6 +314,8 @@ __all__ = [
     "StockNewsView",
     "StockOperationStatus",
     "StockParticipantPositionView",
+    "StockPortfolioHolding",
+    "StockPortfolioView",
     "StockPositionView",
     "StockPriceTickView",
     "StockProfileUpsert",

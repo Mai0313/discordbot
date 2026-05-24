@@ -27,11 +27,13 @@ from discordbot.typings.stock import (
     StockTradeLegType,
     StockTradeLegView,
     StockGeneratedNews,
+    StockPortfolioView,
     StockPriceTickView,
     StockProfileUpsert,
     StockDetailViewData,
     StockOperationStatus,
     StockSupplyAuditView,
+    StockPortfolioHolding,
     StockSettlementResult,
     StockNewsGenerationContext,
     StockParticipantPositionView,
@@ -1296,6 +1298,45 @@ async def get_stock_detail(
     )
 
 
+async def get_stock_portfolio(
+    user_id: int, now: datetime | None = None, rng: Random | None = None
+) -> StockPortfolioView:
+    """Returns the user's non-zero stock positions with current quote valuation."""
+    await _ensure_schema()
+    async with open_stock_session() as session:
+        symbols = await _user_position_symbols(session=session, user_id=user_id)
+    if symbols:
+        await ensure_due_stock_news(symbols=symbols, now=now)
+    for symbol in symbols:
+        async with open_stock_session() as session, _market_lock(symbol=symbol):
+            await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
+            await session.commit()
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=select(StockPosition, StockProfile)
+            .join(StockProfile, StockProfile.symbol == StockPosition.symbol)
+            .where(
+                StockPosition.user_id == user_id,
+                or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+            )
+            .order_by(
+                (StockPosition.long_shares + StockPosition.short_shares).desc(),
+                StockPosition.symbol.asc(),
+            )
+        )
+        holdings = tuple(
+            _portfolio_holding_view(position=position, profile=profile)
+            for position, profile in result.all()
+        )
+    return StockPortfolioView(
+        user_id=user_id,
+        holdings=holdings,
+        equity_value=sum(holding.equity_value for holding in holdings),
+        unrealized_pnl=sum(holding.unrealized_pnl for holding in holdings),
+        realized_pnl=sum(holding.realized_pnl for holding in holdings),
+    )
+
+
 async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
     """Returns recent news for a stock."""
     await ensure_due_stock_news(symbols=(symbol,))
@@ -1355,6 +1396,54 @@ async def _public_position_views(
         .limit(8)
     )
     return tuple(_participant_position_view(position=position) for position in result.scalars())
+
+
+async def _user_position_symbols(session: AsyncSession, user_id: int) -> tuple[str, ...]:
+    """Returns symbols where the user has a non-zero position."""
+    result = await session.execute(
+        statement=select(StockPosition.symbol)
+        .where(
+            StockPosition.user_id == user_id,
+            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+        )
+        .order_by(StockPosition.symbol.asc())
+    )
+    return tuple(result.scalars())
+
+
+def _portfolio_holding_view(
+    position: StockPosition, profile: StockProfile
+) -> StockPortfolioHolding:
+    """Projects a stock position into portfolio valuation terms."""
+    long_market_value = cash_floor(cents=profile.price_cents * position.long_shares)
+    short_cover_cost = cash_ceil(cents=profile.price_cents * position.short_shares)
+    unrealized_pnl = (
+        long_market_value
+        - position.long_cost_basis
+        + position.short_entry_value
+        - short_cover_cost
+    )
+    equity_value = (
+        long_market_value
+        + position.short_collateral
+        + position.short_entry_value
+        - short_cover_cost
+    )
+    return StockPortfolioHolding(
+        symbol=position.symbol,
+        name=profile.name,
+        price_cents=profile.price_cents,
+        long_shares=position.long_shares,
+        long_cost_basis=position.long_cost_basis,
+        long_market_value=long_market_value,
+        short_shares=position.short_shares,
+        short_entry_value=position.short_entry_value,
+        short_collateral=position.short_collateral,
+        short_cover_cost=short_cover_cost,
+        equity_value=equity_value,
+        unrealized_pnl=unrealized_pnl,
+        realized_pnl=position.realized_pnl,
+    )
 
 
 async def _market_exposure(session: AsyncSession, profile: StockProfile) -> _StockMarketExposure:
@@ -2514,6 +2603,7 @@ __all__ = [
     "format_price",
     "get_stock_detail",
     "get_stock_news",
+    "get_stock_portfolio",
     "list_market_quotes",
     "list_reconciliation_operations",
     "list_stock_profiles",

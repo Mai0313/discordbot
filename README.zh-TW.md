@@ -46,7 +46,7 @@
 | `/loss_leaderboard`                                              | 顯示今日賭場輸局累計排行榜。                                         |
 | `/credit status\|borrow\|call\|repay`                            | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。       |
 | `/central_bank status\|borrow\|call\|repay`                      | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。 |
-| `/portfolio [member]`                                            | 查看錢包、債務與預估淨資產。                                         |
+| `/portfolio [member]`                                            | 查看錢包、債務、stock holdings 與預估淨資產。                         |
 | `/stock`                                                         | 公開股票市場訊息，明細、交易、新聞、紀錄都在同一則 message edit。    |
 | `/give <member> <amount>`                                        | 轉帳虛擬歡樂豆給其他成員。                                           |
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手動餘額調整。                                            |

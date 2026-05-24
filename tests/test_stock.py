@@ -1022,6 +1022,53 @@ async def test_stock_detail_shows_stock_level_trades_and_positions(
     assert any(position.short_shares == 1 for position in detail.public_positions)
 
 
+async def test_stock_portfolio_lists_non_zero_positions_and_values(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Stock portfolio values long and short positions from current quotes."""
+    await _upsert_illiquid_profile()
+    await adjust_balance(user_id=1, name="alice", delta=10_000)
+    await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="2",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.SHORT,
+        quantity="3",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    portfolio = await stock_db.get_stock_portfolio(
+        user_id=1, now=datetime(2026, 1, 1), rng=_rng(seed=1)
+    )
+    holdings = {holding.symbol: holding for holding in portfolio.holdings}
+    bcat = holdings[BCAT_SYMBOL]
+    thin = holdings["THIN"]
+
+    assert set(holdings) == {BCAT_SYMBOL, "THIN"}
+    assert bcat.long_shares == 2
+    assert bcat.long_market_value == cash_floor(cents=bcat.price_cents * bcat.long_shares)
+    assert bcat.equity_value == bcat.long_market_value
+    assert thin.short_shares == 3
+    assert thin.short_cover_cost == cash_ceil(cents=thin.price_cents * thin.short_shares)
+    assert thin.unrealized_pnl == thin.short_entry_value - thin.short_cover_cost
+    assert (
+        thin.equity_value == thin.short_collateral + thin.short_entry_value - thin.short_cover_cost
+    )
+    assert portfolio.equity_value == bcat.equity_value + thin.equity_value
+    assert portfolio.unrealized_pnl == bcat.unrealized_pnl + thin.unrealized_pnl
+    assert portfolio.realized_pnl == 0
+
+
 async def test_stock_oversized_buy_defaults_to_affordable_all(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:

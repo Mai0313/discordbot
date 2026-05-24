@@ -46,7 +46,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/loss_leaderboard`                                              | Shows today's accumulated casino losses.                                                                               |
 | `/credit status\|borrow\|call\|repay`                            | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.     |
 | `/central_bank status\|borrow\|call\|repay`                      | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity. |
-| `/portfolio [member]`                                            | Shows wallet, debt, and estimated net worth.                                                                           |
+| `/portfolio [member]`                                            | Shows wallet, debt, stock holdings, and estimated net worth.                                                           |
 | `/stock`                                                         | Opens one public stock market message that edits in place for details, trading, news, and history.                     |
 | `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member.                                                                                |
 | `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments.                                                                                 |

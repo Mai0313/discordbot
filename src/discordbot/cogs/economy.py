@@ -9,6 +9,7 @@ from nextcord import Embed, Locale, Member, ButtonStyle, Interaction, SlashOptio
 from nextcord.ui import View, Button
 from nextcord.ext import commands
 
+from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
@@ -18,12 +19,14 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanLenderType,
 )
+from discordbot.cogs._stock.market import format_price
 from discordbot.cogs._economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
+from discordbot.cogs._stock.database import get_stock_portfolio
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     top_n,
@@ -75,6 +78,8 @@ _PORTFOLIO_COLOR = 0x95A5A6
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
+_PORTFOLIO_STOCK_LINE_LIMIT = 5
+_PORTFOLIO_STOCK_NAME_LIMIT = 20
 
 
 def _vip_perk_lines(checkin_streak: int = 1) -> str:
@@ -95,6 +100,49 @@ def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
     """Sets an embed thumbnail when an avatar URL is available."""
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
+
+
+def _portfolio_stock_lines(stock_portfolio: StockPortfolioView) -> str:
+    """Formats stock holdings for the private portfolio embed."""
+    if not stock_portfolio.holdings:
+        return "目前沒有股票部位"
+    lines = [
+        _portfolio_stock_line(holding=holding)
+        for holding in stock_portfolio.holdings[:_PORTFOLIO_STOCK_LINE_LIMIT]
+    ]
+    remaining = len(stock_portfolio.holdings) - _PORTFOLIO_STOCK_LINE_LIMIT
+    if remaining > 0:
+        lines.append(f"還有 `{remaining:,}` 檔未列出")
+    return "\n".join(lines)
+
+
+def _portfolio_stock_line(holding: StockPortfolioHolding) -> str:
+    """Formats one stock holding into a compact portfolio line."""
+    position_parts: list[str] = []
+    if holding.long_shares > 0:
+        position_parts.append(
+            f"持股 `{holding.long_shares:,}` 股 / 市值 {amount_code(amount=holding.long_market_value)}"
+        )
+    if holding.short_shares > 0:
+        short_equity = (
+            holding.short_collateral + holding.short_entry_value - holding.short_cover_cost
+        )
+        position_parts.append(
+            f"做空 `{holding.short_shares:,}` 股 / 淨值 {amount_code(amount=short_equity)}"
+        )
+    position_text = " · ".join(position_parts) if position_parts else "無部位"
+    name = _portfolio_stock_name(name=holding.name)
+    return (
+        f"`{holding.symbol}` {name} · 股價 `{format_price(price_cents=holding.price_cents)}` · "
+        f"{position_text} · 未實現 {amount_code(amount=holding.unrealized_pnl, signed=True)}"
+    )
+
+
+def _portfolio_stock_name(name: str) -> str:
+    """Keeps long company names from filling the portfolio field."""
+    if len(name) <= _PORTFOLIO_STOCK_NAME_LIMIT:
+        return name
+    return f"{name[:_PORTFOLIO_STOCK_NAME_LIMIT]}..."
 
 
 async def _send_expiring_followup(
@@ -1621,18 +1669,34 @@ class EconomyCogs(commands.Cog):
             return
         target = member or interaction.user
         portfolio = await get_portfolio(user_id=target.id)
+        stock_portfolio = await get_stock_portfolio(user_id=target.id)
+        net_worth = portfolio.net_worth + stock_portfolio.equity_value
         embed = Embed(
             title="📊 投資組合",
-            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=portfolio.net_worth)}",
+            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=net_worth)}",
             color=_PORTFOLIO_COLOR,
         )
         embed.add_field(name="現金", value=amount_code(amount=portfolio.balance), inline=True)
+        embed.add_field(
+            name="股票淨值",
+            value=(
+                f"估值 {amount_code(amount=stock_portfolio.equity_value)}\n"
+                f"未實現 {amount_code(amount=stock_portfolio.unrealized_pnl, signed=True)}\n"
+                f"已實現 {amount_code(amount=stock_portfolio.realized_pnl, signed=True)}"
+            ),
+            inline=True,
+        )
         embed.add_field(
             name="債務",
             value=(
                 f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
                 f"利息 {amount_code(amount=portfolio.debt_interest)}"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name="股票部位",
+            value=_portfolio_stock_lines(stock_portfolio=stock_portfolio),
             inline=False,
         )
         await _send_private_followup(interaction=interaction, embed=embed)
