@@ -74,12 +74,11 @@ _HOUSE_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
 _CENTRAL_BANK_COLOR = 0x1ABC9C
-_PORTFOLIO_COLOR = 0x95A5A6
 _CHECKIN_COLOR = 0x9B59B6
 _VIP_COLOR = 0xF1C40F
 _ERROR_COLOR = 0xED4245
-_PORTFOLIO_STOCK_LINE_LIMIT = 5
-_PORTFOLIO_STOCK_NAME_LIMIT = 20
+_STOCK_POSITION_LINE_LIMIT = 5
+_STOCK_POSITION_NAME_LIMIT = 20
 
 
 def _vip_perk_lines(checkin_streak: int = 1) -> str:
@@ -117,22 +116,22 @@ def _parse_positive_amount(raw_amount: str | None) -> int | None:
     return amount
 
 
-def _portfolio_stock_lines(stock_portfolio: StockPortfolioView) -> str:
-    """Formats stock holdings for the private portfolio embed."""
+def _stock_position_lines(stock_portfolio: StockPortfolioView) -> str:
+    """Formats stock holdings for the private balance embed."""
     if not stock_portfolio.holdings:
         return "目前沒有股票部位"
     lines = [
-        _portfolio_stock_line(holding=holding)
-        for holding in stock_portfolio.holdings[:_PORTFOLIO_STOCK_LINE_LIMIT]
+        _stock_position_line(holding=holding)
+        for holding in stock_portfolio.holdings[:_STOCK_POSITION_LINE_LIMIT]
     ]
-    remaining = len(stock_portfolio.holdings) - _PORTFOLIO_STOCK_LINE_LIMIT
+    remaining = len(stock_portfolio.holdings) - _STOCK_POSITION_LINE_LIMIT
     if remaining > 0:
         lines.append(f"還有 `{remaining:,}` 檔未列出")
     return "\n".join(lines)
 
 
-def _portfolio_stock_line(holding: StockPortfolioHolding) -> str:
-    """Formats one stock holding into a compact portfolio line."""
+def _stock_position_line(holding: StockPortfolioHolding) -> str:
+    """Formats one stock holding into a compact balance line."""
     position_parts: list[str] = []
     if holding.long_shares > 0:
         position_parts.append(
@@ -148,7 +147,7 @@ def _portfolio_stock_line(holding: StockPortfolioHolding) -> str:
             f"{amount_code(amount=short_equity, compact=True)}"
         )
     position_text = " · ".join(position_parts) if position_parts else "無部位"
-    name = _portfolio_stock_name(name=holding.name)
+    name = _stock_position_name(name=holding.name)
     return (
         f"`{holding.symbol}` {name} · 股價 `{format_price(price_cents=holding.price_cents)}` · "
         f"{position_text} · 未實現 "
@@ -156,11 +155,28 @@ def _portfolio_stock_line(holding: StockPortfolioHolding) -> str:
     )
 
 
-def _portfolio_stock_name(name: str) -> str:
-    """Keeps long company names from filling the portfolio field."""
-    if len(name) <= _PORTFOLIO_STOCK_NAME_LIMIT:
+def _stock_position_name(name: str) -> str:
+    """Keeps long company names from filling the stock field."""
+    if len(name) <= _STOCK_POSITION_NAME_LIMIT:
         return name
-    return f"{name[:_PORTFOLIO_STOCK_NAME_LIMIT]}..."
+    return f"{name[:_STOCK_POSITION_NAME_LIMIT]}..."
+
+
+def _debt_summary_text(*, principal: int, interest: int) -> str:
+    """Formats outstanding loan principal and interest."""
+    if principal <= 0 and interest <= 0:
+        return "無未還債務"
+    return (
+        f"本金 {amount_code(amount=principal, compact=True)}\n"
+        f"利息 {amount_code(amount=interest, compact=True)}"
+    )
+
+
+def _vip_status_text(is_vip: bool) -> str:
+    """Formats VIP status for the private balance embed."""
+    if not is_vip:
+        return "一般會員"
+    return f"👑 VIP\n{_vip_perk_lines()}"
 
 
 async def _send_expiring_followup(
@@ -780,53 +796,84 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="balance",
-        description=f"Check your current {CURRENCY_NAME} balance and loan status.",
+        description=f"Check a member's {CURRENCY_NAME} balance, loans, stocks, and VIP status.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: f"查詢你目前的{CURRENCY_NAME}餘額與欠款狀態",
-            Locale.ja: f"現在の{CURRENCY_NAME}残高と借入状況を確認します。",
+            Locale.zh_TW: f"查詢成員的{CURRENCY_NAME}餘額、借貸、股票與 VIP 狀態",
+            Locale.ja: f"member の{CURRENCY_NAME}残高、loan、stock、VIP 状態を確認します。",
         },
         nsfw=False,
     )
-    async def balance(self, interaction: Interaction) -> None:
-        """Replies with the caller's current balance and any outstanding loan.
+    async def balance(
+        self,
+        interaction: Interaction,
+        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="Member to inspect; defaults to yourself.",
+            name_localizations={Locale.zh_TW: "成員", Locale.ja: "メンバー"},
+            description_localizations={
+                Locale.zh_TW: "要查看的成員；預設是自己",
+                Locale.ja: "表示する member。省略時は自分。",
+            },
+            required=False,
+            default=None,
+        ),
+    ) -> None:
+        """Replies with a member's balance, loans, stocks, and VIP status.
 
         Args:
             interaction: The interaction that triggered the command.
+            member: Optional member to inspect.
         """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
-        user = interaction.user
-        portfolio = await get_portfolio(user_id=user.id)
-        is_vip = await get_vip(user_id=user.id)
-        age_days = (datetime.now(tz=UTC) - user.created_at).days
+        target = member or interaction.user
+        portfolio = await get_portfolio(user_id=target.id)
+        stock_portfolio = await get_stock_portfolio(user_id=target.id)
+        is_vip = await get_vip(user_id=target.id)
+        age_days = (datetime.now(tz=UTC) - target.created_at).days
+        net_worth = portfolio.net_worth + stock_portfolio.equity_value
 
         embed = Embed(
-            title="💰 錢包",
+            title="💰 財務總覽",
             color=_BALANCE_COLOR,
-            description=f"## {currency_text(amount=portfolio.balance, compact=True)}",
+            description=(
+                f"## {target.display_name}\n淨資產 {bold_currency(amount=net_worth, compact=True)}"
+            ),
         )
-        embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
-        _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
+        embed.set_author(
+            name=f"{target.display_name} 的財務總覽", icon_url=target.display_avatar.url
+        )
+        _set_optional_thumbnail(embed=embed, avatar_url=target.display_avatar.url)
 
-        if portfolio.debt_principal > 0 or portfolio.debt_interest > 0:
-            embed.add_field(
-                name="未還債務",
-                value=(
-                    f"本金 {amount_code(amount=portfolio.debt_principal, compact=True)}\n"
-                    f"利息 {amount_code(amount=portfolio.debt_interest, compact=True)}"
-                ),
-                inline=False,
-            )
         embed.add_field(
-            name="淨資產",
-            value=amount_code(amount=portfolio.net_worth, compact=True),
+            name="現金", value=amount_code(amount=portfolio.balance, compact=True), inline=True
+        )
+        embed.add_field(
+            name="股票淨值",
+            value=(
+                f"估值 {amount_code(amount=stock_portfolio.equity_value, compact=True)}\n"
+                f"未實現 "
+                f"{amount_code(amount=stock_portfolio.unrealized_pnl, signed=True, compact=True)}\n"
+                f"已實現 "
+                f"{amount_code(amount=stock_portfolio.realized_pnl, signed=True, compact=True)}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="債務",
+            value=_debt_summary_text(
+                principal=portfolio.debt_principal, interest=portfolio.debt_interest
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="股票部位",
+            value=_stock_position_lines(stock_portfolio=stock_portfolio),
             inline=False,
         )
-
-        if is_vip:
-            embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
+        embed.add_field(name="會員狀態", value=_vip_status_text(is_vip=is_vip), inline=False)
 
         vip_badge = " · 👑 VIP" if is_vip else ""
         embed.set_footer(text=f"帳號 {age_days} 天{vip_badge}")
@@ -1697,73 +1744,6 @@ class EconomyCogs(commands.Cog):
             inline=False,
         )
         await _send_expiring_followup(interaction=interaction, embed=embed)
-
-    @nextcord.slash_command(
-        name="portfolio",
-        description="Show wallet, debt, and estimated net worth.",
-        name_localizations={Locale.zh_TW: "投資組合", Locale.ja: "portfolio"},
-        description_localizations={
-            Locale.zh_TW: "查看餘額、債務與預估淨資產",
-            Locale.ja: "balance、debt、estimated net worth を表示します。",
-        },
-        nsfw=False,
-    )
-    async def portfolio(
-        self,
-        interaction: Interaction,
-        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
-            name="member",
-            description="Member to inspect; defaults to yourself.",
-            name_localizations={Locale.zh_TW: "成員", Locale.ja: "メンバー"},
-            description_localizations={
-                Locale.zh_TW: "要查看的成員；預設是自己",
-                Locale.ja: "表示する member。省略時は自分。",
-            },
-            required=False,
-            default=None,
-        ),
-    ) -> None:
-        """Shows a portfolio view."""
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user is None:
-            return
-        target = member or interaction.user
-        portfolio = await get_portfolio(user_id=target.id)
-        stock_portfolio = await get_stock_portfolio(user_id=target.id)
-        net_worth = portfolio.net_worth + stock_portfolio.equity_value
-        embed = Embed(
-            title="📊 投資組合",
-            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=net_worth, compact=True)}",
-            color=_PORTFOLIO_COLOR,
-        )
-        embed.add_field(
-            name="現金", value=amount_code(amount=portfolio.balance, compact=True), inline=True
-        )
-        embed.add_field(
-            name="股票淨值",
-            value=(
-                f"估值 {amount_code(amount=stock_portfolio.equity_value, compact=True)}\n"
-                f"未實現 "
-                f"{amount_code(amount=stock_portfolio.unrealized_pnl, signed=True, compact=True)}\n"
-                f"已實現 "
-                f"{amount_code(amount=stock_portfolio.realized_pnl, signed=True, compact=True)}"
-            ),
-            inline=True,
-        )
-        embed.add_field(
-            name="債務",
-            value=(
-                f"本金 {amount_code(amount=portfolio.debt_principal, compact=True)}\n"
-                f"利息 {amount_code(amount=portfolio.debt_interest, compact=True)}"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="股票部位",
-            value=_portfolio_stock_lines(stock_portfolio=stock_portfolio),
-            inline=False,
-        )
-        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="checkin",

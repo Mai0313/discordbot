@@ -36,7 +36,7 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance` balance · `/portfolio` net worth and stock holdings · `/give` transfer · `/checkin` daily reward\n"
+            "`/balance [member]` balance, loans, stock holdings, net worth, and VIP · `/give` transfer · `/checkin` daily reward\n"
             "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),
@@ -72,7 +72,7 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance` 餘額 · `/portfolio` 淨資產和 stock holdings · `/give` 轉帳 · `/checkin` 每日簽到\n"
+            "`/balance [member]` 餘額、借貸、stock holdings、淨資產和 VIP · `/give` 轉帳 · `/checkin` 每日簽到\n"
             "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/house` 莊家 ledger\n"
             "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整，amount 可輸入逗號格式"
         ),
@@ -108,7 +108,7 @@ _HELP_CONTENT = {
         ),
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance` balance · `/portfolio` net worth and stock holdings · `/give` transfer · `/checkin` daily reward\n"
+            "`/balance [member]` balance、loan、stock holdings、net worth、VIP · `/give` transfer · `/checkin` daily reward\n"
             "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),

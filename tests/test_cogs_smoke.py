@@ -638,7 +638,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=bot)
     interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await EconomyCogs.balance.callback(cog, interaction)
+    await EconomyCogs.balance.callback(cog, interaction, member=None)
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
@@ -673,10 +673,9 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
-    await EconomyCogs.portfolio.callback(cog, interaction, member=None)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 18
+    assert len(interaction.followup.sent) == 17
     assert len(scheduled) == 11
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
@@ -694,6 +693,19 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[13].get("ephemeral") is not True
     assert interaction.followup.sent[14].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
+    balance_embed = interaction.followup.sent[0]["embed"]
+    assert balance_embed.title == "💰 財務總覽"
+    assert "315 虛擬歡樂豆" in balance_embed.description
+    assert any(field.name == "現金" and "`150`" in field.value for field in balance_embed.fields)
+    assert any(
+        field.name == "債務" and "本金 `30`" in field.value for field in balance_embed.fields
+    )
+    assert any(
+        field.name == "股票淨值" and "`200`" in field.value for field in balance_embed.fields
+    )
+    assert any(
+        field.name == "股票部位" and "BCAT" in field.value for field in balance_embed.fields
+    )
     borrow_embed = interaction.followup.sent[7]["embed"]
     assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
     borrow_view = interaction.followup.sent[7]["view"]
@@ -703,14 +715,12 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     central_bank_view = central_bank_payload["view"]
     assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
     assert central_bank_view.message is not None
-    portfolio_embed = interaction.followup.sent[15]["embed"]
-    assert "315 虛擬歡樂豆" in portfolio_embed.description
-    assert any(
-        field.name == "股票淨值" and "`200`" in field.value for field in portfolio_embed.fields
+
+    inspected_member = FakeInteraction(user=FakeUser(user_id=1))
+    await EconomyCogs.balance.callback(
+        cog, inspected_member, member=FakeUser(user_id=2, name="bob", display_name="Bob")
     )
-    assert any(
-        field.name == "股票部位" and "BCAT" in field.value for field in portfolio_embed.fields
-    )
+    assert "Bob" in inspected_member.followup.sent[0]["embed"].description
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
