@@ -29,9 +29,7 @@ def stored_int_to_text(value: int) -> str:
 
 def sqlite_int_add_text(left: Any, right: Any) -> str:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
     """Adds two persisted integers and returns canonical decimal text."""
-    return stored_int_to_text(
-        value=stored_int_to_int(value=left) + stored_int_to_int(value=right)
-    )
+    return stored_int_to_text(value=stored_int_to_int(value=left) + stored_int_to_int(value=right))
 
 
 def sqlite_int_compare_text(left: Any, right: Any) -> int:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
@@ -44,8 +42,7 @@ def sqlite_int_compare_text(left: Any, right: Any) -> int:  # noqa: ANN401 -- SQ
 def int_add_text(column: ColumnElement[Any], delta: int) -> ColumnElement[Any]:
     """Builds a SQLite expression that adds `delta` to a decimal-text column."""
     return cast(
-        "ColumnElement[Any]",
-        func.discordbot_int_add_text(column, stored_int_to_text(value=delta)),
+        "ColumnElement[Any]", func.discordbot_int_add_text(column, stored_int_to_text(value=delta))
     )
 
 
@@ -74,8 +71,7 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
         return cast(
             "ColumnElement[bool]",
             int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr),
-                value=stored_int_to_int(value=other),
+                column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
             > 0,
         )
@@ -84,8 +80,7 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
         return cast(
             "ColumnElement[bool]",
             int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr),
-                value=stored_int_to_int(value=other),
+                column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
             >= 0,
         )
@@ -94,8 +89,7 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
         return cast(
             "ColumnElement[bool]",
             int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr),
-                value=stored_int_to_int(value=other),
+                column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
             < 0,
         )
@@ -104,8 +98,7 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
         return cast(
             "ColumnElement[bool]",
             int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr),
-                value=stored_int_to_int(value=other),
+                column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
             <= 0,
         )
