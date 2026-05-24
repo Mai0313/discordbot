@@ -16,9 +16,7 @@ def test_balance_leaderboard_board_handles_large_balances_and_long_names() -> No
     image = build_balance_leaderboard_board_image(
         rows=(
             LeaderboardEntry(
-                user_id=1,
-                name="超級無敵長名字測試玩家股份有限公司",
-                balance=123_456_789_000_000,
+                user_id=1, name="超級無敵長名字測試玩家股份有限公司", balance=123_456_789_000_000
             ),
         )
     )

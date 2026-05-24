@@ -1,8 +1,8 @@
 """Pillow board renderers for public economy rankings."""
 
-from functools import cache
 from io import BytesIO
 from typing import TypedDict
+from functools import cache
 from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
@@ -233,9 +233,7 @@ def _draw_rank_row(
     """Draws one ranking row."""
     position = row["position"]
     fill = _SURFACE if position % 2 == 1 else _ROW_ALT
-    draw.rectangle(
-        xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=fill
-    )
+    draw.rectangle(xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=fill)
     draw.line(
         xy=(_BOARD_MARGIN, y + _ROW_HEIGHT, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT),
         fill=_GRID,
@@ -248,15 +246,12 @@ def _draw_rank_row(
         fill=spec["accent"] if position <= 3 else _MUTED,
     )
     display_name = _fit_text(
-        draw=draw,
-        text=row["name"] or "未知玩家",
-        font=fonts["body"],
-        max_width=_NAME_MAX_WIDTH,
+        draw=draw, text=row["name"] or "未知玩家", font=fonts["body"], max_width=_NAME_MAX_WIDTH
     )
     draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts["body"], fill=_TEXT)
     _draw_text_right(
         draw=draw,
-        text=f'{spec["amount_label"]} {_compact_amount(amount=row["amount"])}',
+        text=f"{spec['amount_label']} {_compact_amount(amount=row['amount'])}",
         xy=(_AMOUNT_RIGHT, y + 13),
         font=fonts["body"],
         fill=_TEXT,
@@ -266,12 +261,9 @@ def _draw_rank_row(
 def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> None:
     """Draws an empty-state row."""
     draw.rectangle(
-        xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT),
-        fill=_SURFACE,
+        xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=_SURFACE
     )
-    draw.text(
-        xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts["body"], fill=_MUTED
-    )
+    draw.text(xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts["body"], fill=_MUTED)
 
 
 def _draw_text_right(
