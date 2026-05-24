@@ -1,5 +1,6 @@
 """Slash commands that surface point balances, leaderboards, transfers, and loans."""
 
+from io import BytesIO
 from datetime import UTC, datetime
 import contextlib
 
@@ -16,6 +17,12 @@ from discordbot.typings.economy import (
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanLenderType,
+)
+from discordbot.cogs._economy.boards import (
+    LOSS_LEADERBOARD_BOARD_FILENAME,
+    BALANCE_LEADERBOARD_BOARD_FILENAME,
+    build_loss_leaderboard_board_image,
+    build_balance_leaderboard_board_image,
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
@@ -90,28 +97,19 @@ def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
         embed.set_thumbnail(url=avatar_url)
 
 
-def _rank_line(position: int, name: str, balance: int) -> str:
-    """Formats one leaderboard row."""
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    rank = medals.get(position, f"`#{position}`")
-    return f"{rank} **{name}**  {amount_code(amount=balance)} {CURRENCY_NAME}"
-
-
-def _loss_rank_line(position: int, name: str, loss: int) -> str:
-    """Formats one loss-leaderboard row."""
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    rank = medals.get(position, f"`#{position}`")
-    return f"{rank} **{name}**  累計輸 {amount_code(amount=loss)} {CURRENCY_NAME}"
-
-
 async def _send_expiring_followup(
-    interaction: Interaction, embed: Embed, view: View | None = None
+    interaction: Interaction,
+    embed: Embed,
+    view: View | None = None,
+    file: nextcord.File | None = None,
 ) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
-    if view is None:
-        message = await interaction.followup.send(embed=embed, wait=True)
-    else:
-        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+    kwargs: dict[str, object] = {"embed": embed, "wait": True}
+    if view is not None:
+        kwargs["view"] = view
+    if file is not None:
+        kwargs["file"] = file
+    message = await interaction.followup.send(**kwargs)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
 
@@ -769,21 +767,20 @@ class EconomyCogs(commands.Cog):
             return
 
         champion = rows[0]
-
+        board = build_balance_leaderboard_board_image(rows=rows)
         embed = Embed(
             title=f"🏆 {CURRENCY_NAME} Top 10",
-            description=(f"## 🥇 {champion.name}\n{bold_currency(amount=champion.balance)}"),
+            description="### 公開排行榜\n依可用餘額排序。",
             color=_LEADERBOARD_COLOR,
         )
         embed.set_author(name="目前第一名", icon_url=champion.avatar_url or None)
         _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
-        if len(rows) > 1:
-            others = "\n".join(
-                _rank_line(position=position, name=row.name, balance=row.balance)
-                for position, row in enumerate(iterable=rows[1:], start=2)
-            )
-            embed.add_field(name="其他玩家", value=others, inline=False)
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        embed.set_image(url=f"attachment://{BALANCE_LEADERBOARD_BOARD_FILENAME}")
+        await _send_expiring_followup(
+            interaction=interaction,
+            embed=embed,
+            file=nextcord.File(fp=BytesIO(board), filename=BALANCE_LEADERBOARD_BOARD_FILENAME),
+        )
 
     @nextcord.slash_command(
         name="loss_leaderboard",
@@ -814,24 +811,21 @@ class EconomyCogs(commands.Cog):
             return
 
         champion = rows[0]
-
+        board = build_loss_leaderboard_board_image(rows=rows)
         embed = Embed(
             title=f"💸 今日輸局累計 {CURRENCY_NAME}",
-            description=(
-                f"## 🥇 {champion.name}\n累計輸 {bold_currency(amount=champion.loss_amount)}"
-            ),
+            description="### 今日累計輸排序\n以 gross loss 排名，贏回來不抵扣。",
             color=_LOSS_LEADERBOARD_COLOR,
         )
         embed.set_author(name="今日累計輸最多", icon_url=champion.avatar_url or None)
         _set_optional_thumbnail(embed=embed, avatar_url=champion.avatar_url)
-        if len(rows) > 1:
-            others = "\n".join(
-                _loss_rank_line(position=position, name=row.name, loss=row.loss_amount)
-                for position, row in enumerate(iterable=rows[1:], start=2)
-            )
-            embed.add_field(name="其他玩家", value=others, inline=False)
+        embed.set_image(url=f"attachment://{LOSS_LEADERBOARD_BOARD_FILENAME}")
         embed.set_footer(text="今日實際輸掉累計 | 贏回來不抵扣 | 每天 0:00 (Asia/Taipei) 重置")
-        await _send_expiring_followup(interaction=interaction, embed=embed)
+        await _send_expiring_followup(
+            interaction=interaction,
+            embed=embed,
+            file=nextcord.File(fp=BytesIO(board), filename=LOSS_LEADERBOARD_BOARD_FILENAME),
+        )
 
     @nextcord.slash_command(
         name="give",

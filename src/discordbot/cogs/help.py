@@ -37,7 +37,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` balance · `/portfolio` net worth · `/give` transfer · `/checkin` daily reward\n"
-            "`/leaderboard` top balances · `/loss_leaderboard` casino losses · `/house` dealer ledger\n"
+            "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments"
         ),
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
@@ -73,7 +73,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` 餘額 · `/portfolio` 淨資產 · `/give` 轉帳 · `/checkin` 每日簽到\n"
-            "`/leaderboard` 排行榜 · `/loss_leaderboard` 今日 casino loss · `/house` 莊家 ledger\n"
+            "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/house` 莊家 ledger\n"
             "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整"
         ),
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
@@ -109,7 +109,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` balance · `/portfolio` net worth · `/give` transfer · `/checkin` daily reward\n"
-            "`/leaderboard` ranking · `/loss_leaderboard` casino loss · `/house` dealer ledger\n"
+            "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments"
         ),
         "checkin": (

@@ -410,6 +410,7 @@ def test_stock_detail_embed_uses_localized_user_labels() -> None:
     assert "可用資金" in field_names
     assert "目前操作 user" not in field_names
     assert "操作 user 資金" not in field_names
+    assert "市值 `1億`" in embed.description
 
 
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:

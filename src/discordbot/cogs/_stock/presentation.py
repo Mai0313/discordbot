@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from typing import TypedDict
+from functools import cache
 
 from PIL import Image, ImageDraw, ImageFont
 from nextcord import Embed
@@ -168,6 +169,7 @@ def _market_page(
     return page_count, normalized_page, quotes[start : start + safe_page_size]
 
 
+@cache
 def _market_fonts() -> _MarketFonts:
     """Loads the market board fonts with a bundled-system fallback chain."""
     return {
@@ -429,7 +431,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         f"({signed_percent(bps=detail.quote.change_bps)})\n"
         f"分類 `{profile.category}` · 波動設定 "
         f"`{volatility_text(base_volatility_bps=profile.base_volatility_bps, volatility_amplifier_bps=profile.volatility_amplifier_bps)}`\n"
-        f"市值 {amount_code(amount=market_cap)} {CURRENCY_NAME}"
+        f"市值 `{_compact_amount(amount=market_cap)}` {CURRENCY_NAME}"
     )
     embed = Embed(title="📊 股票明細", description=description, color=DETAIL_COLOR)
     embed.add_field(
