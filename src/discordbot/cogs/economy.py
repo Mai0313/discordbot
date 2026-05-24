@@ -103,6 +103,20 @@ def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
         embed.set_thumbnail(url=avatar_url)
 
 
+def _parse_positive_amount(raw_amount: str | None) -> int | None:
+    """Parses user-entered positive amount text with optional comma separators."""
+    normalized = (raw_amount or "").replace(",", "").strip()
+    if not normalized.isdecimal():
+        return None
+    try:
+        amount = int(normalized)
+    except ValueError:
+        return None
+    if amount <= 0:
+        return None
+    return amount
+
+
 def _portfolio_stock_lines(stock_portfolio: StockPortfolioView) -> str:
     """Formats stock holdings for the private portfolio embed."""
     if not stock_portfolio.holdings:
@@ -617,25 +631,31 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to add.",
+            description=f"How much {CURRENCY_NAME} to add. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要增加的{CURRENCY_NAME}",
-                Locale.ja: f"追加する{CURRENCY_NAME}。",
+                Locale.zh_TW: f"要增加的{CURRENCY_NAME}，可加逗號",
+                Locale.ja: f"追加する{CURRENCY_NAME}。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
     ) -> None:
         """Credits points to a member through the manual-adjustment audit path."""
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await interaction.response.send_message(
+                embed=self._invalid_admin_amount_embed(title="退稅失敗"), ephemeral=True
+            )
+            return
         await self._run_admin_adjustment(
             interaction=interaction,
             member=member,
             action="refund_tax",
             title="退稅完成",
-            delta=amount,
+            delta=parsed_amount,
         )
 
     @admin.subcommand(
@@ -660,25 +680,40 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to debit.",
+            description=f"How much {CURRENCY_NAME} to debit. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要扣除的{CURRENCY_NAME}",
-                Locale.ja: f"徴収する{CURRENCY_NAME}。",
+                Locale.zh_TW: f"要扣除的{CURRENCY_NAME}，可加逗號",
+                Locale.ja: f"徴収する{CURRENCY_NAME}。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
     ) -> None:
         """Debits points from a member through the manual-adjustment audit path."""
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await interaction.response.send_message(
+                embed=self._invalid_admin_amount_embed(title="收稅失敗"), ephemeral=True
+            )
+            return
         await self._run_admin_adjustment(
             interaction=interaction,
             member=member,
             action="collect_tax",
             title="收稅完成",
-            delta=-amount,
+            delta=-parsed_amount,
+        )
+
+    @staticmethod
+    def _invalid_admin_amount_embed(title: str) -> Embed:
+        """Builds the validation embed for malformed admin adjustment amounts."""
+        return Embed(
+            title=title,
+            description="### 金額格式錯誤\n請輸入正整數，可以加逗號，例如 `1,000`。",
+            color=_ERROR_COLOR,
         )
 
     async def _run_admin_adjustment(

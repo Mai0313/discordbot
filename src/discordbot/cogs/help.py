@@ -38,7 +38,7 @@ _HELP_CONTENT = {
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` balance · `/portfolio` net worth and stock holdings · `/give` transfer · `/checkin` daily reward\n"
             "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
-            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments"
+            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
         "stocks": (
@@ -74,7 +74,7 @@ _HELP_CONTENT = {
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` 餘額 · `/portfolio` 淨資產和 stock holdings · `/give` 轉帳 · `/checkin` 每日簽到\n"
             "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/house` 莊家 ledger\n"
-            "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整"
+            "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整，amount 可輸入逗號格式"
         ),
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
         "stocks": (
@@ -110,7 +110,7 @@ _HELP_CONTENT = {
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance` balance · `/portfolio` net worth and stock holdings · `/give` transfer · `/checkin` daily reward\n"
             "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
-            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments"
+            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),
         "checkin": (
             "**デイリーチェックイン**\n`/checkin` で daily reward と streak bonus を受け取れます。"

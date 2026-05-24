@@ -643,10 +643,10 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
     await EconomyCogs.house.callback(cog, interaction)
     await EconomyCogs.admin_refund_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="100"
     )
     await EconomyCogs.admin_collect_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=50
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="50"
     )
     await EconomyCogs.give.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
@@ -929,12 +929,80 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.admin_refund_tax.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="100"
     )
 
     assert called is False
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "權限不足" in interaction.followup.sent[0]["embed"].title
+
+
+def test_parse_admin_amount_accepts_formatted_text() -> None:
+    """Verifies admin adjustment text parsing avoids Discord integer option limits."""
+    assert (
+        economy._parse_positive_amount(raw_amount="9,007,199,254,740,993") == 9_007_199_254_740_993
+    )
+    assert economy._parse_positive_amount(raw_amount=" 0001 ") == 1
+    assert economy._parse_positive_amount(raw_amount=None) is None
+    assert economy._parse_positive_amount(raw_amount="0") is None
+    assert economy._parse_positive_amount(raw_amount="not a number") is None
+    assert economy._parse_positive_amount(raw_amount="-1") is None
+
+
+async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin tax commands must parse large string amounts before database mutation."""
+    captured_deltas: list[int] = []
+
+    async def record_adjust_balance(
+        user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
+    ) -> BalanceAdjustmentResult:
+        """Records parsed adjustment deltas."""
+        captured_deltas.append(delta)
+        return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
+
+    monkeypatch.setattr(economy, "get_admin", fake_get_admin)
+    monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await EconomyCogs.admin_refund_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="9,007,199,254,740,993"
+    )
+    await EconomyCogs.admin_collect_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="9,007,199,254,740,993"
+    )
+
+    assert captured_deltas == [9_007_199_254_740_993, -9_007_199_254_740_993]
+
+
+async def test_economy_admin_tax_rejects_invalid_amount_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid admin tax amount text must be rejected before balance mutation."""
+    called = False
+
+    async def fake_adjust_balance_guard(
+        user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
+    ) -> BalanceAdjustmentResult:
+        """Fails the test if invalid amount text reaches the mutation path."""
+        nonlocal called
+        called = True
+        return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
+
+    monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+
+    await EconomyCogs.admin_collect_tax.callback(
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="not a number"
+    )
+
+    assert called is False
+    assert interaction.response.sent[0]["ephemeral"] is True
+    assert interaction.response.sent[0]["embed"].title == "收稅失敗"
+    assert "金額格式錯誤" in interaction.response.sent[0]["embed"].description
+    assert interaction.followup.sent == []
 
 
 async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.MonkeyPatch) -> None:
