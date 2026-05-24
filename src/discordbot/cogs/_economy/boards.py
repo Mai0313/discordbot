@@ -81,7 +81,7 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
             "title": f"{CURRENCY_NAME} 排行榜",
             "subtitle": "Top 10 public balances",
             "amount_header": "餘額",
-            "amount_label": "持有",
+            "amount_label": "",
             "accent": _BALANCE_ACCENT,
             "rows": tuple((row.name, row.balance) for row in rows),
         }

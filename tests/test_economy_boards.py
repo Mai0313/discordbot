@@ -56,3 +56,21 @@ def test_loss_leaderboard_amount_text_has_no_prefix() -> None:
         )
         == "9.88兆"
     )
+
+
+def test_balance_leaderboard_amount_text_has_no_prefix() -> None:
+    """Balance leaderboard rows show only the compact amount."""
+    assert (
+        _ranking_amount_text(
+            spec={
+                "title": "虛擬歡樂豆 排行榜",
+                "subtitle": "",
+                "amount_header": "餘額",
+                "amount_label": "",
+                "accent": (0, 0, 0),
+                "rows": (),
+            },
+            amount=27_0000_0000_0000,
+        )
+        == "27兆"
+    )
