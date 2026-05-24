@@ -51,7 +51,7 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**Games**\n"
-            "`/games blackjack` starts a Blackjack table. `/games dragon_gate` starts a Dragon Gate jackpot table."
+            "`/games blackjack` starts a Blackjack table, with `all_in` for full-balance stakes. `/games dragon_gate` starts a Dragon Gate jackpot table."
         ),
         "ping": "**Ping**\n`/ping` checks the bot's response latency.",
     },
@@ -83,7 +83,7 @@ _HELP_CONTENT = {
         ),
         "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
         "games": (
-            "**小遊戲**\n`/games blackjack` 開 21 點桌。`/games dragon_gate` 開射龍門 jackpot 桌。"
+            "**小遊戲**\n`/games blackjack` 開 21 點桌，可以用 `all_in` 直接押目前餘額。`/games dragon_gate` 開射龍門 jackpot 桌。"
         ),
         "ping": "**延遲測試**\n`/ping` 檢查 bot response latency。",
     },
@@ -125,7 +125,7 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**ゲーム**\n"
-            "`/games blackjack` は Blackjack table、`/games dragon_gate` は Dragon Gate jackpot table を開きます。"
+            "`/games blackjack` は `all_in` で全残高 stake の Blackjack table、`/games dragon_gate` は Dragon Gate jackpot table を開きます。"
         ),
         "ping": "**Ping**\n`/ping` で bot の応答遅延を確認します。",
     },
