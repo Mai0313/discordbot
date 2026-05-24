@@ -61,11 +61,13 @@ from discordbot.cogs._economy.database import (
     get_jackpot_pool,
     get_jackpot_snapshot,
     credit_with_repayment,
+    _casino_counter_to_int,
     apply_round_settlement,
     apply_jackpot_settlement,
     open_global_state_session,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
+    _apply_daily_casino_delta_in_session,
 )
 from discordbot.cogs._games.settlement import (
     settle_wager,
@@ -263,7 +265,12 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
         row = result.one_or_none()
     if row is None:
         return 0, 0, 0, None
-    return row[0], row[1], row[2], row[3]
+    return (
+        _casino_counter_to_int(value=row[0]),
+        _casino_counter_to_int(value=row[1]),
+        _casino_counter_to_int(value=row[2]),
+        row[3],
+    )
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
@@ -446,9 +453,12 @@ async def test_ensure_schema_bootstraps_current_databases(
             "casino_account": "PRAGMA table_info(casino_account)",
         }
         table_columns: dict[str, set[str]] = {}
+        table_column_types: dict[str, dict[str, str]] = {}
         for table_name, query in column_queries.items():
             result = await session.execute(statement=text(text=query))
-            table_columns[table_name] = {row[1] for row in result.all()}
+            table_info = result.all()
+            table_columns[table_name] = {row[1] for row in table_info}
+            table_column_types[table_name] = {row[1]: row[2] for row in table_info}
     async with open_global_state_session() as session:
         result = await session.execute(
             statement=text(
@@ -483,6 +493,9 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_proposal"
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
+    assert table_column_types["casino_account"]["daily_loss"] == "TEXT"
+    assert table_column_types["casino_account"]["daily_win"] == "TEXT"
+    assert table_column_types["casino_account"]["daily_net"] == "TEXT"
     assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
     assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)
@@ -1497,6 +1510,48 @@ async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
     assert (loss, win, net) == (300, 500, 200)
     assert day_started_at is not None
     assert _as_taipei(dt=day_started_at) == _taipei_midnight(now=_database_now())
+
+
+async def test_daily_casino_counters_store_large_values_as_text() -> None:
+    """Casino counters can exceed SQLite's INTEGER range without becoming REAL."""
+    await _add_balance(user_id=1, name="alice", amount=1)
+    large_loss = 10**20
+
+    async with open_session() as session:
+        now = _database_now()
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=1, name="alice", delta=-large_loss, now=now
+        )
+        await _apply_daily_casino_delta_in_session(
+            session=session, user_id=1, name="alice", delta=-7, now=now
+        )
+        await session.commit()
+
+    async with open_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="""
+                SELECT daily_loss, typeof(daily_loss), daily_win, typeof(daily_win), daily_net, typeof(daily_net)
+                  FROM casino_account
+                 WHERE user_id = 1
+                """
+            )
+        )
+        counter_row = result.one()
+
+    rows = await top_losers(limit=10)
+
+    assert counter_row == (
+        str(large_loss + 7),
+        "text",
+        "0",
+        "text",
+        str(-(large_loss + 7)),
+        "text",
+    )
+    assert rows == [
+        LossLeaderboardEntry(user_id=1, name="alice", loss_amount=large_loss + 7, avatar_url="")
+    ]
 
 
 async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:

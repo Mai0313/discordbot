@@ -50,6 +50,7 @@ from datetime import datetime, timezone, timedelta
 from collections.abc import Sequence
 
 from sqlalchemy import (
+    Text,
     Index,
     String,
     Boolean,
@@ -143,9 +144,27 @@ def _taipei_midnight(now: datetime) -> datetime:
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-@event.listens_for(_engine.sync_engine, "connect")
-@event.listens_for(_global_state_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
+def _casino_counter_to_int(value: object) -> int:
+    """Parses a persisted casino counter into a Python arbitrary-precision int."""
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, bytes):
+        return _casino_counter_to_int(value=value.decode())
+    if isinstance(value, str):
+        normalized = value.strip()
+        return int(normalized or "0")
+    msg = f"Unsupported casino counter type: {type(value)!r}"
+    raise TypeError(msg)
+
+
+def _sqlite_int_add_text(left: Any, right: Any) -> str:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
+    """Adds two persisted casino counters and returns canonical decimal text."""
+    return str(_casino_counter_to_int(value=left) + _casino_counter_to_int(value=right))
+
+
+def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     """Sets WAL mode + a tolerant busy_timeout on every new connection.
 
     WAL flips the read/write lock so readers never block on writes;
@@ -159,7 +178,34 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.execute("PRAGMA foreign_keys=ON")
+    dbapi_connection.create_function("discordbot_int_add_text", 2, _sqlite_int_add_text)
     cursor.close()
+
+
+@event.listens_for(_engine.sync_engine, "connect")
+@event.listens_for(_global_state_engine.sync_engine, "connect")
+def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
+    """Configures a newly opened SQLite connection."""
+    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+
+
+def _configure_sqlite_on_checkout(
+    dbapi_connection: object, _connection_record: object, _connection_proxy: object
+) -> None:
+    """Configures pooled connections from test-swapped engines."""
+    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+
+
+def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
+    """Installs SQLite connection hooks on the active engine."""
+    if not event.contains(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite):
+        event.listen(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite)
+    if not event.contains(
+        target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
+    ):
+        event.listen(
+            target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
+        )
 
 
 class Base(DeclarativeBase):
@@ -246,9 +292,9 @@ class CasinoAccount(Base):
         user_id: Discord user ID; primary key.
         name: Last-seen Discord username for quick inspection.
         day_started_at: Asia/Taipei midnight for the stored counters.
-        daily_loss: Current-day gross loss from player-side casino settlements.
-        daily_win: Current-day gross win from player-side casino settlements.
-        daily_net: Current-day signed net casino result.
+        daily_loss: Current-day gross loss from player-side casino settlements, stored as a decimal string.
+        daily_win: Current-day gross win from player-side casino settlements, stored as a decimal string.
+        daily_net: Current-day signed net casino result, stored as a decimal string.
         updated_at: Taiwan-local timestamp of the last casino counter write.
     """
 
@@ -262,9 +308,9 @@ class CasinoAccount(Base):
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     day_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    daily_loss: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    daily_win: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    daily_net: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_loss: Mapped[str] = mapped_column(Text, default="0", nullable=False)
+    daily_win: Mapped[str] = mapped_column(Text, default="0", nullable=False)
+    daily_net: Mapped[str] = mapped_column(Text, default="0", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -447,6 +493,7 @@ def _current_loan_accept_lock() -> asyncio.Lock:
 async def _ensure_global_state_schema() -> None:
     """Bootstraps bot-wide state in `data/global_state.db`."""
     global _global_state_schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    _ensure_sqlite_hooks(engine=_global_state_engine)
     if _global_state_schema_ready_for is _global_state_engine:
         return
     async with _current_global_state_schema_lock():
@@ -507,6 +554,7 @@ async def _ensure_economy_schema_migrations(conn: Any) -> None:  # noqa: ANN401 
 async def _ensure_schema() -> None:
     """Bootstraps current economy and bot-wide state schemas once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    _ensure_sqlite_hooks(engine=_engine)
     if _schema_ready_for is _engine:
         return
     async with _current_schema_lock():
@@ -525,11 +573,13 @@ def open_session() -> AsyncSession:
     Returns:
         An `AsyncSession` using the current module-level `_engine`.
     """
+    _ensure_sqlite_hooks(engine=_engine)
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
 def open_global_state_session() -> AsyncSession:
     """Creates an async session bound to the bot-wide global state DB."""
+    _ensure_sqlite_hooks(engine=_global_state_engine)
     return AsyncSession(bind=_global_state_engine, expire_on_commit=False)
 
 
@@ -688,6 +738,9 @@ async def _apply_daily_casino_delta_in_session(
     today_midnight = _taipei_midnight(now=now)
     loss_delta = max(-delta, 0)
     win_delta = max(delta, 0)
+    loss_delta_text = str(loss_delta)
+    win_delta_text = str(win_delta)
+    delta_text = str(delta)
     same_day = CasinoAccount.day_started_at == today_midnight
     await session.execute(
         statement=insert(CasinoAccount)
@@ -695,9 +748,9 @@ async def _apply_daily_casino_delta_in_session(
             user_id=user_id,
             name=name or str(user_id),
             day_started_at=today_midnight,
-            daily_loss=loss_delta,
-            daily_win=win_delta,
-            daily_net=delta,
+            daily_loss=loss_delta_text,
+            daily_win=win_delta_text,
+            daily_net=delta_text,
             updated_at=now,
         )
         .on_conflict_do_update(
@@ -706,12 +759,23 @@ async def _apply_daily_casino_delta_in_session(
                 "name": name or str(user_id),
                 "day_started_at": today_midnight,
                 "daily_loss": case(
-                    (same_day, CasinoAccount.daily_loss + loss_delta), else_=loss_delta
+                    (
+                        same_day,
+                        func.discordbot_int_add_text(CasinoAccount.daily_loss, loss_delta_text),
+                    ),
+                    else_=loss_delta_text,
                 ),
                 "daily_win": case(
-                    (same_day, CasinoAccount.daily_win + win_delta), else_=win_delta
+                    (
+                        same_day,
+                        func.discordbot_int_add_text(CasinoAccount.daily_win, win_delta_text),
+                    ),
+                    else_=win_delta_text,
                 ),
-                "daily_net": case((same_day, CasinoAccount.daily_net + delta), else_=delta),
+                "daily_net": case(
+                    (same_day, func.discordbot_int_add_text(CasinoAccount.daily_net, delta_text)),
+                    else_=delta_text,
+                ),
                 "updated_at": now,
             },
         )
@@ -2292,8 +2356,8 @@ async def top_losers(
             )
             .select_from(CasinoAccount)
             .join(UserAccount, UserAccount.user_id == CasinoAccount.user_id)
-            .where(CasinoAccount.day_started_at == today_midnight, CasinoAccount.daily_loss > 0)
-            .order_by(desc(CasinoAccount.daily_loss))
+            .where(CasinoAccount.day_started_at == today_midnight, CasinoAccount.daily_loss != "0")
+            .order_by(desc(func.length(CasinoAccount.daily_loss)), desc(CasinoAccount.daily_loss))
             .limit(limit=limit)
         )
         if not include_hidden:
@@ -2301,15 +2365,20 @@ async def top_losers(
         if exclude_user_ids:
             stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)
-        return [
-            LossLeaderboardEntry(
-                user_id=row[0],
-                name=row[1] or str(row[0]),
-                loss_amount=row[3],
-                avatar_url=row[2] or "",
+        rows: list[LossLeaderboardEntry] = []
+        for row in result.all():
+            loss_amount = _casino_counter_to_int(value=row[3])
+            if loss_amount <= 0:
+                continue
+            rows.append(
+                LossLeaderboardEntry(
+                    user_id=row[0],
+                    name=row[1] or str(row[0]),
+                    loss_amount=loss_amount,
+                    avatar_url=row[2] or "",
+                )
             )
-            for row in result.all()
-        ]
+        return rows
 
 
 def _loan_proposal_view(proposal: LoanProposal) -> LoanProposalView:
