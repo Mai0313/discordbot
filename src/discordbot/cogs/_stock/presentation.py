@@ -1,5 +1,9 @@
-"""Discord embed builders for the simulated stock market."""
+"""Discord embed and image builders for the simulated stock market."""
 
+from io import BytesIO
+from typing import TypedDict
+
+from PIL import Image, ImageDraw, ImageFont
 from nextcord import Embed
 
 from discordbot.typings.stock import (
@@ -21,6 +25,64 @@ DETAIL_COLOR = 0x3498DB
 NEWS_COLOR = 0xF1C40F
 ERROR_COLOR = 0xED4245
 SUCCESS_COLOR = 0x57F287
+MARKET_BOARD_WIDTH = 1120
+MARKET_BOARD_FILENAME_PREFIX = "stock_market"
+_MARKET_BOARD_MARGIN = 32
+_MARKET_HEADER_HEIGHT = 64
+_MARKET_TABLE_HEADER_HEIGHT = 48
+_MARKET_ROW_HEIGHT = 58
+_MARKET_BOARD_FOOTER_HEIGHT = 28
+_MARKET_BACKGROUND = (28, 31, 36)
+_MARKET_SURFACE = (38, 42, 49)
+_MARKET_ROW_ALT = (33, 37, 43)
+_MARKET_GRID = (70, 76, 88)
+_MARKET_TEXT = (234, 237, 242)
+_MARKET_MUTED = (169, 177, 190)
+_MARKET_POSITIVE = (87, 242, 135)
+_MARKET_NEGATIVE = (237, 66, 69)
+_MARKET_NEUTRAL = (201, 207, 217)
+_MARKET_ACCENT = (88, 166, 255)
+_MARKET_TAG = (246, 196, 83)
+_MARKET_TABLE_LEFT = _MARKET_BOARD_MARGIN
+_MARKET_TABLE_RIGHT = MARKET_BOARD_WIDTH - _MARKET_BOARD_MARGIN
+_MARKET_SYMBOL_X = 52
+_MARKET_COMPANY_X = 150
+_MARKET_CATEGORY_X = 456
+_MARKET_PRICE_RIGHT = 676
+_MARKET_CHANGE_RIGHT = 802
+_MARKET_PRESSURE_RIGHT = 930
+_MARKET_CAP_RIGHT = 1068
+_MARKET_NAME_MAX_WIDTH = 280
+_MARKET_CATEGORY_MAX_WIDTH = 112
+_REGULAR_FONT_CANDIDATES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "NotoSansCJK-Regular.ttc",
+    "DejaVuSans.ttf",
+)
+_BOLD_FONT_CANDIDATES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+    "NotoSansCJK-Bold.ttc",
+    "DejaVuSans-Bold.ttf",
+)
+type _MarketFont = ImageFont.ImageFont | ImageFont.FreeTypeFont
+
+
+class _MarketFonts(TypedDict):
+    """Font set used by the stock market board image."""
+
+    title: _MarketFont
+    header: _MarketFont
+    symbol: _MarketFont
+    body: _MarketFont
+    small: _MarketFont
+
+
+def market_board_filename(page_index: int) -> str:
+    """Returns a stable market board attachment filename."""
+    normalized_page = max(page_index, 0)
+    return f"{MARKET_BOARD_FILENAME_PREFIX}_{normalized_page + 1}.png"
 
 
 def signed_percent(bps: int) -> str:
@@ -34,30 +96,327 @@ def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> 
 
 
 def build_market_embed(
-    quotes: tuple[StockMarketQuote, ...], page_index: int = 0, page_size: int = 25
+    quotes: tuple[StockMarketQuote, ...],
+    page_index: int = 0,
+    page_size: int = 25,
+    board_filename: str | None = None,
 ) -> Embed:
     """Builds the public market list embed."""
     title = "📈 模擬股市"
-    detail_hint = "選擇股票後會在這則公開訊息更新股票明細。"
-    description_parts = ["### 市場列表", detail_hint, ""]
-    page_count = max((len(quotes) + page_size - 1) // page_size, 1)
-    normalized_page = min(max(page_index, 0), page_count - 1)
-    page_quotes = quotes[normalized_page * page_size : (normalized_page + 1) * page_size]
-    for quote in page_quotes:
-        profile = quote.profile
-        market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
-        description_parts.append(
-            f"**{profile.symbol}** · {profile.name}\n"
-            f"`{format_price(price_cents=profile.price_cents)}` "
-            f"({signed_percent(bps=quote.change_bps)}) · "
-            f"市值 {amount_code(amount=market_cap)} {CURRENCY_NAME}"
-        )
-    embed = Embed(title=title, description="\n".join(description_parts), color=MARKET_COLOR)
+    description = "### 市場列表\n選擇股票後會在這則公開訊息更新股票明細。"
+    if not quotes:
+        description = "### 市場列表\n目前沒有可用的股票。"
+    page_count, normalized_page, _page_quotes = _market_page(
+        quotes=quotes, page_index=page_index, page_size=page_size
+    )
+    embed = Embed(title=title, description=description, color=MARKET_COLOR)
+    if board_filename is not None:
+        embed.set_image(url=f"attachment://{board_filename}")
     footer = "這則股票訊息 180 秒無互動後會自動清理"
     if page_count > 1:
         footer += f" · 第 {normalized_page + 1}/{page_count} 頁"
     embed.set_footer(text=footer)
     return embed
+
+
+def build_market_board_image(
+    quotes: tuple[StockMarketQuote, ...], page_index: int = 0, page_size: int = 25
+) -> bytes:
+    """Renders the market list as a fixed-layout PNG board."""
+    page_count, normalized_page, page_quotes = _market_page(
+        quotes=quotes, page_index=page_index, page_size=page_size
+    )
+    row_count = max(len(page_quotes), 1)
+    height = (
+        _MARKET_BOARD_MARGIN * 2
+        + _MARKET_HEADER_HEIGHT
+        + _MARKET_TABLE_HEADER_HEIGHT
+        + row_count * _MARKET_ROW_HEIGHT
+        + _MARKET_BOARD_FOOTER_HEIGHT
+    )
+    image = Image.new(mode="RGB", size=(MARKET_BOARD_WIDTH, height), color=_MARKET_BACKGROUND)
+    draw = ImageDraw.Draw(im=image)
+    fonts = _market_fonts()
+    _draw_market_header(
+        draw=draw,
+        fonts=fonts,
+        quote_count=len(quotes),
+        page_index=normalized_page,
+        page_count=page_count,
+    )
+    table_top = _MARKET_BOARD_MARGIN + _MARKET_HEADER_HEIGHT
+    _draw_market_table_header(draw=draw, fonts=fonts, y=table_top)
+    if page_quotes:
+        for index, quote in enumerate(page_quotes):
+            y = table_top + _MARKET_TABLE_HEADER_HEIGHT + index * _MARKET_ROW_HEIGHT
+            _draw_market_row(draw=draw, fonts=fonts, quote=quote, row_index=index, y=y)
+    else:
+        _draw_empty_market_row(draw=draw, fonts=fonts, y=table_top + _MARKET_TABLE_HEADER_HEIGHT)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _market_page(
+    quotes: tuple[StockMarketQuote, ...], page_index: int, page_size: int
+) -> tuple[int, int, tuple[StockMarketQuote, ...]]:
+    """Returns normalized market page metadata and rows."""
+    safe_page_size = max(page_size, 1)
+    page_count = max((len(quotes) + safe_page_size - 1) // safe_page_size, 1)
+    normalized_page = min(max(page_index, 0), page_count - 1)
+    start = normalized_page * safe_page_size
+    return page_count, normalized_page, quotes[start : start + safe_page_size]
+
+
+def _market_fonts() -> _MarketFonts:
+    """Loads the market board fonts with a bundled-system fallback chain."""
+    return {
+        "title": _load_font(size=34, bold=True),
+        "header": _load_font(size=20, bold=True),
+        "symbol": _load_font(size=28, bold=True),
+        "body": _load_font(size=24, bold=False),
+        "small": _load_font(size=16, bold=False),
+    }
+
+
+def _load_font(size: int, bold: bool) -> _MarketFont:
+    """Loads a CJK-capable font when available."""
+    candidates = _BOLD_FONT_CANDIDATES if bold else _REGULAR_FONT_CANDIDATES
+    for candidate in candidates:
+        try:
+            return ImageFont.truetype(font=candidate, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _draw_market_header(
+    draw: ImageDraw.ImageDraw,
+    fonts: _MarketFonts,
+    quote_count: int,
+    page_index: int,
+    page_count: int,
+) -> None:
+    """Draws the board title and summary line."""
+    x = _MARKET_BOARD_MARGIN
+    y = _MARKET_BOARD_MARGIN
+    draw.text(xy=(x, y), text="市場看板", font=fonts["title"], fill=_MARKET_TEXT)
+    summary = f"{quote_count:,} 檔股票"
+    if page_count > 1:
+        summary = f"{summary} · 第 {page_index + 1}/{page_count} 頁"
+    draw.text(xy=(x, y + 40), text=summary, font=fonts["small"], fill=_MARKET_MUTED)
+    _draw_text_right(
+        draw=draw,
+        text=f"單位: {CURRENCY_NAME}",
+        xy=(_MARKET_CAP_RIGHT, y + 40),
+        font=fonts["small"],
+        fill=_MARKET_MUTED,
+    )
+
+
+def _draw_market_table_header(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y: int) -> None:
+    """Draws fixed-width table headers."""
+    draw.rectangle(
+        xy=(_MARKET_TABLE_LEFT, y, _MARKET_TABLE_RIGHT, y + _MARKET_TABLE_HEADER_HEIGHT),
+        fill=_MARKET_SURFACE,
+    )
+    baseline = y + 14
+    draw.text(
+        xy=(_MARKET_SYMBOL_X, baseline), text="代碼", font=fonts["header"], fill=_MARKET_MUTED
+    )
+    draw.text(
+        xy=(_MARKET_COMPANY_X, baseline), text="公司", font=fonts["header"], fill=_MARKET_MUTED
+    )
+    draw.text(
+        xy=(_MARKET_CATEGORY_X, baseline), text="分類", font=fonts["header"], fill=_MARKET_MUTED
+    )
+    _draw_text_right(
+        draw=draw,
+        text="股價",
+        xy=(_MARKET_PRICE_RIGHT, baseline),
+        font=fonts["header"],
+        fill=_MARKET_MUTED,
+    )
+    _draw_text_right(
+        draw=draw,
+        text="今日",
+        xy=(_MARKET_CHANGE_RIGHT, baseline),
+        font=fonts["header"],
+        fill=_MARKET_MUTED,
+    )
+    _draw_text_right(
+        draw=draw,
+        text="買賣壓力",
+        xy=(_MARKET_PRESSURE_RIGHT, baseline),
+        font=fonts["header"],
+        fill=_MARKET_MUTED,
+    )
+    _draw_text_right(
+        draw=draw,
+        text="市值",
+        xy=(_MARKET_CAP_RIGHT, baseline),
+        font=fonts["header"],
+        fill=_MARKET_MUTED,
+    )
+
+
+def _draw_market_row(
+    draw: ImageDraw.ImageDraw, fonts: _MarketFonts, quote: StockMarketQuote, row_index: int, y: int
+) -> None:
+    """Draws one stock quote row."""
+    profile = quote.profile
+    row_color = _MARKET_SURFACE if row_index % 2 == 0 else _MARKET_ROW_ALT
+    draw.rectangle(
+        xy=(_MARKET_TABLE_LEFT, y, _MARKET_TABLE_RIGHT, y + _MARKET_ROW_HEIGHT), fill=row_color
+    )
+    draw.line(
+        xy=(
+            _MARKET_TABLE_LEFT,
+            y + _MARKET_ROW_HEIGHT,
+            _MARKET_TABLE_RIGHT,
+            y + _MARKET_ROW_HEIGHT,
+        ),
+        fill=_MARKET_GRID,
+        width=1,
+    )
+    market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
+    name = _fit_text(
+        draw=draw, text=profile.name, font=fonts["body"], max_width=_MARKET_NAME_MAX_WIDTH
+    )
+    category = _fit_text(
+        draw=draw, text=profile.category, font=fonts["small"], max_width=_MARKET_CATEGORY_MAX_WIDTH
+    )
+    draw.text(
+        xy=(_MARKET_SYMBOL_X, y + 14),
+        text=profile.symbol,
+        font=fonts["symbol"],
+        fill=_MARKET_ACCENT,
+    )
+    draw.text(xy=(_MARKET_COMPANY_X, y + 8), text=name, font=fonts["body"], fill=_MARKET_TEXT)
+    _draw_tag(draw=draw, text=category, xy=(_MARKET_CATEGORY_X, y + 19), font=fonts["small"])
+    _draw_text_right(
+        draw=draw,
+        text=format_price(price_cents=profile.price_cents),
+        xy=(_MARKET_PRICE_RIGHT, y + 12),
+        font=fonts["body"],
+        fill=_MARKET_TEXT,
+    )
+    _draw_text_right(
+        draw=draw,
+        text=signed_percent(bps=quote.change_bps),
+        xy=(_MARKET_CHANGE_RIGHT, y + 12),
+        font=fonts["body"],
+        fill=_metric_color(bps=quote.change_bps),
+    )
+    _draw_text_right(
+        draw=draw,
+        text=signed_percent(bps=quote.pressure_bps),
+        xy=(_MARKET_PRESSURE_RIGHT, y + 12),
+        font=fonts["body"],
+        fill=_metric_color(bps=quote.pressure_bps),
+    )
+    _draw_text_right(
+        draw=draw,
+        text=_compact_amount(amount=market_cap),
+        xy=(_MARKET_CAP_RIGHT, y + 12),
+        font=fonts["body"],
+        fill=_MARKET_TEXT,
+    )
+
+
+def _draw_empty_market_row(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y: int) -> None:
+    """Draws an empty-state row in the market board."""
+    draw.rectangle(
+        xy=(_MARKET_TABLE_LEFT, y, _MARKET_TABLE_RIGHT, y + _MARKET_ROW_HEIGHT),
+        fill=_MARKET_SURFACE,
+    )
+    draw.text(
+        xy=(_MARKET_SYMBOL_X, y + 16),
+        text="目前沒有可用的股票",
+        font=fonts["body"],
+        fill=_MARKET_MUTED,
+    )
+
+
+def _draw_tag(
+    draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int], font: _MarketFont
+) -> None:
+    """Draws a compact category tag."""
+    x, y = xy
+    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
+    width = bbox[2] - bbox[0] + 16
+    draw.rounded_rectangle(
+        xy=(x, y, x + width, y + 20), radius=8, fill=(67, 57, 35), outline=(94, 78, 44)
+    )
+    draw.text(xy=(x + 8, y + 1), text=text, font=font, fill=_MARKET_TAG)
+
+
+def _draw_text_right(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    xy: tuple[int, int],
+    font: _MarketFont,
+    fill: tuple[int, int, int],
+) -> None:
+    """Draws text with its right edge anchored at x."""
+    right, y = xy
+    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
+    draw.text(xy=(right - (bbox[2] - bbox[0]), y), text=text, font=font, fill=fill)
+
+
+def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: _MarketFont, max_width: int) -> str:
+    """Truncates text to fit the requested pixel width."""
+    if _text_width(draw=draw, text=text, font=font) <= max_width:
+        return text
+    suffix = "..."
+    low = 0
+    high = len(text)
+    while low < high:
+        midpoint = (low + high + 1) // 2
+        candidate = f"{text[:midpoint]}{suffix}"
+        if _text_width(draw=draw, text=candidate, font=font) <= max_width:
+            low = midpoint
+        else:
+            high = midpoint - 1
+    if low == 0:
+        return suffix
+    return f"{text[:low]}{suffix}"
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: _MarketFont) -> int:
+    """Returns rendered text width."""
+    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _metric_color(bps: int) -> tuple[int, int, int]:
+    """Returns a metric color for signed basis points."""
+    if bps > 0:
+        return _MARKET_POSITIVE
+    if bps < 0:
+        return _MARKET_NEGATIVE
+    return _MARKET_NEUTRAL
+
+
+def _compact_amount(amount: int) -> str:
+    """Formats large market-cap amounts without long comma groups."""
+    abs_amount = abs(amount)
+    sign = "-" if amount < 0 else ""
+    for threshold, suffix in ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬")):
+        if abs_amount >= threshold:
+            return f"{sign}{_compact_decimal(value=abs_amount / threshold)}{suffix}"
+    return f"{amount:,}"
+
+
+def _compact_decimal(value: float) -> str:
+    """Formats a compact display number with bounded decimals."""
+    if value >= 100:
+        formatted = f"{value:,.0f}"
+    elif value >= 10:
+        formatted = f"{value:,.1f}"
+    else:
+        formatted = f"{value:,.2f}"
+    return formatted.rstrip("0").rstrip(".")
 
 
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:

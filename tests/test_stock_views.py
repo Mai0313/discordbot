@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
 from datetime import datetime
 
+from PIL import Image
 import pytest
 from nextcord import Embed, Locale
 
@@ -31,7 +33,13 @@ from discordbot.cogs._stock.views import (
     StockPostTradeView,
     StockQuantityModal,
 )
-from discordbot.cogs._stock.presentation import build_settlement_embed, build_stock_detail_embed
+from discordbot.cogs._stock.presentation import (
+    build_market_embed,
+    market_board_filename,
+    build_settlement_embed,
+    build_market_board_image,
+    build_stock_detail_embed,
+)
 
 BCAT_SYMBOL = "BCAT"
 BCAT_NAME = "破貓科技股份有限公司"
@@ -227,6 +235,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert interaction.user is not None
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert isinstance(interaction.followup.sent[0]["view"], StockMarketView)
+    assert interaction.followup.sent[0]["file"].filename == "stock_market_1.png"
     assert interaction.followup.sent[0]["view"].message is scheduled[0]
     assert interaction.followup.sent[0]["view"].owner_id == interaction.user.id
     assert scheduled
@@ -303,6 +312,36 @@ async def test_stock_market_select_truncates_long_company_names() -> None:
     assert len(option.label) == stock_views.SELECT_OPTION_LABEL_LIMIT
     assert option.label.startswith(f"{BCAT_SYMBOL} · 長")
     assert option.label.endswith("...")
+
+
+def test_stock_market_embed_uses_board_attachment_for_rows() -> None:
+    """The market embed keeps tabular rows out of Markdown text."""
+    filename = market_board_filename(page_index=0)
+    embed = build_market_embed(quotes=(_quote(),), board_filename=filename)
+
+    assert embed.image.url == f"attachment://{filename}"
+    assert "市值" not in embed.description
+    assert "100,000,000" not in embed.description
+
+
+def test_stock_market_board_handles_large_market_caps() -> None:
+    """The market board renders huge market caps without relying on long text rows."""
+    quote = _quote().model_copy(
+        update={
+            "profile": _quote().profile.model_copy(
+                update={"price_cents": 987_654_321, "total_shares": 123_456_789}
+            ),
+            "change_bps": -1234,
+            "pressure_bps": 987,
+        }
+    )
+
+    image = build_market_board_image(quotes=(quote,))
+
+    assert image.startswith(b"\x89PNG")
+    with Image.open(BytesIO(image)) as opened:
+        assert opened.size[0] == 1120
+        assert opened.size[1] > 180
 
 
 async def test_stock_detail_buttons_edit_same_public_message(

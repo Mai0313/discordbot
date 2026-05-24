@@ -28,7 +28,9 @@ from discordbot.cogs._stock.presentation import (
     build_error_embed,
     build_market_embed,
     build_tutorial_embed,
+    market_board_filename,
     build_settlement_embed,
+    build_market_board_image,
     build_stock_detail_embed,
     build_action_prompt_embed,
 )
@@ -50,6 +52,20 @@ def _select_option_label(symbol: str, name: str) -> str:
     if len(label) <= SELECT_OPTION_LABEL_LIMIT:
         return label
     return f"{label[: SELECT_OPTION_LABEL_LIMIT - 3]}..."
+
+
+def build_market_message_payload(
+    quotes: tuple[StockMarketQuote, ...], page_index: int = 0
+) -> tuple[nextcord.Embed, File]:
+    """Builds the market embed and board attachment for one page."""
+    filename = market_board_filename(page_index=page_index)
+    embed = build_market_embed(
+        quotes=quotes, page_index=page_index, page_size=MARKET_PAGE_SIZE, board_filename=filename
+    )
+    board = build_market_board_image(
+        quotes=quotes, page_index=page_index, page_size=MARKET_PAGE_SIZE
+    )
+    return embed, File(fp=BytesIO(board), filename=filename)
 
 
 class StockPublicView(View):
@@ -179,11 +195,11 @@ class StockMarketView(StockPublicView):
         """Edits the market list to a bounded page index."""
         self.stop()
         normalized_page = min(max(page_index, 0), self.page_count - 1)
+        embed, file = build_market_message_payload(quotes=self.quotes, page_index=normalized_page)
         await edit_stock_message(
             interaction=interaction,
-            embed=build_market_embed(
-                quotes=self.quotes, page_index=normalized_page, page_size=MARKET_PAGE_SIZE
-            ),
+            embed=embed,
+            file=file,
             view=StockMarketView(
                 quotes=self.quotes, owner_id=self.owner_id, page_index=normalized_page
             ),
@@ -203,10 +219,12 @@ class StockTutorialView(StockPublicView):
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the market list."""
         quotes = await list_market_quotes()
+        embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
         await edit_stock_message(
             interaction=interaction,
-            embed=build_market_embed(quotes=quotes),
+            embed=embed,
+            file=file,
             view=StockMarketView(quotes=quotes, owner_id=self.owner_id),
         )
 
@@ -248,10 +266,12 @@ class StockDetailView(StockPublicView):
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the public market list."""
         quotes = await list_market_quotes()
+        embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
         await edit_stock_message(
             interaction=interaction,
-            embed=build_market_embed(quotes=quotes),
+            embed=embed,
+            file=file,
             view=StockMarketView(quotes=quotes, owner_id=self.owner_id),
         )
 
@@ -361,10 +381,12 @@ class StockPostTradeView(StockPublicView):
     async def back(self, _button: Button, interaction: Interaction) -> None:
         """Returns to the public market list."""
         quotes = await list_market_quotes()
+        embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
         await edit_stock_message(
             interaction=interaction,
-            embed=build_market_embed(quotes=quotes),
+            embed=embed,
+            file=file,
             view=StockMarketView(quotes=quotes, owner_id=self.owner_id),
         )
 
@@ -558,6 +580,7 @@ __all__ = [
     "StockPublicView",
     "StockQuantityModal",
     "StockTutorialView",
+    "build_market_message_payload",
     "edit_stock_action_prompt",
     "edit_stock_detail",
     "edit_stock_message",
