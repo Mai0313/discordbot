@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
+from discordbot.utils.amounts import compact_amount
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
@@ -268,7 +269,7 @@ def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> No
 
 def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
     """Formats the amount column for one ranking row."""
-    amount_text = _compact_amount(amount=amount)
+    amount_text = compact_amount(amount=amount)
     if not spec["amount_label"]:
         return amount_text
     return f"{spec['amount_label']} {amount_text}"
@@ -330,24 +331,3 @@ def _rank_text(position: int) -> str:
     """Formats a ranking number."""
     medals = {1: "1", 2: "2", 3: "3"}
     return medals.get(position, str(position))
-
-
-def _compact_amount(amount: int) -> str:
-    """Formats large economy amounts without long comma groups."""
-    abs_amount = abs(amount)
-    sign = "-" if amount < 0 else ""
-    for threshold, suffix in ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬")):
-        if abs_amount >= threshold:
-            return f"{sign}{_compact_decimal(value=abs_amount / threshold)}{suffix}"
-    return f"{amount:,}"
-
-
-def _compact_decimal(value: float) -> str:
-    """Formats a compact display number with bounded decimals."""
-    if value >= 100:
-        formatted = f"{value:,.0f}"
-    elif value >= 10:
-        formatted = f"{value:,.1f}"
-    else:
-        formatted = f"{value:,.2f}"
-    return formatted.rstrip("0").rstrip(".")

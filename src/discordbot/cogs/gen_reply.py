@@ -756,9 +756,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         if new_balance is not None:
-            balance_text = f"{currency_text(amount=new_balance)} ({currency_text(amount=total_tokens, signed=True)})"
+            balance_text = (
+                f"{currency_text(amount=new_balance, compact=True)} "
+                f"({currency_text(amount=total_tokens, signed=True, compact=True)})"
+            )
         else:
-            balance_text = currency_text(amount=total_tokens, signed=True)
+            balance_text = currency_text(amount=total_tokens, signed=True, compact=True)
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
 
         # Final update to ensure complete message is displayed.

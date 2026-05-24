@@ -5,6 +5,7 @@ from typing import Literal
 from nextcord import Embed
 
 from discordbot.typings.games import SettleOutcome
+from discordbot.cogs._economy.presentation import amount_code
 
 IN_PROGRESS_COLOR = 0x5865F2
 WIN_COLOR = 0x57F287
@@ -137,7 +138,7 @@ def lobby_participant_line(
     bet_suffix = ""
     if bet is not None:
         allin_suffix = " · all-in" if is_allin else ""
-        bet_suffix = f" · 下注 `{bet:,}`{allin_suffix}"
+        bet_suffix = f" · 下注 {amount_code(amount=bet, compact=True)}{allin_suffix}"
     return f"**{index}. {display_name}**{bet_suffix}"
 
 
@@ -163,14 +164,16 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
         `-# 本局 +X · 餘額 Y` style metadata, with an `· all-in` suffix
         when the round was all-in.
     """
-    segments = [f"本局 `{delta:+,}`"]
+    segments = [f"本局 {amount_code(amount=delta, signed=True, compact=True)}"]
     if vip_bonus > 0 and base_delta is not None:
-        segments.append(f"VIP加成 `+{vip_bonus:,}`")
+        segments.append(f"VIP加成 {amount_code(amount=vip_bonus, signed=True, compact=True)}")
     if five_card_bonus > 0:
-        segments.append(f"過五關 bonus `+{five_card_bonus:,}`")
+        segments.append(
+            f"過五關 bonus {amount_code(amount=five_card_bonus, signed=True, compact=True)}"
+        )
     if is_allin:
         segments.append("all-in")
-    segments.append(f"餘額 `{new_balance:,}`")
+    segments.append(f"餘額 {amount_code(amount=new_balance, compact=True)}")
     return "-# " + " · ".join(segments)
 
 
