@@ -6,6 +6,7 @@ from PIL import Image
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.cogs._economy.boards import (
+    _ranking_amount_text,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
@@ -37,3 +38,21 @@ def test_loss_leaderboard_board_handles_large_losses() -> None:
     with Image.open(BytesIO(image)) as opened:
         assert opened.size[0] == 960
         assert opened.size[1] > 170
+
+
+def test_loss_leaderboard_amount_text_has_no_prefix() -> None:
+    """Loss leaderboard rows show only the compact amount."""
+    assert (
+        _ranking_amount_text(
+            spec={
+                "title": "今日輸錢榜",
+                "subtitle": "",
+                "amount_header": "累計輸",
+                "amount_label": "",
+                "accent": (0, 0, 0),
+                "rows": (),
+            },
+            amount=9_876_543_210_000,
+        )
+        == "9.88兆"
+    )

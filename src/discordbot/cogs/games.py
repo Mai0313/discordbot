@@ -230,14 +230,6 @@ class GamesCogs(commands.Cog):
             color=ERROR_COLOR,
         )
 
-    def _blackjack_missing_bet_embed(self) -> Embed:
-        """Builds the validation embed for missing Blackjack wager options."""
-        return Embed(
-            title="缺少下注",
-            description="請輸入 `bet`, 或把 `all_in` 設成 `true` 直接用目前餘額開桌",
-            color=ERROR_COLOR,
-        )
-
     @nextcord.slash_command(
         name="games",
         description="Game commands.",
@@ -260,58 +252,37 @@ class GamesCogs(commands.Cog):
     async def blackjack(
         self,
         interaction: Interaction,
-        bet: int | None = SlashOption(
+        bet: int = SlashOption(
             name="bet",
-            description=f"Table stake in {CURRENCY_NAME}; omit when all_in is true.",
+            description=f"Table stake in {CURRENCY_NAME}; use 0 to go all in.",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"這桌的基本下注{CURRENCY_NAME}; all_in=true 時可省略",
-                Locale.ja: f"Table の基本賭け金{CURRENCY_NAME}; all_in=true の場合は省略できます。",
+                Locale.zh_TW: f"這桌的基本下注{CURRENCY_NAME}; 輸入 0 會直接 all in",
+                Locale.ja: f"Table の基本賭け金{CURRENCY_NAME}; 0 で all in。",
             },
-            required=False,
-            default=None,
-            min_value=1,
-        ),
-        all_in: bool = SlashOption(
-            name="all_in",
-            description="Use your current balance as the Blackjack table stake.",
-            name_localizations={Locale.zh_TW: "all_in", Locale.ja: "オールイン"},
-            description_localizations={
-                Locale.zh_TW: "不用輸入大額數字, 直接用目前餘額開桌",
-                Locale.ja: "大きな数値を入力せず、現在の残高で table を開きます。",
-            },
-            required=False,
-            default=False,
+            required=True,
+            min_value=0,
         ),
     ) -> None:
         """Opens a Blackjack lobby. The owner starts the table from the lobby.
 
         Args:
             interaction: The interaction that triggered the command.
-            bet: How many points to wager, unless `all_in` is selected.
-            all_in: Whether to use the owner's current balance as the wager.
+            bet: How many points to wager. Zero uses the owner's current balance.
         """
         await interaction.response.defer()
         if interaction.user is None:
             return
 
-        bet_value = bet if isinstance(bet, int) else None
-        all_in_requested = all_in is True
         guild = getattr(interaction, "guild", None)
-        if all_in_requested:
+        if bet == 0:
             participant_result = await self._all_in_participant_from_user(
                 user=interaction.user, guild=guild
             )
-        elif bet_value is not None:
-            participant_result = await self._participant_from_user(
-                user=interaction.user, wager=bet_value, mode="clamp", guild=guild
-            )
         else:
-            message = await interaction.followup.send(
-                embed=self._blackjack_missing_bet_embed(), wait=True
+            participant_result = await self._participant_from_user(
+                user=interaction.user, wager=bet, mode="clamp", guild=guild
             )
-            schedule_public_message_delete(message=message, user_name=interaction.user.name)
-            return
         owner = participant_result.participant
         if owner is None:
             message = await interaction.followup.send(

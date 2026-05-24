@@ -97,7 +97,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Pure rules live in `cogs/_games/blackjack.py` and `cogs/_games/dragon_gate.py`; production uses `random.SystemRandom`, tests inject seeded `random.Random`.
 - Lobby scaffolding lives in `cogs/_games/lobby.py`. Do not convert the base views to `abc.ABC`; project style uses `raise NotImplementedError`.
 - Casino settlement is one atomic step after the round resolves. Validate or clamp bets up front, then settle through the game settlement helpers.
-- Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and peek. Split uses same Blackjack value, so 10/J/Q/K can split with each other. No Double after Split. Split-hand 21 is not natural Blackjack.
+- Blackjack supports Hit, Stand, Double Down, Split, Surrender, Insurance, and peek. `/games blackjack bet=0` means all in. Split uses same Blackjack value, so 10/J/Q/K can split with each other. No Double after Split. Split-hand 21 is not natural Blackjack.
 - A Blackjack hand that reaches exactly five cards totaling 21 auto-stands as five-card 21. The main hand still settles against the dealer normally, and the extra 1x bet bonus is system-funded. VIP adds one 0.5x bonus for that qualifying hand, but `/house` only mirrors dealer-paid normal settlement.
 - Blackjack dealer play is deterministic only below 17: ≤16 hits. At 17+ the interactive dealer phase calls `DealerAI.decide_blackjack_action` and applies the returned hit / stand action.
 - Blackjack action buttons are presence-based: invalid controls are removed from the view instead of being left visible and disabled.

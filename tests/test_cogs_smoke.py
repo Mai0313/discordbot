@@ -1291,6 +1291,11 @@ async def fake_game_balance(user_id: int) -> int:
     return 100
 
 
+async def _empty_game_balance(user_id: int) -> int:
+    """Returns no spendable game balance."""
+    return 0
+
+
 async def _wealthy_game_balance(user_id: int) -> int:
     """Returns a fake balance large enough for Dragon Gate ante."""
     return 1_000_000
@@ -1423,10 +1428,10 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert bob.is_allin is False
 
 
-async def test_blackjack_owner_all_in_option_sets_table_bet_without_numeric_bet(
+async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies the all_in option avoids typing a very large numeric bet."""
+    """Verifies bet zero avoids typing a very large numeric bet."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
@@ -1440,7 +1445,7 @@ async def test_blackjack_owner_all_in_option_sets_table_bet_without_numeric_bet(
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=None, all_in=True)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=0)
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
     assert lobby_view.requested_bet == 300_000_000_000_000
@@ -1448,21 +1453,22 @@ async def test_blackjack_owner_all_in_option_sets_table_bet_without_numeric_bet(
     assert lobby_view.participants[0].is_allin is True
 
 
-async def test_blackjack_requires_bet_or_all_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies optional bet does not silently open a zero-stake table."""
+async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies zero means all in, not a zero-stake table."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=None, all_in=False)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=0)
 
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]
-    assert owner_interaction.followup.sent[0]["embed"].title == "缺少下注"
+    assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
 
 
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
