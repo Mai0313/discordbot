@@ -519,7 +519,7 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     assert isinstance(progress.title, str)
     assert progress.title
     assert isinstance(progress.description, str)
-    assert "110,000" in progress.description
+    assert "11萬" in progress.description
 
     round_state.place_bet(user_id=1, amount=10_000, jackpot=110_000)
     results = [

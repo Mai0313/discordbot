@@ -12,6 +12,7 @@ from nextcord import Embed, Message, ButtonStyle, Interaction
 from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
+from discordbot.utils.amounts import compact_amount
 from discordbot.cogs._games.lobby import (
     PrepareParticipant,
     RefreshParticipants,
@@ -59,7 +60,7 @@ from discordbot.cogs._games.presentation import (
     lobby_participant_line,
     build_dealer_talk_embed,
 )
-from discordbot.cogs._economy.presentation import currency_text
+from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
@@ -115,7 +116,7 @@ def _result_line(result: DragonGateTurnResult) -> str:
     return (
         f"# {pillars}  →  {result.third_card}\n"
         f"**{result.participant.display_name}** (第 {result.turn_number} 手){direction}\n"
-        f"### {outcome_label} `{result.delta:+,}`"
+        f"### {outcome_label} {amount_code(amount=result.delta, signed=True, compact=True)}"
     )
 
 
@@ -127,7 +128,8 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
         pillars = " ".join(str(card) for card in result.pillars)
         lines.append(
             f"第 {result.turn_number} 手 {result.participant.account_name}: "
-            f"{pillars} → {result.third_card}  {outcome_label} {result.delta:+,}"
+            f"{pillars} → {result.third_card}  {outcome_label} "
+            f"{compact_amount(amount=result.delta, signed=True)}"
         )
     return lines
 
@@ -138,7 +140,9 @@ def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
     for participant in round_state.participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
         delta = round_state.player_delta(user_id=participant.user_id)
         suffix = " (已離桌)" if participant.user_id in round_state.withdrawn_user_ids else ""
-        lines.append(f"{participant.account_name}{suffix}: {delta:+,}")
+        lines.append(
+            f"{participant.account_name}{suffix}: {compact_amount(amount=delta, signed=True)}"
+        )
     return lines
 
 
@@ -148,7 +152,8 @@ def _last_result_line(result: DragonGateTurnResult) -> str:
     pillars = " ".join(str(card) for card in result.pillars)
     return (
         f"**{result.participant.display_name}**: "
-        f"{pillars} → `{result.third_card}`  {outcome_label} `{result.delta:+,}`"
+        f"{pillars} → `{result.third_card}`  {outcome_label} "
+        f"{amount_code(amount=result.delta, signed=True, compact=True)}"
     )
 
 
@@ -168,7 +173,7 @@ def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
     """Formats compact table settlement details for dealer banter."""
     lines: list[str] = []
     for result in results:
-        delta = currency_text(amount=result.delta, signed=True)
+        delta = currency_text(amount=result.delta, signed=True, compact=True)
         lines.append(f"{result.participant.display_name}: {delta}")
     return ";".join(lines)
 
@@ -196,9 +201,9 @@ def _table_color(results: list[DragonGatePlayerResult]) -> int:
 def _settlement_result_heading(delta: int) -> str:
     """Formats one player's final net delta as an embed heading."""
     if delta > 0:
-        return f"## {WIN_RESULT_EMOJI} `{delta:+,}`"
+        return f"## {WIN_RESULT_EMOJI} {amount_code(amount=delta, signed=True, compact=True)}"
     if delta < 0:
-        return f"## 💸 `{delta:+,}`"
+        return f"## 💸 {amount_code(amount=delta, signed=True, compact=True)}"
     return "## 持平"
 
 
@@ -207,9 +212,9 @@ def _final_title(results: list[DragonGatePlayerResult]) -> str:
     if len(results) == 1:
         delta = results[0].delta
         if delta > 0:
-            return f"♦️ 射龍門 · {WIN_RESULT_EMOJI} `+{delta:,}`"
+            return f"♦️ 射龍門 · {WIN_RESULT_EMOJI} {amount_code(amount=delta, signed=True, compact=True)}"
         if delta < 0:
-            return f"♦️ 射龍門 · 💸 `{delta:,}`"
+            return f"♦️ 射龍門 · 💸 {amount_code(amount=delta, compact=True)}"
         return "♦️ 射龍門 · 持平"
     total_delta = sum(result.delta for result in results)
     wins = sum(1 for result in results if result.delta > 0)
@@ -220,7 +225,10 @@ def _final_title(results: list[DragonGatePlayerResult]) -> str:
         prefix = "💸 "
     else:
         prefix = ""
-    return f"♦️ 射龍門 · {prefix}{wins} 贏 {losses} 輸 · 淨 `{total_delta:+,}`"
+    return (
+        f"♦️ 射龍門 · {prefix}{wins} 贏 {losses} 輸 · 淨 "
+        f"{amount_code(amount=total_delta, signed=True, compact=True)}"
+    )
 
 
 def build_dragon_gate_lobby_embed(
@@ -239,11 +247,13 @@ def build_dragon_gate_lobby_embed(
         inline=False,
     )
     embed.add_field(
-        name=f"{POT_FIELD_EMOJI} 彩金池 (跨桌累積)", value=f"`{jackpot:,}`", inline=False
+        name=f"{POT_FIELD_EMOJI} 彩金池 (跨桌累積)",
+        value=amount_code(amount=jackpot, compact=True),
+        inline=False,
     )
     if owner.avatar_url:
         embed.set_thumbnail(url=owner.avatar_url)
-    embed.set_footer(text=f"入場費 {currency_text(amount=ANTE)} 進彩金池")
+    embed.set_footer(text=f"入場費 {currency_text(amount=ANTE, compact=True)} 進彩金池")
     return embed
 
 
@@ -255,7 +265,7 @@ def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: i
     if round_state.last_result is not None:
         description_parts.append(_last_result_line(result=round_state.last_result))
         description_parts.append("")
-    description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {jackpot:,}")
+    description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {compact_amount(amount=jackpot)}")
     if active_turn is not None:
         description_parts.append("")
         description_parts.append(_gate_description_block(turn=active_turn))
@@ -306,7 +316,7 @@ def build_dragon_gate_final_embed(
 ) -> Embed:
     """Builds the final embed for a settled 射龍門 table."""
     description_parts: list[str] = [f"### {FINISH_REASON_FIELD_EMOJI} 結束原因", reason, ""]
-    description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {jackpot:,}")
+    description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {compact_amount(amount=jackpot)}")
     description_parts.append("")
     if round_state.last_result is not None:
         description_parts.append(f"### {LAST_HAND_FIELD_EMOJI} 最後一手")
@@ -314,11 +324,13 @@ def build_dragon_gate_final_embed(
         description_parts.append("")
     description_parts.append("### 結算")
     for result in results[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
-        balance_text = f"餘額 `{result.final_balance:,}`"
+        balance_text = f"餘額 {amount_code(amount=result.final_balance, compact=True)}"
         if result.withdrawn:
             balance_text += " · 已離桌"
         if result.refunded_to_pool > 0:
-            balance_text += f" · 逆贏退回 `{result.refunded_to_pool:,}`"
+            balance_text += (
+                f" · 逆贏退回 {amount_code(amount=result.refunded_to_pool, compact=True)}"
+            )
         description_parts.append(f"**{result.participant.display_name}**")
         description_parts.append(_settlement_result_heading(delta=result.delta))
         description_parts.append(metadata_line(text=balance_text))
@@ -581,10 +593,13 @@ class DragonGateView(View):
             bet_select.placeholder = "🪙 選擇下注金額"
         bet_select.options = [
             nextcord.SelectOption(
-                label=f"底注 {minimum:,}", value="min", emoji="🪙", description="最低下注金額"
+                label=f"底注 {compact_amount(amount=minimum)}",
+                value="min",
+                emoji="🪙",
+                description="最低下注金額",
             ),
             nextcord.SelectOption(
-                label=f"全池 {maximum:,}",
+                label=f"全池 {compact_amount(amount=maximum)}",
                 value="max",
                 emoji="💰",
                 description="一把定生死, 清空彩金池",
@@ -905,8 +920,8 @@ class DragonGateView(View):
             maximum = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
             content = (
                 "下注金額需介於 "
-                f"{currency_text(amount=minimum)} 到 "
-                f"{currency_text(amount=maximum)}"
+                f"{currency_text(amount=minimum, compact=True)} 到 "
+                f"{currency_text(amount=maximum, compact=True)}"
             )
         else:
             content = "這桌已經不能操作了"

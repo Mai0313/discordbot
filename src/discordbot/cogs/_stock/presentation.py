@@ -18,6 +18,7 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
+from discordbot.utils.amounts import compact_amount
 from discordbot.cogs._stock.market import cash_floor, format_price
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
@@ -319,7 +320,7 @@ def _draw_market_row(
     )
     _draw_text_right(
         draw=draw,
-        text=_compact_amount(amount=market_cap),
+        text=compact_amount(amount=market_cap),
         xy=(_MARKET_CAP_RIGHT, y + 12),
         font=fonts["body"],
         fill=_MARKET_TEXT,
@@ -400,27 +401,6 @@ def _metric_color(bps: int) -> tuple[int, int, int]:
     return _MARKET_NEUTRAL
 
 
-def _compact_amount(amount: int) -> str:
-    """Formats large market-cap amounts without long comma groups."""
-    abs_amount = abs(amount)
-    sign = "-" if amount < 0 else ""
-    for threshold, suffix in ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬")):
-        if abs_amount >= threshold:
-            return f"{sign}{_compact_decimal(value=abs_amount / threshold)}{suffix}"
-    return f"{amount:,}"
-
-
-def _compact_decimal(value: float) -> str:
-    """Formats a compact display number with bounded decimals."""
-    if value >= 100:
-        formatted = f"{value:,.0f}"
-    elif value >= 10:
-        formatted = f"{value:,.1f}"
-    else:
-        formatted = f"{value:,.2f}"
-    return formatted.rstrip("0").rstrip(".")
-
-
 def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -> Embed:
     """Builds a public stock detail embed for the current interaction user."""
     profile = detail.quote.profile
@@ -431,7 +411,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         f"({signed_percent(bps=detail.quote.change_bps)})\n"
         f"分類 `{profile.category}` · 波動設定 "
         f"`{volatility_text(base_volatility_bps=profile.base_volatility_bps, volatility_amplifier_bps=profile.volatility_amplifier_bps)}`\n"
-        f"市值 `{_compact_amount(amount=market_cap)}` {CURRENCY_NAME}"
+        f"市值 `{compact_amount(amount=market_cap)}` {CURRENCY_NAME}"
     )
     embed = Embed(title="📊 股票明細", description=description, color=DETAIL_COLOR)
     embed.add_field(
@@ -439,12 +419,14 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         value=detail.position.user_name or str(detail.position.user_id),
         inline=True,
     )
-    embed.add_field(name="可用資金", value=currency_text(amount=detail.balance), inline=True)
+    embed.add_field(
+        name="可用資金", value=currency_text(amount=detail.balance, compact=True), inline=True
+    )
     embed.add_field(
         name="持股",
         value=(
             f"持股數 `{detail.position.long_shares:,}` 股\n"
-            f"持股成本 {amount_code(amount=detail.position.long_cost_basis)}"
+            f"持股成本 {amount_code(amount=detail.position.long_cost_basis, compact=True)}"
         ),
         inline=True,
     )
@@ -452,13 +434,13 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
         name="做空",
         value=(
             f"做空股數 `{detail.position.short_shares:,}` 股\n"
-            f"做空擔保金 {amount_code(amount=detail.position.short_collateral)}"
+            f"做空擔保金 {amount_code(amount=detail.position.short_collateral, compact=True)}"
         ),
         inline=True,
     )
     embed.add_field(
         name="已實現損益",
-        value=amount_code(amount=detail.position.realized_pnl, signed=True),
+        value=amount_code(amount=detail.position.realized_pnl, signed=True, compact=True),
         inline=True,
     )
     embed.add_field(
@@ -531,8 +513,8 @@ def build_settlement_embed(result: StockSettlementResult) -> Embed:
         f"### {action_label} {result.symbol}",
         f"成交股數 `{result.shares:,}`",
         f"成交價 `{format_price(price_cents=result.price_cents)}`",
-        f"錢包變化 {amount_code(amount=result.wallet_delta, signed=True)}",
-        f"餘額 {amount_code(amount=result.balance_after)} {CURRENCY_NAME}",
+        f"錢包變化 {amount_code(amount=result.wallet_delta, signed=True, compact=True)}",
+        f"餘額 {amount_code(amount=result.balance_after, compact=True)} {CURRENCY_NAME}",
     ]
     embed = Embed(title="股票交易完成", description="\n".join(lines), color=SUCCESS_COLOR)
     embed.add_field(name="交易明細", value=_leg_lines(legs=result.legs), inline=False)
@@ -585,7 +567,7 @@ def _position_summary_line(position: StockParticipantPositionView) -> str:
     name = position.user_name or str(position.user_id)
     return (
         f"{name} · 持股 `{position.long_shares:,}` 股 · 做空 `{position.short_shares:,}` 股 · "
-        f"損益 {amount_code(amount=position.realized_pnl, signed=True)}"
+        f"損益 {amount_code(amount=position.realized_pnl, signed=True, compact=True)}"
     )
 
 
@@ -597,7 +579,7 @@ def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
         lines.append(
             f"{name} · #{leg.leg_order} {_leg_type_label(leg_type=leg.leg_type)} "
             f"`{leg.shares:,}` 股 · 成交價 `{format_price(price_cents=leg.price_cents)}` · "
-            f"錢包變化 {amount_code(amount=leg.wallet_delta, signed=True)} · "
-            f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True)}"
+            f"錢包變化 {amount_code(amount=leg.wallet_delta, signed=True, compact=True)} · "
+            f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True, compact=True)}"
         )
     return "\n".join(lines) if lines else "無"

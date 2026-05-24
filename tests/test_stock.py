@@ -350,7 +350,22 @@ async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: No
                     "stock_position",
                     "stock_operation",
                     "stock_trade_leg",
+                    "stock_price_tick",
                     "stock_news",
+                )
+            }
+        )
+        column_types = await conn.run_sync(
+            lambda sync_conn: {
+                table_name: {
+                    column["name"]: column["type"].__class__.__name__.upper()
+                    for column in inspect(sync_conn).get_columns(table_name=table_name)
+                }
+                for table_name in (
+                    "stock_profile",
+                    "stock_position",
+                    "stock_trade_leg",
+                    "stock_price_tick",
                 )
             }
         )
@@ -358,6 +373,11 @@ async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: No
     assert column_names["stock_position"][:3] == ["symbol", "user_id", "user_name"]
     assert column_names["stock_operation"][1:4] == ["symbol", "user_id", "user_name"]
     assert column_names["stock_trade_leg"][3:6] == ["symbol", "user_id", "user_name"]
+    assert column_types["stock_profile"]["price_cents"] == "TEXT"
+    assert column_types["stock_profile"]["float_shares"] == "TEXT"
+    assert column_types["stock_position"]["long_cost_basis"] == "TEXT"
+    assert column_types["stock_trade_leg"]["wallet_delta"] == "TEXT"
+    assert column_types["stock_price_tick"]["price_cents"] == "TEXT"
     assert "source" in column_names["stock_news"]
 
 
@@ -401,6 +421,97 @@ async def test_stock_profile_upsert_manages_database_company(stock_empty_db: Non
     assert latest_tick.price_cents == 12_345
 
 
+async def test_stock_large_numbers_use_text_storage(stock_empty_db: None) -> None:
+    """Stock money and share quantities can exceed SQLite's integer ceiling."""
+    large_value = 10**30
+    now = datetime(2026, 1, 1)
+    profile = await stock_db.upsert_stock_profile(
+        profile=StockProfileUpsert(
+            symbol="BIG",
+            name="超大數測試股份有限公司",
+            category="測試",
+            price_cents=large_value,
+            total_shares=large_value * 4,
+            float_shares=large_value * 3,
+            base_volatility_bps=0,
+            volatility_amplifier_bps=0,
+            liquidity_shares=large_value,
+            fair_value_cents=large_value,
+            mean_reversion_bps=1,
+            max_tick_change_bps=1,
+            news_cadence_hours=8,
+        ),
+        now=now,
+    )
+    async with stock_db.open_stock_session() as session:
+        session.add(
+            instance=stock_db.StockPosition(
+                symbol="BIG",
+                user_id=1,
+                user_name="Large",
+                long_shares=large_value,
+                long_cost_basis=large_value * 2,
+                short_shares=large_value // 2,
+                short_entry_value=large_value * 3,
+                short_collateral=large_value * 4,
+                realized_pnl=large_value * 5,
+                version=1,
+                updated_at=now,
+            )
+        )
+        session.add(
+            instance=stock_db.StockOperation(
+                operation_id="large-operation",
+                symbol="BIG",
+                user_id=1,
+                user_name="Large",
+                requested_action=StockAction.BUY.value,
+                status=StockOperationStatus.APPLIED.value,
+                failure_reason="",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            instance=stock_db.StockTradeLeg(
+                operation_id="large-operation",
+                leg_order=1,
+                symbol="BIG",
+                user_id=1,
+                user_name="Large",
+                leg_type=StockTradeLegType.OPEN_LONG.value,
+                shares=large_value,
+                price_cents=large_value,
+                wallet_delta=-(large_value * 2),
+                basis_delta=large_value * 2,
+                collateral_delta=0,
+                realized_pnl_delta=0,
+                created_at=now,
+            )
+        )
+        await session.commit()
+        storage_result = await session.execute(
+            statement=text(
+                """
+                SELECT
+                    (SELECT typeof(price_cents) FROM stock_profile WHERE symbol = 'BIG'),
+                    (SELECT typeof(float_shares) FROM stock_profile WHERE symbol = 'BIG'),
+                    (SELECT typeof(long_cost_basis) FROM stock_position WHERE symbol = 'BIG'),
+                    (SELECT typeof(wallet_delta) FROM stock_trade_leg WHERE operation_id = 'large-operation'),
+                    (SELECT typeof(price_cents) FROM stock_price_tick WHERE symbol = 'BIG')
+                """
+            )
+        )
+        storage_row = storage_result.one()
+
+    assert profile.price_cents == large_value
+    assert storage_row == ("text", "text", "text", "text", "text")
+    audit = (await stock_db.list_stock_supply_audit())[0]
+    assert audit.long_shares == large_value
+    assert audit.short_shares == large_value // 2
+    assert audit.available_long_shares == large_value * 2
+
+
 def test_stock_profile_upsert_rejects_invalid_share_structure() -> None:
     """DB-owned company payloads reject impossible share counts before persistence."""
     with pytest.raises(ValueError, match="float_shares cannot exceed total_shares"):
@@ -419,128 +530,6 @@ def test_stock_profile_upsert_rejects_invalid_share_structure() -> None:
             max_tick_change_bps=1,
             news_cadence_hours=8,
         )
-
-
-async def test_stock_schema_migrates_mvp_profile_and_news_columns(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Existing MVP stock DB files receive v2 profile and news columns."""
-    stock_db_path = tmp_path / "legacy_stock.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{stock_db_path}")
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                """
-                CREATE TABLE stock_profile (
-                    symbol VARCHAR(16) PRIMARY KEY,
-                    name VARCHAR(128) NOT NULL,
-                    category VARCHAR(64) NOT NULL,
-                    price_cents INTEGER NOT NULL,
-                    previous_close_price_cents INTEGER NOT NULL,
-                    day_open_price_cents INTEGER NOT NULL,
-                    total_shares INTEGER NOT NULL,
-                    base_volatility_bps INTEGER NOT NULL,
-                    volatility_amplifier_bps INTEGER NOT NULL,
-                    created_at DATETIME NOT NULL,
-                    updated_at DATETIME NOT NULL
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                CREATE TABLE stock_news (
-                    id VARCHAR(64) PRIMARY KEY,
-                    symbol VARCHAR(16) NOT NULL,
-                    headline VARCHAR(256) NOT NULL,
-                    sentiment_bps INTEGER NOT NULL,
-                    created_at DATETIME NOT NULL
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                CREATE TABLE stock_price_tick (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol VARCHAR(16) NOT NULL,
-                    price_cents INTEGER NOT NULL,
-                    created_at DATETIME NOT NULL
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                CREATE INDEX ix_stock_price_tick_symbol_created
-                ON stock_price_tick (symbol, created_at)
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                INSERT INTO stock_profile (
-                    symbol, name, category, price_cents, previous_close_price_cents,
-                    day_open_price_cents, total_shares, base_volatility_bps,
-                    volatility_amplifier_bps, created_at, updated_at
-                )
-                VALUES (
-                    'BCAT', 'legacy', 'legacy', 10000, 10000, 10000,
-                    500000, 70, 150, '2026-01-01 00:00:00', '2026-01-01 00:00:00'
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                INSERT INTO stock_price_tick (symbol, price_cents, created_at)
-                VALUES
-                    ('BCAT', 9900, '2026-01-01 00:00:00'),
-                    ('BCAT', 10000, '2026-01-01 00:00:00')
-                """
-            )
-        )
-    monkeypatch.setattr(stock_db, "_engine", engine)
-    monkeypatch.setattr(stock_db, "_schema_ready_for", None)
-
-    quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1, 1), rng=_rng(seed=1))
-
-    assert any(quote.profile.symbol == BCAT_SYMBOL for quote in quotes)
-    bcat_quote = next(quote for quote in quotes if quote.profile.symbol == BCAT_SYMBOL)
-    assert bcat_quote.profile.total_shares == 500_000
-    assert bcat_quote.profile.float_shares == 500_000
-    async with engine.connect() as conn:
-        columns = await conn.run_sync(
-            lambda sync_conn: {
-                table_name: {
-                    column["name"]
-                    for column in inspect(sync_conn).get_columns(table_name=table_name)
-                }
-                for table_name in ("stock_profile", "stock_news")
-            }
-        )
-        index_result = await conn.execute(text("PRAGMA index_list(stock_price_tick)"))
-        duplicate_result = await conn.execute(
-            text(
-                """
-                SELECT COUNT(*)
-                FROM stock_price_tick
-                WHERE symbol = 'BCAT' AND created_at = '2026-01-01 00:00:00'
-                """
-            )
-        )
-    assert "fair_value_cents" in columns["stock_profile"]
-    assert "source" in columns["stock_news"]
-    assert any(
-        row[1] == "ix_stock_price_tick_symbol_created" and row[2] for row in index_result.all()
-    )
-    assert duplicate_result.scalar_one() == 1
-    await engine.dispose()
 
 
 async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: None) -> None:

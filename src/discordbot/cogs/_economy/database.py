@@ -44,13 +44,12 @@ errors before either commit; SQLite still cannot make a hard crash between two
 database-file commits fully atomic.
 """
 
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 from datetime import datetime, timezone, timedelta
 from collections.abc import Sequence
 
 from sqlalchemy import (
-    Text,
     Index,
     String,
     Boolean,
@@ -65,10 +64,8 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.types import TypeDecorator
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.economy import (
@@ -106,6 +103,15 @@ from discordbot.typings.economy import (
     OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
+from discordbot.utils.stored_integer import (
+    StoredInteger,
+    configure_sqlite_stored_integer_functions,
+)
+from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
+from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.elements import ColumnElement
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. With WAL +
 # busy_timeout, contention is rare and resolves on the first or second retry;
@@ -143,122 +149,6 @@ def _taipei_midnight(now: datetime) -> datetime:
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _stored_int_to_int(value: object) -> int:
-    """Parses a persisted decimal-string integer into a Python int."""
-    if value is None:
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, bytes):
-        return _stored_int_to_int(value=value.decode())
-    if isinstance(value, str):
-        normalized = value.strip()
-        return int(normalized or "0")
-    msg = f"Unsupported stored integer type: {type(value)!r}"
-    raise TypeError(msg)
-
-
-def _stored_int_to_text(value: int) -> str:
-    """Returns canonical decimal text for a persisted integer."""
-    return str(value)
-
-
-def _sqlite_int_add_text(left: Any, right: Any) -> str:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
-    """Adds two persisted integers and returns canonical decimal text."""
-    return _stored_int_to_text(
-        value=_stored_int_to_int(value=left) + _stored_int_to_int(value=right)
-    )
-
-
-def _sqlite_int_compare_text(left: Any, right: Any) -> int:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
-    """Compares two persisted integers for SQLite predicates."""
-    left_int = _stored_int_to_int(value=left)
-    right_int = _stored_int_to_int(value=right)
-    return (left_int > right_int) - (left_int < right_int)
-
-
-def _int_add_text(column: ColumnElement[Any], delta: int) -> ColumnElement[Any]:
-    """Builds a SQLite expression that adds `delta` to a decimal-text column."""
-    return cast(
-        "ColumnElement[Any]",
-        func.discordbot_int_add_text(column, _stored_int_to_text(value=delta)),
-    )
-
-
-def _int_compare_text(column: ColumnElement[Any], value: int) -> ColumnElement[int]:
-    """Builds a SQLite expression that compares a decimal-text column."""
-    return cast(
-        "ColumnElement[int]",
-        func.discordbot_int_compare_text(column, _stored_int_to_text(value=value)),
-    )
-
-
-class StoredIntegerComparator(TypeDecorator.Comparator[int]):
-    """Routes SQL arithmetic and comparisons through integer-aware UDFs."""
-
-    def __add__(self, other: object) -> ColumnElement[Any]:
-        return _int_add_text(
-            column=cast("ColumnElement[Any]", self.expr), delta=_stored_int_to_int(value=other)
-        )
-
-    def __sub__(self, other: object) -> ColumnElement[Any]:
-        return _int_add_text(
-            column=cast("ColumnElement[Any]", self.expr), delta=-_stored_int_to_int(value=other)
-        )
-
-    def __gt__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
-            _int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
-            )
-            > 0,
-        )
-
-    def __ge__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
-            _int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
-            )
-            >= 0,
-        )
-
-    def __lt__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
-            _int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
-            )
-            < 0,
-        )
-
-    def __le__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
-            _int_compare_text(
-                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
-            )
-            <= 0,
-        )
-
-
-class StoredInteger(TypeDecorator[int]):
-    """Persists Python integers as decimal text in SQLite."""
-
-    impl = Text
-    cache_ok = True
-    comparator_factory = StoredIntegerComparator
-
-    def process_bind_param(self, value: object | None, dialect: Any) -> str:  # noqa: ANN401 -- SQLAlchemy hook signature
-        """Converts a Python integer into canonical decimal text."""
-        return _stored_int_to_text(value=_stored_int_to_int(value=value))
-
-    def process_result_value(self, value: object | None, dialect: Any) -> int:  # noqa: ANN401 -- SQLAlchemy hook signature
-        """Converts persisted decimal text into a Python integer."""
-        return _stored_int_to_int(value=value)
-
-
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     """Sets WAL mode + a tolerant busy_timeout on every new connection.
 
@@ -273,8 +163,7 @@ def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.execute("PRAGMA foreign_keys=ON")
-    dbapi_connection.create_function("discordbot_int_add_text", 2, _sqlite_int_add_text)
-    dbapi_connection.create_function("discordbot_int_compare_text", 2, _sqlite_int_compare_text)
+    configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
     cursor.close()
 
 

@@ -67,6 +67,10 @@ jobs:
 
       - name: Run pytest
         if: ${{ steps.check_tests.outputs.has_tests == 'true' }}
+        env:
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
         run: |
           set -o pipefail
           uv run pytest -vv | tee .coverage.txt

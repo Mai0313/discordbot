@@ -211,7 +211,7 @@ class GamesCogs(commands.Cog):
         return Embed(
             title="餘額不足",
             description=(
-                f"### {bold_currency(amount=balance)}\n"
+                f"### {bold_currency(amount=balance, compact=True)}\n"
                 f"沒有可下注的{CURRENCY_NAME}\n"
                 f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
             ),
@@ -232,8 +232,8 @@ class GamesCogs(commands.Cog):
         return Embed(
             title="餘額不足",
             description=(
-                f"### {bold_currency(amount=balance)}\n"
-                f"射龍門入場費固定 {bold_currency(amount=ANTE)} 進彩金池\n"
+                f"### {bold_currency(amount=balance, compact=True)}\n"
+                f"射龍門入場費固定 {bold_currency(amount=ANTE, compact=True)} 進彩金池\n"
                 f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
             ),
             color=ERROR_COLOR,

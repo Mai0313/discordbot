@@ -64,7 +64,7 @@ from discordbot.cogs._games.presentation import (
     build_dealer_talk_embed,
     blackjack_outcome_presentation,
 )
-from discordbot.cogs._economy.presentation import currency_text
+from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
@@ -149,7 +149,7 @@ def _hand_status_suffix(hand: BlackjackHandState, is_active: bool) -> str:  # no
 
 def _hand_metadata_text(hand: BlackjackHandState, participant: GameParticipant) -> str:
     """Returns the small-text metadata for one sub-hand."""
-    parts: list[str] = [f"下注 `{hand.bet:,}`"]
+    parts: list[str] = [f"下注 {amount_code(amount=hand.bet, compact=True)}"]
     if hand.is_split_hand:
         parts.append("split A" if hand.is_split_aces else "split")
     if hand.doubled:
@@ -162,7 +162,7 @@ def _hand_metadata_text(hand: BlackjackHandState, participant: GameParticipant) 
 def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
     """Returns the per-player status text shown during the insurance phase."""
     if player.insurance_bet > 0:
-        return f"保險 `{player.insurance_bet:,}`"
+        return f"保險 {amount_code(amount=player.insurance_bet, compact=True)}"
     if player.insurance_resolved:
         return "已拒絕保險"
     return "保險待決定"
@@ -219,7 +219,7 @@ def build_blackjack_lobby_embed(
     )
     if owner.avatar_url:
         embed.set_thumbnail(url=owner.avatar_url)
-    embed.set_footer(text=f"基本下注 {currency_text(amount=requested_bet)}")
+    embed.set_footer(text=f"基本下注 {currency_text(amount=requested_bet, compact=True)}")
     return embed
 
 
@@ -260,7 +260,7 @@ def build_in_progress_embed(
         if round_state.phase == "insurance":
             insurance_status = _insurance_phase_status(player=player)
         elif player.insurance_bet > 0:
-            insurance_status = f"保險 `{player.insurance_bet:,}`"
+            insurance_status = f"保險 {amount_code(amount=player.insurance_bet, compact=True)}"
         description_parts.append("")
         description_parts.append(f"### {participant.display_name}")
         description_parts.append(
@@ -289,7 +289,7 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     lines: list[str] = []
     for result in results:
         outcome_label, _color = blackjack_outcome_presentation(outcome=result.settlement.outcome)
-        delta = currency_text(amount=result.settlement.delta, signed=True)
+        delta = currency_text(amount=result.settlement.delta, signed=True, compact=True)
         lines.append(f"{result.participant.display_name}: {outcome_label} {delta}")
     return "；".join(lines)
 
@@ -442,9 +442,11 @@ def build_final_embed(
         if result.settlement.insurance is not None:
             ins = result.settlement.insurance
             label = (
-                f"保險 `{ins.bet:,}` → 中獎 (+{ins.delta:,})"
+                f"保險 {amount_code(amount=ins.bet, compact=True)} → 中獎 "
+                f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
                 if ins.won
-                else f"保險 `{ins.bet:,}` → 莊家無 BJ ({ins.delta:+,})"
+                else f"保險 {amount_code(amount=ins.bet, compact=True)} → 莊家無 BJ "
+                f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
             )
             description_parts.append(metadata_line(text=label))
         metadata = settlement_metadata(

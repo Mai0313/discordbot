@@ -90,9 +90,10 @@ def _vip_perk_lines(checkin_streak: int = 1) -> str:
     boosted_win = apply_vip_blackjack_bonus(delta=sample_win, is_vip=True)
     checkin_label = "簽到基礎" if checkin_streak == 1 else f"第 {checkin_streak} 天簽到"
     return (
-        f"{checkin_label} {amount_code(amount=base_checkin)} → {amount_code(amount=vip_checkin)}\n"
-        f"Blackjack 贏局例 {amount_code(amount=sample_win, signed=True)} → "
-        f"{amount_code(amount=boosted_win, signed=True)}"
+        f"{checkin_label} {amount_code(amount=base_checkin, compact=True)} → "
+        f"{amount_code(amount=vip_checkin, compact=True)}\n"
+        f"Blackjack 贏局例 {amount_code(amount=sample_win, signed=True, compact=True)} → "
+        f"{amount_code(amount=boosted_win, signed=True, compact=True)}"
     )
 
 
@@ -121,20 +122,23 @@ def _portfolio_stock_line(holding: StockPortfolioHolding) -> str:
     position_parts: list[str] = []
     if holding.long_shares > 0:
         position_parts.append(
-            f"持股 `{holding.long_shares:,}` 股 / 市值 {amount_code(amount=holding.long_market_value)}"
+            f"持股 `{holding.long_shares:,}` 股 / 市值 "
+            f"{amount_code(amount=holding.long_market_value, compact=True)}"
         )
     if holding.short_shares > 0:
         short_equity = (
             holding.short_collateral + holding.short_entry_value - holding.short_cover_cost
         )
         position_parts.append(
-            f"做空 `{holding.short_shares:,}` 股 / 淨值 {amount_code(amount=short_equity)}"
+            f"做空 `{holding.short_shares:,}` 股 / 淨值 "
+            f"{amount_code(amount=short_equity, compact=True)}"
         )
     position_text = " · ".join(position_parts) if position_parts else "無部位"
     name = _portfolio_stock_name(name=holding.name)
     return (
         f"`{holding.symbol}` {name} · 股價 `{format_price(price_cents=holding.price_cents)}` · "
-        f"{position_text} · 未實現 {amount_code(amount=holding.unrealized_pnl, signed=True)}"
+        f"{position_text} · 未實現 "
+        f"{amount_code(amount=holding.unrealized_pnl, signed=True, compact=True)}"
     )
 
 
@@ -181,7 +185,7 @@ def _rate_text(monthly_rate_bps: int) -> str:
 def _loan_terms_text(amount: int, monthly_rate_bps: int) -> str:
     """Formats the loan terms shown before acceptance."""
     return (
-        f"本金 {amount_code(amount=amount)}\n"
+        f"本金 {amount_code(amount=amount, compact=True)}\n"
         f"利率 `{_rate_text(monthly_rate_bps=monthly_rate_bps)}`\n"
         "利息採單利，依經過天數按比例計算\n"
         "還款會先抵利息，再抵本金；貸方可催收"
@@ -198,12 +202,12 @@ def _payment_summary_text(  # noqa: PLR0913 -- summary needs all visible repayme
 ) -> str:
     """Formats one repayment or collection result."""
     return (
-        f"本次扣款 {amount_code(amount=paid_amount)}\n"
-        f"償還利息 {amount_code(amount=interest_paid)}\n"
-        f"償還本金 {amount_code(amount=principal_paid)}\n"
-        f"剩餘本金 {amount_code(amount=remaining_principal)}\n"
-        f"剩餘利息 {amount_code(amount=remaining_interest)}\n"
-        f"借方餘額 {amount_code(amount=borrower_balance)}"
+        f"本次扣款 {amount_code(amount=paid_amount, compact=True)}\n"
+        f"償還利息 {amount_code(amount=interest_paid, compact=True)}\n"
+        f"償還本金 {amount_code(amount=principal_paid, compact=True)}\n"
+        f"剩餘本金 {amount_code(amount=remaining_principal, compact=True)}\n"
+        f"剩餘利息 {amount_code(amount=remaining_interest, compact=True)}\n"
+        f"借方餘額 {amount_code(amount=borrower_balance, compact=True)}"
     )
 
 
@@ -320,14 +324,14 @@ class CentralBankLoanDecisionView(View):
         embed = Embed(
             title="🏛️ 央行借款已批准",
             description=(
-                f"### {currency_text(amount=result.contract.principal_remaining)} 已入帳"
+                f"### {currency_text(amount=result.contract.principal_remaining, compact=True)} 已入帳"
             ),
             color=_CENTRAL_BANK_COLOR,
         )
         embed.add_field(name="批准者", value=interaction.user.mention, inline=True)
         embed.add_field(
             name="央行剩餘額度",
-            value=amount_code(amount=result.central_bank_available_credit or 0),
+            value=amount_code(amount=result.central_bank_available_credit or 0, compact=True),
             inline=True,
         )
         self.stop()
@@ -486,12 +490,14 @@ class CreditLoanDecisionView(View):
 
         embed = Embed(
             title="✅ 信貸已批准",
-            description=f"### {currency_text(amount=result.contract.principal_remaining)} 已入帳",
+            description=f"### {currency_text(amount=result.contract.principal_remaining, compact=True)} 已入帳",
             color=_BORROW_COLOR,
         )
         embed.add_field(name="批准者", value=interaction.user.mention, inline=True)
         embed.add_field(
-            name="借方餘額", value=amount_code(amount=result.borrower_balance), inline=True
+            name="借方餘額",
+            value=amount_code(amount=result.borrower_balance, compact=True),
+            inline=True,
         )
         self.stop()
         await interaction.response.edit_message(embed=embed, view=None)
@@ -716,7 +722,10 @@ class EconomyCogs(commands.Cog):
         )
         embed = Embed(
             title=title,
-            description=f"### {member.mention}\n{currency_text(amount=result.applied_delta, signed=True)}",
+            description=(
+                f"### {member.mention}\n"
+                f"{currency_text(amount=result.applied_delta, signed=True, compact=True)}"
+            ),
             color=_ADMIN_COLOR,
         )
         embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
@@ -724,9 +733,9 @@ class EconomyCogs(commands.Cog):
         embed.add_field(
             name="操作結果",
             value=(
-                f"申請 {amount_code(amount=delta, signed=True)}\n"
-                f"實際 {amount_code(amount=result.applied_delta, signed=True)}\n"
-                f"餘額 {amount_code(amount=result.new_balance)}"
+                f"申請 {amount_code(amount=delta, signed=True, compact=True)}\n"
+                f"實際 {amount_code(amount=result.applied_delta, signed=True, compact=True)}\n"
+                f"餘額 {amount_code(amount=result.new_balance, compact=True)}"
             ),
             inline=False,
         )
@@ -761,7 +770,7 @@ class EconomyCogs(commands.Cog):
         embed = Embed(
             title="💰 錢包",
             color=_BALANCE_COLOR,
-            description=f"## {currency_text(amount=portfolio.balance)}",
+            description=f"## {currency_text(amount=portfolio.balance, compact=True)}",
         )
         embed.set_author(name=f"{user.display_name} 的錢包", icon_url=user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=user.display_avatar.url)
@@ -770,12 +779,16 @@ class EconomyCogs(commands.Cog):
             embed.add_field(
                 name="未還債務",
                 value=(
-                    f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
-                    f"利息 {amount_code(amount=portfolio.debt_interest)}"
+                    f"本金 {amount_code(amount=portfolio.debt_principal, compact=True)}\n"
+                    f"利息 {amount_code(amount=portfolio.debt_interest, compact=True)}"
                 ),
                 inline=False,
             )
-        embed.add_field(name="淨資產", value=amount_code(amount=portfolio.net_worth), inline=False)
+        embed.add_field(
+            name="淨資產",
+            value=amount_code(amount=portfolio.net_worth, compact=True),
+            inline=False,
+        )
 
         if is_vip:
             embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
@@ -954,8 +967,8 @@ class EconomyCogs(commands.Cog):
                 title="轉帳失敗",
                 description=(
                     f"### 餘額不足\n"
-                    f"目前 {bold_currency(amount=balance_now)}\n"
-                    f"想轉 {bold_currency(amount=amount)}"
+                    f"目前 {bold_currency(amount=balance_now, compact=True)}\n"
+                    f"想轉 {bold_currency(amount=amount, compact=True)}"
                 ),
                 color=_ERROR_COLOR,
             )
@@ -965,7 +978,7 @@ class EconomyCogs(commands.Cog):
 
         embed = Embed(
             title="💸 轉帳完成",
-            description=f"### {currency_text(amount=amount)}\n{sender.mention} → {member.mention}",
+            description=f"### {currency_text(amount=amount, compact=True)}\n{sender.mention} → {member.mention}",
             color=_TRANSFER_COLOR,
         )
         embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
@@ -973,8 +986,10 @@ class EconomyCogs(commands.Cog):
         embed.add_field(
             name="轉帳後餘額",
             value=(
-                f"**{sender.display_name}** {amount_code(amount=transfer_result.sender_balance)}\n"
-                f"**{member.display_name}** {amount_code(amount=transfer_result.receiver_balance)}"
+                f"**{sender.display_name}** "
+                f"{amount_code(amount=transfer_result.sender_balance, compact=True)}\n"
+                f"**{member.display_name}** "
+                f"{amount_code(amount=transfer_result.receiver_balance, compact=True)}"
             ),
             inline=False,
         )
@@ -1018,10 +1033,10 @@ class EconomyCogs(commands.Cog):
             name = name or account.name
 
         if balance > 0:
-            verdict = rf"\+ {bold_currency(amount=balance)}"
+            verdict = rf"\+ {bold_currency(amount=balance, compact=True)}"
             color = _BALANCE_COLOR
         elif balance < 0:
-            verdict = rf"\- {bold_currency(amount=abs(balance))}"
+            verdict = rf"\- {bold_currency(amount=abs(balance), compact=True)}"
             color = _ERROR_COLOR
         else:
             verdict = "⚖️ 打平"
@@ -1033,7 +1048,8 @@ class EconomyCogs(commands.Cog):
         embed.add_field(
             name="流水",
             value=(
-                f"贏到 {amount_code(amount=total_earned)}\n賠出 {amount_code(amount=total_spent)}"
+                f"贏到 {amount_code(amount=total_earned, compact=True)}\n"
+                f"賠出 {amount_code(amount=total_spent, compact=True)}"
             ),
             inline=False,
         )
@@ -1145,7 +1161,10 @@ class EconomyCogs(commands.Cog):
 
         embed = Embed(
             title="💴 信貸申請已建立",
-            description=f"### {user.mention} → {member.mention}\n{currency_text(amount=amount)}",
+            description=(
+                f"### {user.mention} → {member.mention}\n"
+                f"{currency_text(amount=amount, compact=True)}"
+            ),
             color=_BORROW_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
@@ -1228,7 +1247,9 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         embed = Embed(
             title="🧾 信貸還款完成",
-            description=f"### {currency_text(amount=-result.paid_amount, signed=True)} 扣款",
+            description=(
+                f"### {currency_text(amount=-result.paid_amount, signed=True, compact=True)} 扣款"
+            ),
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
@@ -1309,7 +1330,10 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         embed = Embed(
             title="📣 信貸催收完成",
-            description=f"### 從 {member.mention} 回收 {currency_text(amount=result.paid_amount)}",
+            description=(
+                f"### 從 {member.mention} 回收 "
+                f"{currency_text(amount=result.paid_amount, compact=True)}"
+            ),
             color=_REPAY_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
@@ -1355,8 +1379,8 @@ class EconomyCogs(commands.Cog):
         lines = [
             (
                 f"{'欠 ' + contract.lender_name if contract.borrower_id == interaction.user.id else contract.borrower_name + ' 欠你'} "
-                f"本金 {amount_code(amount=contract.principal_remaining)} · "
-                f"利息 {amount_code(amount=contract.interest_due)} · "
+                f"本金 {amount_code(amount=contract.principal_remaining, compact=True)} · "
+                f"利息 {amount_code(amount=contract.interest_due, compact=True)} · "
                 f"{_rate_text(monthly_rate_bps=contract.monthly_rate_bps)}"
             )
             for contract in contracts[:10]
@@ -1438,7 +1462,7 @@ class EconomyCogs(commands.Cog):
             return
         embed = Embed(
             title="🏛️ 央行借款申請已建立",
-            description=f"### {user.mention}\n{currency_text(amount=amount)}",
+            description=f"### {user.mention}\n{currency_text(amount=amount, compact=True)}",
             color=_CENTRAL_BANK_COLOR,
         )
         embed.set_author(name=user.display_name, icon_url=user_avatar_url)
@@ -1625,14 +1649,15 @@ class EconomyCogs(commands.Cog):
         status = await get_central_bank_status(exclude_user_ids=exclude_user_ids)
         embed = Embed(
             title="🏛️ 中央銀行狀態",
-            description=f"## 可放貸 {bold_currency(amount=status.available_credit)}",
+            description=f"## 可放貸 {bold_currency(amount=status.available_credit, compact=True)}",
             color=_CENTRAL_BANK_COLOR,
         )
         embed.add_field(
             name="資金池",
             value=(
-                f"全體正餘額 {amount_code(amount=status.total_positive_user_balance)}\n"
-                f"未還本金 {amount_code(amount=status.outstanding_principal)}"
+                f"全體正餘額 "
+                f"{amount_code(amount=status.total_positive_user_balance, compact=True)}\n"
+                f"未還本金 {amount_code(amount=status.outstanding_principal, compact=True)}"
             ),
             inline=False,
         )
@@ -1673,24 +1698,28 @@ class EconomyCogs(commands.Cog):
         net_worth = portfolio.net_worth + stock_portfolio.equity_value
         embed = Embed(
             title="📊 投資組合",
-            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=net_worth)}",
+            description=f"## {target.display_name}\n淨資產 {bold_currency(amount=net_worth, compact=True)}",
             color=_PORTFOLIO_COLOR,
         )
-        embed.add_field(name="現金", value=amount_code(amount=portfolio.balance), inline=True)
+        embed.add_field(
+            name="現金", value=amount_code(amount=portfolio.balance, compact=True), inline=True
+        )
         embed.add_field(
             name="股票淨值",
             value=(
-                f"估值 {amount_code(amount=stock_portfolio.equity_value)}\n"
-                f"未實現 {amount_code(amount=stock_portfolio.unrealized_pnl, signed=True)}\n"
-                f"已實現 {amount_code(amount=stock_portfolio.realized_pnl, signed=True)}"
+                f"估值 {amount_code(amount=stock_portfolio.equity_value, compact=True)}\n"
+                f"未實現 "
+                f"{amount_code(amount=stock_portfolio.unrealized_pnl, signed=True, compact=True)}\n"
+                f"已實現 "
+                f"{amount_code(amount=stock_portfolio.realized_pnl, signed=True, compact=True)}"
             ),
             inline=True,
         )
         embed.add_field(
             name="債務",
             value=(
-                f"本金 {amount_code(amount=portfolio.debt_principal)}\n"
-                f"利息 {amount_code(amount=portfolio.debt_interest)}"
+                f"本金 {amount_code(amount=portfolio.debt_principal, compact=True)}\n"
+                f"利息 {amount_code(amount=portfolio.debt_interest, compact=True)}"
             ),
             inline=False,
         )
@@ -1707,9 +1736,13 @@ class EconomyCogs(commands.Cog):
         name_localizations={Locale.zh_TW: "簽到", Locale.ja: "デイリーチェックイン"},
         description_localizations={
             Locale.zh_TW: (
-                f"每日簽到領 {BASE_CHECKIN_REWARD_AMOUNT:,} {CURRENCY_NAME}, 連續 7 天加成, VIP 2x"
+                f"每日簽到領 {currency_text(amount=BASE_CHECKIN_REWARD_AMOUNT, compact=True)}, "
+                "連續 7 天加成, VIP 2x"
             ),
-            Locale.ja: (f"毎日{BASE_CHECKIN_REWARD_AMOUNT:,}{CURRENCY_NAME}, 7日連続でボーナス。"),
+            Locale.ja: (
+                f"毎日{currency_text(amount=BASE_CHECKIN_REWARD_AMOUNT, compact=True)}, "
+                "7日連続でボーナス。"
+            ),
         },
         nsfw=False,
     )
@@ -1740,20 +1773,24 @@ class EconomyCogs(commands.Cog):
         vip_badge = " · 👑 VIP 2x" if result.is_vip else ""
         embed = Embed(
             title="📅 每日簽到",
-            description=f"## {currency_text(amount=result.amount, signed=True)} 入帳",
+            description=f"## {currency_text(amount=result.amount, signed=True, compact=True)} 入帳",
             color=_CHECKIN_COLOR,
         )
         embed.set_author(name=f"{user.display_name} 的簽到", icon_url=user_avatar_url)
         _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(name="連續簽到", value=f"第 {result.streak} / 7 天", inline=True)
-        embed.add_field(name="目前餘額", value=amount_code(amount=result.new_balance), inline=True)
+        embed.add_field(
+            name="目前餘額",
+            value=amount_code(amount=result.new_balance, compact=True),
+            inline=True,
+        )
         if result.is_vip:
             base_reward = checkin_reward(streak=result.streak, is_vip=False)
             embed.add_field(
                 name="👑 VIP加成",
                 value=(
-                    f"本日簽到 {amount_code(amount=base_reward)} → "
-                    f"{amount_code(amount=result.amount)}"
+                    f"本日簽到 {amount_code(amount=base_reward, compact=True)} → "
+                    f"{amount_code(amount=result.amount, compact=True)}"
                 ),
                 inline=False,
             )
@@ -1763,7 +1800,7 @@ class EconomyCogs(commands.Cog):
     @nextcord.slash_command(
         name="vip",
         description=(
-            f"Buy permanent VIP for {VIP_PURCHASE_COST:,} {CURRENCY_NAME}: "
+            f"Buy permanent VIP for {currency_text(amount=VIP_PURCHASE_COST, compact=True)}: "
             "2x check-in and 1.5x Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
@@ -1805,8 +1842,8 @@ class EconomyCogs(commands.Cog):
                 title="VIP 購買失敗",
                 description=(
                     f"### 餘額不足\n"
-                    f"目前 {bold_currency(amount=balance_now)}\n"
-                    f"需要 {bold_currency(amount=VIP_PURCHASE_COST)}"
+                    f"目前 {bold_currency(amount=balance_now, compact=True)}\n"
+                    f"需要 {bold_currency(amount=VIP_PURCHASE_COST, compact=True)}"
                 ),
                 color=_ERROR_COLOR,
             )
@@ -1818,7 +1855,7 @@ class EconomyCogs(commands.Cog):
         embed = Embed(
             title="👑 升級 VIP 成功",
             description=(
-                f"### {currency_text(amount=-result.cost, signed=True)} 扣款\n"
+                f"### {currency_text(amount=-result.cost, signed=True, compact=True)} 扣款\n"
                 "簽到與 Blackjack 贏局加成已生效"
             ),
             color=_VIP_COLOR,
@@ -1827,7 +1864,9 @@ class EconomyCogs(commands.Cog):
         _set_optional_thumbnail(embed=embed, avatar_url=user_avatar_url)
         embed.add_field(name="👑 VIP加成", value=_vip_perk_lines(), inline=False)
         embed.add_field(
-            name="目前餘額", value=amount_code(amount=result.new_balance), inline=False
+            name="目前餘額",
+            value=amount_code(amount=result.new_balance, compact=True),
+            inline=False,
         )
         await _send_private_followup(interaction=interaction, embed=embed)
 
