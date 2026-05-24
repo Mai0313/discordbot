@@ -4,7 +4,7 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import text, select, update
 
 from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS, LoanProposalStatus
 from discordbot.cogs._economy.database import (
@@ -91,6 +91,62 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
     assert result.remaining_interest == 0
     assert await get_balance(user_id=1) == 400
     assert await get_balance(user_id=2) == 600
+
+
+async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
+    """Loan proposal and contract money columns can exceed SQLite's INTEGER range."""
+    large_amount = 10**20
+    await _add_balance(user_id=10, name="lender", amount=large_amount)
+    proposal = await create_personal_loan_request(
+        borrower_id=20,
+        borrower_name="borrower",
+        lender_id=10,
+        lender_name="lender",
+        amount=large_amount,
+    )
+    assert proposal is not None
+
+    accepted = await accept_loan_proposal(
+        proposal_id=proposal.proposal_id, actor_id=10, actor_name="lender"
+    )
+    assert accepted is not None
+    assert accepted.borrower_balance == large_amount
+    assert accepted.lender_balance == 0
+    assert accepted.contract.principal_remaining == large_amount
+
+    async with open_session() as session:
+        proposal_result = await session.execute(
+            statement=text(
+                text="""
+                SELECT amount, typeof(amount), escrow_amount, typeof(escrow_amount)
+                  FROM loan_proposal
+                 WHERE id = :proposal_id
+                """
+            ),
+            params={"proposal_id": proposal.proposal_id},
+        )
+        contract_result = await session.execute(
+            statement=text(
+                text="""
+                SELECT original_principal, typeof(original_principal),
+                       principal_remaining, typeof(principal_remaining),
+                       interest_due, typeof(interest_due)
+                  FROM loan_contract
+                 WHERE id = :contract_id
+                """
+            ),
+            params={"contract_id": accepted.contract.contract_id},
+        )
+
+    assert proposal_result.one() == (str(large_amount), "text", "0", "text")
+    assert contract_result.one() == (
+        str(large_amount),
+        "text",
+        str(large_amount),
+        "text",
+        "0",
+        "text",
+    )
 
 
 async def test_expired_loan_request_rejects_without_debiting_lender() -> None:

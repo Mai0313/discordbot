@@ -59,9 +59,9 @@ from discordbot.cogs._economy.database import (
     checkin_reward,
     _taipei_midnight,
     get_jackpot_pool,
+    _stored_int_to_int,
     get_jackpot_snapshot,
     credit_with_repayment,
-    _casino_counter_to_int,
     apply_round_settlement,
     apply_jackpot_settlement,
     open_global_state_session,
@@ -266,11 +266,102 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
     if row is None:
         return 0, 0, 0, None
     return (
-        _casino_counter_to_int(value=row[0]),
-        _casino_counter_to_int(value=row[1]),
-        _casino_counter_to_int(value=row[2]),
+        _stored_int_to_int(value=row[0]),
+        _stored_int_to_int(value=row[1]),
+        _stored_int_to_int(value=row[2]),
         row[3],
     )
+
+
+async def _economy_schema_details() -> tuple[
+    set[str], set[str], set[str], dict[str, set[str]], dict[str, dict[str, str]]
+]:
+    """Reads current economy schema metadata."""
+    async with open_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        economy_tables = {row[0] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(user_wallet)"))
+        wallet_index_names = {row[1] for row in result.all()}
+        result = await session.execute(statement=text(text="PRAGMA index_list(casino_account)"))
+        casino_index_names = {row[1] for row in result.all()}
+        column_queries = {
+            "user_account": "PRAGMA table_info(user_account)",
+            "user_wallet": "PRAGMA table_info(user_wallet)",
+            "loan_proposal": "PRAGMA table_info(loan_proposal)",
+            "loan_contract": "PRAGMA table_info(loan_contract)",
+            "casino_account": "PRAGMA table_info(casino_account)",
+        }
+        table_columns: dict[str, set[str]] = {}
+        table_column_types: dict[str, dict[str, str]] = {}
+        for table_name, query in column_queries.items():
+            result = await session.execute(statement=text(text=query))
+            table_info = result.all()
+            table_columns[table_name] = {row[1] for row in table_info}
+            table_column_types[table_name] = {row[1]: row[2] for row in table_info}
+    return (
+        economy_tables,
+        wallet_index_names,
+        casino_index_names,
+        table_columns,
+        table_column_types,
+    )
+
+
+async def _global_state_schema_details() -> tuple[
+    set[str], tuple[int, int, int, int, int], dict[str, str]
+]:
+    """Reads current global-state schema metadata."""
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=text(
+                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        global_state_tables = {row[0] for row in result.all()}
+        result = await session.execute(
+            statement=select(
+                JackpotPool.pool_balance,
+                JackpotPool.total_contributed,
+                JackpotPool.total_claimed,
+                JackpotPool.seeded_amount,
+                JackpotPool.generation,
+            ).where(JackpotPool.game_id == "dragon_gate")
+        )
+        jackpot_row = result.one()
+        result = await session.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
+        jackpot_column_types = {row[1]: row[2] for row in result.all()}
+    return (
+        global_state_tables,
+        cast("tuple[int, int, int, int, int]", tuple(jackpot_row)),
+        jackpot_column_types,
+    )
+
+
+def _assert_money_columns_are_text(
+    table_column_types: dict[str, dict[str, str]], jackpot_column_types: dict[str, str]
+) -> None:
+    """Checks all decimal-string money columns use SQLite TEXT affinity."""
+    economy_money_columns = {
+        "user_wallet": ("balance", "total_earned", "total_spent"),
+        "loan_proposal": ("amount", "escrow_amount"),
+        "loan_contract": (
+            "original_principal",
+            "principal_remaining",
+            "interest_due",
+            "total_interest_paid",
+            "total_principal_paid",
+        ),
+        "casino_account": ("daily_loss", "daily_win", "daily_net"),
+    }
+    for table_name, column_names in economy_money_columns.items():
+        for column_name in column_names:
+            assert table_column_types[table_name][column_name] == "TEXT"
+    for column_name in ("pool_balance", "total_contributed", "total_claimed", "seeded_amount"):
+        assert jackpot_column_types[column_name] == "TEXT"
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
@@ -434,48 +525,14 @@ async def test_ensure_schema_bootstraps_current_databases(
 
     await _ensure_schema()
 
-    async with open_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-        )
-        economy_tables = {row[0] for row in result.all()}
-        result = await session.execute(statement=text(text="PRAGMA index_list(user_wallet)"))
-        wallet_index_names = {row[1] for row in result.all()}
-        result = await session.execute(statement=text(text="PRAGMA index_list(casino_account)"))
-        casino_index_names = {row[1] for row in result.all()}
-        column_queries = {
-            "user_account": "PRAGMA table_info(user_account)",
-            "user_wallet": "PRAGMA table_info(user_wallet)",
-            "loan_proposal": "PRAGMA table_info(loan_proposal)",
-            "loan_contract": "PRAGMA table_info(loan_contract)",
-            "casino_account": "PRAGMA table_info(casino_account)",
-        }
-        table_columns: dict[str, set[str]] = {}
-        table_column_types: dict[str, dict[str, str]] = {}
-        for table_name, query in column_queries.items():
-            result = await session.execute(statement=text(text=query))
-            table_info = result.all()
-            table_columns[table_name] = {row[1] for row in table_info}
-            table_column_types[table_name] = {row[1]: row[2] for row in table_info}
-    async with open_global_state_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-        )
-        global_state_tables = {row[0] for row in result.all()}
-        result = await session.execute(
-            statement=select(
-                JackpotPool.pool_balance,
-                JackpotPool.total_contributed,
-                JackpotPool.total_claimed,
-                JackpotPool.seeded_amount,
-                JackpotPool.generation,
-            ).where(JackpotPool.game_id == "dragon_gate")
-        )
-        jackpot_row = result.one()
+    (
+        economy_tables,
+        wallet_index_names,
+        casino_index_names,
+        table_columns,
+        table_column_types,
+    ) = await _economy_schema_details()
+    global_state_tables, jackpot_row, jackpot_column_types = await _global_state_schema_details()
     assert economy_tables == {
         "user_account",
         "user_wallet",
@@ -493,12 +550,12 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_proposal"
     ]
     assert {"borrower_id", "borrower_name", "lender_type"} <= table_columns["loan_contract"]
-    assert table_column_types["casino_account"]["daily_loss"] == "TEXT"
-    assert table_column_types["casino_account"]["daily_win"] == "TEXT"
-    assert table_column_types["casino_account"]["daily_net"] == "TEXT"
+    _assert_money_columns_are_text(
+        table_column_types=table_column_types, jackpot_column_types=jackpot_column_types
+    )
     assert "ix_user_wallet_balance" in wallet_index_names
     assert "ix_casino_account_day_loss" in casino_index_names
-    assert tuple(jackpot_row) == (100_000, 0, 0, 100_000, 0)
+    assert jackpot_row == (100_000, 0, 0, 100_000, 0)
 
     await _add_balance(
         user_id=42, name="alice", amount=5, avatar_url="https://cdn.example/avatar.png"
@@ -507,92 +564,6 @@ async def test_ensure_schema_bootstraps_current_databases(
     assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
-    await engine.dispose()
-    await global_state_engine.dispose()
-
-
-async def test_ensure_schema_migrates_legacy_user_wallet_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Legacy wallet rows gain and backfill the denormalized account name."""
-    db_path = tmp_path / "legacy-wallet.db"
-    global_state_db_path = tmp_path / "legacy-wallet-global-state.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                text="""
-                CREATE TABLE user_account (
-                    user_id INTEGER NOT NULL,
-                    name VARCHAR(128),
-                    avatar_url VARCHAR(2048) NOT NULL,
-                    updated_at DATETIME,
-                    is_vip BOOLEAN NOT NULL,
-                    last_checkin_at DATETIME,
-                    checkin_streak INTEGER NOT NULL,
-                    is_admin BOOLEAN NOT NULL,
-                    is_central_banker BOOLEAN NOT NULL DEFAULT 0,
-                    hide_from_leaderboard BOOLEAN NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id)
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                text="""
-                CREATE TABLE user_wallet (
-                    user_id INTEGER NOT NULL,
-                    balance INTEGER NOT NULL,
-                    total_earned INTEGER NOT NULL,
-                    total_spent INTEGER NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    PRIMARY KEY (user_id)
-                )
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                text="""
-                INSERT INTO user_account (
-                    user_id, name, avatar_url, updated_at, is_vip, last_checkin_at, checkin_streak, is_admin, is_central_banker, hide_from_leaderboard
-                )
-                VALUES (1, 'alice', '', '2026-05-21 00:00:00', 0, NULL, 0, 0, 0, 0)
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                text="""
-                INSERT INTO user_wallet (user_id, balance, total_earned, total_spent, updated_at)
-                VALUES
-                    (1, 100, 100, 0, '2026-05-21 00:00:00'),
-                    (2, 50, 50, 0, '2026-05-21 00:00:00')
-                """
-            )
-        )
-
-    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr(
-        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
-    )
-    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
-    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
-
-    await _ensure_schema()
-
-    async with open_session() as session:
-        result = await session.execute(statement=text(text="PRAGMA table_info(user_wallet)"))
-        wallet_columns = {row[1] for row in result.all()}
-        result = await session.execute(
-            statement=text(text="SELECT user_id, name FROM user_wallet ORDER BY user_id")
-        )
-        wallet_names = result.all()
-
-    assert "name" in wallet_columns
-    assert wallet_names == [(1, "alice"), (2, "2")]
     await engine.dispose()
     await global_state_engine.dispose()
 
@@ -1552,6 +1523,44 @@ async def test_daily_casino_counters_store_large_values_as_text() -> None:
     assert rows == [
         LossLeaderboardEntry(user_id=1, name="alice", loss_amount=large_loss + 7, avatar_url="")
     ]
+
+
+async def test_wallet_and_jackpot_store_large_values_as_text() -> None:
+    """Core wallet and jackpot money columns can exceed SQLite's INTEGER range."""
+    large_amount = 10**20
+
+    await adjust_balance(user_id=1, name="alice", delta=large_amount)
+    result = await apply_jackpot_settlement(
+        player_id=1, player_account_name="alice", player_delta=-large_amount, game_id="dragon_gate"
+    )
+
+    async with open_session() as session:
+        wallet_result = await session.execute(
+            statement=text(
+                text="""
+                SELECT balance, typeof(balance), total_earned, typeof(total_earned), total_spent, typeof(total_spent)
+                  FROM user_wallet
+                 WHERE user_id = 1
+                """
+            )
+        )
+        wallet_row = wallet_result.one()
+    async with open_global_state_session() as session:
+        jackpot_result = await session.execute(
+            statement=text(
+                text="""
+                SELECT pool_balance, typeof(pool_balance), total_contributed, typeof(total_contributed)
+                  FROM jackpot_pool
+                 WHERE game_id = 'dragon_gate'
+                """
+            )
+        )
+        jackpot_row = jackpot_result.one()
+
+    assert result.player_balance == 0
+    assert result.applied_player_delta == -large_amount
+    assert wallet_row == ("0", "text", str(large_amount), "text", str(large_amount), "text")
+    assert jackpot_row == (str(100_000 + large_amount), "text", str(large_amount), "text")
 
 
 async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:

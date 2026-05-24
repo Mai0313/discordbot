@@ -44,7 +44,7 @@ errors before either commit; SQLite still cannot make a hard crash between two
 database-file commits fully atomic.
 """
 
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import Any, Final, cast
 import asyncio
 from datetime import datetime, timezone, timedelta
 from collections.abc import Sequence
@@ -65,8 +65,10 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.economy import (
@@ -105,9 +107,6 @@ from discordbot.typings.economy import (
     JackpotSettlementBatchResult,
 )
 
-if TYPE_CHECKING:
-    from sqlalchemy.sql.elements import ColumnElement
-
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. With WAL +
 # busy_timeout, contention is rare and resolves on the first or second retry;
 # the bound prevents a degenerate hot-row livelock.
@@ -144,24 +143,120 @@ def _taipei_midnight(now: datetime) -> datetime:
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _casino_counter_to_int(value: object) -> int:
-    """Parses a persisted casino counter into a Python arbitrary-precision int."""
+def _stored_int_to_int(value: object) -> int:
+    """Parses a persisted decimal-string integer into a Python int."""
     if value is None:
         return 0
     if isinstance(value, int):
         return value
     if isinstance(value, bytes):
-        return _casino_counter_to_int(value=value.decode())
+        return _stored_int_to_int(value=value.decode())
     if isinstance(value, str):
         normalized = value.strip()
         return int(normalized or "0")
-    msg = f"Unsupported casino counter type: {type(value)!r}"
+    msg = f"Unsupported stored integer type: {type(value)!r}"
     raise TypeError(msg)
 
 
+def _stored_int_to_text(value: int) -> str:
+    """Returns canonical decimal text for a persisted integer."""
+    return str(value)
+
+
 def _sqlite_int_add_text(left: Any, right: Any) -> str:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
-    """Adds two persisted casino counters and returns canonical decimal text."""
-    return str(_casino_counter_to_int(value=left) + _casino_counter_to_int(value=right))
+    """Adds two persisted integers and returns canonical decimal text."""
+    return _stored_int_to_text(
+        value=_stored_int_to_int(value=left) + _stored_int_to_int(value=right)
+    )
+
+
+def _sqlite_int_compare_text(left: Any, right: Any) -> int:  # noqa: ANN401 -- SQLite UDF inputs can be any scalar type
+    """Compares two persisted integers for SQLite predicates."""
+    left_int = _stored_int_to_int(value=left)
+    right_int = _stored_int_to_int(value=right)
+    return (left_int > right_int) - (left_int < right_int)
+
+
+def _int_add_text(column: ColumnElement[Any], delta: int) -> ColumnElement[Any]:
+    """Builds a SQLite expression that adds `delta` to a decimal-text column."""
+    return cast(
+        "ColumnElement[Any]",
+        func.discordbot_int_add_text(column, _stored_int_to_text(value=delta)),
+    )
+
+
+def _int_compare_text(column: ColumnElement[Any], value: int) -> ColumnElement[int]:
+    """Builds a SQLite expression that compares a decimal-text column."""
+    return cast(
+        "ColumnElement[int]",
+        func.discordbot_int_compare_text(column, _stored_int_to_text(value=value)),
+    )
+
+
+class StoredIntegerComparator(TypeDecorator.Comparator[int]):
+    """Routes SQL arithmetic and comparisons through integer-aware UDFs."""
+
+    def __add__(self, other: object) -> ColumnElement[Any]:
+        return _int_add_text(
+            column=cast("ColumnElement[Any]", self.expr), delta=_stored_int_to_int(value=other)
+        )
+
+    def __sub__(self, other: object) -> ColumnElement[Any]:
+        return _int_add_text(
+            column=cast("ColumnElement[Any]", self.expr), delta=-_stored_int_to_int(value=other)
+        )
+
+    def __gt__(self, other: object) -> ColumnElement[bool]:
+        return cast(
+            "ColumnElement[bool]",
+            _int_compare_text(
+                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
+            )
+            > 0,
+        )
+
+    def __ge__(self, other: object) -> ColumnElement[bool]:
+        return cast(
+            "ColumnElement[bool]",
+            _int_compare_text(
+                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
+            )
+            >= 0,
+        )
+
+    def __lt__(self, other: object) -> ColumnElement[bool]:
+        return cast(
+            "ColumnElement[bool]",
+            _int_compare_text(
+                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
+            )
+            < 0,
+        )
+
+    def __le__(self, other: object) -> ColumnElement[bool]:
+        return cast(
+            "ColumnElement[bool]",
+            _int_compare_text(
+                column=cast("ColumnElement[Any]", self.expr), value=_stored_int_to_int(value=other)
+            )
+            <= 0,
+        )
+
+
+class StoredInteger(TypeDecorator[int]):
+    """Persists Python integers as decimal text in SQLite."""
+
+    impl = Text
+    cache_ok = True
+    comparator_factory = StoredIntegerComparator
+
+    def process_bind_param(self, value: object | None, dialect: Any) -> str:  # noqa: ANN401 -- SQLAlchemy hook signature
+        """Converts a Python integer into canonical decimal text."""
+        return _stored_int_to_text(value=_stored_int_to_int(value=value))
+
+    def process_result_value(self, value: object | None, dialect: Any) -> int:  # noqa: ANN401 -- SQLAlchemy hook signature
+        """Converts persisted decimal text into a Python integer."""
+        return _stored_int_to_int(value=value)
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
@@ -179,6 +274,7 @@ def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.execute("PRAGMA foreign_keys=ON")
     dbapi_connection.create_function("discordbot_int_add_text", 2, _sqlite_int_add_text)
+    dbapi_connection.create_function("discordbot_int_compare_text", 2, _sqlite_int_compare_text)
     cursor.close()
 
 
@@ -277,9 +373,9 @@ class UserWallet(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
-    balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_earned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_spent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_earned: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_spent: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -308,9 +404,9 @@ class CasinoAccount(Base):
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     day_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    daily_loss: Mapped[str] = mapped_column(Text, default="0", nullable=False)
-    daily_win: Mapped[str] = mapped_column(Text, default="0", nullable=False)
-    daily_net: Mapped[str] = mapped_column(Text, default="0", nullable=False)
+    daily_loss: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    daily_win: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    daily_net: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -344,11 +440,11 @@ class LoanProposal(Base):
     lender_name: Mapped[str] = mapped_column(String(length=128), default="", nullable=False)
     lender_avatar_url: Mapped[str] = mapped_column(String(length=2048), default="", nullable=False)
     creator_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
     monthly_rate_bps: Mapped[int] = mapped_column(
         Integer, default=DEFAULT_LOAN_MONTHLY_RATE_BPS, nullable=False
     )
-    escrow_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    escrow_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
@@ -376,11 +472,11 @@ class LoanContract(Base):
     borrower_avatar_url: Mapped[str] = mapped_column(
         String(length=2048), default="", nullable=False
     )
-    original_principal: Mapped[int] = mapped_column(Integer, nullable=False)
-    principal_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
-    interest_due: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_interest_paid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_principal_paid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    original_principal: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    principal_remaining: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    interest_due: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_interest_paid: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_principal_paid: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     monthly_rate_bps: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(length=16), default="active", nullable=False)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
@@ -419,10 +515,10 @@ class JackpotPool(GlobalStateBase):
     __tablename__ = "jackpot_pool"
 
     game_id: Mapped[str] = mapped_column(String(length=32), primary_key=True)
-    pool_balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_contributed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    total_claimed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    seeded_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pool_balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_contributed: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_claimed: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    seeded_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
@@ -506,49 +602,16 @@ async def _ensure_global_state_schema() -> None:
                     statement=insert(JackpotPool)
                     .values(
                         game_id=seed_game_id,
-                        pool_balance=seed_amount,
-                        total_contributed=0,
-                        total_claimed=0,
-                        seeded_amount=seed_amount,
+                        pool_balance=_stored_int_to_text(value=seed_amount),
+                        total_contributed="0",
+                        total_claimed="0",
+                        seeded_amount=_stored_int_to_text(value=seed_amount),
                         generation=0,
                         updated_at=_database_now(),
                     )
                     .on_conflict_do_nothing(index_elements=["game_id"])
                 )
         _global_state_schema_ready_for = _global_state_engine
-
-
-async def _ensure_economy_schema_migrations(conn: Any) -> None:  # noqa: ANN401 -- SQLAlchemy async connection is generic here
-    """Applies lightweight in-place SQLite migrations for existing DB files."""
-    result = await conn.execute(text("PRAGMA table_info(user_account)"))
-    user_columns = {row[1] for row in result.all()}
-    if "is_central_banker" not in user_columns:
-        await conn.execute(
-            text(
-                "ALTER TABLE user_account ADD COLUMN is_central_banker BOOLEAN NOT NULL DEFAULT 0"
-            )
-        )
-
-    result = await conn.execute(text("PRAGMA table_info(user_wallet)"))
-    wallet_columns = {row[1] for row in result.all()}
-    if "name" not in wallet_columns:
-        await conn.execute(
-            text("ALTER TABLE user_wallet ADD COLUMN name VARCHAR(128) NOT NULL DEFAULT ''")
-        )
-    await conn.execute(
-        text(
-            """
-            UPDATE user_wallet
-               SET name = COALESCE(
-                   (SELECT NULLIF(user_account.name, '')
-                      FROM user_account
-                     WHERE user_account.user_id = user_wallet.user_id),
-                   CAST(user_wallet.user_id AS TEXT)
-               )
-             WHERE name = ''
-            """
-        )
-    )
 
 
 async def _ensure_schema() -> None:
@@ -562,7 +625,6 @@ async def _ensure_schema() -> None:
             return
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            await _ensure_economy_schema_migrations(conn=conn)
         await _ensure_global_state_schema()
         _schema_ready_for = _engine
 
@@ -2300,24 +2362,20 @@ async def top_n(
     """
     await _ensure_schema()
     async with open_session() as session:
-        stmt = (
-            select(
-                UserWallet.user_id, UserAccount.name, UserWallet.balance, UserAccount.avatar_url
-            )
-            .join(UserAccount, UserAccount.user_id == UserWallet.user_id)
-            .order_by(desc(UserWallet.balance))
-        )
+        stmt = select(
+            UserWallet.user_id, UserAccount.name, UserWallet.balance, UserAccount.avatar_url
+        ).join(UserAccount, UserAccount.user_id == UserWallet.user_id)
         if not include_hidden:
             stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
         if exclude_user_ids:
             stmt = stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
-        if limit is not None:
-            stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
-        return [
+        rows = [
             LeaderboardEntry(user_id=row[0], name=row[1], balance=row[2], avatar_url=row[3] or "")
             for row in result.all()
         ]
+        rows.sort(key=lambda entry: entry.balance, reverse=True)
+        return rows if limit is None else rows[:limit]
 
 
 async def top_losers(
@@ -2367,7 +2425,7 @@ async def top_losers(
         result = await session.execute(statement=stmt)
         rows: list[LossLeaderboardEntry] = []
         for row in result.all():
-            loss_amount = _casino_counter_to_int(value=row[3])
+            loss_amount = _stored_int_to_int(value=row[3])
             if loss_amount <= 0:
                 continue
             rows.append(
@@ -2483,20 +2541,21 @@ async def _central_bank_status_in_session(
     session: AsyncSession, exclude_user_ids: tuple[int, ...] = ()
 ) -> CentralBankStatus:
     """Computes central-bank lending capacity from positive user balances."""
-    positive_balance_expr = case((UserWallet.balance > 0, UserWallet.balance), else_=0)
-    balance_stmt = select(func.coalesce(func.sum(positive_balance_expr), 0))
+    balance_stmt = select(UserWallet.balance)
     if exclude_user_ids:
         balance_stmt = balance_stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
     total_result = await session.execute(statement=balance_stmt)
-    total_positive_user_balance = int(total_result.scalar_one() or 0)
+    total_positive_user_balance = sum(
+        balance for balance in total_result.scalars().all() if balance > 0
+    )
 
     debt_result = await session.execute(
-        statement=select(func.coalesce(func.sum(LoanContract.principal_remaining), 0)).where(
+        statement=select(LoanContract.principal_remaining).where(
             LoanContract.lender_type == LoanLenderType.CENTRAL_BANK,
             LoanContract.status == LoanContractStatus.ACTIVE,
         )
     )
-    outstanding_principal = int(debt_result.scalar_one() or 0)
+    outstanding_principal = sum(debt_result.scalars().all())
     # Central-bank loans mint into user balances, so subtract outstanding
     # principal once to estimate the pre-loan pool and once for already-used
     # capacity.
