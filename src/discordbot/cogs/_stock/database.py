@@ -1262,14 +1262,13 @@ async def get_stock_portfolio(
         result = await session.execute(
             statement=select(StockPosition, StockProfile)
             .join(StockProfile, StockProfile.symbol == StockPosition.symbol)
-            .where(StockPosition.user_id == user_id)
+            .where(
+                StockPosition.user_id == user_id,
+                or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+            )
             .order_by(StockPosition.symbol.asc())
         )
-        position_rows = [
-            (position, profile)
-            for position, profile in result.all()
-            if _has_open_position(position=position)
-        ]
+        position_rows = list(result.all())
         position_rows.sort(
             key=lambda row: (-_position_share_total(position=row[0]), row[0].symbol)
         )
@@ -1334,12 +1333,13 @@ async def _public_position_views(
     """Returns public stock-level non-zero position summaries."""
     result = await session.execute(
         statement=select(StockPosition)
-        .where(StockPosition.symbol == symbol)
+        .where(
+            StockPosition.symbol == symbol,
+            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+        )
         .order_by(StockPosition.updated_at.desc())
     )
-    positions = [
-        position for position in result.scalars() if _has_open_position(position=position)
-    ]
+    positions = list(result.scalars())
     positions.sort(
         key=lambda position: (
             _position_share_total(position=position),
@@ -1352,21 +1352,15 @@ async def _public_position_views(
 
 async def _user_position_symbols(session: AsyncSession, user_id: int) -> tuple[str, ...]:
     """Returns symbols where the user has a non-zero position."""
-    positions = await session.execute(
-        statement=select(StockPosition).where(StockPosition.user_id == user_id)
-    )
-    return tuple(
-        sorted(
-            position.symbol
-            for position in positions.scalars()
-            if _has_open_position(position=position)
+    result = await session.execute(
+        statement=select(StockPosition.symbol)
+        .where(
+            StockPosition.user_id == user_id,
+            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
         )
+        .order_by(StockPosition.symbol.asc())
     )
-
-
-def _has_open_position(position: StockPosition) -> bool:
-    """Returns whether a persisted stock position carries exposure."""
-    return position.long_shares > 0 or position.short_shares > 0
+    return tuple(result.scalars())
 
 
 def _position_share_total(position: StockPosition) -> int:
@@ -1427,7 +1421,10 @@ async def _market_exposures(
     position_result = await session.execute(
         statement=select(
             StockPosition.symbol, StockPosition.long_shares, StockPosition.short_shares
-        ).where(StockPosition.symbol.in_(symbols))
+        ).where(
+            StockPosition.symbol.in_(symbols),
+            or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+        )
     )
     for symbol, long_shares, short_shares in position_result.all():
         exposure_totals[symbol]["long"] += long_shares
