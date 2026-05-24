@@ -20,7 +20,7 @@ from discordbot.typings.games import (
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import DealerAI
-from discordbot.cogs._games.wagers import WagerMode, build_wager_participant
+from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_tracked_public_messages,
@@ -218,6 +218,15 @@ class GamesCogs(commands.Cog):
             color=ERROR_COLOR,
         )
 
+    @staticmethod
+    def _invalid_bet_embed() -> Embed:
+        """Builds the validation embed for malformed bet input."""
+        return Embed(
+            title="下注格式錯誤",
+            description="請輸入非負整數，可以加逗號，例如 `1,000`；輸入 `0` 會 all in。",
+            color=ERROR_COLOR,
+        )
+
     def _dragon_gate_insufficient_balance_embed(self, balance: int) -> Embed:
         """Builds the insufficient-balance embed for 射龍門 ante checks."""
         return Embed(
@@ -252,36 +261,43 @@ class GamesCogs(commands.Cog):
     async def blackjack(
         self,
         interaction: Interaction,
-        bet: int = SlashOption(
+        bet: str = SlashOption(
             name="bet",
-            description=f"Table stake in {CURRENCY_NAME}; use 0 to go all in.",
+            description=f"Table stake in {CURRENCY_NAME}; enter 0 to go all in. Commas are allowed.",
             name_localizations={Locale.zh_TW: "下注", Locale.ja: "賭け金"},
             description_localizations={
-                Locale.zh_TW: f"這桌的基本下注{CURRENCY_NAME}; 輸入 0 會直接 all in",
-                Locale.ja: f"Table の基本賭け金{CURRENCY_NAME}; 0 で all in。",
+                Locale.zh_TW: f"這桌的基本下注{CURRENCY_NAME}; 可加逗號，輸入 0 會直接 all in",
+                Locale.ja: f"Table の基本賭け金{CURRENCY_NAME}; カンマ可、0 で all in。",
             },
             required=True,
-            min_value=0,
+            min_length=1,
         ),
     ) -> None:
         """Opens a Blackjack lobby. The owner starts the table from the lobby.
 
         Args:
             interaction: The interaction that triggered the command.
-            bet: How many points to wager. Zero uses the owner's current balance.
+            bet: Raw wager text. Zero uses the owner's current balance.
         """
-        await interaction.response.defer()
         if interaction.user is None:
             return
+        wager = parse_wager_amount(raw_amount=bet)
+        if wager is None:
+            await interaction.response.send_message(
+                embed=self._invalid_bet_embed(), ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
 
         guild = getattr(interaction, "guild", None)
-        if bet == 0:
+        if wager == 0:
             participant_result = await self._all_in_participant_from_user(
                 user=interaction.user, guild=guild
             )
         else:
             participant_result = await self._participant_from_user(
-                user=interaction.user, wager=bet, mode="clamp", guild=guild
+                user=interaction.user, wager=wager, mode="clamp", guild=guild
             )
         owner = participant_result.participant
         if owner is None:

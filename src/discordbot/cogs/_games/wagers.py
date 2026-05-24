@@ -7,6 +7,17 @@ from discordbot.typings.games import GameParticipant, GameParticipantIdentity
 WagerMode = Literal["clamp", "exact"]
 
 
+def parse_wager_amount(raw_amount: str | None) -> int | None:
+    """Parses user-entered wager text with optional comma separators."""
+    normalized = (raw_amount or "").replace(",", "").strip()
+    if not normalized.isdecimal():
+        return None
+    try:
+        return int(normalized)
+    except ValueError:
+        return None
+
+
 def build_wager_participant(
     identity: GameParticipantIdentity, balance: int, wager: int, mode: WagerMode
 ) -> GameParticipant | None:

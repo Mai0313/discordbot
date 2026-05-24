@@ -34,30 +34,30 @@
 
 ## 指令
 
-| 指令                                                             | 功能                                                                 |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。           |
-| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体。                                        |
-| `/download_video <url> [quality]`                                | 下载视频并传回 Discord。                                             |
-| `/balance`                                                       | 私密显示你的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                |
-| `/checkin`                                                       | 领取每日签到奖励。                                                   |
-| `/vip`                                                           | 购买永久 VIP 权益。                                                  |
-| `/leaderboard`                                                   | 显示全域余额排行榜。                                                 |
-| `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                         |
-| `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。       |
-| `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。 |
-| `/portfolio [member]`                                            | 查看钱包、债务、stock holdings 与预估净资产。                        |
-| `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。    |
-| `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员。                                           |
-| `/admin refund_tax\|collect_tax`                                 | admin-only 手动余额调整。                                            |
-| `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；输入 `0` 就是 all in。                   |
-| `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                       |
-| `/house`                                                         | 显示 Blackjack dealer ledger。                                       |
-| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                            |
-| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                               |
-| `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                       |
-| `/help`                                                          | 显示 Discord 内的使用指南。                                          |
-| `/ping`                                                          | 检查 bot latency。                                                   |
+| 指令                                                             | 功能                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。              |
+| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体。                                           |
+| `/download_video <url> [quality]`                                | 下载视频并传回 Discord。                                                |
+| `/balance`                                                       | 私密显示你的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                   |
+| `/checkin`                                                       | 领取每日签到奖励。                                                      |
+| `/vip`                                                           | 购买永久 VIP 权益。                                                     |
+| `/leaderboard`                                                   | 显示全域余额排行榜。                                                    |
+| `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                            |
+| `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。          |
+| `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。    |
+| `/portfolio [member]`                                            | 查看钱包、债务、stock holdings 与预估净资产。                           |
+| `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。       |
+| `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员。                                              |
+| `/admin refund_tax\|collect_tax`                                 | admin-only 手动余额调整。                                               |
+| `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。 |
+| `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                          |
+| `/house`                                                         | 显示 Blackjack dealer ledger。                                          |
+| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                               |
+| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                                  |
+| `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                          |
+| `/help`                                                          | 显示 Discord 内的使用指南。                                             |
+| `/ping`                                                          | 检查 bot latency。                                                      |
 
 ## 自托管
 

@@ -39,6 +39,7 @@ from discordbot.typings.economy import (
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
@@ -1341,6 +1342,15 @@ def test_games_commands_are_grouped_under_games() -> None:
     assert GamesCogs.dragon_gate.name_localizations[nextcord.Locale.zh_TW] == "射龍門"
 
 
+def test_parse_wager_amount_accepts_formatted_text() -> None:
+    """Verifies wager text parsing avoids Discord integer option limits."""
+    assert parse_wager_amount(raw_amount="9,007,199,254,740,993") == 9_007_199_254_740_993
+    assert parse_wager_amount(raw_amount=" 000 ") == 0
+    assert parse_wager_amount(raw_amount=None) is None
+    assert parse_wager_amount(raw_amount="not a number") is None
+    assert parse_wager_amount(raw_amount="-1") is None
+
+
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -1352,7 +1362,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     cog.__dict__["dealer"] = FakeDealer()
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet=10)
+    await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
 
@@ -1376,7 +1386,7 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=10)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="10")
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
 
@@ -1407,7 +1417,7 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=1_000_000)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="1,000,000")
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
     assert lobby_view.requested_bet == 300
@@ -1428,6 +1438,44 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert bob.is_allin is False
 
 
+async def test_blackjack_string_bet_accepts_large_formatted_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies Blackjack slash bet parsing accepts values above Discord integer limits."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+
+    async def balance_by_user(user_id: int) -> int:
+        """Returns enough balance to cover a large formatted wager."""
+        return 10_000_000_000_000_000
+
+    monkeypatch.setattr(games, "get_balance", balance_by_user)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog.__dict__["dealer"] = FakeDealer()
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="9,007,199,254,740,993")
+    lobby_view = owner_interaction.followup.sent[0]["view"]
+
+    assert isinstance(lobby_view, BlackjackLobbyView)
+    assert lobby_view.requested_bet == 9_007_199_254_740_993
+    assert lobby_view.participants[0].bet == 9_007_199_254_740_993
+
+
+async def test_blackjack_string_bet_rejects_invalid_text() -> None:
+    """Verifies invalid text is rejected before wager preparation."""
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="not a number")
+
+    assert owner_interaction.response.sent[0]["ephemeral"] is True
+    assert owner_interaction.response.sent[0]["embed"].title == "下注格式錯誤"
+    assert owner_interaction.followup.sent == []
+    assert owner_interaction.response.deferred is False
+
+
 async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1445,7 +1493,7 @@ async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=0)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
     assert lobby_view.requested_bet == 300_000_000_000_000
@@ -1464,7 +1512,7 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     cog.__dict__["dealer"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
-    await GamesCogs.blackjack.callback(cog, owner_interaction, bet=0)
+    await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
 
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]

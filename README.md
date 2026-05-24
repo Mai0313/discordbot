@@ -50,7 +50,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/stock`                                                         | Opens one public stock market message that edits in place for details, trading, news, and history.                     |
 | `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member.                                                                                |
 | `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments.                                                                                 |
-| `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby; use `0` to go all in.                                                             |
+| `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                      |
 | `/games dragon_gate`                                             | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                    |
 | `/house`                                                         | Shows the Blackjack dealer ledger.                                                                                     |
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                             |

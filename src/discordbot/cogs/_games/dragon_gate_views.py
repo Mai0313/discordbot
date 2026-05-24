@@ -17,6 +17,7 @@ from discordbot.cogs._games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
+from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
@@ -543,9 +544,8 @@ class DragonGateView(View):
 
     async def submit_custom_bet(self, interaction: Interaction, raw_amount: str | None) -> None:
         """Handles the custom bet modal submission."""
-        try:
-            amount = int((raw_amount or "").replace(",", "").strip())
-        except ValueError:
+        amount = parse_wager_amount(raw_amount=raw_amount)
+        if amount is None:
             await interaction.response.send_message(content="下注金額要是整數", ephemeral=True)
             return
         await interaction.response.defer()
