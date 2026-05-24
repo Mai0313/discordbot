@@ -9,10 +9,15 @@ def compact_amount(amount: int, signed: bool = False) -> str:
     """Formats a large integer with Traditional Chinese scale units."""
     abs_amount = abs(amount)
     sign = _amount_sign(amount=amount, signed=signed)
-    for threshold, suffix in _COMPACT_UNITS:
+    for unit_index, (threshold, suffix) in enumerate(_COMPACT_UNITS):
         if abs_amount >= threshold:
             value = Decimal(abs_amount) / Decimal(threshold)
-            return f"{sign}{_compact_decimal(value=value)}{suffix}"
+            formatted = _compact_decimal(value=value)
+            if formatted == "10,000" and unit_index > 0:
+                threshold, suffix = _COMPACT_UNITS[unit_index - 1]
+                value = Decimal(abs_amount) / Decimal(threshold)
+                formatted = _compact_decimal(value=value)
+            return f"{sign}{formatted}{suffix}"
     return f"{amount:+,}" if signed and amount != 0 else f"{amount:,}"
 
 
@@ -33,4 +38,6 @@ def _compact_decimal(value: Decimal) -> str:
         formatted = f"{value:,.1f}"
     else:
         formatted = f"{value:,.2f}"
-    return formatted.rstrip("0").rstrip(".")
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted
