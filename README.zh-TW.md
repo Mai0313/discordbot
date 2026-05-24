@@ -66,7 +66,7 @@
 - Python 3.12 或更新版本
 - 來自 [Discord Developer Portal](https://discord.com/developers/applications) 的 Discord bot token
 - OpenAI-compatible API key 與 base URL。若想把 OpenAI、Gemini、Claude 和其他 provider 放在同一個 endpoint 後面，建議使用 LiteLLM。
-- 影片下載需要 `ffmpeg`。Docker image 已經內建。
+- 影片下載需要 `ffmpeg`，產生 board 圖片需要支援 CJK 的 fonts。Docker image 已經內建兩者。
 
 ### Docker
 

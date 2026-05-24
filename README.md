@@ -66,7 +66,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 - Python 3.12 or newer
 - A Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
 - An OpenAI-compatible API key and base URL. LiteLLM is the expected choice when you want to route OpenAI, Gemini, Claude, and other providers behind one endpoint.
-- `ffmpeg` for video downloads. The Docker image already includes it.
+- `ffmpeg` for video downloads and CJK-capable fonts for generated board images. The Docker image already includes both.
 
 ### Docker
 
