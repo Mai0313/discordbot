@@ -18,6 +18,8 @@ from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.stock import (
     STOCK_HISTORY_DAYS,
+    STOCK_BPS_DENOMINATOR,
+    STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS,
     StockAction,
     StockNewsView,
     StockMarketQuote,
@@ -238,6 +240,7 @@ class _StockExecutionSnapshot(BaseModel):
     position: StockPositionView
     available_long_shares: int
     available_short_shares: int
+    available_individual_long_shares: int
 
 
 class _StockMarketExposure(BaseModel):
@@ -1633,6 +1636,21 @@ def _max_coverable_short_shares(
     return low
 
 
+def _individual_long_cap_shares(float_shares: int) -> int:
+    """Returns the maximum long shares one user may hold for a stock."""
+    return float_shares * STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS // STOCK_BPS_DENOMINATOR
+
+
+def _available_individual_long_shares(float_shares: int, position: StockPositionView) -> int:
+    """Returns how many new long shares the user can open before the ownership cap."""
+    return max(_individual_long_cap_shares(float_shares=float_shares) - position.long_shares, 0)
+
+
+def _open_long_share_cap(snapshot: _StockExecutionSnapshot) -> int:
+    """Returns the submit-time cap for opening new long shares."""
+    return min(snapshot.available_long_shares, snapshot.available_individual_long_shares)
+
+
 def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
     """Returns the largest quantity that can pass balance validation."""
     if snapshot.action == StockAction.SHORT:
@@ -1656,7 +1674,7 @@ def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
             wallet_balance=snapshot.wallet_balance,
             liquidity_shares=snapshot.liquidity_shares,
             max_impact_bps=snapshot.max_order_impact_bps,
-            share_cap=snapshot.available_long_shares,
+            share_cap=_open_long_share_cap(snapshot=snapshot),
         )
 
     coverable_shares = _max_coverable_short_shares(
@@ -1685,7 +1703,7 @@ def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
         wallet_balance=max(cash_after_covering, 0),
         liquidity_shares=snapshot.liquidity_shares,
         max_impact_bps=snapshot.max_order_impact_bps,
-        share_cap=snapshot.available_long_shares,
+        share_cap=_open_long_share_cap(snapshot=snapshot),
     )
 
 
@@ -1699,6 +1717,8 @@ def _clamp_quantity_to_available(parsed_quantity: int, snapshot: _StockExecution
 def _max_quantity_error(snapshot: _StockExecutionSnapshot) -> str:
     """Returns the clearest validation error when nothing is executable."""
     if snapshot.action == StockAction.BUY:
+        if snapshot.position.short_shares <= 0 and snapshot.available_individual_long_shares <= 0:
+            return "單一玩家持股上限為 49%，目前無法再買入這檔股票"
         if snapshot.position.short_shares <= 0 and snapshot.available_long_shares <= 0:
             return "目前沒有可買入的流通股"
         return "餘額不足，無法買入或回補股票"
@@ -1784,6 +1804,7 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
     position: StockPositionView,
     available_long_shares: int,
     available_short_shares: int,
+    available_individual_long_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
     """Builds ordered stock and wallet mutations from the submit-time state."""
@@ -1809,6 +1830,7 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
             wallet_balance=wallet_balance,
             position=position,
             available_long_shares=available_long_shares,
+            available_individual_long_shares=available_individual_long_shares,
             now=now,
         )
     return _build_short_plan(
@@ -1837,6 +1859,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
     wallet_balance: int,
     position: StockPositionView,
     available_long_shares: int,
+    available_individual_long_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
     """Builds a buy/cover plan."""
@@ -1904,6 +1927,16 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
         remaining -= cover_shares
 
     if remaining > 0:
+        if remaining > available_individual_long_shares:
+            return _insufficient_result(
+                symbol=symbol,
+                action=StockAction.BUY,
+                quantity=quantity,
+                price_cents=price_cents,
+                balance=wallet_balance,
+                position=position,
+                error="單一玩家持股上限為 49%，目前無法再買入這檔股票",
+            )
         if remaining > available_long_shares:
             return _insufficient_result(
                 symbol=symbol,
@@ -2202,6 +2235,9 @@ async def _build_submit_time_operation_plan(  # noqa: PLR0913 -- submit-time pla
         msg = f"Unknown stock symbol: {normalized_symbol}"
         raise ValueError(msg)
     exposure = await _market_exposure(session=session, profile=profile)
+    available_individual_long_shares = _available_individual_long_shares(
+        float_shares=profile.float_shares, position=position
+    )
     try:
         parsed_quantity = _parse_quantity(
             raw_quantity=quantity,
@@ -2229,6 +2265,7 @@ async def _build_submit_time_operation_plan(  # noqa: PLR0913 -- submit-time pla
         position=position,
         available_long_shares=exposure.available_long_shares,
         available_short_shares=exposure.available_short_shares,
+        available_individual_long_shares=available_individual_long_shares,
     )
     requested_quantity = parsed_quantity
     parsed_quantity = _clamp_quantity_to_available(
@@ -2260,6 +2297,7 @@ async def _build_submit_time_operation_plan(  # noqa: PLR0913 -- submit-time pla
         position=position,
         available_long_shares=exposure.available_long_shares,
         available_short_shares=exposure.available_short_shares,
+        available_individual_long_shares=available_individual_long_shares,
         now=effective_now,
     )
 

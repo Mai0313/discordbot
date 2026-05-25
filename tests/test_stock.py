@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
     STOCK_TICK_SECONDS,
+    STOCK_BPS_DENOMINATOR,
     STOCK_NEWS_CADENCE_HOURS,
     MAX_TICKS_PER_INTERACTION,
+    STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS,
     StockAction,
     StockProfileView,
     StockTradeLegType,
@@ -60,6 +62,9 @@ BCAT_FAIR_VALUE_CENTS = 10_000
 BCAT_MEAN_REVERSION_BPS = 35
 BCAT_MAX_TICK_CHANGE_BPS = 450
 BCAT_NEWS_CADENCE_HOURS = STOCK_NEWS_CADENCE_HOURS
+BCAT_INDIVIDUAL_OWNERSHIP_CAP = (
+    BCAT_FLOAT_SHARES * STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS // STOCK_BPS_DENOMINATOR
+)
 
 
 def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None:
@@ -1086,11 +1091,35 @@ async def test_stock_buy_clamps_to_remaining_float(
 ) -> None:
     """New long exposure cannot exceed the DB-managed floating share supply."""
     await adjust_balance(user_id=1, name="alice", delta=100_000_000)
+    await adjust_balance(user_id=2, name="bob", delta=100_000_000)
+    await adjust_balance(user_id=3, name="carol", delta=100_000_000)
+    await adjust_balance(user_id=4, name="dave", delta=100_000_000)
 
-    result = await stock_db.settle_stock_operation(
+    first = await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
         user_id=1,
         user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity=f"{BCAT_INDIVIDUAL_OWNERSHIP_CAP:,}",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    second = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=2,
+        user_name="bob",
+        requested_action=StockAction.BUY,
+        quantity=f"{BCAT_INDIVIDUAL_OWNERSHIP_CAP:,}",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    assert first.success
+    assert second.success
+
+    result = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=3,
+        user_name="carol",
         requested_action=StockAction.BUY,
         quantity=f"{BCAT_FLOAT_SHARES + 10:,}",
         now=datetime(2026, 1, 1),
@@ -1098,12 +1127,57 @@ async def test_stock_buy_clamps_to_remaining_float(
     )
 
     assert result.success
-    assert result.shares == BCAT_FLOAT_SHARES
-    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
-    assert detail.position.long_shares == BCAT_FLOAT_SHARES
+    assert result.shares == BCAT_FLOAT_SHARES - BCAT_INDIVIDUAL_OWNERSHIP_CAP * 2
+    detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=3)
+    assert detail.position.long_shares == BCAT_FLOAT_SHARES - BCAT_INDIVIDUAL_OWNERSHIP_CAP * 2
     audits = await stock_db.list_stock_supply_audit()
     bcat_audit = next(audit for audit in audits if audit.symbol == BCAT_SYMBOL)
     assert bcat_audit.available_long_shares == 0
+
+    blocked = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=4,
+        user_name="dave",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert not blocked.success
+    assert "流通股" in blocked.error
+
+
+async def test_stock_buy_clamps_to_individual_ownership_cap(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """A single user cannot open long exposure above 49% of floating shares."""
+    await adjust_balance(user_id=1, name="alice", delta=100_000_000)
+    await adjust_balance(user_id=2, name="bob", delta=100_000_000)
+
+    numeric = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity=f"{BCAT_FLOAT_SHARES:,}",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    all_in = await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=2,
+        user_name="bob",
+        requested_action=StockAction.BUY,
+        quantity="ALL",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    assert numeric.success
+    assert numeric.shares == BCAT_INDIVIDUAL_OWNERSHIP_CAP
+    assert all_in.success
+    assert all_in.shares == BCAT_INDIVIDUAL_OWNERSHIP_CAP
 
     blocked = await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
@@ -1116,7 +1190,7 @@ async def test_stock_buy_clamps_to_remaining_float(
     )
 
     assert not blocked.success
-    assert "流通股" in blocked.error
+    assert "49%" in blocked.error
 
 
 async def test_stock_large_buy_uses_execution_slippage(
@@ -1303,6 +1377,8 @@ async def test_stock_pending_operations_reserve_supply(
     await adjust_balance(user_id=2, name="bob", delta=1_000)
     await adjust_balance(user_id=3, name="carol", delta=100_000_000)
     await adjust_balance(user_id=4, name="dave", delta=1_000)
+    await adjust_balance(user_id=5, name="erin", delta=200_000)
+    await adjust_balance(user_id=6, name="frank", delta=200_000)
     original_apply = stock_db.apply_ordered_wallet_deltas
 
     async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
@@ -1310,10 +1386,28 @@ async def test_stock_pending_operations_reserve_supply(
         raise RuntimeError("wallet unavailable")
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
-    pending_long = await stock_db.settle_stock_operation(
+    first_pending_long = await stock_db.settle_stock_operation(
         symbol="THIN",
         user_id=1,
         user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1,000",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    second_pending_long = await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=5,
+        user_name="erin",
+        requested_action=StockAction.BUY,
+        quantity="1,000",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+    final_pending_long = await stock_db.settle_stock_operation(
+        symbol="THIN",
+        user_id=6,
+        user_name="frank",
         requested_action=StockAction.BUY,
         quantity="1,000",
         now=datetime(2026, 1, 1),
@@ -1350,7 +1444,12 @@ async def test_stock_pending_operations_reserve_supply(
     )
     audits = {audit.symbol: audit for audit in await stock_db.list_stock_supply_audit()}
 
-    assert pending_long.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert first_pending_long.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert first_pending_long.shares == 490
+    assert second_pending_long.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert second_pending_long.shares == 490
+    assert final_pending_long.status == StockOperationStatus.RECONCILE_REQUIRED
+    assert final_pending_long.shares == 20
     assert pending_short.status == StockOperationStatus.RECONCILE_REQUIRED
     assert not blocked_long.success
     assert "流通股" in blocked_long.error
@@ -1358,7 +1457,7 @@ async def test_stock_pending_operations_reserve_supply(
     assert "借券" in blocked_short.error
     assert audits["THIN"].long_shares == 1_000
     assert audits["THIN"].available_long_shares == 0
-    assert audits["THIN"].non_final_operations == 1
+    assert audits["THIN"].non_final_operations == 3
     assert audits[BCAT_SYMBOL].short_shares == BCAT_FLOAT_SHARES
     assert audits[BCAT_SYMBOL].available_short_shares == 0
     assert audits[BCAT_SYMBOL].non_final_operations == 1
