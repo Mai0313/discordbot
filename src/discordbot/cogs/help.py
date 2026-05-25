@@ -51,7 +51,7 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**Games**\n"
-            "`/games blackjack` starts a Blackjack table; `bet` accepts comma-formatted numbers, and `0` means all in. `/games dragon_gate` starts a Dragon Gate jackpot table."
+            "`/games blackjack` starts a Blackjack table; five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. `bet` accepts comma-formatted numbers, and `0` means all in. `/games dragon_gate` starts a Dragon Gate jackpot table."
         ),
         "ping": "**Ping**\n`/ping` checks the bot's response latency.",
     },
@@ -83,7 +83,7 @@ _HELP_CONTENT = {
         ),
         "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
         "games": (
-            "**小遊戲**\n`/games blackjack` 開 21 點桌，`bet` 可以輸入含逗號的數字，`0` 就是 all in。`/games dragon_gate` 開射龍門 jackpot 桌。"
+            "**小遊戲**\n`/games blackjack` 開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；`bet` 可以輸入含逗號的數字，`0` 就是 all in。`/games dragon_gate` 開射龍門 jackpot 桌。"
         ),
         "ping": "**延遲測試**\n`/ping` 檢查 bot response latency。",
     },
@@ -125,7 +125,7 @@ _HELP_CONTENT = {
         ),
         "games": (
             "**ゲーム**\n"
-            "`/games blackjack` は `bet` にカンマ付き数字を入力でき、`0` は all in です。`/games dragon_gate` は Dragon Gate jackpot table を開きます。"
+            "`/games blackjack` は 5枚で bust していなければ勝ち、5枚以上 21 は system-funded bonus を維持します。`bet` にカンマ付き数字を入力でき、`0` は all in です。`/games dragon_gate` は Dragon Gate jackpot table を開きます。"
         ),
         "ping": "**Ping**\n`/ping` で bot の応答遅延を確認します。",
     },

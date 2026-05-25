@@ -26,6 +26,7 @@ from discordbot.cogs._games.blackjack import (
     is_blackjack,
     can_surrender,
     is_soft_total,
+    is_five_card_win,
     dealer_visible_value,
     is_five_card_twenty_one,
 )
@@ -70,14 +71,22 @@ def test_is_blackjack_only_for_two_card_21() -> None:
     assert is_blackjack(cards=triple_seven) is False
 
 
-def test_is_five_card_twenty_one_requires_exactly_five_cards_and_total_21() -> None:
-    """過五關 only applies to exactly five cards totaling 21."""
+def test_is_five_card_twenty_one_accepts_five_or_more_cards_at_21() -> None:
+    """過五關 21 bonus applies to five or more cards totaling 21."""
     five_card_21 = [
         Card(rank="2", suit="♠"),
         Card(rank="3", suit="♥"),
         Card(rank="4", suit="♣"),
         Card(rank="5", suit="♦"),
         Card(rank="7", suit="♠"),
+    ]
+    six_card_21 = [
+        Card(rank="A", suit="♠"),
+        Card(rank="2", suit="♥"),
+        Card(rank="3", suit="♣"),
+        Card(rank="4", suit="♦"),
+        Card(rank="5", suit="♠"),
+        Card(rank="6", suit="♥"),
     ]
     four_card_21 = [
         Card(rank="2", suit="♠"),
@@ -94,8 +103,37 @@ def test_is_five_card_twenty_one_requires_exactly_five_cards_and_total_21() -> N
     ]
 
     assert is_five_card_twenty_one(cards=five_card_21) is True
+    assert is_five_card_twenty_one(cards=six_card_21) is True
     assert is_five_card_twenty_one(cards=four_card_21) is False
     assert is_five_card_twenty_one(cards=five_card_20) is False
+
+
+def test_is_five_card_win_accepts_any_five_card_non_bust() -> None:
+    """過五關 win applies to five or more cards that have not busted."""
+    five_card_20 = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank="6", suit="♠"),
+    ]
+    five_card_bust = [
+        Card(rank="7", suit="♠"),
+        Card(rank="8", suit="♥"),
+        Card(rank="9", suit="♣"),
+        Card(rank="2", suit="♦"),
+        Card(rank="K", suit="♠"),
+    ]
+    four_card_20 = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="5", suit="♣"),
+        Card(rank="10", suit="♦"),
+    ]
+
+    assert is_five_card_win(cards=five_card_20) is True
+    assert is_five_card_win(cards=five_card_bust) is False
+    assert is_five_card_win(cards=four_card_20) is False
 
 
 def test_is_bust_above_21() -> None:
@@ -273,6 +311,26 @@ def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() ->
 
     assert outcome == "five_card_twenty_one"
     assert delta == 0
+
+
+def test_settle_five_card_non_21_wins_against_dealer_21() -> None:
+    """Five-card non-bust hands win normally even when the dealer reaches 21."""
+    hand = _hand_with(
+        player=[
+            Card(rank="2", suit="♠"),
+            Card(rank="3", suit="♥"),
+            Card(rank="4", suit="♣"),
+            Card(rank="5", suit="♦"),
+            Card(rank="6", suit="♠"),
+        ],
+        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♥")],
+        bet=50,
+    )
+
+    outcome, delta = settle(hand=hand)
+
+    assert outcome == "five_card_win"
+    assert delta == 50
 
 
 def test_settle_unfinished_hand_raises() -> None:
@@ -554,8 +612,8 @@ def test_legacy_hit_finishes_on_fifth_card_twenty_one() -> None:
     assert hand.finished is True
 
 
-def test_hit_does_not_finish_on_fifth_card_non_21() -> None:
-    """Five cards that do not total 21 stay actionable when they have not busted."""
+def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
+    """Five cards that do not bust auto-stand even when below 21."""
     round_state = _two_player_round(
         cards_a=[
             Card(rank="2", suit="♠"),
@@ -574,8 +632,8 @@ def test_hit_does_not_finish_on_fifth_card_non_21() -> None:
 
     alice = round_state.players[0].hands[0]
     assert alice.total() == 20
-    assert alice.finished is False
-    assert round_state.active_player() == round_state.players[0]
+    assert alice.finished is True
+    assert round_state.active_player() == round_state.players[1]
 
 
 def test_hit_auto_stands_on_fifth_card_twenty_one() -> None:

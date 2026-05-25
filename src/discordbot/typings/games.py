@@ -7,6 +7,7 @@ SettleOutcome = Literal[
     "lose",
     "push",
     "blackjack",
+    "five_card_win",
     "five_card_twenty_one",
     "player_bust",
     "dealer_bust",
@@ -149,7 +150,7 @@ class BlackjackHandSettlement(BaseModel):
         delta: Dealer-paid signed point change for this single hand before
             VIP and five-card bonuses.
         five_card_bonus: System-funded bonus for a five-card 21.
-        five_card_twenty_one: True when this hand made exactly five cards
+        five_card_twenty_one: True when this hand made five or more cards
             totaling 21.
         doubled: True if this hand was doubled.
         surrendered: True if this hand was surrendered.

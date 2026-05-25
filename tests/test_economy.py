@@ -2084,6 +2084,45 @@ async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
     assert settlement.vip_bonus == 0
 
 
+async def test_settle_blackjack_player_five_card_non_21_wins_without_system_bonus() -> None:
+    """Five-card non-bust hands win normally without the five-card 21 bonus."""
+    await _add_balance(user_id=1, name="alice", amount=100_000)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
+    )
+    player = round_state.players[0]
+    hand = player.hands[0]
+    hand.cards = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank="6", suit="♠"),
+    ]
+    hand.finished = True
+    round_state.dealer = [
+        Card(rank="7", suit="♣"),
+        Card(rank="7", suit="♦"),
+        Card(rank="7", suit="♥"),
+    ]
+    round_state.finished = True
+    round_state.phase = "settled"
+
+    settlement = await _settle_player(round_state=round_state)
+
+    assert settlement.outcome == "five_card_win"
+    assert settlement.hands[0].five_card_twenty_one is False
+    assert settlement.hands[0].five_card_bonus == 0
+    assert settlement.base_delta == 10_000
+    assert settlement.five_card_bonus == 0
+    assert settlement.delta == 10_000
+    assert settlement.new_balance == 110_000
+    assert settlement.house_balance == -10_000
+    assert await get_balance(user_id=99) == -10_000
+    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
+    assert (loss, win, net) == (0, 10_000, 10_000)
+
+
 async def test_settle_blackjack_player_five_card_bonus_excludes_house_ledger() -> None:
     """Five-card 21 pays the system bonus without moving the house ledger for it."""
     await _add_balance(user_id=1, name="alice", amount=100_000)
@@ -2261,6 +2300,43 @@ async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:
     description = cast("str", embed.description)
     assert "## ✨ 過五關 · 21" in description
     assert "過五關 bonus `+1萬`" in description
+
+
+async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata() -> None:
+    """Final Blackjack embeds display non-21 five-card wins without bonus metadata."""
+    await _add_balance(user_id=1, name="alice", amount=100_000)
+    round_state = BlackjackRound.from_participants(
+        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
+    )
+    player = round_state.players[0]
+    hand = player.hands[0]
+    hand.cards = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="4", suit="♣"),
+        Card(rank="5", suit="♦"),
+        Card(rank="6", suit="♠"),
+    ]
+    hand.finished = True
+    round_state.dealer = [
+        Card(rank="7", suit="♣"),
+        Card(rank="7", suit="♦"),
+        Card(rank="7", suit="♥"),
+    ]
+    round_state.finished = True
+    round_state.phase = "settled"
+    settlement = await _settle_player(round_state=round_state)
+
+    embed = build_final_embed(
+        dealer_name="house",
+        round_state=round_state,
+        results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
+    )
+
+    assert embed.title == "♠️ 二十一點 · 🎉 過五關 · 20"
+    description = cast("str", embed.description)
+    assert "## 🎉 過五關 · 20" in description
+    assert "過五關 bonus" not in description
 
 
 async def test_settle_blackjack_player_insurance_won_with_dealer_blackjack() -> None:

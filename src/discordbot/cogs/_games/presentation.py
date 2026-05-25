@@ -52,6 +52,7 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
         "lose": ("你輸了", LOSE_COLOR),
         "push": ("平手", PUSH_COLOR),
         "blackjack": ("Blackjack!", WIN_COLOR),
+        "five_card_win": ("過五關", WIN_COLOR),
         "five_card_twenty_one": ("過五關", WIN_COLOR),
         "player_bust": ("你爆牌了", LOSE_COLOR),
         "dealer_bust": ("莊家爆牌, 你贏了", WIN_COLOR),
@@ -197,6 +198,8 @@ def player_result_inline(outcome: SettleOutcome, player_total: int, dealer_total
         return f"{NATURAL_RESULT_EMOJI} Blackjack · {player_total}"
     if outcome == "five_card_twenty_one":
         return f"{NATURAL_RESULT_EMOJI} 過五關 · {player_total}"
+    if outcome == "five_card_win":
+        return f"{WIN_RESULT_EMOJI} 過五關 · {player_total}"
     if outcome == "dealer_bust":
         return f"{DEALER_BUST_RESULT_EMOJI} 莊家爆牌, 你贏了 · {dealer_total}"
     if outcome == "player_bust":

@@ -32,6 +32,7 @@ from discordbot.cogs._games.blackjack import (
     can_surrender,
     dealer_up_card,
     committed_wagers,
+    is_five_card_win,
     is_five_card_twenty_one,
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
@@ -83,6 +84,7 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
     "lose": "下次再來送錢吧",
     "push": "白忙一場, 賭場最開心的就是這種局",
     "blackjack": "Blackjack? 算你會玩, 下一把見真章",
+    "five_card_win": "過五關沒爆, 這把讓你過",
     "five_card_twenty_one": "過五關也給你摸到, 這把算你有耐心",
     "player_bust": "爆了爆了, 沒事多算算數字好嗎",
     "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
@@ -138,6 +140,10 @@ def _hand_status_suffix(hand: BlackjackHandState, is_active: bool) -> str:  # no
         return f" {NATURAL_RESULT_EMOJI} BLACKJACK"
     if hand.is_bust():
         return f" {BUST_RESULT_EMOJI} 爆牌"
+    if is_five_card_twenty_one(cards=hand.cards):
+        return f" {NATURAL_RESULT_EMOJI} 過五關 21"
+    if is_five_card_win(cards=hand.cards):
+        return f" {WIN_RESULT_EMOJI} 過五關"
     if hand.doubled and hand.finished:
         return " 💰 doubled"
     if hand.finished:
@@ -297,16 +303,22 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
 def _dealer_hand_status(hand: BlackjackHandState) -> str:
     """Returns a compact status label for one sub-hand."""
     if hand.surrendered:
-        return "surrender"
-    if hand.is_blackjack():
-        return "blackjack"
-    if hand.is_bust():
-        return "bust"
-    if hand.doubled:
-        return "doubled"
-    if hand.finished:
-        return "stand"
-    return "acting"
+        status = "surrender"
+    elif hand.is_blackjack():
+        status = "blackjack"
+    elif hand.is_bust():
+        status = "bust"
+    elif is_five_card_twenty_one(cards=hand.cards):
+        status = "five-card 21"
+    elif is_five_card_win(cards=hand.cards):
+        status = "five-card win"
+    elif hand.doubled:
+        status = "doubled"
+    elif hand.finished:
+        status = "stand"
+    else:
+        status = "acting"
+    return status
 
 
 def _dealer_insurance_status(round_state: BlackjackRound, player: BlackjackPlayerHand) -> str:
@@ -347,7 +359,8 @@ def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
             split_label = (
                 "split A" if hand.is_split_aces else "split" if hand.is_split_hand else "no"
             )
-            five_card = is_five_card_twenty_one(cards=hand.cards)
+            five_card = is_five_card_win(cards=hand.cards)
+            five_card_twenty_one = is_five_card_twenty_one(cards=hand.cards)
             lines.append(
                 f"- {label}: "
                 f"cards={render_hand(cards=hand.cards)}, "
@@ -359,7 +372,8 @@ def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
                 f"player_draws_after_initial={player_draws}, "
                 f"actions_taken={hand.actions_taken}, "
                 f"split={split_label}, "
-                f"five_card_twenty_one={'yes' if five_card else 'no'}, "
+                f"five_card_win={'yes' if five_card else 'no'}, "
+                f"five_card_twenty_one={'yes' if five_card_twenty_one else 'no'}, "
                 f"insurance={insurance}"
             )
     return "\n".join(lines)

@@ -22,6 +22,7 @@ from discordbot.cogs._games.blackjack import (
     settle_hand,
     is_blackjack,
     dealer_up_card,
+    is_five_card_win,
     is_five_card_twenty_one,
 )
 from discordbot.cogs._economy.database import (
@@ -52,6 +53,8 @@ def blackjack_detail(hand: BlackjackHand) -> str:
             detail = "玩家過五關 21 點, 莊家 21 點, 主局平手"
         else:
             detail = f"玩家過五關 21 點, 莊家 {hand.dealer_total()} 點"
+    elif is_five_card_win(cards=hand.player):
+        detail = f"玩家過五關 {hand.player_total()} 點, 未爆直接獲勝"
     elif dealer_blackjack:
         detail = f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
     elif is_bust(cards=hand.player):
@@ -77,6 +80,8 @@ def _blackjack_hand_detail_part(
             detail = f"{prefix} 過五關 21 (主局平手{bonus})"
         else:
             detail = f"{prefix} 過五關 21 ({settlement.delta:+d}{bonus})"
+    elif settlement.outcome == "five_card_win":
+        detail = f"{prefix} 過五關 {hand_total} ({settlement.delta:+d})"
     elif settlement.outcome == "blackjack":
         detail = f"{prefix} Blackjack ({settlement.delta:+d})"
     elif settlement.outcome == "player_bust":
