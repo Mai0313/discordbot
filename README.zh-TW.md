@@ -47,8 +47,8 @@
 | `/credit status\|borrow\|call\|repay`                            | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。          |
 | `/central_bank status\|borrow\|call\|repay`                      | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。    |
 | `/stock`                                                         | 公開股票市場訊息，明細、交易、新聞、紀錄都在同一則 message edit。       |
-| `/give <member> <amount>`                                        | 轉帳虛擬歡樂豆給其他成員。                                              |
-| `/admin refund_tax\|collect_tax`                                 | admin-only 手動餘額調整。                                               |
+| `/give <member> <amount>`                                        | 轉帳虛擬歡樂豆給其他成員或 bot。                                        |
+| `/admin refund_tax\|collect_tax`                                 | admin-only 手動調整成員或 bot 餘額。                                    |
 | `/games blackjack <bet>`                                         | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。 |
 | `/games dragon_gate`                                             | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                          |
 | `/house`                                                         | 顯示 Blackjack dealer ledger。                                          |

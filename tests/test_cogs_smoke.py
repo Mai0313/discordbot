@@ -726,7 +726,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.give.callback(
         cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount=1
     )
-    assert "不能" in bot_receiver.followup.sent[0]["embed"].description
+    assert "轉帳完成" in bot_receiver.followup.sent[0]["embed"].title
 
 
 async def test_central_bank_decision_buttons_require_banker_and_allow_self_approval(
@@ -986,6 +986,33 @@ async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.Monk
     assert captured_deltas == [9_007_199_254_740_993, -9_007_199_254_740_993]
 
 
+async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin tax commands may adjust the bot account."""
+    captured_targets: list[tuple[int, str, int]] = []
+
+    async def record_adjust_balance(
+        user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
+    ) -> BalanceAdjustmentResult:
+        """Records target accounts and parsed adjustment deltas."""
+        del allow_negative, avatar_url
+        captured_targets.append((user_id, name, delta))
+        return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
+
+    monkeypatch.setattr(economy, "get_admin", fake_get_admin)
+    monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1))
+    bot_member = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
+
+    await EconomyCogs.admin_refund_tax.callback(cog, interaction, member=bot_member, amount="100")
+    await EconomyCogs.admin_collect_tax.callback(cog, interaction, member=bot_member, amount="50")
+
+    assert captured_targets == [(999, "discordbot", 100), (999, "discordbot", -50)]
+    assert interaction.followup.sent[0].get("ephemeral") is not True
+    assert interaction.followup.sent[1].get("ephemeral") is not True
+
+
 async def test_economy_admin_tax_rejects_invalid_amount_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1059,6 +1086,49 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
 
     assert captured_sender_avatar_url == "https://example.test/alice-server.png"
     assert captured_receiver_avatar_url == "https://example.test/bob-server.png"
+
+
+async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Players may transfer balance to the bot account."""
+    captured_transfer: dict[str, int | str] = {}
+
+    async def record_transfer(  # noqa: PLR0913 -- mirrors transfer signature
+        sender_id: int,
+        sender_name: str,
+        receiver_id: int,
+        receiver_name: str,
+        amount: int,
+        sender_avatar_url: str = "",
+        receiver_avatar_url: str = "",
+    ) -> TransferResult:
+        """Records bot-recipient transfer identity payloads."""
+        del sender_avatar_url, receiver_avatar_url
+        captured_transfer.update({
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "receiver_id": receiver_id,
+            "receiver_name": receiver_name,
+            "amount": amount,
+        })
+        return TransferResult(sender_balance=50, receiver_balance=100)
+
+    sender = FakeUser(user_id=1, name="alice")
+    bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
+    interaction = FakeInteraction(user=sender)
+    monkeypatch.setattr(economy, "transfer", record_transfer)
+    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    cog = EconomyCogs(bot=SimpleNamespace(user=bot_receiver))
+
+    await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount=100)
+
+    assert captured_transfer == {
+        "sender_id": 1,
+        "sender_name": "alice",
+        "receiver_id": 999,
+        "receiver_name": "discordbot",
+        "amount": 100,
+    }
+    assert "轉帳完成" in interaction.followup.sent[0]["embed"].title
 
 
 async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:

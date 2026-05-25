@@ -627,11 +627,11 @@ class EconomyCogs(commands.Cog):
 
     @admin.subcommand(
         name="refund_tax",
-        description=f"Admin-only: credit {CURRENCY_NAME} to a member.",
+        description=f"Admin-only: credit {CURRENCY_NAME} to a member or bot.",
         name_localizations={Locale.zh_TW: "退稅", Locale.ja: "税還付"},
         description_localizations={
-            Locale.zh_TW: f"管理員限定：無條件增加某位成員的{CURRENCY_NAME}",
-            Locale.ja: f"管理者専用：メンバーに{CURRENCY_NAME}を付与します。",
+            Locale.zh_TW: f"管理員限定：無條件增加某位成員或 bot 的{CURRENCY_NAME}",
+            Locale.ja: f"管理者専用：メンバーまたは bot に{CURRENCY_NAME}を付与します。",
         },
     )
     async def admin_refund_tax(
@@ -639,11 +639,11 @@ class EconomyCogs(commands.Cog):
         interaction: Interaction,
         member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
             name="member",
-            description=f"The member to receive the {CURRENCY_NAME}.",
+            description=f"The member or bot to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
             description_localizations={
-                Locale.zh_TW: f"要增加{CURRENCY_NAME}的成員",
-                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバー。",
+                Locale.zh_TW: f"要增加{CURRENCY_NAME}的成員或 bot",
+                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバーまたは bot。",
             },
             required=True,
         ),
@@ -676,11 +676,11 @@ class EconomyCogs(commands.Cog):
 
     @admin.subcommand(
         name="collect_tax",
-        description=f"Admin-only: debit {CURRENCY_NAME} from a member.",
+        description=f"Admin-only: debit {CURRENCY_NAME} from a member or bot.",
         name_localizations={Locale.zh_TW: "收稅", Locale.ja: "徴税"},
         description_localizations={
-            Locale.zh_TW: f"管理員限定：無條件扣除某位成員的{CURRENCY_NAME}",
-            Locale.ja: f"管理者専用：メンバーから{CURRENCY_NAME}を徴収します。",
+            Locale.zh_TW: f"管理員限定：無條件扣除某位成員或 bot 的{CURRENCY_NAME}",
+            Locale.ja: f"管理者専用：メンバーまたは bot から{CURRENCY_NAME}を徴収します。",
         },
     )
     async def admin_collect_tax(
@@ -688,11 +688,11 @@ class EconomyCogs(commands.Cog):
         interaction: Interaction,
         member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
             name="member",
-            description=f"The member to debit the {CURRENCY_NAME} from.",
+            description=f"The member or bot to debit the {CURRENCY_NAME} from.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
             description_localizations={
-                Locale.zh_TW: f"要扣除{CURRENCY_NAME}的成員",
-                Locale.ja: f"{CURRENCY_NAME}を徴収するメンバー。",
+                Locale.zh_TW: f"要扣除{CURRENCY_NAME}的成員或 bot",
+                Locale.ja: f"{CURRENCY_NAME}を徴収するメンバーまたは bot。",
             },
             required=True,
         ),
@@ -751,17 +751,6 @@ class EconomyCogs(commands.Cog):
             embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
             await _send_private_followup(interaction=interaction, embed=embed)
             return
-        if member.bot:
-            await interaction.response.defer(ephemeral=True)
-            embed = Embed(
-                title=f"{title}失敗",
-                description="### 不能對 bot 操作\n請選一般成員",
-                color=_ERROR_COLOR,
-            )
-            embed.set_author(name=actor.display_name, icon_url=actor_avatar_url)
-            await _send_private_followup(interaction=interaction, embed=embed)
-            return
-
         await interaction.response.defer()
         member_avatar_url = await guild_avatar_url(user=member, guild=guild)
         result = await adjust_balance(
@@ -972,11 +961,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="give",
-        description=f"Transfer your {CURRENCY_NAME} to another member.",
+        description=f"Transfer your {CURRENCY_NAME} to another member or bot.",
         name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "虛擬歡樂豆送付"},
         description_localizations={
-            Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員",
-            Locale.ja: f"他のメンバーに{CURRENCY_NAME}を送ります。",
+            Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員或 bot",
+            Locale.ja: f"他のメンバーまたは bot に{CURRENCY_NAME}を送ります。",
         },
         nsfw=False,
     )
@@ -985,11 +974,11 @@ class EconomyCogs(commands.Cog):
         interaction: Interaction,
         member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
             name="member",
-            description=f"The member to receive the {CURRENCY_NAME}.",
+            description=f"The member or bot to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "受取人"},
             description_localizations={
-                Locale.zh_TW: f"要接收{CURRENCY_NAME}的成員",
-                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバー。",
+                Locale.zh_TW: f"要接收{CURRENCY_NAME}的成員或 bot",
+                Locale.ja: f"{CURRENCY_NAME}を受け取るメンバーまたは bot。",
             },
             required=True,
         ),
@@ -1020,13 +1009,6 @@ class EconomyCogs(commands.Cog):
         guild = getattr(interaction, "guild", None)
         sender_avatar_url = await guild_avatar_url(user=sender, guild=guild)
 
-        if member.bot:
-            embed = Embed(
-                title="轉帳失敗", description="### 不能轉給 bot\n請選一般成員", color=_ERROR_COLOR
-            )
-            embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
-            await _send_expiring_followup(interaction=interaction, embed=embed)
-            return
         if member.id == sender.id:
             embed = Embed(title="轉帳失敗", description="### 不能轉給自己", color=_ERROR_COLOR)
             embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
