@@ -43,7 +43,7 @@ _HELP_CONTENT = {
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
         "stocks": (
             "**Simulated Stock Market**\n"
-            "`/stock` opens the market board UI for prices, market-context news, positions, charts, supply-capped buy and short entries, 49%-capped long holdings, plus sell and cover exits. Share counts display in lots when possible."
+            "`/stock` opens the market board UI for prices, market-context news, compact top-holder and recent-trade summaries, positions, charts, supply-capped buy and short entries, 49%-capped long holdings, plus sell and cover exits. Share counts display in lots when possible."
         ),
         "vip": (
             "**VIP**\n"
@@ -79,7 +79,7 @@ _HELP_CONTENT = {
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
         "stocks": (
             "**模擬股市**\n"
-            "`/stock` 開啟 market board UI，可以看價格、參考 market context 的 news、position、chart，也能建立受 supply cap 與單人 49% long holding cap 限制的 buy/short，或執行 sell/cover 出場；股數顯示會在可用時改用張。"
+            "`/stock` 開啟 market board UI，可以看價格、參考 market context 的 news、compact top-holder / recent-trade summary、position、chart，也能建立受 supply cap 與單人 49% long holding cap 限制的 buy/short，或執行 sell/cover 出場；股數顯示會在可用時改用張。"
         ),
         "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
         "games": (
@@ -117,7 +117,7 @@ _HELP_CONTENT = {
         ),
         "stocks": (
             "**シミュレーション株式市場**\n"
-            "`/stock` で market board UI を開き、price、market context 付き news、position、chart、supply cap と単一 user 49% long holding cap 付きの buy/short entry、sell/cover exit を扱えます。Share counts は可能な場合 lots 表示になります。"
+            "`/stock` で market board UI を開き、price、market context 付き news、compact top-holder / recent-trade summary、position、chart、supply cap と単一 user 49% long holding cap 付きの buy/short entry、sell/cover exit を扱えます。Share counts は可能な場合 lots 表示になります。"
         ),
         "vip": (
             "**VIP**\n"

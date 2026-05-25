@@ -24,6 +24,7 @@ from discordbot.typings.stock import (
     StockDetailViewData,
     StockOperationStatus,
     StockSettlementResult,
+    StockParticipantPositionView,
 )
 from discordbot.cogs._stock.views import (
     StockActionView,
@@ -181,6 +182,46 @@ def _detail(long_shares: int = 0, short_shares: int = 0) -> StockDetailViewData:
         news=(),
         ticks=(),
     )
+
+
+def _stock_trade_leg(index: int, user_name: str) -> StockTradeLegView:
+    """Builds one deterministic stock trade leg."""
+    return StockTradeLegView(
+        operation_id=f"operation-{index}",
+        leg_order=index,
+        symbol=BCAT_SYMBOL,
+        user_id=index,
+        user_name=user_name,
+        leg_type=StockTradeLegType.OPEN_LONG,
+        shares=index * 1000,
+        price_cents=10_000 + index,
+        wallet_delta=-(index * 100),
+        basis_delta=index * 100,
+        collateral_delta=0,
+        realized_pnl_delta=index,
+        created_at=datetime(2026, 1, index),
+    )
+
+
+def _stock_participant(
+    user_id: int, user_name: str, long_shares: int, short_shares: int = 0
+) -> StockParticipantPositionView:
+    """Builds one deterministic public participant position."""
+    return StockParticipantPositionView(
+        user_id=user_id,
+        user_name=user_name,
+        long_shares=long_shares,
+        short_shares=short_shares,
+        realized_pnl=user_id * 100,
+    )
+
+
+def _field_value(embed: Embed, name: str) -> str:
+    """Returns one embed field value by name."""
+    for field in embed.fields:
+        if field.name == name:
+            return str(field.value)
+    raise AssertionError(f"missing embed field: {name}")
 
 
 def test_stock_setup_is_sync_and_adds_cog_with_override() -> None:
@@ -423,6 +464,57 @@ def test_stock_detail_embed_displays_large_share_counts_as_lots() -> None:
     field_values = "\n".join(str(field.value) for field in embed.fields)
     assert "持股數 `100億張`" in field_values
     assert "做空股數 `1張 234股`" in field_values
+
+
+def test_stock_detail_embed_compacts_public_position_summary() -> None:
+    """The public stock detail embed shows only the top three shareholders."""
+    detail = _detail().model_copy(
+        update={
+            "public_positions": (
+                _stock_participant(
+                    user_id=5, user_name="short_whale", long_shares=0, short_shares=9999
+                ),
+                _stock_participant(user_id=4, user_name="dave", long_shares=1000),
+                _stock_participant(user_id=2, user_name="bob", long_shares=2000),
+                _stock_participant(user_id=6, user_name="erin", long_shares=500),
+                _stock_participant(user_id=3, user_name="carol", long_shares=3000),
+            )
+        }
+    )
+
+    embed = build_stock_detail_embed(detail=detail, chart_filename="chart.png")
+
+    value = _field_value(embed=embed, name="公開部位摘要")
+    assert "1. **carol** 持股 `3張`" in value
+    assert "2. **bob** 持股 `2張`" in value
+    assert "3. **dave** 持股 `1張`" in value
+    assert "-# 做空" in value
+    assert "已實現損益" in value
+    assert "short_whale" not in value
+    assert "erin" not in value
+
+
+def test_stock_detail_embed_compacts_recent_trades() -> None:
+    """The public stock detail embed shows only three recent trade rows."""
+    detail = _detail().model_copy(
+        update={
+            "recent_trades": (
+                _stock_trade_leg(index=1, user_name="alice"),
+                _stock_trade_leg(index=2, user_name="bob"),
+                _stock_trade_leg(index=3, user_name="carol"),
+                _stock_trade_leg(index=4, user_name="dave"),
+            )
+        }
+    )
+
+    embed = build_stock_detail_embed(detail=detail, chart_filename="chart.png")
+
+    value = _field_value(embed=embed, name="近期交易")
+    assert "1. **alice** 買入 `1張`" in value
+    assert "2. **bob** 買入 `2張`" in value
+    assert "3. **carol** 買入 `3張`" in value
+    assert "-# #1 · 錢包變化" in value
+    assert "dave" not in value
 
 
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:

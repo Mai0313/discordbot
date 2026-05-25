@@ -27,6 +27,7 @@ DETAIL_COLOR = 0x3498DB
 NEWS_COLOR = 0xF1C40F
 ERROR_COLOR = 0xED4245
 SUCCESS_COLOR = 0x57F287
+DETAIL_LIST_LIMIT = 3
 MARKET_BOARD_WIDTH = 1120
 MARKET_BOARD_FILENAME_PREFIX = "stock_market"
 _MARKET_BOARD_MARGIN = 32
@@ -550,24 +551,34 @@ def _recent_trade_lines(detail: StockDetailViewData) -> str:
     """Formats recent trade legs for a detail embed."""
     if not detail.recent_trades:
         return "尚無交易紀錄"
-    return _leg_lines(legs=detail.recent_trades[:5])
+    return "\n".join(
+        _recent_trade_line(index=index, leg=leg)
+        for index, leg in enumerate(detail.recent_trades[:DETAIL_LIST_LIMIT], start=1)
+    )
 
 
 def _position_summary_lines(detail: StockDetailViewData) -> str:
     """Formats public non-zero stock positions."""
-    if not detail.public_positions:
+    positions = sorted(
+        (position for position in detail.public_positions if position.long_shares > 0),
+        key=lambda position: position.long_shares,
+        reverse=True,
+    )
+    if not positions:
         return "尚無公開部位"
     return "\n".join(
-        _position_summary_line(position=position) for position in detail.public_positions[:5]
+        _position_summary_line(index=index, position=position)
+        for index, position in enumerate(positions[:DETAIL_LIST_LIMIT], start=1)
     )
 
 
-def _position_summary_line(position: StockParticipantPositionView) -> str:
+def _position_summary_line(index: int, position: StockParticipantPositionView) -> str:
     """Formats one public position summary line."""
     name = position.user_name or str(position.user_id)
     return (
-        f"{name} · 持股 `{share_quantity_text(shares=position.long_shares)}` · 做空 `{share_quantity_text(shares=position.short_shares)}` · "
-        f"損益 {amount_code(amount=position.realized_pnl, signed=True, compact=True)}"
+        f"{index}. **{name}** 持股 `{share_quantity_text(shares=position.long_shares)}`\n"
+        f"-# 做空 `{share_quantity_text(shares=position.short_shares)}` · 已實現損益 "
+        f"{amount_code(amount=position.realized_pnl, signed=True, compact=True)}"
     )
 
 
@@ -583,3 +594,14 @@ def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
             f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True, compact=True)}"
         )
     return "\n".join(lines) if lines else "無"
+
+
+def _recent_trade_line(index: int, leg: StockTradeLegView) -> str:
+    """Formats one compact recent trade line."""
+    name = leg.user_name or str(leg.user_id)
+    return (
+        f"{index}. **{name}** {_leg_type_label(leg_type=leg.leg_type)} "
+        f"`{share_quantity_text(shares=leg.shares)}` @ `{format_price(price_cents=leg.price_cents)}`\n"
+        f"-# #{leg.leg_order} · 錢包變化 {amount_code(amount=leg.wallet_delta, signed=True, compact=True)} · "
+        f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True, compact=True)}"
+    )
