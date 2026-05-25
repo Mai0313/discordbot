@@ -41,6 +41,7 @@ from discordbot.typings.stock import (
     StockReconciliationOperation,
 )
 from discordbot.typings.economy import WalletDeltaLeg
+from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
     NEWS_SENTIMENT_DECAY_BPS,
@@ -1945,7 +1946,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
                 price_cents=price_cents,
                 balance=wallet_balance,
                 position=position,
-                error=f"目前可買入流通股只剩 {available_long_shares:,} 股",
+                error=f"目前可買入流通股只剩 {share_quantity_text(shares=available_long_shares)}",
             )
         open_price_cents = _buy_execution_price(
             price_cents=price_cents,
@@ -1962,7 +1963,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
                 price_cents=price_cents,
                 balance=wallet_balance,
                 position=position,
-                error=f"餘額不足，需要 {cost:,} 才能買入 {remaining:,} 股",
+                error=f"餘額不足，需要 {cost:,} 才能買入 {share_quantity_text(shares=remaining)}",
             )
         legs.append(
             _leg_view(
@@ -2077,7 +2078,7 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
                 price_cents=price_cents,
                 balance=wallet_balance,
                 position=position,
-                error=f"目前可借券做空股數只剩 {available_short_shares:,} 股",
+                error=f"目前可借券做空股數只剩 {share_quantity_text(shares=available_short_shares)}",
             )
         collateral = cash_ceil(cents=price_cents * remaining)
         if collateral > wallet_balance + wallet_delta_total:

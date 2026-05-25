@@ -7,8 +7,8 @@ from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
-from discordbot.utils.amounts import compact_amount
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
+from discordbot.utils.number_text import compact_amount
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 BALANCE_LEADERBOARD_BOARD_FILENAME = "economy_leaderboard.png"

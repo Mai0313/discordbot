@@ -1,6 +1,6 @@
 """Shared presentation helpers for economy currency labels."""
 
-from discordbot.utils.amounts import compact_amount
+from discordbot.utils.number_text import compact_amount
 
 CURRENCY_NAME = "虛擬歡樂豆"
 

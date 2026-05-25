@@ -18,7 +18,7 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
-from discordbot.utils.amounts import compact_amount
+from discordbot.utils.number_text import compact_amount, share_quantity_text
 from discordbot.cogs._stock.market import cash_floor, format_price
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
@@ -425,7 +425,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
     embed.add_field(
         name="持股",
         value=(
-            f"持股數 `{detail.position.long_shares:,}` 股\n"
+            f"持股數 `{share_quantity_text(shares=detail.position.long_shares)}`\n"
             f"持股成本 {amount_code(amount=detail.position.long_cost_basis, compact=True)}"
         ),
         inline=True,
@@ -433,7 +433,7 @@ def build_stock_detail_embed(detail: StockDetailViewData, chart_filename: str) -
     embed.add_field(
         name="做空",
         value=(
-            f"做空股數 `{detail.position.short_shares:,}` 股\n"
+            f"做空股數 `{share_quantity_text(shares=detail.position.short_shares)}`\n"
             f"做空擔保金 {amount_code(amount=detail.position.short_collateral, compact=True)}"
         ),
         inline=True,
@@ -489,8 +489,8 @@ def build_action_prompt_embed(detail: StockDetailViewData) -> Embed:
         description=(
             f"股票代碼：{profile.symbol}\n"
             f"當前每股價格：{format_price(price_cents=profile.price_cents)} {CURRENCY_NAME}\n"
-            f"目前持有：{detail.position.long_shares:,} 股 | "
-            f"目前做空：{detail.position.short_shares:,} 股\n\n"
+            f"目前持有：{share_quantity_text(shares=detail.position.long_shares)} | "
+            f"目前做空：{share_quantity_text(shares=detail.position.short_shares)}\n\n"
             "請先選擇操作，接著會跳出數量視窗，可輸入股數或 `ALL`。"
         ),
         color=DETAIL_COLOR,
@@ -511,7 +511,7 @@ def build_settlement_embed(result: StockSettlementResult) -> Embed:
     action_label = _action_label(action=result.requested_action)
     lines = [
         f"### {action_label} {result.symbol}",
-        f"成交股數 `{result.shares:,}`",
+        f"成交股數 `{share_quantity_text(shares=result.shares)}`",
         f"成交價 `{format_price(price_cents=result.price_cents)}`",
         f"錢包變化 {amount_code(amount=result.wallet_delta, signed=True, compact=True)}",
         f"餘額 {amount_code(amount=result.balance_after, compact=True)} {CURRENCY_NAME}",
@@ -566,7 +566,7 @@ def _position_summary_line(position: StockParticipantPositionView) -> str:
     """Formats one public position summary line."""
     name = position.user_name or str(position.user_id)
     return (
-        f"{name} · 持股 `{position.long_shares:,}` 股 · 做空 `{position.short_shares:,}` 股 · "
+        f"{name} · 持股 `{share_quantity_text(shares=position.long_shares)}` · 做空 `{share_quantity_text(shares=position.short_shares)}` · "
         f"損益 {amount_code(amount=position.realized_pnl, signed=True, compact=True)}"
     )
 
@@ -578,7 +578,7 @@ def _leg_lines(legs: tuple[StockTradeLegView, ...]) -> str:
         name = leg.user_name or str(leg.user_id)
         lines.append(
             f"{name} · #{leg.leg_order} {_leg_type_label(leg_type=leg.leg_type)} "
-            f"`{leg.shares:,}` 股 · 成交價 `{format_price(price_cents=leg.price_cents)}` · "
+            f"`{share_quantity_text(shares=leg.shares)}` · 成交價 `{format_price(price_cents=leg.price_cents)}` · "
             f"錢包變化 {amount_code(amount=leg.wallet_delta, signed=True, compact=True)} · "
             f"損益 {amount_code(amount=leg.realized_pnl_delta, signed=True, compact=True)}"
         )

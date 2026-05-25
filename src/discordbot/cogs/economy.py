@@ -19,6 +19,7 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanLenderType,
 )
+from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs._stock.market import format_price
 from discordbot.cogs._economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
@@ -135,7 +136,7 @@ def _stock_position_line(holding: StockPortfolioHolding) -> str:
     position_parts: list[str] = []
     if holding.long_shares > 0:
         position_parts.append(
-            f"持股 `{holding.long_shares:,}` 股 / 市值 "
+            f"持股 `{share_quantity_text(shares=holding.long_shares)}` / 市值 "
             f"{amount_code(amount=holding.long_market_value, compact=True)}"
         )
     if holding.short_shares > 0:
@@ -143,7 +144,7 @@ def _stock_position_line(holding: StockPortfolioHolding) -> str:
             holding.short_collateral + holding.short_entry_value - holding.short_cover_cost
         )
         position_parts.append(
-            f"做空 `{holding.short_shares:,}` 股 / 淨值 "
+            f"做空 `{share_quantity_text(shares=holding.short_shares)}` / 淨值 "
             f"{amount_code(amount=short_equity, compact=True)}"
         )
     position_text = " · ".join(position_parts) if position_parts else "無部位"

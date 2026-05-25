@@ -387,7 +387,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
     assert "股票代碼" in embed.description
     assert "股票代碼：BCAT" in embed.description
     assert "100.00 虛擬歡樂豆" in embed.description
-    assert "目前持有：3 股 | 目前做空：2 股" in embed.description
+    assert "目前持有：3股 | 目前做空：2股" in embed.description
     assert isinstance(operate_interaction.message.edits[0]["view"], StockActionView)
 
     news_interaction = InteractionStub()
@@ -411,6 +411,18 @@ def test_stock_detail_embed_uses_localized_user_labels() -> None:
     assert "目前操作 user" not in field_names
     assert "操作 user 資金" not in field_names
     assert "市值 `1億`" in embed.description
+
+
+def test_stock_detail_embed_displays_large_share_counts_as_lots() -> None:
+    """The public stock detail embed keeps huge share counts readable."""
+    embed = build_stock_detail_embed(
+        detail=_detail(long_shares=10_000_000_000_000, short_shares=1_234),
+        chart_filename="chart.png",
+    )
+
+    field_values = "\n".join(str(field.value) for field in embed.fields)
+    assert "持股數 `100億張`" in field_values
+    assert "做空股數 `1張 234股`" in field_values
 
 
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:

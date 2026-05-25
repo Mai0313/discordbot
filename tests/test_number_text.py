@@ -1,6 +1,6 @@
-"""Tests for shared amount presentation helpers."""
+"""Tests for shared readable number presentation helpers."""
 
-from discordbot.utils.amounts import compact_amount
+from discordbot.utils.number_text import compact_amount, compact_number, share_quantity_text
 from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 
@@ -34,3 +34,18 @@ def test_currency_helpers_can_opt_into_compact_amounts() -> None:
     assert currency_text(amount=123_456_789, compact=True) == "1.23億 虛擬歡樂豆"
     assert currency_text(amount=123_456_789, signed=True, compact=True) == "+1.23億 虛擬歡樂豆"
     assert amount_code(amount=-10_000, signed=True, compact=True) == "`-1萬`"
+
+
+def test_compact_number_matches_amount_formatting() -> None:
+    """Generic numeric text keeps the same compact scale behavior."""
+    assert compact_number(number=123_456_789) == "1.23億"
+
+
+def test_share_quantity_text_uses_lot_units_without_changing_small_shares() -> None:
+    """Stock share display switches to 張 only after one lot."""
+    assert share_quantity_text(shares=999) == "999股"
+    assert share_quantity_text(shares=1_000) == "1張"
+    assert share_quantity_text(shares=1_234) == "1張 234股"
+    assert share_quantity_text(shares=-1_234) == "-1張 234股"
+    assert share_quantity_text(shares=1_234, signed=True) == "+1張 234股"
+    assert share_quantity_text(shares=10_000_000_000_000) == "100億張"

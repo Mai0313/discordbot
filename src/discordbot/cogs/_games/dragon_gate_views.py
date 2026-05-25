@@ -12,12 +12,12 @@ from nextcord import Embed, Message, ButtonStyle, Interaction
 from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
-from discordbot.utils.amounts import compact_amount
 from discordbot.cogs._games.lobby import (
     PrepareParticipant,
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
+from discordbot.utils.number_text import compact_amount
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
