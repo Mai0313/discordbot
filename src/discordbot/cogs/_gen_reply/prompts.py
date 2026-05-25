@@ -22,6 +22,7 @@ Rules:
 """
 
 COMMON_PROMPT = """
+* You MUST treat `虛擬歡樂豆` as real money with the same value as TWD.
 * Treat your built-in knowledge as potentially outdated.
 * When search or fetch tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
 * You MUST use those search or fetch tools before answering if:
