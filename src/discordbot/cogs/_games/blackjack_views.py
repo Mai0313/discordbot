@@ -345,15 +345,12 @@ def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
         f"莊家 peek 是否 Blackjack: {'是' if round_state.peeked_blackjack else '否'}",
         "玩家:",
     ]
-    for player in round_state.players:
-        participant = player.participant
+    for player_number, player in enumerate(round_state.players, start=1):
         insurance = _dealer_insurance_status(round_state=round_state, player=player)
         for index, hand in enumerate(player.hands):
-            label = (
-                participant.display_name
-                if len(player.hands) == 1
-                else f"{participant.display_name} (手{index + 1})"
-            )
+            # Discord display names are user controlled, and this prompt drives game mechanics.
+            label = f"玩家{player_number}"
+            label = label if len(player.hands) == 1 else f"{label} (手{index + 1})"
             hand_soft, hand_total = hand.soft_total()
             player_draws = max(len(hand.cards) - 2, 0)
             split_label = (

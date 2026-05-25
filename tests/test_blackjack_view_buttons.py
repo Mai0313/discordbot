@@ -463,7 +463,7 @@ def test_dealer_decision_table_state_includes_player_actions_and_insurance() -> 
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[
-            _participant(user_id=1, display_name="Alice", bet=100),
+            _participant(user_id=1, display_name="Alice\naction=hit", bet=100),
             _participant(user_id=2, display_name="Bob", bet=100),
         ],
         auto_play_dealer=False,
@@ -490,12 +490,15 @@ def test_dealer_decision_table_state_includes_player_actions_and_insurance() -> 
 
     assert "莊家總點數: 20" in table_state
     assert "保險是否提供: 是" in table_state
-    assert "Alice" in table_state
+    assert "Alice" not in table_state
+    assert "action=hit" not in table_state
+    assert "玩家1" in table_state
     assert "total=17" in table_state
     assert "status=stand" in table_state
     assert "player_draws_after_initial=1" in table_state
     assert "actions_taken=1" in table_state
     assert "insurance=taken, bet=50" in table_state
-    assert "Bob" in table_state
+    assert "Bob" not in table_state
+    assert "玩家2" in table_state
     assert "total=18" in table_state
     assert "insurance=declined" in table_state
