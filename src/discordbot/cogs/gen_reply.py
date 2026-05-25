@@ -28,7 +28,6 @@ from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._gen_reply.prompts import (
-    BELIEF,
     IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
@@ -776,16 +775,10 @@ class ReplyGeneratorCogs(commands.Cog):
         return stored_content
 
     async def _handle_message_reply(
-        self, message: Message, system_prompt: str, context_prompt: str, history_limit: int
+        self, message: Message, system_prompt: str, history_limit: int
     ) -> None:
         """Handles generating text replies using history and context."""
-        message_list: list[EasyInputMessageParam] = [
-            # Temp skip since this belief is too strong in responses and causes refusal to answer; revisit after prompt tuning.
-            # EasyInputMessageParam(
-            #     role="user",
-            #     content=[ResponseInputTextParam(text=context_prompt, type="input_text")],
-            # )
-        ]
+        message_list: list[EasyInputMessageParam] = []
 
         hist_messages, reference_messages, current_message = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
@@ -857,19 +850,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
                 current_emoji = "📖"
                 await self._handle_message_reply(
-                    message=message,
-                    system_prompt=SUMMARY_PROMPT,
-                    context_prompt=BELIEF,
-                    history_limit=50,
+                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=50
                 )
             else:
                 await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
                 current_emoji = "❓"
                 await self._handle_message_reply(
-                    message=message,
-                    system_prompt=REPLY_PROMPT,
-                    context_prompt=BELIEF,
-                    history_limit=30,
+                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
             await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
         except Exception as e:

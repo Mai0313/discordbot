@@ -659,9 +659,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
 
     streamed: list[FakeMessage] = []
     monkeypatch.setattr(cog, "_handle_streaming", fake_streaming)
-    await cog._handle_message_reply(
-        message=message, system_prompt="system", context_prompt="context", history_limit=2
-    )
+    await cog._handle_message_reply(message=message, system_prompt="system", history_limit=2)
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
 
@@ -699,7 +697,7 @@ async def test_gen_reply_on_message_dispatches_routes(
         calls.append("_handle_video_generation")
 
     async def fake_message_handler(
-        message: FakeMessage, system_prompt: str, context_prompt: str, history_limit: int
+        message: FakeMessage, system_prompt: str, history_limit: int
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")

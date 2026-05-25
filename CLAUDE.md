@@ -55,7 +55,6 @@ make gen-docs                    # regenerate docs/ from sources
 - `client.images.edit(image=...)` needs raw `bytes`, not image-reference dicts.
 - Per-token pricing comes from `utils.model_pricing` and its cached LiteLLM JSON. Do not hardcode rates in `gen_reply.py`.
 - `message.snapshots` are intentionally not walked by cleaned-content or attachment ingestion.
-- `BELIEF` in `_gen_reply/prompts.py` is currently disabled but kept in the signature for a possible future re-enable.
 
 ## Economy
 
