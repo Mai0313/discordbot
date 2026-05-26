@@ -23,7 +23,7 @@
 
 ## 功能
 
-- **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、生成或编辑图片、生成短视频、在 thread 延续长回复，并在可用时使用 model-provided web tools。
+- **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、生成或编辑图片、生成短视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频，文件太大时会自动 retry 低画质。
 - **虚拟欢乐豆与金融系统**：用户可从消息与 AI 回复获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。

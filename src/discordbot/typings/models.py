@@ -90,11 +90,11 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_handle_image_reply`, `_route_message`, `_long_reply_thread_name`, `_generate_reply`, `dealer`.
+        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`, `dealer`.
 
         Returns:
-            Fast model settings used for routing, image captions, thread
-            titles, and short Discord replies.
+            Fast model settings used for routing, image captions, and short
+            Discord replies.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model

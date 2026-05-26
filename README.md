@@ -23,7 +23,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Features
 
-- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies in threads, and use model-provided web tools when available.
+- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.

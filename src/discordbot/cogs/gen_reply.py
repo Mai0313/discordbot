@@ -12,7 +12,7 @@ import contextlib
 from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
 import logfire
-from nextcord import File, Embed, Thread, Message, Attachment, StickerItem
+from nextcord import File, Embed, Message, Attachment, StickerItem
 from pydantic import ValidationError
 from nextcord.ext import commands
 from openai.types.responses import ResponseStreamEvent
@@ -32,7 +32,6 @@ from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
-    THREAD_TITLE_PROMPT,
 )
 from discordbot.cogs._economy.presentation import currency_text
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -53,8 +52,6 @@ _CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 # which never appear together in user-authored content.
 _USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
 _DISCORD_MESSAGE_LIMIT = 2000
-_DISCORD_THREAD_NAME_LIMIT = 100
-_THREAD_TITLE_CONTEXT_LIMIT = 1800
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -529,83 +526,34 @@ class ReplyGeneratorCogs(commands.Cog):
         input_rate, output_rate = get_token_rates(model_name=model_name)
         return input_rate * input_tokens + output_rate * output_tokens
 
-    @staticmethod
-    async def _award_chat_points(
-        user_id: int, name: str, avatar_url: str, amount: int
-    ) -> int | None:
-        """Persists chat-reward points and returns the new balance, or None on DB failure.
+    async def _award_chat_points(self, message: Message, amount: int) -> int | None:
+        """Persists chat-reward points for a Discord message author.
 
-        Routed through `credit_with_repayment` so all income events share
-        one balance-credit path. Long-term loans are repaid explicitly, so chat
-        rewards land fully in the user's wallet.
+        Returns the new balance, or None when the amount is non-positive or
+        the DB write fails. Routed through `credit_with_repayment` so all
+        income events share one balance-credit path; long-term loans are
+        repaid explicitly, so chat rewards land fully in the user's wallet.
         """
+        if amount <= 0:
+            return None
+        avatar_url = await guild_avatar_url(
+            user=message.author, guild=getattr(message, "guild", None)
+        )
         try:
             result = await credit_with_repayment(
-                user_id=user_id, name=name, avatar_url=avatar_url, amount=amount
+                user_id=message.author.id,
+                name=message.author.name,
+                avatar_url=avatar_url,
+                amount=amount,
             )
             return result.new_balance
         except Exception:
             logfire.warn("Failed to award chat points", _exc_info=True)
             return None
 
-    async def _award_chat_points_for_message(self, message: Message, amount: int) -> int | None:
-        """Persists chat reward points for a Discord message author."""
-        if amount <= 0:
-            return None
-        avatar_url = await guild_avatar_url(
-            user=message.author, guild=getattr(message, "guild", None)
-        )
-        return await self._award_chat_points(
-            user_id=message.author.id,
-            name=message.author.name,
-            avatar_url=avatar_url,
-            amount=amount,
-        )
-
-    @staticmethod
-    def _fallback_long_reply_thread_name(message: Message) -> str:
-        """Builds a bounded fallback thread name for long AI replies."""
-        author_name = message.author.display_name or message.author.name
-        return f"AI reply for {author_name}"[:_DISCORD_THREAD_NAME_LIMIT]
-
-    @staticmethod
-    def _sanitize_thread_name(title: str, fallback: str) -> str:
-        """Cleans model output into a Discord thread name."""
-        cleaned_title = " ".join(title.strip().split())
-        cleaned_title = cleaned_title.strip("\"'`“”「」『』")
-        if not cleaned_title:
-            return fallback
-        return cleaned_title[:_DISCORD_THREAD_NAME_LIMIT]
-
-    async def _long_reply_thread_name(self, message: Message, content: str) -> str:
-        """Generates a bounded thread name for long AI replies."""
-        fallback = self._fallback_long_reply_thread_name(message=message)
-        try:
-            user_content = await self._get_cleaned_content(message=message)
-            title_input = (
-                "User message:\n"
-                f"{user_content or '(no text)'}\n\n"
-                "AI reply preview:\n"
-                f"{content[:_THREAD_TITLE_CONTEXT_LIMIT]}"
-            )
-            fast_model = self.runtime_models.fast_model
-            responses = await self.client.responses.create(
-                model=fast_model.name,
-                instructions=THREAD_TITLE_PROMPT,
-                input=title_input,
-                reasoning=fast_model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
-            )
-        except Exception:
-            logfire.warn("Failed to generate long AI reply thread name", _exc_info=True)
-            return fallback
-        return self._sanitize_thread_name(title=responses.output_text or "", fallback=fallback)
-
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
-        """Splits a completed reply into one parent message plus thread chunks."""
+        """Splits a completed reply into one parent message plus follow-up chunks."""
         if len(f"{content}{footer}") <= _DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []
 
@@ -615,18 +563,18 @@ class ReplyGeneratorCogs(commands.Cog):
 
         parent_content = content[:_DISCORD_MESSAGE_LIMIT]
         remaining = content[_DISCORD_MESSAGE_LIMIT:]
-        thread_chunks: list[str] = []
+        follow_up_chunks: list[str] = []
 
         while len(remaining) > _DISCORD_MESSAGE_LIMIT:
-            thread_chunks.append(remaining[:_DISCORD_MESSAGE_LIMIT])
+            follow_up_chunks.append(remaining[:_DISCORD_MESSAGE_LIMIT])
             remaining = remaining[_DISCORD_MESSAGE_LIMIT:]
 
         if len(remaining) <= tail_capacity:
-            thread_chunks.append(f"{remaining}{footer}")
+            follow_up_chunks.append(f"{remaining}{footer}")
         else:
-            thread_chunks.append(remaining[:tail_capacity])
-            thread_chunks.append(f"{remaining[tail_capacity:]}{footer}")
-        return parent_content, thread_chunks
+            follow_up_chunks.append(remaining[:tail_capacity])
+            follow_up_chunks.append(f"{remaining[tail_capacity:]}{footer}")
+        return parent_content, follow_up_chunks
 
     async def _write_streaming_preview(
         self, message: Message, reply: Message | None, content: str, displayed_content: str
@@ -641,57 +589,20 @@ class ReplyGeneratorCogs(commands.Cog):
             await reply.edit(content=preview)
         return reply, preview
 
-    async def _create_long_reply_thread(
-        self, message: Message, reply: Message, title_context: str
-    ) -> Thread | None:
-        """Creates a continuation thread for a long reply, returning None on fallback paths."""
-        if message.guild is None:
-            return None
-        try:
-            thread_name = await self._long_reply_thread_name(
-                message=message, content=title_context
-            )
-            return await reply.create_thread(name=thread_name)
-        except Exception:
-            logfire.warn("Failed to create long AI reply thread", _exc_info=True)
-            return None
-
-    async def _send_long_reply_chunks(
-        self, message: Message, reply: Message, chunks: list[str], title_context: str
-    ) -> None:
-        """Sends long-reply continuation chunks into a thread, or replies as fallback."""
-        thread = await self._create_long_reply_thread(
-            message=message, reply=reply, title_context=title_context
-        )
-        if thread is None:
-            for chunk in chunks:
-                await message.reply(content=chunk)
-            return
-
-        for index, chunk in enumerate(chunks):
-            try:
-                await thread.send(content=chunk)
-            except Exception:
-                logfire.warn("Failed to send long AI reply chunk in thread", _exc_info=True)
-                for fallback_chunk in chunks[index:]:
-                    await message.reply(content=fallback_chunk)
-                return
-
     async def _finalize_streaming_reply(
         self, message: Message, reply: Message | None, content: str, footer: str
     ) -> Message:
-        """Writes the final reply, moving overflow into a continuation thread."""
-        parent_content, thread_chunks = self._split_reply_for_discord(
+        """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
+        parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
         )
         if reply is None:
             reply = await message.reply(content=parent_content)
         else:
             await reply.edit(content=parent_content)
-        if thread_chunks:
-            await self._send_long_reply_chunks(
-                message=message, reply=reply, chunks=thread_chunks, title_context=content
-            )
+        previous = reply
+        for chunk in follow_up_chunks:
+            previous = await previous.reply(content=chunk)
         return reply
 
     async def _handle_streaming(  # noqa: C901 -- dispatches on multiple Responses API stream event types
@@ -749,9 +660,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # footer; on DB failure _award_chat_points returns None and the
         # footer falls back to the delta-only format.
         total_tokens = input_tokens + output_tokens
-        new_balance = await self._award_chat_points_for_message(
-            message=message, amount=total_tokens
-        )
+        new_balance = await self._award_chat_points(message=message, amount=total_tokens)
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         if new_balance is not None:

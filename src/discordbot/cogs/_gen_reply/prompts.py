@@ -61,17 +61,6 @@ Classification rules:
 Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
 """
 
-THREAD_TITLE_PROMPT = """
-You are naming a Discord thread that continues a long AI reply.
-
-Rules:
-1. Write one concise topic title, 2 to 8 words.
-2. Base it on the user's request and the AI reply preview.
-3. Follow the user's language when clear.
-4. No markdown, no quotes, no emoji, no bullet, no preamble.
-5. Output only the title.
-"""
-
 IMAGE_PROMPT = f"""
 {PERSONA_CHOICES}
 

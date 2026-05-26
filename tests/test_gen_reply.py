@@ -14,7 +14,6 @@ from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, _DISCORD_MESSAGE_LIMIT, ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
-from discordbot.cogs._gen_reply.prompts import THREAD_TITLE_PROMPT
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -42,37 +41,25 @@ class FakeReference:
 
 
 class FakeReply:
-    """Provides a fake reply object that records edited content."""
+    """Provides a fake reply object that records edited content and follow-up replies."""
 
     def __init__(self) -> None:
-        """Initializes the fake reply with empty content and no attached view."""
+        """Initializes the fake reply with empty content and no follow-up chain."""
         self.content: str | None = ""
         self.file: File | None = None
         self.embed: Embed | None = None
-        self.created_thread: FakeThread | None = None
-        self.thread_name: str | None = None
+        self.replies: list[FakeReply] = []
 
     async def edit(self, content: str) -> None:
         """Records the replacement content passed to edit."""
         self.content = content
 
-    async def create_thread(self, *, name: str) -> FakeThread:
-        """Creates and records a fake continuation thread."""
-        self.thread_name = name
-        self.created_thread = FakeThread()
-        return self.created_thread
-
-
-class FakeThread:
-    """Minimal fake Discord thread that records sent messages."""
-
-    def __init__(self) -> None:
-        """Initializes the fake thread message store."""
-        self.sent_messages: list[str] = []
-
-    async def send(self, content: str) -> None:
-        """Records a message sent into the fake thread."""
-        self.sent_messages.append(content)
+    async def reply(self, content: str) -> FakeReply:
+        """Creates and records a follow-up reply in the chain."""
+        child = FakeReply()
+        child.content = content
+        self.replies.append(child)
+        return child
 
 
 class FakeAuthor:
@@ -170,8 +157,6 @@ class FakeResponses:
         self.create_inputs: list[ResponseInputParam | str] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
-        self.thread_title_output = "Generated Thread Topic"
-        self.raise_on_thread_title = False
         self.output_parsed = SimpleNamespace(decision="SUMMARY")
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
@@ -192,10 +177,6 @@ class FakeResponses:
         self.create_instructions.append(instructions)
         self.create_inputs.append(input)
         self.create_streams.append(stream)
-        if instructions == THREAD_TITLE_PROMPT:
-            if self.raise_on_thread_title:
-                raise RuntimeError("thread title failed")
-            return SimpleNamespace(output_text=self.thread_title_output)
         return SimpleNamespace(output_text=self.output_text)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
@@ -329,12 +310,11 @@ def _stub_streaming_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
         del model_name, input_tokens, output_tokens
         return 0.0
 
-    async def fake_award(user_id: int, name: str, avatar_url: str, amount: int) -> None:
-        del user_id, name, avatar_url, amount
-        pass
+    async def fake_award(self: ReplyGeneratorCogs, message: FakeMessage, amount: int) -> None:
+        del self, message, amount
 
     monkeypatch.setattr(ReplyGeneratorCogs, "_calculate_cost", staticmethod(fake_calculate_cost))
-    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", staticmethod(fake_award))
+    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", fake_award)
 
 
 async def test_handle_streaming_allows_missing_output_token_details(
@@ -349,13 +329,13 @@ async def test_handle_streaming_allows_missing_output_token_details(
         assert output_tokens == 34
         return 0.0
 
-    async def fake_award(user_id: int, name: str, avatar_url: str, amount: int) -> None:
+    async def fake_award(self: ReplyGeneratorCogs, message: FakeMessage, amount: int) -> None:
         """Skips database writes for chat reward accounting."""
         # Stub the DB-touching coroutine so the test doesn't write to data/economy.db.
-        pass
+        del self, message, amount
 
     monkeypatch.setattr(ReplyGeneratorCogs, "_calculate_cost", staticmethod(fake_calculate_cost))
-    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", staticmethod(fake_award))
+    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", fake_award)
 
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     message = FakeMessage()
@@ -369,10 +349,10 @@ async def test_handle_streaming_allows_missing_output_token_details(
     assert message.replies[0].content == result
 
 
-async def test_handle_streaming_moves_long_reply_overflow_to_thread(
+async def test_handle_streaming_continues_long_reply_as_reply_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies replies over Discord's content limit continue in a thread."""
+    """Verifies replies over Discord's content limit continue as a reply chain."""
     _stub_streaming_accounting(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
@@ -396,50 +376,20 @@ async def test_handle_streaming_moves_long_reply_overflow_to_thread(
 
     usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · +3 虛擬歡樂豆"
     assert result == f"{body}{usage_footer}"
-    assert message.replies[0].content == body[:_DISCORD_MESSAGE_LIMIT]
-    assert message.replies[0].thread_name == "Generated Thread Topic"
-    assert cog.client.responses.create_models == [cog.runtime_models.fast_model.name]
-    assert cog.client.responses.create_instructions == [THREAD_TITLE_PROMPT]
-    title_input = cog.client.responses.create_inputs[0]
-    assert isinstance(title_input, str)
-    assert "explain how long Discord replies are handled" in title_input
-    assert body[:1800] in title_input
-    thread = message.replies[0].created_thread
-    assert thread is not None
-    assert thread.sent_messages == [
-        body[_DISCORD_MESSAGE_LIMIT : _DISCORD_MESSAGE_LIMIT * 2],
-        f"{body[_DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}",
-    ]
-    assert all(len(chunk) <= _DISCORD_MESSAGE_LIMIT for chunk in thread.sent_messages)
 
+    parent = message.replies[0]
+    assert parent.content == body[:_DISCORD_MESSAGE_LIMIT]
 
-async def test_handle_streaming_falls_back_to_author_thread_title(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verifies thread creation still works when title generation fails."""
-    _stub_streaming_accounting(monkeypatch=monkeypatch)
-    cog = _cog()
-    cog.client.responses.raise_on_thread_title = True
-    message = FakeMessage()
-    body = "x" * 2500
+    first_follow_up = parent.replies[0]
+    assert first_follow_up.content == body[_DISCORD_MESSAGE_LIMIT : _DISCORD_MESSAGE_LIMIT * 2]
 
-    await cog._handle_streaming(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta=body),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
-                    ),
-                ),
-            ]
-        ),
-        message=message,
-    )
+    second_follow_up = first_follow_up.replies[0]
+    assert second_follow_up.content == f"{body[_DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}"
+    assert second_follow_up.replies == []
 
-    assert message.replies[0].thread_name == "AI reply for Tester"
+    chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
+    assert all(len(chunk) <= _DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
+    assert cog.client.responses.create_models == []
 
 
 async def test_handle_streaming_marks_web_search_from_call_event(
