@@ -692,18 +692,16 @@ class ReplyGeneratorCogs(commands.Cog):
         if not is_dm and (not self.bot.user or f"<@{self.bot.user.id}>" not in message.content):
             return
 
-        current_emoji = "🤔"
-        await self._handle_reaction(message=message, emoji=current_emoji)
         user_prompt = await self._get_user_prompt(content=message.content)
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
+            await self._handle_reaction(message=message, emoji="❓")
             await message.reply(content="?")
             return
 
         try:
-            await self._handle_reaction(message=message, emoji="🔀", previous=current_emoji)
+            await self._handle_reaction(message=message, emoji="🔀")
             current_emoji = "🔀"
             route = await self._route_message(message=message)
             if route == "IMAGE":
@@ -730,7 +728,7 @@ class ReplyGeneratorCogs(commands.Cog):
         except Exception as e:
             logfire.error("Failed to generate reply", user_id=message.author.name, _exc_info=True)
             with contextlib.suppress(Exception):
-                await self._handle_reaction(message=message, emoji="❌", previous=current_emoji)
+                await self._handle_reaction(message=message, emoji="❌")
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
