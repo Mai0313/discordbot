@@ -17,7 +17,7 @@ config = LLMConfig()
 
 # Mirror the @property values in cogs/gen_reply.py. Update here when the bot's
 # image_model / fast_model swap, otherwise this script tests stale models.
-IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image-preview")
+IMAGE_MODEL = ModelSettings(name="gemini-3-pro-image-preview")
 FAST_MODEL = ModelSettings(name="gemini-flash-latest", effort="none")
 
 

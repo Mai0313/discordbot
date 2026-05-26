@@ -71,7 +71,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        image_model = ModelSettings(name="gemini-3.1-flash-image-preview")
+        image_model = ModelSettings(name="gemini-3-pro-image-preview")
         return image_model
 
     @property
