@@ -109,22 +109,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return "\n\n".join(embed_parts)
 
     async def _get_cleaned_content(self, message: Message) -> str:
-        """Returns the textual content of a message without the author prefix.
-
-        Falls back through the available text sources in this order: raw content
-        with the bot mention stripped, embed-derived text, and system event
-        description (for join/pin/thread-created style events). The author prefix
-        is added later in `_process_single_message` so it can be skipped for
-        `role=assistant`.
-
-        For bot-authored messages, the trailing `usage_footer` appended by
-        `_handle_streaming` is stripped so history fed back as `role=assistant`
-        does not teach the model to mimic the footer pattern.
-
-        Note: `message.snapshots` (Discord's forward feature) is intentionally
-        not walked here because that workflow is rare in practice. Add it back
-        if forwarded messages become a common path.
-        """
+        """Returns the textual content of a message without the author prefix."""
         content = await self._get_user_prompt(content=message.content)
         if content and self.bot.user and message.author.id == self.bot.user.id:
             content = _USAGE_FOOTER_RE.sub("", content)
@@ -663,10 +648,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
         if new_balance is not None:
-            balance_text = (
-                f"{currency_text(amount=new_balance, compact=True)} "
-                f"({currency_text(amount=total_tokens, signed=True, compact=True)})"
-            )
+            balance_text = f"{currency_text(amount=new_balance, compact=True)} ({currency_text(amount=total_tokens, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=total_tokens, signed=True, compact=True)
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
