@@ -179,18 +179,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_attachment_parts(
         self, message: Message
     ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
-        """Extracts attachment content parts from a message.
-
-        Each attachment is mapped to the modality it requires
-        (image / video / audio) and skipped when the slow model, the heaviest
-        consumer of the payload, does not list that modality. Routing and
-        image-edit paths inherit the same gate so a text-only slow model
-        produces zero attachment parts everywhere.
-
-        Note: `message.snapshots` (Discord's forward feature) is intentionally
-        not walked here for the same reason as in `_get_cleaned_content`;
-        revisit if forwarded media becomes a common path.
-        """
+        """Extracts attachment content parts from a message."""
         slow_model = self.runtime_models.slow_model
         modalities = get_supported_modalities(model_name=slow_model.name)
         _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
@@ -297,12 +286,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
-        """Walks the reference chain up to depth 3 and renders each link as context.
-
-        Output ordering is oldest → newest so that the model reads the conversation
-        in chronological order and the most direct reply (depth 1) appears closest
-        to the current message. A visited set guards against cycles.
-        """
+        """Walks the reference chain up to depth 3 and renders each link as context."""
         chain: list[Message] = []
         visited: set[int] = {message.id}
         current = message
@@ -512,13 +496,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return input_rate * input_tokens + output_rate * output_tokens
 
     async def _award_chat_points(self, message: Message, amount: int) -> int | None:
-        """Persists chat-reward points for a Discord message author.
-
-        Returns the new balance, or None when the amount is non-positive or
-        the DB write fails. Routed through `credit_with_repayment` so all
-        income events share one balance-credit path; long-term loans are
-        repaid explicitly, so chat rewards land fully in the user's wallet.
-        """
+        """Persists chat-reward points for a Discord message author."""
         if amount <= 0:
             return None
         avatar_url = await guild_avatar_url(
