@@ -381,6 +381,31 @@ class LoanContract(Base):
     )
 
 
+class GameSetting(GlobalStateBase):
+    """Tunable game balance values that may be adjusted without redeploy.
+
+    One row per `(game_id, setting_key)`. Stores integer setting values
+    via `StoredInteger` so persisted decimals stay consistent with
+    economy / jackpot tables. Seeded with defaults on first schema bootstrap;
+    later edits via `scripts/manage_game_setting.py` persist across restarts.
+
+    Attributes:
+        game_id: Stable game identifier (e.g. `"dragon_gate"`).
+        setting_key: Setting identifier within the game (e.g. `"ante"`).
+        setting_value: Tunable integer value used by the rules engine.
+        updated_at: Taiwan-local timestamp of the last write.
+    """
+
+    __tablename__ = "game_setting"
+
+    game_id: Mapped[str] = mapped_column(String(length=32), primary_key=True)
+    setting_key: Mapped[str] = mapped_column(String(length=64), primary_key=True)
+    setting_value: Mapped[int] = mapped_column(StoredInteger(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
 class JackpotPool(GlobalStateBase):
     """Per-game cumulative jackpot shared across every table of that game.
 
@@ -422,6 +447,14 @@ class JackpotPool(GlobalStateBase):
 # it, so /house P&L stays unaffected by the donation. Seeded pools are also
 # topped back up to this amount whenever they are drained.
 _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
+
+# Default values seeded into `game_setting` on first schema bootstrap. INSERT
+# OR IGNORE: admin-edited rows survive subsequent restarts; only missing rows
+# get the default. Read via `discordbot.cogs._games.settings.get_game_setting`.
+_GAME_SETTING_SEEDS: Final[tuple[tuple[str, str, int], ...]] = (
+    ("dragon_gate", "ante", 5_000),
+    ("dragon_gate", "min_bet", 10_000),
+)
 
 
 def _jackpot_seed_amount(game_id: str) -> int:
@@ -553,6 +586,17 @@ async def _ensure_global_state_schema() -> None:
                         updated_at=_database_now(),
                     )
                     .on_conflict_do_nothing(index_elements=["game_id"])
+                )
+            for setting_game_id, setting_key, setting_value in _GAME_SETTING_SEEDS:
+                await conn.execute(
+                    statement=insert(GameSetting)
+                    .values(
+                        game_id=setting_game_id,
+                        setting_key=setting_key,
+                        setting_value=_stored_int_to_text(value=setting_value),
+                        updated_at=_database_now(),
+                    )
+                    .on_conflict_do_nothing(index_elements=["game_id", "setting_key"])
                 )
         _global_state_schema_ready_for = _global_state_engine
 

@@ -26,6 +26,7 @@ from discordbot.typings.economy import (
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
     GAME_ID,
+    MIN_BET,
     DragonGateRound,
     DragonGateParticipantUnknownError,
     card_value,
@@ -503,7 +504,7 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     lobby = build_dragon_gate_lobby_embed(
-        owner=owner, participants=[owner, bob], jackpot=100_000, status="ready"
+        owner=owner, participants=[owner, bob], jackpot=100_000, ante=ANTE, status="ready"
     )
     assert isinstance(lobby, Embed)
     assert isinstance(lobby.title, str)
@@ -613,6 +614,8 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
         prepare_participant=prepare_participant,
         refresh_participants=refresh_participants,
         initial_jackpot=state.jackpot,
+        ante=ANTE,
+        min_bet=MIN_BET,
     )
     view.message = message
 
@@ -696,6 +699,8 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         prepare_participant=prepare_participant,
         refresh_participants=refresh_participants,
         initial_jackpot=100_000,
+        ante=ANTE,
+        min_bet=MIN_BET,
     )
     view.message = message
 

@@ -7,7 +7,6 @@ from pydantic import Field, BaseModel, ConfigDict, model_validator
 STOCK_TICK_SECONDS: Final[int] = 5 * 60
 MAX_TICKS_PER_INTERACTION: Final[int] = 12 * 24
 STOCK_HISTORY_DAYS: Final[int] = 7
-STOCK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 STOCK_NEWS_CADENCE_HOURS: Final[int] = 4
 STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS: Final[int] = 4_900
 STOCK_BPS_DENOMINATOR: Final[int] = 10_000
@@ -304,7 +303,6 @@ class StockSupplyAuditView(BaseModel):
 
 __all__ = [
     "MAX_TICKS_PER_INTERACTION",
-    "STOCK_ACTION_TIMEOUT_SECONDS",
     "STOCK_BPS_DENOMINATOR",
     "STOCK_HISTORY_DAYS",
     "STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS",

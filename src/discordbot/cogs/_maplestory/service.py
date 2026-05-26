@@ -81,19 +81,6 @@ class MapleStoryService:
         svc._load_all(data_dir)
         return svc
 
-    # Keep backwards compat for existing callers
-    @classmethod
-    def from_file(cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json") -> MapleStoryService:
-        """Creates a service instance, inferring the directory from a file path.
-
-        Args:
-            file_path: Path to a data file (e.g., monsters.json).
-
-        Returns:
-            An initialized MapleStoryService instance.
-        """
-        return cls.from_directory(file_path.parent)
-
     def _load_all(self, data_dir: Path) -> None:
         """Loads all MapleStory JSON data and resets derived caches."""
         self._monsters = _load_json(path=data_dir / "monsters.json", model=Monster)

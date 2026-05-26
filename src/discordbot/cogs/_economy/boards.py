@@ -6,11 +6,18 @@ from typing import Final, TypedDict
 from functools import cache
 from collections.abc import Sequence
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.utils.number_text import compact_amount
+from discordbot.utils.pillow_text import (
+    BoardFont,
+    fit_text,
+    load_font,
+    draw_text_right,
+    draw_text_center,
+)
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 BALANCE_LEADERBOARD_BOARD_FILENAME = "economy_leaderboard.png"
@@ -34,29 +41,16 @@ _NAME_X = 128
 _AMOUNT_RIGHT = 908
 _NAME_MAX_WIDTH = 520
 _BOARD_IMAGE_CACHE_TTL_SECONDS: Final[float] = 5.0
-_REGULAR_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "NotoSansCJK-Regular.ttc",
-    "DejaVuSans.ttf",
-)
-_BOLD_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "NotoSansCJK-Bold.ttc",
-    "DejaVuSans-Bold.ttf",
-)
-type _BoardFont = ImageFont.ImageFont | ImageFont.FreeTypeFont
 
 
 class _BoardFonts(TypedDict):
     """Font set used by economy board images."""
 
-    title: _BoardFont
-    header: _BoardFont
-    rank: _BoardFont
-    body: _BoardFont
-    small: _BoardFont
+    title: BoardFont
+    header: BoardFont
+    rank: BoardFont
+    body: BoardFont
+    small: BoardFont
 
 
 class _RankingBoardSpec(BaseModel):
@@ -173,23 +167,12 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
 def _board_fonts() -> _BoardFonts:
     """Loads CJK-capable fonts for ranking boards."""
     return {
-        "title": _load_font(size=34, bold=True),
-        "header": _load_font(size=19, bold=True),
-        "rank": _load_font(size=26, bold=True),
-        "body": _load_font(size=24, bold=False),
-        "small": _load_font(size=16, bold=False),
+        "title": load_font(size=34, bold=True),
+        "header": load_font(size=19, bold=True),
+        "rank": load_font(size=26, bold=True),
+        "body": load_font(size=24, bold=False),
+        "small": load_font(size=16, bold=False),
     }
-
-
-def _load_font(size: int, bold: bool) -> _BoardFont:
-    """Loads a CJK-capable font when available."""
-    candidates = _BOLD_FONT_CANDIDATES if bold else _REGULAR_FONT_CANDIDATES
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(font=candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def _draw_header(
@@ -211,7 +194,7 @@ def _draw_header(
         outline=accent,
         width=2,
     )
-    _draw_text_center(
+    draw_text_center(
         draw=draw,
         text="PUBLIC",
         center=(_BOARD_WIDTH - 96, y + 23),
@@ -235,7 +218,7 @@ def _draw_table_header(
     baseline = y + 12
     draw.text(xy=(_RANK_X, baseline), text="排名", font=fonts["header"], fill=_MUTED)
     draw.text(xy=(_NAME_X, baseline), text="玩家", font=fonts["header"], fill=_MUTED)
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=amount_header,
         xy=(_AMOUNT_RIGHT, baseline),
@@ -266,11 +249,11 @@ def _draw_rank_row(
         font=fonts["rank"],
         fill=spec.accent if position <= 3 else _MUTED,
     )
-    display_name = _fit_text(
+    display_name = fit_text(
         draw=draw, text=row.name or "未知玩家", font=fonts["body"], max_width=_NAME_MAX_WIDTH
     )
     draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts["body"], fill=_TEXT)
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=_ranking_amount_text(spec=spec, amount=row.amount),
         xy=(_AMOUNT_RIGHT, y + 13),
@@ -293,58 +276,6 @@ def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
     if not spec.amount_label:
         return amount_text
     return f"{spec.amount_label} {amount_text}"
-
-
-def _draw_text_right(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    xy: tuple[int, int],
-    font: _BoardFont,
-    fill: tuple[int, int, int],
-) -> None:
-    """Draws text with its right edge anchored at x."""
-    right, y = xy
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    draw.text(xy=(right - (bbox[2] - bbox[0]), y), text=text, font=font, fill=fill)
-
-
-def _draw_text_center(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    center: tuple[int, int],
-    font: _BoardFont,
-    fill: tuple[int, int, int],
-) -> None:
-    """Draws text centered around a point."""
-    x, y = center
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    width = bbox[2] - bbox[0]
-    draw.text(xy=(x - width // 2, y), text=text, font=font, fill=fill)
-
-
-def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: _BoardFont, max_width: int) -> str:
-    """Truncates text to fit the requested pixel width."""
-    if _text_width(draw=draw, text=text, font=font) <= max_width:
-        return text
-    suffix = "..."
-    low = 0
-    high = len(text)
-    while low < high:
-        midpoint = (low + high + 1) // 2
-        candidate = f"{text[:midpoint]}{suffix}"
-        if _text_width(draw=draw, text=candidate, font=font) <= max_width:
-            low = midpoint
-        else:
-            high = midpoint - 1
-    if low == 0:
-        return suffix
-    return f"{text[:low]}{suffix}"
-
-
-def _text_width(draw: ImageDraw.ImageDraw, text: str, font: _BoardFont) -> int:
-    """Returns rendered text width."""
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    return bbox[2] - bbox[0]
 
 
 def _rank_text(position: int) -> str:

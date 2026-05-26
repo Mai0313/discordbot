@@ -12,7 +12,7 @@ from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
 from sqlalchemy.engine import Connection
 
-PUBLIC_MESSAGE_TTL_SECONDS = 180
+PUBLIC_MESSAGE_TTL_SECONDS: Final[int] = 180
 _PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/game_cleanup.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None

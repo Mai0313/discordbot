@@ -35,6 +35,9 @@ from discordbot.cogs._games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
+from discordbot.utils.message_cleanup import (
+    PUBLIC_MESSAGE_TTL_SECONDS as BLACKJACK_ACTION_TIMEOUT_SECONDS,
+)
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
@@ -74,7 +77,6 @@ if TYPE_CHECKING:
     from discordbot.cogs._games.dealer import DealerAI
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 5
-BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6

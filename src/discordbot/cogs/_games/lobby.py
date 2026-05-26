@@ -213,14 +213,13 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
 
     On Start, each participant is charged `ante` into the jackpot via
     one `apply_jackpot_settlement_batch` call before the table begins.
-    Subclasses must declare `game_id` / `ante` and override
-    `_start_game_after_antes`.
+    Subclasses must declare `game_id`, pass an `ante` into `__init__`,
+    and override `_start_game_after_antes`.
     """
 
     game_id: ClassVar[str]
-    ante: ClassVar[int]
 
-    def __init__(  # noqa: PLR0913 -- jackpot lobby adds initial_jackpot on top of base deps
+    def __init__(  # noqa: PLR0913 -- jackpot lobby adds initial_jackpot + ante on top of base deps
         self,
         owner: GameParticipant,
         rng: Random,
@@ -230,6 +229,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
+        ante: int,
         timeout: int,
         initial_jackpot_generation: int | None = None,
     ) -> None:
@@ -244,6 +244,7 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
             refresh_participants=refresh_participants,
             timeout=timeout,
         )
+        self.ante = ante
         self._jackpot_snapshot = initial_jackpot
         self._jackpot_generation = initial_jackpot_generation
 

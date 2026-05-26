@@ -17,6 +17,14 @@ from discordbot.typings.games import (
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
+from discordbot.cogs._games.settings import (
+    get_game_setting,
+    set_game_setting,
+    list_game_settings,
+    get_dragon_gate_ante,
+    get_dragon_gate_min_bet,
+    invalidate_game_setting_cache,
+)
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._economy.database import (
     TAIWAN_TIMEZONE,
@@ -538,7 +546,7 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_contract",
         "casino_account",
     }
-    assert global_state_tables == {"jackpot_pool"}
+    assert global_state_tables == {"jackpot_pool", "game_setting"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"
@@ -2775,3 +2783,43 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 
     await engine.dispose()
     await global_state_engine.dispose()
+
+
+async def test_game_setting_seeds_and_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """game_setting rows seed Dragon Gate defaults and round-trip through set/get."""
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
+    invalidate_game_setting_cache()
+
+    assert await get_dragon_gate_ante() == 5_000
+    assert await get_dragon_gate_min_bet() == 10_000
+
+    await set_game_setting(game_id="dragon_gate", setting_key="ante", value=6_500)
+    assert await get_dragon_gate_ante() == 6_500
+    rows = await list_game_settings(game_id="dragon_gate")
+    assert ("dragon_gate", "ante", 6_500) in rows
+
+
+async def test_invalidate_game_setting_cache_forces_db_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After invalidate, a getter hits the DB again instead of returning a stale value."""
+    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
+    invalidate_game_setting_cache()
+
+    assert await get_game_setting(game_id="dragon_gate", setting_key="ante", default=0) == 5_000
+
+    async with open_global_state_session() as session:
+        await session.execute(
+            statement=text(
+                text=(
+                    "UPDATE game_setting SET setting_value = '9999' "
+                    "WHERE game_id = 'dragon_gate' AND setting_key = 'ante'"
+                )
+            )
+        )
+        await session.commit()
+
+    # Stale process cache still returns the original value.
+    assert await get_game_setting(game_id="dragon_gate", setting_key="ante", default=0) == 5_000
+    invalidate_game_setting_cache()
+    assert await get_game_setting(game_id="dragon_gate", setting_key="ante", default=0) == 9_999

@@ -1775,7 +1775,7 @@ def _max_quantity_error(snapshot: _StockExecutionSnapshot) -> str:
     """Returns the clearest validation error when nothing is executable."""
     if snapshot.action == StockAction.BUY:
         if snapshot.position.short_shares <= 0 and snapshot.available_individual_long_shares <= 0:
-            return "單一玩家持股上限為 49%，目前無法再買入這檔股票"
+            return f"單一玩家持股上限為 {STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS // 100}%，目前無法再買入這檔股票"
         if snapshot.position.short_shares <= 0 and snapshot.available_long_shares <= 0:
             return "目前沒有可買入的流通股"
         return "餘額不足，無法買入或回補股票"
@@ -1992,7 +1992,7 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
                 price_cents=price_cents,
                 balance=wallet_balance,
                 position=position,
-                error="單一玩家持股上限為 49%，目前無法再買入這檔股票",
+                error=f"單一玩家持股上限為 {STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS // 100}%，目前無法再買入這檔股票",
             )
         if remaining > available_long_shares:
             return _insufficient_result(

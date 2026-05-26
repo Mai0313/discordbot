@@ -8,7 +8,7 @@ from nextcord import File, User, Member, Message, ButtonStyle, Interaction, Sele
 from pydantic import BaseModel, ConfigDict, SkipValidation
 from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
-from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
+from discordbot.typings.stock import StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs._stock.chart import build_price_chart, invalidate_stock_chart_cache
 from discordbot.cogs._stock.database import (
@@ -16,6 +16,9 @@ from discordbot.cogs._stock.database import (
     get_stock_detail,
     list_market_quotes,
     settle_stock_operation,
+)
+from discordbot.utils.message_cleanup import (
+    PUBLIC_MESSAGE_TTL_SECONDS as STOCK_ACTION_TIMEOUT_SECONDS,
 )
 from discordbot.utils.message_cleanup import (
     track_public_message,

@@ -19,12 +19,12 @@ nav:
               - _auto_unmute:
                   - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
               - _economy:
+                  - boards: Reference/discordbot/cogs/_economy/boards.md
                   - database: Reference/discordbot/cogs/_economy/database.md
                   - presentation: Reference/discordbot/cogs/_economy/presentation.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
                   - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
-                  - cleanup: Reference/discordbot/cogs/_games/cleanup.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
@@ -32,6 +32,7 @@ nav:
                   - lobby: Reference/discordbot/cogs/_games/lobby.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
+                  - settings: Reference/discordbot/cogs/_games/settings.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
@@ -49,6 +50,7 @@ nav:
                   - market: Reference/discordbot/cogs/_stock/market.md
                   - news: Reference/discordbot/cogs/_stock/news.md
                   - presentation: Reference/discordbot/cogs/_stock/presentation.md
+                  - prompts: Reference/discordbot/cogs/_stock/prompts.md
                   - views: Reference/discordbot/cogs/_stock/views.md
               - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
               - economy: Reference/discordbot/cogs/economy.md
@@ -72,7 +74,11 @@ nav:
               - avatars: Reference/discordbot/utils/avatars.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
+              - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
+              - number_text: Reference/discordbot/utils/number_text.md
+              - pillow_text: Reference/discordbot/utils/pillow_text.md
+              - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
@@ -82,6 +88,7 @@ nav:
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
       - manage_central_banker: Scripts/manage_central_banker.md
+      - manage_game_setting: Scripts/manage_game_setting.md
       - manage_stock_company: Scripts/manage_stock_company.md
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md

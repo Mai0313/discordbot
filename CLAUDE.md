@@ -109,6 +109,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Blackjack player losses clamp at balance 0. `apply_round_settlement` mirrors only the actual collected player debit into the bot's house ledger; full positive payouts still mirror the dealer-paid delta.
 - Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"` in `data/global_state.db`. Jackpot money columns also use decimal-string storage. Do not route it through the house ledger.
 - Dragon Gate ante, losses, wins, leave refunds, and timeout refunds settle through jackpot helpers. Losses clamp at balance 0.
+- Tunable game balance values live in `game_setting` (also in `data/global_state.db`), keyed by `(game_id, setting_key)`. Defaults seed on schema bootstrap; Dragon Gate ante / min_bet load through `cogs/_games/settings.py` getters with a process cache, with `cogs/_games/dragon_gate.py` module constants kept only as offline / test fallback. Adjust with `scripts/manage_game_setting.py set <game_id> <setting_key> <int>`.
 - On Dragon Gate leave or timeout, positive per-player running delta is refunded into the pool unless the whole-pool win branch already cleared the jackpot.
 - Interactive game and lobby views use 180-second idle timeouts. Terminal public messages schedule deletion 180 seconds after settlement or send through `utils.message_cleanup`; do not add cog-local delete/forget loops.
 - `build_dealer_talk_embed` is the dedicated dealer-talk embed. In-progress and final game messages may send multiple embeds in order `[dealer talk, main, history?]`.

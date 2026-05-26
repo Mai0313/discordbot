@@ -19,6 +19,9 @@ from discordbot.cogs._games.lobby import (
 )
 from discordbot.utils.number_text import compact_amount
 from discordbot.cogs._games.wagers import parse_wager_amount
+from discordbot.utils.message_cleanup import (
+    PUBLIC_MESSAGE_TTL_SECONDS as DRAGON_GATE_ACTION_TIMEOUT_SECONDS,
+)
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
@@ -26,7 +29,6 @@ from discordbot.cogs._economy.database import (
     apply_jackpot_settlement,
 )
 from discordbot.cogs._games.dragon_gate import (
-    ANTE,
     GAME_ID,
     DragonGateTurn,
     DragonGateError,
@@ -69,7 +71,6 @@ if TYPE_CHECKING:
     from discordbot.typings.economy import JackpotSnapshot
     from discordbot.cogs._games.dealer import DealerAI
 
-DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
 DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
@@ -235,6 +236,7 @@ def build_dragon_gate_lobby_embed(
     owner: GameParticipant,
     participants: list[GameParticipant],
     jackpot: int,
+    ante: int,
     status: str = "等待玩家加入",
 ) -> Embed:
     """Builds the lobby embed shown before a 射龍門 table starts."""
@@ -253,7 +255,7 @@ def build_dragon_gate_lobby_embed(
     )
     if owner.avatar_url:
         embed.set_thumbnail(url=owner.avatar_url)
-    embed.set_footer(text=f"入場費 {currency_text(amount=ANTE, compact=True)} 進彩金池")
+    embed.set_footer(text=f"入場費 {currency_text(amount=ante, compact=True)} 進彩金池")
     return embed
 
 
@@ -352,7 +354,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
     """Join / leave / start lobby for a 射龍門 game session."""
 
     game_id = GAME_ID
-    ante = ANTE
 
     def __init__(  # noqa: PLR0913 -- lobby owns all table dependencies
         self,
@@ -364,6 +365,8 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
+        ante: int,
+        min_bet: int,
         initial_jackpot_generation: int | None = None,
     ) -> None:
         """Initializes a 射龍門 lobby with the current jackpot snapshot."""
@@ -376,9 +379,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             initial_jackpot=initial_jackpot,
+            ante=ante,
             timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS,
             initial_jackpot_generation=initial_jackpot_generation,
         )
+        self._min_bet = min_bet
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
         """Builds the 射龍門 lobby embed from participants and jackpot state."""
@@ -387,6 +392,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             participants=self.participants,
             jackpot=self._jackpot_snapshot,
             status=status,
+            ante=self.ante,
         )
 
     async def _start_game_after_antes(
@@ -394,14 +400,14 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
     ) -> None:
         """Starts the active table after all lobby antes have been charged."""
         round_state = DragonGateRound.from_participants(
-            rng=self.rng, participants=self.participants
+            rng=self.rng, participants=self.participants, min_bet=self._min_bet
         )
         table_balance = sum(participant.balance_at_start for participant in self.participants)
         dealer_line = await self.dealer.taunt_bet(
             author_name=self.owner.account_name,
             player_name=f"{len(self.participants)} 位玩家",
             balance_at_start=table_balance,
-            bet=ANTE * len(self.participants),
+            bet=self.ante * len(self.participants),
             game="dragon_gate",
         )
         view = DragonGateView(

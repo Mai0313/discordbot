@@ -136,12 +136,18 @@ class DragonGateRound(BaseModel):
     layer reads this on withdraw / timeout to decide whether to apply the
     "逆贏不拿" refund (clawing winnings back into the jackpot when a
     player leaves while ahead).
+
+    `min_bet` lets the caller override the floor of the legal bet range so
+    runtime tuning (DB-backed game_setting) does not require editing the
+    rules module; defaults to the module-level `MIN_BET` so tests stay
+    deterministic without DB.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     rng: Random
     participants: list[GameParticipant]
+    min_bet: int = MIN_BET
     current_player_index: int = 0
     turn_number: int = 0
     active_turn: DragonGateTurn | None = None
@@ -152,12 +158,12 @@ class DragonGateRound(BaseModel):
 
     @classmethod
     def from_participants(
-        cls, rng: Random, participants: list[GameParticipant]
+        cls, rng: Random, participants: list[GameParticipant], min_bet: int = MIN_BET
     ) -> "DragonGateRound":
         """Builds and starts a 射龍門 round from lobby participants."""
         if not participants:
             raise ValueError("At least one participant is required")
-        round_state = cls(rng=rng, participants=participants)
+        round_state = cls(rng=rng, participants=participants, min_bet=min_bet)
         round_state.player_deltas = {participant.user_id: 0 for participant in participants}
         round_state._deal_next_turn()
         return round_state
@@ -166,7 +172,7 @@ class DragonGateRound(BaseModel):
         """Returns the minimum legal bet given the live jackpot snapshot."""
         if jackpot <= 0:
             return 0
-        return min(MIN_BET, jackpot)
+        return min(self.min_bet, jackpot)
 
     def current_max_bet(self, jackpot: int) -> int:
         """Returns the maximum legal bet given the live jackpot snapshot."""

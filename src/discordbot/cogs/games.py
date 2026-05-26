@@ -21,13 +21,13 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import DealerAI
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.cogs._games.settings import get_dragon_gate_ante, get_dragon_gate_min_bet
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_tracked_public_messages,
     schedule_public_message_delete,
 )
 from discordbot.cogs._economy.database import get_balance
-from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._games.blackjack_views import (
@@ -227,13 +227,13 @@ class GamesCogs(commands.Cog):
             color=ERROR_COLOR,
         )
 
-    def _dragon_gate_insufficient_balance_embed(self, balance: int) -> Embed:
+    def _dragon_gate_insufficient_balance_embed(self, balance: int, ante: int) -> Embed:
         """Builds the insufficient-balance embed for 射龍門 ante checks."""
         return Embed(
             title="餘額不足",
             description=(
                 f"### {bold_currency(amount=balance, compact=True)}\n"
-                f"射龍門入場費固定 {bold_currency(amount=ANTE, compact=True)} 進彩金池\n"
+                f"射龍門入場費固定 {bold_currency(amount=ante, compact=True)} 進彩金池\n"
                 f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
             ),
             color=ERROR_COLOR,
@@ -357,19 +357,20 @@ class GamesCogs(commands.Cog):
         if interaction.user is None:
             return
 
+        ante = await get_dragon_gate_ante()
+        min_bet = await get_dragon_gate_min_bet()
+        insufficient_embed = partial(self._dragon_gate_insufficient_balance_embed, ante=ante)
+
         participant_result = await self._participant_from_user(
             user=interaction.user,
-            wager=ANTE,
+            wager=ante,
             mode="exact",
             guild=getattr(interaction, "guild", None),
         )
         owner = participant_result.participant
         if owner is None:
             message = await interaction.followup.send(
-                embed=self._dragon_gate_insufficient_balance_embed(
-                    balance=participant_result.balance
-                ),
-                wait=True,
+                embed=insufficient_embed(balance=participant_result.balance), wait=True
             )
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
@@ -384,16 +385,18 @@ class GamesCogs(commands.Cog):
             dealer_avatar_url=dealer_identity.dealer_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
-                wager=ANTE,
+                wager=ante,
                 mode="exact",
-                insufficient_embed_builder=self._dragon_gate_insufficient_balance_embed,
+                insufficient_embed_builder=insufficient_embed,
             ),
-            refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
+            refresh_participants=partial(self._refresh_participants, wager=ante, mode="exact"),
             initial_jackpot=initial_jackpot.balance,
+            ante=ante,
+            min_bet=min_bet,
             initial_jackpot_generation=initial_jackpot.generation,
         )
         embed = build_dragon_gate_lobby_embed(
-            owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
+            owner=owner, participants=view.participants, jackpot=initial_jackpot.balance, ante=ante
         )
         message = await interaction.followup.send(embed=embed, view=view, wait=True)
         await track_public_message(message=message, user_name=owner.account_name)

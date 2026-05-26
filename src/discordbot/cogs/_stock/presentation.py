@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import TypedDict
 from functools import cache, lru_cache
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from nextcord import Embed
 from pydantic import BaseModel, ConfigDict
 
@@ -20,6 +20,7 @@ from discordbot.typings.stock import (
     StockParticipantPositionView,
 )
 from discordbot.utils.number_text import compact_amount, share_quantity_text
+from discordbot.utils.pillow_text import BoardFont, fit_text, load_font, draw_text_right
 from discordbot.cogs._stock.market import cash_floor, format_price
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
@@ -58,29 +59,16 @@ _MARKET_PRESSURE_RIGHT = 930
 _MARKET_CAP_RIGHT = 1068
 _MARKET_NAME_MAX_WIDTH = 280
 _MARKET_CATEGORY_MAX_WIDTH = 112
-_REGULAR_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "NotoSansCJK-Regular.ttc",
-    "DejaVuSans.ttf",
-)
-_BOLD_FONT_CANDIDATES = (
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "NotoSansCJK-Bold.ttc",
-    "DejaVuSans-Bold.ttf",
-)
-type _MarketFont = ImageFont.ImageFont | ImageFont.FreeTypeFont
 
 
 class _MarketFonts(TypedDict):
     """Font set used by the stock market board image."""
 
-    title: _MarketFont
-    header: _MarketFont
-    symbol: _MarketFont
-    body: _MarketFont
-    small: _MarketFont
+    title: BoardFont
+    header: BoardFont
+    symbol: BoardFont
+    body: BoardFont
+    small: BoardFont
 
 
 class _MarketBoardQuote(BaseModel):
@@ -236,23 +224,12 @@ def _market_page[MarketPageRow](
 def _market_fonts() -> _MarketFonts:
     """Loads the market board fonts with a bundled-system fallback chain."""
     return {
-        "title": _load_font(size=34, bold=True),
-        "header": _load_font(size=20, bold=True),
-        "symbol": _load_font(size=28, bold=True),
-        "body": _load_font(size=24, bold=False),
-        "small": _load_font(size=16, bold=False),
+        "title": load_font(size=34, bold=True),
+        "header": load_font(size=20, bold=True),
+        "symbol": load_font(size=28, bold=True),
+        "body": load_font(size=24, bold=False),
+        "small": load_font(size=16, bold=False),
     }
-
-
-def _load_font(size: int, bold: bool) -> _MarketFont:
-    """Loads a CJK-capable font when available."""
-    candidates = _BOLD_FONT_CANDIDATES if bold else _REGULAR_FONT_CANDIDATES
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(font=candidate, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
 
 
 def _draw_market_header(
@@ -270,7 +247,7 @@ def _draw_market_header(
     if page_count > 1:
         summary = f"{summary} · 第 {page_index + 1}/{page_count} 頁"
     draw.text(xy=(x, y + 40), text=summary, font=fonts["small"], fill=_MARKET_MUTED)
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=f"單位: {CURRENCY_NAME}",
         xy=(_MARKET_CAP_RIGHT, y + 40),
@@ -295,28 +272,28 @@ def _draw_market_table_header(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y:
     draw.text(
         xy=(_MARKET_CATEGORY_X, baseline), text="分類", font=fonts["header"], fill=_MARKET_MUTED
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text="股價",
         xy=(_MARKET_PRICE_RIGHT, baseline),
         font=fonts["header"],
         fill=_MARKET_MUTED,
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text="今日",
         xy=(_MARKET_CHANGE_RIGHT, baseline),
         font=fonts["header"],
         fill=_MARKET_MUTED,
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text="買賣壓力",
         xy=(_MARKET_PRESSURE_RIGHT, baseline),
         font=fonts["header"],
         fill=_MARKET_MUTED,
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text="市值",
         xy=(_MARKET_CAP_RIGHT, baseline),
@@ -348,10 +325,10 @@ def _draw_market_row(
         width=1,
     )
     market_cap = cash_floor(cents=quote.price_cents * quote.total_shares)
-    name = _fit_text(
+    name = fit_text(
         draw=draw, text=quote.name, font=fonts["body"], max_width=_MARKET_NAME_MAX_WIDTH
     )
-    category = _fit_text(
+    category = fit_text(
         draw=draw, text=quote.category, font=fonts["small"], max_width=_MARKET_CATEGORY_MAX_WIDTH
     )
     draw.text(
@@ -359,28 +336,28 @@ def _draw_market_row(
     )
     draw.text(xy=(_MARKET_COMPANY_X, y + 8), text=name, font=fonts["body"], fill=_MARKET_TEXT)
     _draw_tag(draw=draw, text=category, xy=(_MARKET_CATEGORY_X, y + 19), font=fonts["small"])
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=format_price(price_cents=quote.price_cents),
         xy=(_MARKET_PRICE_RIGHT, y + 12),
         font=fonts["body"],
         fill=_MARKET_TEXT,
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=signed_percent(bps=quote.change_bps),
         xy=(_MARKET_CHANGE_RIGHT, y + 12),
         font=fonts["body"],
         fill=_metric_color(bps=quote.change_bps),
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=signed_percent(bps=quote.pressure_bps),
         xy=(_MARKET_PRESSURE_RIGHT, y + 12),
         font=fonts["body"],
         fill=_metric_color(bps=quote.pressure_bps),
     )
-    _draw_text_right(
+    draw_text_right(
         draw=draw,
         text=compact_amount(amount=market_cap),
         xy=(_MARKET_CAP_RIGHT, y + 12),
@@ -403,9 +380,7 @@ def _draw_empty_market_row(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y: in
     )
 
 
-def _draw_tag(
-    draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int], font: _MarketFont
-) -> None:
+def _draw_tag(draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int], font: BoardFont) -> None:
     """Draws a compact category tag."""
     x, y = xy
     bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
@@ -414,44 +389,6 @@ def _draw_tag(
         xy=(x, y, x + width, y + 20), radius=8, fill=(67, 57, 35), outline=(94, 78, 44)
     )
     draw.text(xy=(x + 8, y + 1), text=text, font=font, fill=_MARKET_TAG)
-
-
-def _draw_text_right(
-    draw: ImageDraw.ImageDraw,
-    text: str,
-    xy: tuple[int, int],
-    font: _MarketFont,
-    fill: tuple[int, int, int],
-) -> None:
-    """Draws text with its right edge anchored at x."""
-    right, y = xy
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    draw.text(xy=(right - (bbox[2] - bbox[0]), y), text=text, font=font, fill=fill)
-
-
-def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: _MarketFont, max_width: int) -> str:
-    """Truncates text to fit the requested pixel width."""
-    if _text_width(draw=draw, text=text, font=font) <= max_width:
-        return text
-    suffix = "..."
-    low = 0
-    high = len(text)
-    while low < high:
-        midpoint = (low + high + 1) // 2
-        candidate = f"{text[:midpoint]}{suffix}"
-        if _text_width(draw=draw, text=candidate, font=font) <= max_width:
-            low = midpoint
-        else:
-            high = midpoint - 1
-    if low == 0:
-        return suffix
-    return f"{text[:low]}{suffix}"
-
-
-def _text_width(draw: ImageDraw.ImageDraw, text: str, font: _MarketFont) -> int:
-    """Returns rendered text width."""
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    return bbox[2] - bbox[0]
 
 
 def _metric_color(bps: int) -> tuple[int, int, int]:
