@@ -655,10 +655,9 @@ class ReplyGeneratorCogs(commands.Cog):
             model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-        # Award chat points equal to total tokens used. We await this (rather
-        # than fire-and-forget) so the resulting balance can land in the
-        # footer; on DB failure _award_chat_points returns None and the
-        # footer falls back to the delta-only format.
+        # Award chat points equal to total tokens used. We await this (rather than fire-and-forget)
+        # so the resulting balance can land in the footer.
+        # On DB failure, it returns None and the footer falls back to the delta-only format.
         total_tokens = input_tokens + output_tokens
         new_balance = await self._award_chat_points(message=message, amount=total_tokens)
 
