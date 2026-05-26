@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import monotonic
 import uuid
 from random import Random, SystemRandom
 from typing import TYPE_CHECKING, Any, Final
@@ -89,6 +90,7 @@ _news_provider_semaphore: asyncio.Semaphore | None = None
 _news_provider_semaphore_loop: asyncio.AbstractEventLoop | None = None
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _NEWS_PROVIDER_CONCURRENCY: Final[int] = 4
+_STOCK_PORTFOLIO_CACHE_TTL_SECONDS: Final[float] = 5.0
 _ORDER_FLOW_LOOKBACK = timedelta(hours=24)
 _NEWS_SENTIMENT_LOOKBACK = timedelta(
     seconds=NEWS_SENTIMENT_DECAY_SECONDS
@@ -98,6 +100,36 @@ _FINAL_OPERATION_STATUSES: Final[tuple[str, ...]] = (
     StockOperationStatus.APPLIED.value,
     StockOperationStatus.FAILED.value,
 )
+type _StockPortfolioCacheKey = tuple[int, int]
+_stock_portfolio_cache: dict[_StockPortfolioCacheKey, tuple[float, StockPortfolioView]] = {}
+
+
+def invalidate_stock_portfolio_cache(user_id: int | None = None) -> None:
+    """Clears process-local stock portfolio view cache entries."""
+    if user_id is None:
+        _stock_portfolio_cache.clear()
+        return
+    engine_id = id(_engine)
+    _stock_portfolio_cache.pop((engine_id, user_id), None)
+
+
+def _cached_stock_portfolio(user_id: int) -> StockPortfolioView | None:
+    """Returns a cached stock portfolio when its short TTL is still valid."""
+    cache_key: _StockPortfolioCacheKey = (id(_engine), user_id)
+    cached = _stock_portfolio_cache.get(cache_key)
+    if cached is None:
+        return None
+    cached_at, portfolio = cached
+    if monotonic() - cached_at > _STOCK_PORTFOLIO_CACHE_TTL_SECONDS:
+        _stock_portfolio_cache.pop(cache_key, None)
+        return None
+    return portfolio
+
+
+def _cache_stock_portfolio(portfolio: StockPortfolioView) -> StockPortfolioView:
+    """Stores one stock portfolio view in the short process cache."""
+    _stock_portfolio_cache[(id(_engine), portfolio.user_id)] = (monotonic(), portfolio)
+    return portfolio
 
 
 class Base(DeclarativeBase):
@@ -594,6 +626,7 @@ async def upsert_stock_profile(
                 )
             existing.updated_at = effective_now
         await session.commit()
+        invalidate_stock_portfolio_cache()
         return _profile_view(profile=existing)
 
 
@@ -1208,13 +1241,56 @@ async def list_market_quotes(
         )
         symbols = tuple(symbols_result.scalars().all())
     quotes: list[StockMarketQuote] = []
-    for symbol in symbols:
-        async with open_stock_session() as session, _market_lock(symbol=symbol):
-            quotes.append(
-                await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
-            )
-            await session.commit()
+    async with open_stock_session() as session:
+        for symbol in symbols:
+            async with _market_lock(symbol=symbol):
+                quotes.append(
+                    await advance_market_in_session(
+                        session=session, symbol=symbol, now=now, rng=rng
+                    )
+                )
+                await session.commit()
     return tuple(quotes)
+
+
+async def _advance_symbols_for_views(
+    symbols: tuple[str, ...], now: datetime | None, rng: Random | None
+) -> None:
+    """Advances several symbols with one stock session while preserving per-symbol locks."""
+    async with open_stock_session() as session:
+        for symbol in symbols:
+            async with _market_lock(symbol=symbol):
+                await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
+                await session.commit()
+
+
+async def _current_stock_portfolio(user_id: int) -> StockPortfolioView:
+    """Reads a portfolio after the caller has advanced relevant symbols."""
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=select(StockPosition, StockProfile)
+            .join(StockProfile, StockProfile.symbol == StockPosition.symbol)
+            .where(
+                StockPosition.user_id == user_id,
+                or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
+            )
+            .order_by(StockPosition.symbol.asc())
+        )
+        position_rows = list(result.all())
+        position_rows.sort(
+            key=lambda row: (-_position_share_total(position=row[0]), row[0].symbol)
+        )
+        holdings = tuple(
+            _portfolio_holding_view(position=position, profile=profile)
+            for position, profile in position_rows
+        )
+    return StockPortfolioView(
+        user_id=user_id,
+        holdings=holdings,
+        equity_value=sum(holding.equity_value for holding in holdings),
+        unrealized_pnl=sum(holding.unrealized_pnl for holding in holdings),
+        realized_pnl=sum(holding.realized_pnl for holding in holdings),
+    )
 
 
 async def get_stock_detail(
@@ -1253,40 +1329,20 @@ async def get_stock_portfolio(
     user_id: int, now: datetime | None = None, rng: Random | None = None
 ) -> StockPortfolioView:
     """Returns the user's non-zero stock positions with current quote valuation."""
+    if now is None and rng is None:
+        cached = _cached_stock_portfolio(user_id=user_id)
+        if cached is not None:
+            return cached
     await _ensure_schema()
     async with open_stock_session() as session:
         symbols = await _user_position_symbols(session=session, user_id=user_id)
     if symbols:
         await ensure_due_stock_news(symbols=symbols, now=now)
-    for symbol in symbols:
-        async with open_stock_session() as session, _market_lock(symbol=symbol):
-            await advance_market_in_session(session=session, symbol=symbol, now=now, rng=rng)
-            await session.commit()
-    async with open_stock_session() as session:
-        result = await session.execute(
-            statement=select(StockPosition, StockProfile)
-            .join(StockProfile, StockProfile.symbol == StockPosition.symbol)
-            .where(
-                StockPosition.user_id == user_id,
-                or_(StockPosition.long_shares > 0, StockPosition.short_shares > 0),
-            )
-            .order_by(StockPosition.symbol.asc())
-        )
-        position_rows = list(result.all())
-        position_rows.sort(
-            key=lambda row: (-_position_share_total(position=row[0]), row[0].symbol)
-        )
-        holdings = tuple(
-            _portfolio_holding_view(position=position, profile=profile)
-            for position, profile in position_rows
-        )
-    return StockPortfolioView(
-        user_id=user_id,
-        holdings=holdings,
-        equity_value=sum(holding.equity_value for holding in holdings),
-        unrealized_pnl=sum(holding.unrealized_pnl for holding in holdings),
-        realized_pnl=sum(holding.realized_pnl for holding in holdings),
-    )
+        await _advance_symbols_for_views(symbols=symbols, now=now, rng=rng)
+    portfolio = await _current_stock_portfolio(user_id=user_id)
+    if now is None and rng is None:
+        return _cache_stock_portfolio(portfolio=portfolio)
+    return portfolio
 
 
 async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
@@ -2489,6 +2545,7 @@ async def _finalize_stock_side(plan: _StockOperationPlan, now: datetime) -> None
             .values(status=StockOperationStatus.APPLIED.value, updated_at=now)
         )
         await session.commit()
+    invalidate_stock_portfolio_cache(user_id=plan.position.user_id)
 
 
 async def _write_position(

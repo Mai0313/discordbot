@@ -21,6 +21,9 @@ from discordbot.cogs._stock.views import (
 from discordbot.cogs._stock.database import list_market_quotes, ensure_due_stock_news
 from discordbot.utils.message_cleanup import track_public_message
 
+_stock_news_refresh_task: asyncio.Task[None] | None = None
+_stock_news_refresh_task_loop: asyncio.AbstractEventLoop | None = None
+
 
 class StockCogs(commands.Cog):
     """Provides the simulated stock market slash command."""
@@ -69,8 +72,24 @@ class StockCogs(commands.Cog):
 
 def _schedule_stock_news_refresh(news_ai: StockNewsAI) -> None:
     """Starts a background stock news refresh without delaying the market UI."""
+    global _stock_news_refresh_task, _stock_news_refresh_task_loop  # noqa: PLW0603 -- process task de-dupe
+    loop = asyncio.get_running_loop()
+    if _stock_news_refresh_task_loop is not loop:
+        _stock_news_refresh_task = None
+        _stock_news_refresh_task_loop = loop
+    if _stock_news_refresh_task is not None and not _stock_news_refresh_task.done():
+        return
     task = asyncio.create_task(ensure_due_stock_news(news_provider=news_ai.generate))
-    task.add_done_callback(_log_stock_news_refresh_failure)
+    _stock_news_refresh_task = task
+    task.add_done_callback(_finish_stock_news_refresh)
+
+
+def _finish_stock_news_refresh(task: asyncio.Task[None]) -> None:
+    """Clears the active background refresh slot and logs failures."""
+    global _stock_news_refresh_task  # noqa: PLW0603 -- process task de-dupe
+    if _stock_news_refresh_task is task:
+        _stock_news_refresh_task = None
+    _log_stock_news_refresh_failure(task=task)
 
 
 def _log_stock_news_refresh_failure(task: asyncio.Task[None]) -> None:

@@ -44,6 +44,7 @@ errors before either commit; SQLite still cannot make a hard crash between two
 database-file commits fully atomic.
 """
 
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -103,6 +104,7 @@ from discordbot.typings.economy import (
     OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
+from discordbot.cogs._economy.boards import invalidate_economy_board_cache
 from discordbot.utils.stored_integer import (
     StoredInteger,
     configure_sqlite_stored_integer_functions,
@@ -120,6 +122,7 @@ _CHECKIN_MAX_RETRIES: Final[int] = 8
 _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
 _CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
 _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
+_ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 # Blackjack VIP perk: 1.5x payout on winning rounds, applied as floor(delta * 3 / 2).
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
@@ -254,9 +257,9 @@ class UserWallet(Base):
 
     __tablename__ = "user_wallet"
     __table_args__ = (
-        # /leaderboard does ORDER BY balance DESC LIMIT 10; the index turns a
-        # full scan into a bounded walk. SQLite can read an ASC index backwards
-        # to satisfy ORDER BY DESC.
+        # StoredInteger persists decimal text, so /leaderboard uses an integer-aware
+        # ORDER BY expression. This index still helps point lookups and future
+        # schema migration paths, but it cannot satisfy that computed sort by itself.
         Index("ix_user_wallet_balance", "balance"),
     )
 
@@ -443,6 +446,57 @@ _global_state_schema_lock: asyncio.Lock | None = None
 _global_state_schema_lock_loop: asyncio.AbstractEventLoop | None = None
 _loan_accept_lock: asyncio.Lock | None = None
 _loan_accept_lock_loop: asyncio.AbstractEventLoop | None = None
+type _TopNCacheKey = tuple[int, int | None, tuple[int, ...], bool]
+type _TopLosersCacheKey = tuple[int, int, tuple[int, ...], bool, datetime]
+_top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
+_top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEntry, ...]]] = {}
+
+
+def invalidate_economy_leaderboard_cache() -> None:
+    """Clears process-local leaderboard row and board-image caches."""
+    _top_n_cache.clear()
+    _top_losers_cache.clear()
+    invalidate_economy_board_cache()
+
+
+def _cached_top_n_rows(cache_key: _TopNCacheKey) -> list[LeaderboardEntry] | None:
+    """Returns cached balance leaderboard rows when the short TTL is still valid."""
+    cached = _top_n_cache.get(cache_key)
+    if cached is None:
+        return None
+    cached_at, rows = cached
+    if monotonic() - cached_at > _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS:
+        _top_n_cache.pop(cache_key, None)
+        return None
+    return list(rows)
+
+
+def _cached_top_loser_rows(cache_key: _TopLosersCacheKey) -> list[LossLeaderboardEntry] | None:
+    """Returns cached loss leaderboard rows when the short TTL is still valid."""
+    cached = _top_losers_cache.get(cache_key)
+    if cached is None:
+        return None
+    cached_at, rows = cached
+    if monotonic() - cached_at > _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS:
+        _top_losers_cache.pop(cache_key, None)
+        return None
+    return list(rows)
+
+
+def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 -- SQLAlchemy columns are generic expressions
+    """Returns ORDER BY terms for descending numeric order over decimal text."""
+    sign = func.discordbot_int_compare_text(column, _stored_int_to_text(value=0))
+    positive_length = case((sign > 0, func.length(column)), else_=0)
+    negative_length = case((sign < 0, func.length(column)), else_=0)
+    positive_text = case((sign > 0, column), else_="")
+    negative_text = case((sign < 0, column), else_="")
+    return (
+        desc(sign),
+        desc(positive_length),
+        desc(positive_text),
+        negative_length.asc(),
+        negative_text.asc(),
+    )
 
 
 def _current_schema_lock() -> asyncio.Lock:
@@ -731,6 +785,7 @@ async def _apply_daily_casino_delta_in_session(
             },
         )
     )
+    invalidate_economy_leaderboard_cache()
 
 
 async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper keeps income writes atomic
@@ -749,11 +804,10 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
     result = await session.execute(
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=amount, now=now)
     )
+    new_balance = result.scalar_one()
+    invalidate_economy_leaderboard_cache()
     return CreditResult(
-        new_balance=result.scalar_one(),
-        credited_amount=amount,
-        principal_repaid=0,
-        remaining_debt=0,
+        new_balance=new_balance, credited_amount=amount, principal_repaid=0, remaining_debt=0
     )
 
 
@@ -830,6 +884,7 @@ async def _try_insert_clamped_positive_delta_in_session(
     inserted_balance = insert_result.scalar_one_or_none()
     if inserted_balance is None:
         return None
+    invalidate_economy_leaderboard_cache()
     return inserted_balance, delta
 
 
@@ -860,6 +915,8 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
     )
     if update_result.scalar_one_or_none() is None:
         return None
+    if applied != 0:
+        invalidate_economy_leaderboard_cache()
     return new_balance, applied
 
 
@@ -876,7 +933,10 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     )
     stmt = _build_signed_delta_upsert(user_id=user_id, name=name, delta=delta, now=now)
     result = await session.execute(statement=stmt)
-    return result.scalar_one()
+    new_balance = result.scalar_one()
+    if delta != 0:
+        invalidate_economy_leaderboard_cache()
+    return new_balance
 
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
@@ -995,6 +1055,7 @@ async def credit_with_repayment(
             now=now,
         )
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return result
 
 
@@ -1046,6 +1107,7 @@ async def adjust_balance(
                 now=now,
             )
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
 
 
@@ -1084,6 +1146,7 @@ async def apply_ordered_wallet_deltas(
             await session.rollback()
             return None
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return OrderedWalletDeltaResult(new_balance=balance, applied_deltas=tuple(applied))
 
 
@@ -1132,6 +1195,8 @@ async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session h
             return None
         balance = new_balance
         applied.append(delta)
+    if any(delta != 0 for delta in applied):
+        invalidate_economy_leaderboard_cache()
     return balance
 
 
@@ -1199,6 +1264,7 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
                 now=now,
             )
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return player_balance, dealer_balance
 
 
@@ -1603,6 +1669,8 @@ async def apply_jackpot_settlement_batch(
 
             await global_session.commit()
             await economy_session.commit()
+            if any(delta != 0 for delta in applied_player_deltas.values()):
+                invalidate_economy_leaderboard_cache()
             return JackpotSettlementBatchResult(
                 player_balances=player_balances,
                 applied_player_deltas=applied_player_deltas,
@@ -1694,6 +1762,7 @@ async def _insert_first_checkin_in_session(
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
     )
     balance_after = credit_result.scalar_one()
+    invalidate_economy_leaderboard_cache()
     return reward, balance_after, new_streak, False
 
 
@@ -1758,6 +1827,7 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
         statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
     )
     balance_after = credit_result.scalar_one()
+    invalidate_economy_leaderboard_cache()
     return reward, balance_after, streak_after, bool(vip_after)
 
 
@@ -1836,6 +1906,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
 
             reward, balance_after, streak_after, vip_after = outcome
             await session.commit()
+            invalidate_economy_leaderboard_cache()
             return CheckinResult(
                 new_balance=balance_after, amount=reward, streak=streak_after, is_vip=vip_after
             )
@@ -1917,6 +1988,7 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
                 continue
 
             await session.commit()
+            invalidate_economy_leaderboard_cache()
             return VipPurchaseResult(new_balance=wallet_row[0], cost=cost)
 
         return None
@@ -2225,6 +2297,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         receiver_balance = credit_result.scalar_one()
 
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
 
 
@@ -2235,8 +2308,9 @@ async def top_n(
 
     `exclude_user_ids` filters out specific accounts (notably the bot's
     own house ledger row) before applying the limit, so the leaderboard
-    always shows real players. The `ix_user_wallet_balance` index keeps
-    this query cheap even as the user table grows.
+    always shows real players. Stored integer values are sorted in SQL with
+    explicit decimal-text aware order terms so the query can still apply
+    `LIMIT` before rows reach Python.
 
     Args:
         limit: Maximum number of accounts to return, or `None` to return all
@@ -2250,6 +2324,13 @@ async def top_n(
         empty when the user has never been seen by an avatar-aware write path.
     """
     await _ensure_schema()
+    if limit is not None and limit <= 0:
+        return []
+    exclude_key = tuple(sorted(exclude_user_ids))
+    cache_key: _TopNCacheKey = (id(_engine), limit, exclude_key, include_hidden)
+    cached_rows = _cached_top_n_rows(cache_key=cache_key)
+    if cached_rows is not None:
+        return cached_rows
     async with open_session() as session:
         stmt = select(
             UserWallet.user_id, UserAccount.name, UserWallet.balance, UserAccount.avatar_url
@@ -2258,13 +2339,16 @@ async def top_n(
             stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
         if exclude_user_ids:
             stmt = stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
+        stmt = stmt.order_by(*_stored_integer_desc_order(column=UserWallet.balance))
+        if limit is not None:
+            stmt = stmt.limit(limit=limit)
         result = await session.execute(statement=stmt)
-        rows = [
+        rows = tuple(
             LeaderboardEntry(user_id=row[0], name=row[1], balance=row[2], avatar_url=row[3] or "")
             for row in result.all()
-        ]
-        rows.sort(key=lambda entry: entry.balance, reverse=True)
-        return rows if limit is None else rows[:limit]
+        )
+        _top_n_cache[cache_key] = (monotonic(), rows)
+        return list(rows)
 
 
 async def top_losers(
@@ -2292,6 +2376,17 @@ async def top_losers(
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
+    exclude_key = tuple(sorted(exclude_user_ids))
+    cache_key: _TopLosersCacheKey = (
+        id(_engine),
+        limit,
+        exclude_key,
+        include_hidden,
+        today_midnight,
+    )
+    cached_rows = _cached_top_loser_rows(cache_key=cache_key)
+    if cached_rows is not None:
+        return cached_rows
 
     async with open_session() as session:
         stmt = (
@@ -2325,6 +2420,7 @@ async def top_losers(
                     avatar_url=row[2] or "",
                 )
             )
+        _top_losers_cache[cache_key] = (monotonic(), tuple(rows))
         return rows
 
 
@@ -2795,6 +2891,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             )
         )
         borrower_balance = credit_result.scalar_one()
+        invalidate_economy_leaderboard_cache()
         contract = LoanContract(
             proposal_id=proposal.id,
             lender_type=proposal.lender_type,
@@ -2817,6 +2914,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
         )
         session.add(contract)
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST:
             central_status = await get_central_bank_status(
                 exclude_user_ids=central_bank_exclude_user_ids
@@ -2920,6 +3018,7 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
                 )
             )
             lender_balance = credit_result.scalar_one()
+            invalidate_economy_leaderboard_cache()
 
         total_paid += paid
         total_interest_paid += interest_paid
@@ -2974,6 +3073,7 @@ async def repay_personal_loans(
             await session.rollback()
             return None
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return result
 
 
@@ -3013,6 +3113,7 @@ async def call_personal_loans(
             await session.rollback()
             return None
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return result
 
 
@@ -3039,6 +3140,7 @@ async def repay_central_bank_loans(
             await session.rollback()
             return None
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return result
 
 
@@ -3071,6 +3173,7 @@ async def call_central_bank_loans(
             await session.rollback()
             return None
         await session.commit()
+        invalidate_economy_leaderboard_cache()
         return result
 
 

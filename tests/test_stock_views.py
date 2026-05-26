@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
+import asyncio
 from datetime import datetime
 
 from PIL import Image
@@ -21,10 +22,16 @@ from discordbot.typings.stock import (
     StockPositionView,
     StockTradeLegType,
     StockTradeLegView,
+    StockPriceTickView,
     StockDetailViewData,
     StockOperationStatus,
     StockSettlementResult,
     StockParticipantPositionView,
+)
+from discordbot.cogs._stock.chart import (
+    build_price_chart,
+    _render_price_chart,
+    invalidate_stock_chart_cache,
 )
 from discordbot.cogs._stock.views import (
     StockActionView,
@@ -40,6 +47,8 @@ from discordbot.cogs._stock.presentation import (
     build_settlement_embed,
     build_market_board_image,
     build_stock_detail_embed,
+    _build_market_board_image_cached,
+    invalidate_stock_market_board_cache,
 )
 
 BCAT_SYMBOL = "BCAT"
@@ -283,6 +292,41 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert scheduled_news_refreshes == [cog.news_ai]
 
 
+async def test_stock_news_background_refresh_is_deduped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent stock command refresh scheduling keeps one active task."""
+    calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_ensure_due_stock_news(news_provider: object) -> None:
+        """Blocks the active refresh so the second schedule can observe it."""
+        nonlocal calls
+        assert news_provider is not None
+        calls += 1
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(stock, "ensure_due_stock_news", fake_ensure_due_stock_news)
+    monkeypatch.setattr(stock, "_stock_news_refresh_task", None)
+    monkeypatch.setattr(stock, "_stock_news_refresh_task_loop", None)
+    news_ai = SimpleNamespace(generate=lambda _context: None)
+
+    stock._schedule_stock_news_refresh(news_ai=news_ai)
+    await started.wait()
+    stock._schedule_stock_news_refresh(news_ai=news_ai)
+    assert calls == 1
+
+    task = stock._stock_news_refresh_task
+    assert task is not None
+    release.set()
+    await task
+    stock._schedule_stock_news_refresh(news_ai=news_ai)
+    second_task = stock._stock_news_refresh_task
+    assert second_task is not None
+    await second_task
+    assert calls == 2
+
+
 async def test_stock_command_raises_when_interaction_has_no_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -383,6 +427,47 @@ def test_stock_market_board_handles_large_market_caps() -> None:
     with Image.open(BytesIO(image)) as opened:
         assert opened.size[0] == 1120
         assert opened.size[1] > 180
+
+
+def test_stock_market_board_image_cache_key_changes_with_quote_digest() -> None:
+    """Market board renders are cached by immutable quote fields."""
+    invalidate_stock_market_board_cache()
+    quote = _quote()
+
+    build_market_board_image(quotes=(quote,))
+    assert _build_market_board_image_cached.cache_info().hits == 0
+    assert _build_market_board_image_cached.cache_info().misses == 1
+
+    build_market_board_image(quotes=(quote,))
+    assert _build_market_board_image_cached.cache_info().hits == 1
+
+    changed = quote.model_copy(
+        update={"profile": quote.profile.model_copy(update={"price_cents": 12_345})}
+    )
+    build_market_board_image(quotes=(changed,))
+    assert _build_market_board_image_cached.cache_info().misses == 2
+
+
+def test_stock_chart_image_cache_key_changes_with_ticks() -> None:
+    """7D chart renders are cached by immutable tick rows."""
+    invalidate_stock_chart_cache()
+    first_ticks = (
+        StockPriceTickView(
+            symbol=BCAT_SYMBOL, price_cents=10_000, created_at=datetime(2026, 1, 1)
+        ),
+    )
+    second_ticks = (
+        StockPriceTickView(
+            symbol=BCAT_SYMBOL, price_cents=10_001, created_at=datetime(2026, 1, 1)
+        ),
+    )
+
+    build_price_chart(ticks=first_ticks)
+    assert _render_price_chart.cache_info().misses == 1
+    build_price_chart(ticks=first_ticks)
+    assert _render_price_chart.cache_info().hits == 1
+    build_price_chart(ticks=second_ticks)
+    assert _render_price_chart.cache_info().misses == 2
 
 
 async def test_stock_detail_buttons_edit_same_public_message(

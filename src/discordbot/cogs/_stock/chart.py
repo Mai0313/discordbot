@@ -1,6 +1,7 @@
 """Pillow chart rendering for stock detail views."""
 
 from io import BytesIO
+from functools import lru_cache
 
 from PIL import Image, ImageDraw
 
@@ -18,6 +19,18 @@ _GRID_COLOR = (55, 59, 66)
 
 
 def build_price_chart(ticks: tuple[StockPriceTickView, ...]) -> bytes:
+    """Returns a cached 7D price chart PNG for immutable tick rows."""
+    return _render_price_chart(ticks=ticks)
+
+
+def invalidate_stock_chart_cache(symbol: str | None = None) -> None:
+    """Clears process-local stock chart images."""
+    del symbol
+    _render_price_chart.cache_clear()
+
+
+@lru_cache(maxsize=128)
+def _render_price_chart(ticks: tuple[StockPriceTickView, ...]) -> bytes:
     """Renders a simple non-empty 7D price chart PNG."""
     image = Image.new(mode="RGB", size=(_WIDTH, _HEIGHT), color=_BACKGROUND)
     draw = ImageDraw.Draw(im=image)

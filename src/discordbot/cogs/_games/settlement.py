@@ -1,22 +1,17 @@
 """Settlement helpers shared by game commands and interactive views."""
 
-from random import Random
-
 from discordbot.typings.games import (
     Card,
     SettleOutcome,
     WagerSettlement,
-    BlackjackSettlement,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
     BlackjackInsuranceSettlement,
 )
 from discordbot.cogs._games.blackjack import (
-    BlackjackHand,
     BlackjackRound,
     BlackjackHandState,
     BlackjackPlayerHand,
-    settle,
     is_bust,
     hand_value,
     settle_hand,
@@ -33,36 +28,39 @@ from discordbot.cogs._economy.database import (
 )
 
 
-def blackjack_detail(hand: BlackjackHand) -> str:
+def _blackjack_detail_for_hand(cards: list[Card], dealer: list[Card]) -> str:
     """Builds a concise Blackjack result summary for dealer banter.
 
     Args:
-        hand: Blackjack hand to summarize.
+        cards: Player sub-hand cards.
+        dealer: Dealer cards at settlement time.
 
     Returns:
         A short Chinese summary of the final hand state.
     """
-    player_blackjack = is_blackjack(cards=hand.player)
-    dealer_blackjack = is_blackjack(cards=hand.dealer)
+    player_total = hand_value(cards=cards)
+    dealer_total = hand_value(cards=dealer)
+    player_blackjack = is_blackjack(cards=cards)
+    dealer_blackjack = is_blackjack(cards=dealer)
     if player_blackjack and dealer_blackjack:
         detail = "雙方都是 Blackjack, 平手"
     elif player_blackjack:
-        detail = f"玩家 21 點 Blackjack, 莊家 {hand.dealer_total()} 點"
-    elif is_five_card_twenty_one(cards=hand.player):
-        if hand.dealer_total() == 21:
+        detail = f"玩家 21 點 Blackjack, 莊家 {dealer_total} 點"
+    elif is_five_card_twenty_one(cards=cards):
+        if dealer_total == 21:
             detail = "玩家過五關 21 點, 莊家 21 點, 主局平手"
         else:
-            detail = f"玩家過五關 21 點, 莊家 {hand.dealer_total()} 點"
-    elif is_five_card_win(cards=hand.player):
-        detail = f"玩家過五關 {hand.player_total()} 點, 未爆直接獲勝"
+            detail = f"玩家過五關 21 點, 莊家 {dealer_total} 點"
+    elif is_five_card_win(cards=cards):
+        detail = f"玩家過五關 {player_total} 點, 未爆直接獲勝"
     elif dealer_blackjack:
-        detail = f"莊家 21 點 Blackjack, 玩家 {hand.player_total()} 點"
-    elif is_bust(cards=hand.player):
-        detail = f"玩家爆牌 {hand.player_total()} 點"
-    elif is_bust(cards=hand.dealer):
-        detail = f"莊家爆牌 {hand.dealer_total()} 點, 玩家 {hand.player_total()} 點"
+        detail = f"莊家 21 點 Blackjack, 玩家 {player_total} 點"
+    elif is_bust(cards=cards):
+        detail = f"玩家爆牌 {player_total} 點"
+    elif is_bust(cards=dealer):
+        detail = f"莊家爆牌 {dealer_total} 點, 玩家 {player_total} 點"
     else:
-        detail = f"玩家 {hand.player_total()} 點 vs 莊家 {hand.dealer_total()} 點"
+        detail = f"玩家 {player_total} 點 vs 莊家 {dealer_total} 點"
     return detail
 
 
@@ -110,19 +108,12 @@ def blackjack_detail_player(
         insurance: Optional insurance side-bet result.
 
     Returns:
-        Short Chinese summary; for single-hand players this is shaped to
-        match the legacy `blackjack_detail` text.
+        Short Chinese summary. Single-hand players keep the concise detail
+        shape used by dealer banter.
     """
     if len(hand_settlements) == 1 and insurance is None:
         only = hand_settlements[0]
-        wrapped = BlackjackHand(
-            rng=Random(x=0),  # noqa: S311 -- value never drives randomness; only fills the required field
-            bet=only.bet,
-            player=list(only.cards),
-            dealer=list(dealer),
-            finished=True,
-        )
-        return blackjack_detail(hand=wrapped)
+        return _blackjack_detail_for_hand(cards=list(only.cards), dealer=dealer)
     dealer_total = hand_value(cards=dealer)
     hand_parts: list[str] = []
     for index, settlement in enumerate(hand_settlements, start=1):
@@ -138,27 +129,6 @@ def blackjack_detail_player(
         else:
             summary += f"; 保險 {insurance.bet} → 莊家無 BJ ({insurance.delta:+d})"
     return summary
-
-
-def blackjack_early_finish_note(hand: BlackjackHand) -> str | None:
-    """Explains why a hand ended before the player could hit or stand.
-
-    Args:
-        hand: Blackjack hand to inspect.
-
-    Returns:
-        The early-finish explanation, or `None` when no natural Blackjack
-        ended the hand.
-    """
-    player_blackjack = is_blackjack(cards=hand.player)
-    dealer_blackjack = is_blackjack(cards=hand.dealer)
-    if player_blackjack and dealer_blackjack:
-        return "雙方起手 Blackjack, 本局直接平手"
-    if player_blackjack:
-        return "你起手 Blackjack, 本局直接結算"
-    if dealer_blackjack:
-        return "莊家起手 Blackjack, 依規則本局直接結算"
-    return None
 
 
 def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early-finish reason keeps the mapping explicit
@@ -262,55 +232,6 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     )
 
 
-async def settle_blackjack_round(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
-    hand: BlackjackHand,
-    player_id: int,
-    player_account_name: str,
-    dealer_id: int,
-    dealer_name: str,
-    player_avatar_url: str = "",
-    dealer_avatar_url: str = "",
-) -> BlackjackSettlement:
-    """Settles player payout and mirrored house ledger for one finished hand.
-
-    Args:
-        hand: Finished Blackjack hand to settle.
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        dealer_id: Discord user ID for the dealer ledger row.
-        dealer_name: Account name to store for the dealer ledger row.
-        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
-
-    Returns:
-        Blackjack settlement result including outcome and dealer prompt detail.
-
-    Raises:
-        ValueError: The hand is not finished yet.
-    """
-    outcome, delta = settle(hand=hand)
-    wager = await settle_wager(
-        player_id=player_id,
-        player_account_name=player_account_name,
-        player_avatar_url=player_avatar_url,
-        dealer_id=dealer_id,
-        dealer_name=dealer_name,
-        dealer_avatar_url=dealer_avatar_url,
-        delta=delta,
-    )
-    return BlackjackSettlement(
-        outcome=outcome,
-        delta=wager.delta,
-        payout=wager.payout,
-        new_balance=wager.new_balance,
-        house_balance=wager.house_balance,
-        base_delta=wager.base_delta,
-        vip_bonus=wager.vip_bonus,
-        is_vip=wager.is_vip,
-        detail=blackjack_detail(hand=hand),
-    )
-
-
 def _aggregate_outcome(
     hand_settlements: list[BlackjackHandSettlement],
     insurance: BlackjackInsuranceSettlement | None,
@@ -327,10 +248,10 @@ def _aggregate_outcome(
 
 
 def _hand_settlement_from_state(
-    hand: BlackjackHandState, dealer: list[Card], rng: Random
+    hand: BlackjackHandState, dealer: list[Card]
 ) -> BlackjackHandSettlement:
     """Wraps `settle_hand` into a `BlackjackHandSettlement` row."""
-    outcome, delta = settle_hand(hand=hand, dealer=dealer, rng=rng)
+    outcome, delta = settle_hand(hand=hand, dealer=dealer)
     five_card_twenty_one = outcome == "five_card_twenty_one"
     return BlackjackHandSettlement(
         cards=list(hand.cards),
@@ -390,8 +311,7 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         Aggregated settlement covering every sub-hand and any insurance bet.
     """
     hand_settlements = [
-        _hand_settlement_from_state(hand=hand, dealer=round_state.dealer, rng=round_state.rng)
-        for hand in player.hands
+        _hand_settlement_from_state(hand=hand, dealer=round_state.dealer) for hand in player.hands
     ]
     insurance = _insurance_settlement(player=player, peeked_blackjack=round_state.peeked_blackjack)
     base_delta = sum(settlement.delta for settlement in hand_settlements)

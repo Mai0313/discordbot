@@ -1063,6 +1063,39 @@ async def test_stock_portfolio_lists_non_zero_positions_and_values(
     assert portfolio.realized_pnl == 0
 
 
+async def test_stock_portfolio_short_cache_and_invalidation(
+    stock_isolated_db: None, economy_isolated_db: None
+) -> None:
+    """Production portfolio reads use a short cache that stock writes can clear."""
+    await adjust_balance(user_id=1, name="alice", delta=1_000_000)
+    await stock_db.settle_stock_operation(
+        symbol=BCAT_SYMBOL,
+        user_id=1,
+        user_name="alice",
+        requested_action=StockAction.BUY,
+        quantity="1",
+        now=datetime(2026, 1, 1),
+        rng=_rng(seed=1),
+    )
+
+    first = await stock_db.get_stock_portfolio(user_id=1)
+    async with stock_db.open_stock_session() as session:
+        await session.execute(
+            statement=update(stock_db.StockPosition)
+            .where(
+                stock_db.StockPosition.symbol == BCAT_SYMBOL, stock_db.StockPosition.user_id == 1
+            )
+            .values(long_shares=9, long_cost_basis=90_000)
+        )
+        await session.commit()
+
+    cached = await stock_db.get_stock_portfolio(user_id=1)
+    assert cached.holdings[0].long_shares == first.holdings[0].long_shares
+    stock_db.invalidate_stock_portfolio_cache(user_id=1)
+    refreshed = await stock_db.get_stock_portfolio(user_id=1)
+    assert refreshed.holdings[0].long_shares == 9
+
+
 async def test_stock_oversized_buy_defaults_to_affordable_all(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:

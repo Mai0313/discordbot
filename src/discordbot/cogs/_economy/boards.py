@@ -1,11 +1,13 @@
 """Pillow board renderers for public economy rankings."""
 
 from io import BytesIO
-from typing import TypedDict
+from time import monotonic
+from typing import Final, TypedDict
 from functools import cache
 from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, ConfigDict
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.utils.number_text import compact_amount
@@ -31,6 +33,7 @@ _RANK_X = 52
 _NAME_X = 128
 _AMOUNT_RIGHT = 908
 _NAME_MAX_WIDTH = 520
+_BOARD_IMAGE_CACHE_TTL_SECONDS: Final[float] = 5.0
 _REGULAR_FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
@@ -56,8 +59,10 @@ class _BoardFonts(TypedDict):
     small: _BoardFont
 
 
-class _RankingBoardSpec(TypedDict):
+class _RankingBoardSpec(BaseModel):
     """Data needed to render one ranking board."""
+
+    model_config = ConfigDict(frozen=True)
 
     title: str
     subtitle: str
@@ -67,45 +72,68 @@ class _RankingBoardSpec(TypedDict):
     rows: tuple[tuple[str, int], ...]
 
 
-class _RankingRow(TypedDict):
+class _RankingRow(BaseModel):
     """One row in a rendered ranking board."""
+
+    model_config = ConfigDict(frozen=True)
 
     position: int
     name: str
     amount: int
 
 
+_board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
+
+
+def invalidate_economy_board_cache() -> None:
+    """Clears process-local rendered economy board images."""
+    _board_image_cache.clear()
+
+
 def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> bytes:
     """Renders the public balance leaderboard as a PNG board."""
     return _build_ranking_board_image(
-        spec={
-            "title": f"{CURRENCY_NAME} 排行榜",
-            "subtitle": "Top 10 public balances",
-            "amount_header": "餘額",
-            "amount_label": "",
-            "accent": _BALANCE_ACCENT,
-            "rows": tuple((row.name, row.balance) for row in rows),
-        }
+        spec=_RankingBoardSpec(
+            title=f"{CURRENCY_NAME} 排行榜",
+            subtitle="Top 10 public balances",
+            amount_header="餘額",
+            amount_label="",
+            accent=_BALANCE_ACCENT,
+            rows=tuple((row.name, row.balance) for row in rows),
+        )
     )
 
 
 def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> bytes:
     """Renders the public daily loss leaderboard as a PNG board."""
     return _build_ranking_board_image(
-        spec={
-            "title": "今日輸錢榜",
-            "subtitle": "Gross casino loss · Asia/Taipei 00:00 reset",
-            "amount_header": "累計輸",
-            "amount_label": "",
-            "accent": _LOSS_ACCENT,
-            "rows": tuple((row.name, row.loss_amount) for row in rows),
-        }
+        spec=_RankingBoardSpec(
+            title="今日輸錢榜",
+            subtitle="Gross casino loss · Asia/Taipei 00:00 reset",
+            amount_header="累計輸",
+            amount_label="",
+            accent=_LOSS_ACCENT,
+            rows=tuple((row.name, row.loss_amount) for row in rows),
+        )
     )
 
 
 def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
+    """Returns a cached rendered ranking board image."""
+    now = monotonic()
+    cached = _board_image_cache.get(spec)
+    if cached is not None:
+        cached_at, image = cached
+        if now - cached_at <= _BOARD_IMAGE_CACHE_TTL_SECONDS:
+            return image
+    image = _render_ranking_board_image(spec=spec)
+    _board_image_cache[spec] = (now, image)
+    return image
+
+
+def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     """Renders a fixed-column ranking board."""
-    rows = spec["rows"]
+    rows = spec.rows
     row_count = max(len(rows), 1)
     height = (
         _BOARD_MARGIN * 2
@@ -118,19 +146,11 @@ def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     draw = ImageDraw.Draw(im=image)
     fonts = _board_fonts()
     _draw_header(
-        draw=draw,
-        fonts=fonts,
-        title=spec["title"],
-        subtitle=spec["subtitle"],
-        accent=spec["accent"],
+        draw=draw, fonts=fonts, title=spec.title, subtitle=spec.subtitle, accent=spec.accent
     )
     table_top = _BOARD_MARGIN + _BOARD_HEADER_HEIGHT
     _draw_table_header(
-        draw=draw,
-        fonts=fonts,
-        y=table_top,
-        amount_header=spec["amount_header"],
-        accent=spec["accent"],
+        draw=draw, fonts=fonts, y=table_top, amount_header=spec.amount_header, accent=spec.accent
     )
     if rows:
         for index, (name, amount) in enumerate(iterable=rows):
@@ -138,7 +158,7 @@ def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
             _draw_rank_row(
                 draw=draw,
                 fonts=fonts,
-                row={"position": index + 1, "name": name, "amount": amount},
+                row=_RankingRow(position=index + 1, name=name, amount=amount),
                 spec=spec,
                 y=y,
             )
@@ -232,7 +252,7 @@ def _draw_rank_row(
     y: int,
 ) -> None:
     """Draws one ranking row."""
-    position = row["position"]
+    position = row.position
     fill = _SURFACE if position % 2 == 1 else _ROW_ALT
     draw.rectangle(xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=fill)
     draw.line(
@@ -244,15 +264,15 @@ def _draw_rank_row(
         xy=(_RANK_X, y + 13),
         text=_rank_text(position=position),
         font=fonts["rank"],
-        fill=spec["accent"] if position <= 3 else _MUTED,
+        fill=spec.accent if position <= 3 else _MUTED,
     )
     display_name = _fit_text(
-        draw=draw, text=row["name"] or "未知玩家", font=fonts["body"], max_width=_NAME_MAX_WIDTH
+        draw=draw, text=row.name or "未知玩家", font=fonts["body"], max_width=_NAME_MAX_WIDTH
     )
     draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts["body"], fill=_TEXT)
     _draw_text_right(
         draw=draw,
-        text=_ranking_amount_text(spec=spec, amount=row["amount"]),
+        text=_ranking_amount_text(spec=spec, amount=row.amount),
         xy=(_AMOUNT_RIGHT, y + 13),
         font=fonts["body"],
         fill=_TEXT,
@@ -270,9 +290,9 @@ def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> No
 def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
     """Formats the amount column for one ranking row."""
     amount_text = compact_amount(amount=amount)
-    if not spec["amount_label"]:
+    if not spec.amount_label:
         return amount_text
-    return f"{spec['amount_label']} {amount_text}"
+    return f"{spec.amount_label} {amount_text}"
 
 
 def _draw_text_right(

@@ -2,10 +2,11 @@
 
 from io import BytesIO
 from typing import TypedDict
-from functools import cache
+from functools import cache, lru_cache
 
 from PIL import Image, ImageDraw, ImageFont
 from nextcord import Embed
+from pydantic import BaseModel, ConfigDict
 
 from discordbot.typings.stock import (
     StockAction,
@@ -82,6 +83,30 @@ class _MarketFonts(TypedDict):
     small: _MarketFont
 
 
+class _MarketBoardQuote(BaseModel):
+    """Immutable quote fields needed by the market board renderer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    name: str
+    category: str
+    price_cents: int
+    total_shares: int
+    change_bps: int
+    pressure_bps: int
+
+
+class _MarketBoardSpec(BaseModel):
+    """Immutable market board render spec used as the process-cache key."""
+
+    model_config = ConfigDict(frozen=True)
+
+    quotes: tuple[_MarketBoardQuote, ...]
+    page_index: int
+    page_size: int
+
+
 def market_board_filename(page_index: int) -> str:
     """Returns a stable market board attachment filename."""
     normalized_page = max(page_index, 0)
@@ -125,9 +150,45 @@ def build_market_embed(
 def build_market_board_image(
     quotes: tuple[StockMarketQuote, ...], page_index: int = 0, page_size: int = 25
 ) -> bytes:
+    """Returns a cached market list PNG board for immutable quote rows."""
+    return _build_market_board_image_cached(
+        spec=_market_board_spec(quotes=quotes, page_index=page_index, page_size=page_size)
+    )
+
+
+def invalidate_stock_market_board_cache(symbol: str | None = None) -> None:
+    """Clears process-local market board images."""
+    del symbol
+    _build_market_board_image_cached.cache_clear()
+
+
+def _market_board_spec(
+    quotes: tuple[StockMarketQuote, ...], page_index: int, page_size: int
+) -> _MarketBoardSpec:
+    """Extracts only the quote fields that affect market board pixels."""
+    return _MarketBoardSpec(
+        quotes=tuple(
+            _MarketBoardQuote(
+                symbol=quote.profile.symbol,
+                name=quote.profile.name,
+                category=quote.profile.category,
+                price_cents=quote.profile.price_cents,
+                total_shares=quote.profile.total_shares,
+                change_bps=quote.change_bps,
+                pressure_bps=quote.pressure_bps,
+            )
+            for quote in quotes
+        ),
+        page_index=page_index,
+        page_size=page_size,
+    )
+
+
+@lru_cache(maxsize=128)
+def _build_market_board_image_cached(spec: _MarketBoardSpec) -> bytes:
     """Renders the market list as a fixed-layout PNG board."""
     page_count, normalized_page, page_quotes = _market_page(
-        quotes=quotes, page_index=page_index, page_size=page_size
+        quotes=spec.quotes, page_index=spec.page_index, page_size=spec.page_size
     )
     row_count = max(len(page_quotes), 1)
     height = (
@@ -143,7 +204,7 @@ def build_market_board_image(
     _draw_market_header(
         draw=draw,
         fonts=fonts,
-        quote_count=len(quotes),
+        quote_count=len(spec.quotes),
         page_index=normalized_page,
         page_count=page_count,
     )
@@ -160,9 +221,9 @@ def build_market_board_image(
     return output.getvalue()
 
 
-def _market_page(
-    quotes: tuple[StockMarketQuote, ...], page_index: int, page_size: int
-) -> tuple[int, int, tuple[StockMarketQuote, ...]]:
+def _market_page[MarketPageRow](
+    quotes: tuple[MarketPageRow, ...], page_index: int, page_size: int
+) -> tuple[int, int, tuple[MarketPageRow, ...]]:
     """Returns normalized market page metadata and rows."""
     safe_page_size = max(page_size, 1)
     page_count = max((len(quotes) + safe_page_size - 1) // safe_page_size, 1)
@@ -265,10 +326,13 @@ def _draw_market_table_header(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y:
 
 
 def _draw_market_row(
-    draw: ImageDraw.ImageDraw, fonts: _MarketFonts, quote: StockMarketQuote, row_index: int, y: int
+    draw: ImageDraw.ImageDraw,
+    fonts: _MarketFonts,
+    quote: _MarketBoardQuote,
+    row_index: int,
+    y: int,
 ) -> None:
     """Draws one stock quote row."""
-    profile = quote.profile
     row_color = _MARKET_SURFACE if row_index % 2 == 0 else _MARKET_ROW_ALT
     draw.rectangle(
         xy=(_MARKET_TABLE_LEFT, y, _MARKET_TABLE_RIGHT, y + _MARKET_ROW_HEIGHT), fill=row_color
@@ -283,24 +347,21 @@ def _draw_market_row(
         fill=_MARKET_GRID,
         width=1,
     )
-    market_cap = cash_floor(cents=profile.price_cents * profile.total_shares)
+    market_cap = cash_floor(cents=quote.price_cents * quote.total_shares)
     name = _fit_text(
-        draw=draw, text=profile.name, font=fonts["body"], max_width=_MARKET_NAME_MAX_WIDTH
+        draw=draw, text=quote.name, font=fonts["body"], max_width=_MARKET_NAME_MAX_WIDTH
     )
     category = _fit_text(
-        draw=draw, text=profile.category, font=fonts["small"], max_width=_MARKET_CATEGORY_MAX_WIDTH
+        draw=draw, text=quote.category, font=fonts["small"], max_width=_MARKET_CATEGORY_MAX_WIDTH
     )
     draw.text(
-        xy=(_MARKET_SYMBOL_X, y + 14),
-        text=profile.symbol,
-        font=fonts["symbol"],
-        fill=_MARKET_ACCENT,
+        xy=(_MARKET_SYMBOL_X, y + 14), text=quote.symbol, font=fonts["symbol"], fill=_MARKET_ACCENT
     )
     draw.text(xy=(_MARKET_COMPANY_X, y + 8), text=name, font=fonts["body"], fill=_MARKET_TEXT)
     _draw_tag(draw=draw, text=category, xy=(_MARKET_CATEGORY_X, y + 19), font=fonts["small"])
     _draw_text_right(
         draw=draw,
-        text=format_price(price_cents=profile.price_cents),
+        text=format_price(price_cents=quote.price_cents),
         xy=(_MARKET_PRICE_RIGHT, y + 12),
         font=fonts["body"],
         fill=_MARKET_TEXT,

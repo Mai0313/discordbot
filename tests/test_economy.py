@@ -17,12 +17,7 @@ from discordbot.typings.games import (
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
-from discordbot.cogs._games.blackjack import (
-    Card,
-    BlackjackHand,
-    BlackjackRound,
-    BlackjackHandState,
-)
+from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._economy.database import (
     TAIWAN_TIMEZONE,
     VIP_PURCHASE_COST,
@@ -68,12 +63,9 @@ from discordbot.cogs._economy.database import (
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
     _apply_daily_casino_delta_in_session,
+    invalidate_economy_leaderboard_cache,
 )
-from discordbot.cogs._games.settlement import (
-    settle_wager,
-    settle_blackjack_round,
-    settle_blackjack_player,
-)
+from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embed
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
@@ -222,14 +214,20 @@ def _participant(
     )
 
 
-def _round_from_hand(hand: BlackjackHand, participant: GameParticipant) -> BlackjackRound:
-    """Adapts a single-player hand into the multiplayer round shape."""
-    round_state = BlackjackRound.from_participants(rng=hand.rng, participants=[participant])
-    round_state.players[0].hands[0].cards = list(hand.player)
-    round_state.players[0].hands[0].finished = hand.finished
-    round_state.dealer = list(hand.dealer)
-    round_state.finished = hand.finished
-    round_state.phase = "settled" if hand.finished else "player_actions"
+def _round_from_cards(
+    player_cards: list[Card],
+    dealer_cards: list[Card],
+    participant: GameParticipant,
+    finished: bool,
+) -> BlackjackRound:
+    """Builds the production Blackjack round shape used by views and settlement."""
+    round_state = BlackjackRound.from_participants(rng=SystemRandom(), participants=[participant])
+    round_state.players[0].hands[0].cards = list(player_cards)
+    round_state.players[0].hands[0].finished = finished
+    round_state.dealer = list(dealer_cards)
+    round_state.finished = finished
+    round_state.dealer_played = finished
+    round_state.phase = "settled" if finished else "player_actions"
     return round_state
 
 
@@ -747,6 +745,56 @@ async def test_top_n_none_limit_returns_all_matching_accounts() -> None:
     assert [row.user_id for row in rows] == [2, 3, 1]
 
 
+async def test_top_n_db_order_handles_large_zero_and_negative_balances() -> None:
+    """DB-side ordering keeps decimal-text balances in numeric order."""
+    await adjust_balance(user_id=1, name="huge", delta=10**30)
+    await adjust_balance(user_id=2, name="small", delta=999)
+    await adjust_balance(user_id=3, name="zero", delta=0)
+    await adjust_balance(user_id=4, name="minus_one", delta=-1, allow_negative=True)
+    await adjust_balance(user_id=5, name="minus_ten", delta=-10, allow_negative=True)
+    await adjust_balance(user_id=6, name="minus_two", delta=-2, allow_negative=True)
+
+    rows = await top_n(limit=None)
+
+    assert [(row.user_id, row.balance) for row in rows] == [
+        (1, 10**30),
+        (2, 999),
+        (4, -1),
+        (6, -2),
+        (5, -10),
+    ]
+
+
+async def test_top_n_short_cache_hit_and_manual_invalidation() -> None:
+    """Repeated leaderboard reads use cached rows until explicitly invalidated."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=50)
+
+    assert [row.user_id for row in await top_n(limit=1)] == [1]
+    async with open_session() as session:
+        await session.execute(
+            statement=update(UserWallet)
+            .where(UserWallet.user_id == 2)
+            .values(balance=1_000, total_earned=1_000, total_spent=0)
+        )
+        await session.commit()
+
+    assert [row.user_id for row in await top_n(limit=1)] == [1]
+    invalidate_economy_leaderboard_cache()
+    assert [row.user_id for row in await top_n(limit=1)] == [2]
+
+
+async def test_top_n_write_path_invalidates_cache() -> None:
+    """Balance writes clear cached leaderboard rows."""
+    await _add_balance(user_id=1, name="alice", amount=100)
+    await _add_balance(user_id=2, name="bob", amount=50)
+
+    assert [row.user_id for row in await top_n(limit=1)] == [1]
+    await credit_with_repayment(user_id=2, name="bob", amount=200)
+
+    assert [row.user_id for row in await top_n(limit=1)] == [2]
+
+
 async def test_apply_round_settlement_allows_negative_house_balance() -> None:
     """House ledger keeps a true running net even when the dealer is down."""
     await apply_round_settlement(
@@ -802,17 +850,25 @@ async def test_get_account_returns_none_for_unseen_user() -> None:
     assert await get_account(user_id=12345) is None
 
 
-async def test_settle_blackjack_round_updates_player_and_house() -> None:
+async def test_settle_blackjack_player_updates_player_and_house() -> None:
     """Shared Blackjack settlement applies net delta and mirrors house P&L."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=50)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
-    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
-    hand.finished = True
+    participant = _participant()
+    round_state = _round_from_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+        dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+        participant=participant,
+        finished=True,
+    )
 
-    settlement = await settle_blackjack_round(
-        hand=hand, player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house"
+    settlement = await settle_blackjack_player(
+        round_state=round_state,
+        player=round_state.players[0],
+        player_id=1,
+        player_account_name="alice",
+        dealer_id=99,
+        dealer_name="house",
     )
     assert settlement.delta == 50
     assert settlement.payout == 50
@@ -839,17 +895,17 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     )
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=50)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
-    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
-    hand.finished = True
-
     dealer = _DealerStub()
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
         dealer=dealer,
-        round_state=_round_from_hand(hand=hand, participant=participant),
+        round_state=_round_from_cards(
+            player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+            participant=participant,
+            finished=True,
+        ),
         starter_id=1,
         author_name="alice",
         dealer_id=99,
@@ -886,16 +942,17 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     )
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=50)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="8", suit="♥")]
-    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")]
-
     dealer = _DealerStub()
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
         dealer=dealer,
-        round_state=_round_from_hand(hand=hand, participant=participant),
+        round_state=_round_from_cards(
+            player_cards=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
+            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")],
+            participant=participant,
+            finished=False,
+        ),
         starter_id=1,
         author_name="alice",
         dealer_id=99,
@@ -934,17 +991,17 @@ async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
     )
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=50)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
-    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
-    hand.finished = True
-
     dealer = _SlowSettleDealerStub()
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
         dealer=dealer,
-        round_state=_round_from_hand(hand=hand, participant=participant),
+        round_state=_round_from_cards(
+            player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+            participant=participant,
+            finished=True,
+        ),
         starter_id=1,
         author_name="alice",
         dealer_id=99,
@@ -1157,16 +1214,17 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         delayed_settle_blackjack_player,
     )
 
-    hand = BlackjackHand(rng=SystemRandom(), bet=50)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")]
-    hand.dealer = [Card(rank="10", suit="♣"), Card(rank="8", suit="♦")]
-
     dealer = _DealerStub()
     message = _MessageStub()
     participant = _participant(balance_at_start=50)
     view = BlackjackView(
         dealer=dealer,
-        round_state=_round_from_hand(hand=hand, participant=participant),
+        round_state=_round_from_cards(
+            player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
+            dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
+            participant=participant,
+            finished=False,
+        ),
         starter_id=1,
         author_name="alice",
         dealer_id=99,

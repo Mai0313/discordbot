@@ -189,65 +189,6 @@ def dealer_up_card(dealer: list[Card]) -> Card | None:
     return dealer[1] if len(dealer) > 1 else dealer[0]
 
 
-class BlackjackHand(BaseModel):
-    """Mutable state for one single-player Blackjack round.
-
-    Kept around as the input shape for `settle()` and a handful of legacy
-    callers; the multiplayer state machine lives on `BlackjackRound` and
-    its `BlackjackHandState` children.
-
-    Attributes:
-        rng: Random source; injectable for tests.
-        bet: Original bet amount (in points).
-        player: Player's cards.
-        dealer: Dealer's cards.
-        finished: True once both sides have stopped drawing.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    rng: Random
-    bet: int
-    player: list[Card] = Field(default_factory=list)
-    dealer: list[Card] = Field(default_factory=list)
-    finished: bool = False
-
-    def deal_initial(self) -> None:
-        """Deals two cards to the player and two to the dealer."""
-        self.player = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
-        self.dealer = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
-        if is_blackjack(cards=self.player) or is_blackjack(cards=self.dealer):
-            self.finished = True
-
-    def hit(self) -> Card:
-        """Draws one card for the player.
-
-        Ends the round if the player's hand busts or reaches five cards without busting.
-
-        Returns:
-            The card drawn for the player.
-        """
-        card = draw_card(rng=self.rng)
-        self.player.append(card)
-        if is_bust(cards=self.player) or is_five_card_win(cards=self.player):
-            self.finished = True
-        return card
-
-    def stand(self) -> None:
-        """Player stops; dealer hits until reaching 17, then resolves."""
-        while hand_value(cards=self.dealer) < 17:
-            self.dealer.append(draw_card(rng=self.rng))
-        self.finished = True
-
-    def player_total(self) -> int:
-        """Returns the current best total for the player's hand."""
-        return hand_value(cards=self.player)
-
-    def dealer_total(self) -> int:
-        """Returns the current best total for the dealer's hand."""
-        return hand_value(cards=self.dealer)
-
-
 class BlackjackHandState(BaseModel):
     """One sub-hand owned by a multiplayer Blackjack participant.
 
@@ -316,26 +257,9 @@ class BlackjackPlayerHand(BaseModel):
     insurance_resolved: bool = False
 
     @property
-    def cards(self) -> list[Card]:
-        """Returns the first hand's cards for legacy single-hand callers."""
-        return self.hands[0].cards if self.hands else []
-
-    @property
     def finished(self) -> bool:
         """Returns True once every owned hand has finished."""
         return bool(self.hands) and all(hand.finished for hand in self.hands)
-
-    def total(self) -> int:
-        """Returns the first hand's total for legacy single-hand callers."""
-        return self.hands[0].total() if self.hands else 0
-
-    def is_blackjack(self) -> bool:
-        """Returns whether the first hand is a natural Blackjack."""
-        return bool(self.hands) and self.hands[0].is_blackjack()
-
-    def is_bust(self) -> bool:
-        """Returns whether the first hand has busted."""
-        return bool(self.hands) and self.hands[0].is_bust()
 
 
 def committed_wagers(player: BlackjackPlayerHand) -> int:
@@ -454,26 +378,54 @@ def _settle_split_twenty_one(
     return outcome, delta
 
 
-def settle_hand(
-    hand: BlackjackHandState, dealer: list[Card], rng: Random
+def _settle_regular_hand(
+    hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
+    """Resolves a finished non-surrender, non-special Blackjack sub-hand."""
+    bet = hand.bet
+    player_total = hand.total()
+    dealer_total = hand_value(cards=dealer)
+    player_bj = hand.is_blackjack()
+    dealer_bj = is_blackjack(cards=dealer)
+
+    if player_bj and dealer_bj:
+        outcome: SettleOutcome = "push"
+        delta = 0
+    elif player_bj:
+        outcome, delta = "blackjack", int(bet * 3 // 2)
+    elif dealer_bj:
+        outcome, delta = "lose", -bet
+    elif hand.is_bust():
+        outcome, delta = "player_bust", -bet
+    elif is_bust(cards=dealer):
+        outcome, delta = "dealer_bust", bet
+    elif player_total > dealer_total:
+        outcome, delta = "win", bet
+    elif player_total < dealer_total:
+        outcome, delta = "lose", -bet
+    else:
+        outcome, delta = "push", 0
+    return outcome, delta
+
+
+def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOutcome, int]:
     """Resolves one finished sub-hand into an outcome label and net delta.
 
     Surrender short-circuits to a half-bet refund. Five-card 21 is flagged
     before the generic five-card win so split hands can still earn the
-    five-card bonus. Split-derived two-card 21 is handled before the legacy
-    `settle` wrapper so it never counts as a natural Blackjack; every
-    other sub-hand uses the standard settlement logic.
+    five-card bonus. Split-derived two-card 21 is handled before natural
+    Blackjack so it never receives the natural Blackjack payout.
 
     Args:
         hand: Finished sub-hand to settle.
         dealer: Final dealer cards.
-        rng: Random source kept for `BlackjackHand`'s required field.
 
     Returns:
         `(outcome, delta)` where delta is the signed point change for
         this single hand.
     """
+    if not hand.finished:
+        raise ValueError("Cannot settle an unfinished Blackjack hand")
     if hand.surrendered:
         return "surrender", -((hand.base_bet + 1) // 2)
     if not hand.doubled and is_five_card_twenty_one(cards=hand.cards):
@@ -484,10 +436,7 @@ def settle_hand(
         return "five_card_win", hand.bet
     if hand.is_split_hand and is_blackjack(cards=hand.cards):
         return _settle_split_twenty_one(hand=hand, dealer=dealer)
-    wrapped = BlackjackHand(
-        rng=rng, bet=hand.bet, player=list(hand.cards), dealer=list(dealer), finished=True
-    )
-    return settle(hand=wrapped)
+    return _settle_regular_hand(hand=hand, dealer=dealer)
 
 
 class BlackjackRound(BaseModel):
@@ -768,8 +717,7 @@ class BlackjackRound(BaseModel):
 
     def dealer_visible_value(self) -> int:
         """Returns the visible dealer card value for hint prompts."""
-        hand = BlackjackHand(rng=self.rng, bet=0, dealer=list(self.dealer))
-        return dealer_visible_value(hand=hand)
+        return dealer_visible_value(dealer=self.dealer)
 
     def dealer_is_soft_total(self) -> tuple[bool, int]:
         """Returns `(is_soft, total)` for the dealer hand."""
@@ -794,31 +742,6 @@ class BlackjackRound(BaseModel):
         self.dealer_played = True
         self.finished = True
         self.phase = "settled"
-
-    def settlement_hand(
-        self, player: BlackjackPlayerHand, hand_state: BlackjackHandState | None = None
-    ) -> BlackjackHand:
-        """Builds the single-player hand shape used by settlement helpers.
-
-        When `hand_state` is omitted, the player's first sub-hand is used
-        so existing single-hand callers keep working unchanged.
-
-        Args:
-            player: Player whose hand should be wrapped.
-            hand_state: Specific sub-hand to wrap; defaults to `hands[0]`.
-
-        Returns:
-            A `BlackjackHand` snapshot covering the chosen sub-hand and
-            the current dealer cards.
-        """
-        chosen = hand_state if hand_state is not None else player.hands[0]
-        return BlackjackHand(
-            rng=self.rng,
-            bet=chosen.bet,
-            player=list(chosen.cards),
-            dealer=list(self.dealer),
-            finished=True,
-        )
 
     def _find_player(self, user_id: int) -> BlackjackPlayerHand:
         """Returns the player by user_id or raises when unknown."""
@@ -915,82 +838,6 @@ class BlackjackRound(BaseModel):
         self.mark_dealer_played()
 
 
-def _settle_natural_or_five_card(
-    hand: BlackjackHand, dealer_total: int
-) -> tuple[SettleOutcome, int] | None:
-    """Resolves natural Blackjack and five-card special cases before total comparison."""
-    bet = hand.bet
-    player_five_card_twenty_one = is_five_card_twenty_one(cards=hand.player)
-    player_five_card_win = is_five_card_win(cards=hand.player)
-    player_bj = is_blackjack(cards=hand.player)
-    dealer_bj = is_blackjack(cards=hand.dealer)
-
-    if player_bj and dealer_bj:
-        outcome: SettleOutcome = "push"
-        delta = 0
-    elif player_five_card_twenty_one:
-        outcome = "five_card_twenty_one"
-        delta = 0 if dealer_total == 21 else bet
-    elif player_five_card_win:
-        outcome, delta = "five_card_win", bet
-    elif player_bj:
-        outcome, delta = "blackjack", int(bet * 3 // 2)
-    elif dealer_bj:
-        outcome, delta = "lose", -bet
-    else:
-        return None
-    return outcome, delta
-
-
-def _settle_by_total(
-    hand: BlackjackHand, player_total: int, dealer_total: int
-) -> tuple[SettleOutcome, int]:
-    """Resolves regular Blackjack totals after special cases are excluded."""
-    bet = hand.bet
-    if is_bust(cards=hand.player):
-        outcome: SettleOutcome = "player_bust"
-        delta = -bet
-    elif is_bust(cards=hand.dealer):
-        outcome, delta = "dealer_bust", bet
-    elif player_total > dealer_total:
-        outcome, delta = "win", bet
-    elif player_total < dealer_total:
-        outcome, delta = "lose", -bet
-    else:
-        outcome, delta = "push", 0
-    return outcome, delta
-
-
-def settle(hand: BlackjackHand) -> tuple[SettleOutcome, int]:
-    """Resolves a finished hand into an outcome label and the player's net delta.
-
-    Delta is computed as the direct bankroll change:
-    - natural Blackjack pays 1.5x (rounded to int);
-    - regular win pays 1x;
-    - push returns 0;
-    - loss returns `-bet`.
-
-    Args:
-        hand: Finished Blackjack hand to settle.
-
-    Returns:
-        A tuple of `(outcome, delta)`, where `delta` is the player's net point
-        change for the round.
-
-    Raises:
-        ValueError: The hand is not finished yet.
-    """
-    if not hand.finished:
-        raise ValueError("Cannot settle an unfinished Blackjack hand")
-
-    player_total = hand.player_total()
-    dealer_total = hand.dealer_total()
-    special = _settle_natural_or_five_card(hand=hand, dealer_total=dealer_total)
-    if special is not None:
-        return special
-    return _settle_by_total(hand=hand, player_total=player_total, dealer_total=dealer_total)
-
-
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:
     """Formats a hand for display.
 
@@ -1007,19 +854,19 @@ def render_hand(cards: list[Card], hide_first: bool = False) -> str:
     return " ".join(str(card) for card in cards)
 
 
-def dealer_visible_value(hand: BlackjackHand) -> int:
+def dealer_visible_value(dealer: list[Card]) -> int:
     """Returns the numeric value of the dealer's visible card.
 
     The second dealer card is visible while the first card is hidden. If only
     one card exists, that card is treated as visible.
 
     Args:
-        hand: Blackjack hand containing the dealer cards.
+        dealer: Dealer cards in draw order.
 
     Returns:
         The visible card's Blackjack value, or 0 when the dealer has no cards.
     """
-    up = dealer_up_card(dealer=hand.dealer)
+    up = dealer_up_card(dealer=dealer)
     if up is None:
         return 0
     if up.rank == "A":

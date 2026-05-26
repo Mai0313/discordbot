@@ -10,10 +10,8 @@ import pytest
 from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import (
     Card,
-    BlackjackHand,
     BlackjackRound,
     BlackjackHandState,
-    settle,
     is_bust,
     is_pair,
     can_split,
@@ -30,10 +28,7 @@ from discordbot.cogs._games.blackjack import (
     dealer_visible_value,
     is_five_card_twenty_one,
 )
-from discordbot.cogs._games.settlement import (
-    blackjack_early_finish_note,
-    blackjack_player_early_finish_note,
-)
+from discordbot.cogs._games.settlement import blackjack_player_early_finish_note
 from discordbot.cogs._games.presentation import settlement_metadata
 from discordbot.cogs._games.blackjack_views import build_in_progress_embed
 
@@ -144,13 +139,14 @@ def test_is_bust_above_21() -> None:
     assert is_bust(cards=safe) is False
 
 
-def _hand_with(player: list[Card], dealer: list[Card], bet: int = 100) -> BlackjackHand:
-    """Builds a finished hand for settlement assertions."""
-    hand = BlackjackHand(rng=Random(x=0), bet=bet)
-    hand.player = player
-    hand.dealer = dealer
-    hand.finished = True
-    return hand
+def _settled_hand(cards: list[Card], bet: int = 100) -> BlackjackHandState:
+    """Builds a finished production hand state for settlement assertions."""
+    return BlackjackHandState(cards=cards, bet=bet, base_bet=bet, finished=True)
+
+
+def _settle_cards(player: list[Card], dealer: list[Card], bet: int = 100) -> tuple[str, int]:
+    """Settles a finished hand state against dealer cards."""
+    return settle_hand(hand=_settled_hand(cards=player, bet=bet), dealer=dealer)
 
 
 def _participant(
@@ -169,11 +165,10 @@ def _participant(
 
 def test_settle_player_blackjack_pays_three_to_two() -> None:
     """A natural Blackjack pays 1.5x the bet (rounded down)."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")],
         dealer=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "blackjack"
     assert delta == 150
 
@@ -189,31 +184,46 @@ def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
 
 def test_settle_double_blackjack_is_push() -> None:
     """Two Blackjacks at the table cancel out."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")],
         dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "push"
     assert delta == 0
 
 
 def test_blackjack_early_finish_note_explains_dealer_natural() -> None:
     """A dealer natural Blackjack can end the round before the player acts."""
-    hand = _hand_with(
-        player=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
-        dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
     )
-    assert blackjack_early_finish_note(hand=hand) == "莊家起手 Blackjack, 依規則本局直接結算"
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="7", suit="♥")]
+    assert (
+        blackjack_player_early_finish_note(
+            player=player,
+            dealer=[Card(rank="A", suit="♣"), Card(rank="Q", suit="♦")],
+            peeked_blackjack=False,
+        )
+        == "莊家起手 Blackjack, 依規則本局直接結算"
+    )
 
 
 def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
     """A non-natural 21 should not be described as an early Blackjack finish."""
-    hand = _hand_with(
-        player=[Card(rank="9", suit="♠"), Card(rank="7", suit="♥")],
-        dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
     )
-    assert blackjack_early_finish_note(hand=hand) is None
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="9", suit="♠"), Card(rank="7", suit="♥")]
+    assert (
+        blackjack_player_early_finish_note(
+            player=player,
+            dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
+            peeked_blackjack=False,
+        )
+        is None
+    )
 
 
 def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
@@ -235,67 +245,62 @@ def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
 
 def test_settle_player_bust_loses_bet() -> None:
     """When the player busts the dealer wins regardless of dealer total."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥"), Card(rank="5", suit="♣")],
         dealer=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦")],
         bet=50,
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "player_bust"
     assert delta == -50
 
 
 def test_settle_dealer_bust_pays_even_money() -> None:
     """When the dealer busts the player wins the bet."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer=[Card(rank="10", suit="♣"), Card(rank="6", suit="♦"), Card(rank="K", suit="♠")],
         bet=50,
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "dealer_bust"
     assert delta == 50
 
 
 def test_settle_higher_total_wins() -> None:
     """The higher (non-bust) total wins one bet at even money."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
         bet=50,
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "win"
     assert delta == 50
 
 
 def test_settle_lower_total_loses() -> None:
     """A lower (non-bust) total loses the bet."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
         bet=50,
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "lose"
     assert delta == -50
 
 
 def test_settle_equal_total_is_push() -> None:
     """Equal totals push regardless of card composition."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
         dealer=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
         bet=50,
     )
-    outcome, delta = settle(hand=hand)
     assert outcome == "push"
     assert delta == 0
 
 
 def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() -> None:
     """Five-card 21 uses its own outcome while the main hand can still push."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[
             Card(rank="2", suit="♠"),
             Card(rank="3", suit="♥"),
@@ -307,15 +312,13 @@ def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() ->
         bet=50,
     )
 
-    outcome, delta = settle(hand=hand)
-
     assert outcome == "five_card_twenty_one"
     assert delta == 0
 
 
 def test_settle_five_card_non_21_wins_against_dealer_21() -> None:
     """Five-card non-bust hands win normally even when the dealer reaches 21."""
-    hand = _hand_with(
+    outcome, delta = _settle_cards(
         player=[
             Card(rank="2", suit="♠"),
             Card(rank="3", suit="♥"),
@@ -327,41 +330,44 @@ def test_settle_five_card_non_21_wins_against_dealer_21() -> None:
         bet=50,
     )
 
-    outcome, delta = settle(hand=hand)
-
     assert outcome == "five_card_win"
     assert delta == 50
 
 
 def test_settle_unfinished_hand_raises() -> None:
     """Trying to settle a still-live hand is a programmer error."""
-    hand = BlackjackHand(rng=Random(x=0), bet=50)
-    hand.player = [Card(rank="10", suit="♠")]
+    hand = BlackjackHandState(cards=[Card(rank="10", suit="♠")], bet=50, base_bet=50)
     with pytest.raises(expected_exception=ValueError, match="unfinished"):
-        settle(hand=hand)
+        settle_hand(hand=hand, dealer=[Card(rank="9", suit="♣"), Card(rank="8", suit="♦")])
 
 
 def test_dealer_keeps_drawing_below_17() -> None:
     """Dealer must hit until the hand value is ≥ 17 (or it busts)."""
-    hand = BlackjackHand(rng=Random(x=12345), bet=100)
-    hand.player = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
-    hand.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
-    hand.stand()
-    final = hand.dealer_total()
-    assert final >= 17 or is_bust(cards=hand.dealer)
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=12345), participants=[_participant(user_id=1, display_name="Alice")]
+    )
+    round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    round_state.stand(user_id=1)
+    final = round_state.dealer_total()
+    assert final >= 17 or is_bust(cards=round_state.dealer)
 
 
-def test_legacy_hand_dealer_stops_on_hard_and_soft_seventeen() -> None:
-    """The legacy pure helper stops drawing at hard and soft 17."""
-    hard = BlackjackHand(rng=Random(x=12345), bet=100)
-    hard.player = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
+def test_round_dealer_stops_on_hard_and_soft_seventeen() -> None:
+    """The production round dealer stops drawing at hard and soft 17."""
+    hard = BlackjackRound.from_participants(
+        rng=Random(x=12345), participants=[_participant(user_id=1, display_name="Alice")]
+    )
+    hard.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
     hard.dealer = [Card(rank="10", suit="♣"), Card(rank="7", suit="♦")]
-    hard.stand()
+    hard.stand(user_id=1)
 
-    soft = BlackjackHand(rng=Random(x=12345), bet=100)
-    soft.player = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
+    soft = BlackjackRound.from_participants(
+        rng=Random(x=12345), participants=[_participant(user_id=1, display_name="Alice")]
+    )
+    soft.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="9", suit="♥")]
     soft.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
-    soft.stand()
+    soft.stand(user_id=1)
 
     assert [str(card) for card in hard.dealer] == ["10♣", "7♦"]
     assert [str(card) for card in soft.dealer] == ["A♣", "6♦"]
@@ -449,13 +455,9 @@ def test_render_hand_hides_first_card() -> None:
 
 def test_dealer_visible_value_uses_up_card() -> None:
     """The visible value matches the card not hidden from the player."""
-    hand = BlackjackHand(rng=Random(x=0), bet=10)
-    hand.dealer = [Card(rank="A", suit="♠"), Card(rank="K", suit="♥")]
-    assert dealer_visible_value(hand=hand) == 10
-    hand.dealer = [Card(rank="K", suit="♠"), Card(rank="A", suit="♥")]
-    assert dealer_visible_value(hand=hand) == 11
-    hand.dealer = [Card(rank="7", suit="♠")]
-    assert dealer_visible_value(hand=hand) == 7
+    assert dealer_visible_value(dealer=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")]) == 10
+    assert dealer_visible_value(dealer=[Card(rank="K", suit="♠"), Card(rank="A", suit="♥")]) == 11
+    assert dealer_visible_value(dealer=[Card(rank="7", suit="♠")]) == 7
 
 
 def test_blackjack_in_progress_embed_shows_hole_card_marker_and_up_card() -> None:
@@ -594,22 +596,25 @@ def _two_player_round(
     return round_state
 
 
-def test_legacy_hit_finishes_on_fifth_card_twenty_one() -> None:
-    """A single-player hand auto-finishes when the fifth card makes 21."""
-    hand = BlackjackHand(rng=Random(x=0), bet=100)
-    hand.player = [
+def test_single_player_round_hit_finishes_on_fifth_card_twenty_one() -> None:
+    """A production round hand auto-finishes when the fifth card makes 21."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=1, display_name="Alice")]
+    )
+    round_state.players[0].hands[0].cards = [
         Card(rank="2", suit="♠"),
         Card(rank="3", suit="♥"),
         Card(rank="4", suit="♣"),
         Card(rank="5", suit="♦"),
     ]
+    round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
 
     with patch(
         "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
     ):
-        hand.hit()
+        round_state.hit(user_id=1)
 
-    assert hand.finished is True
+    assert round_state.players[0].hands[0].finished is True
 
 
 def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
@@ -787,7 +792,7 @@ def test_split_aces_twenty_one_settles_as_regular_win_not_blackjack() -> None:
         finished=True,
     )
     outcome, delta = settle_hand(
-        hand=hand, dealer=[Card(rank="9", suit="♠"), Card(rank="9", suit="♣")], rng=Random(x=0)
+        hand=hand, dealer=[Card(rank="9", suit="♠"), Card(rank="9", suit="♣")]
     )
     assert outcome == "win"
     assert delta == 100
@@ -804,7 +809,7 @@ def test_split_twenty_one_loses_to_dealer_natural_blackjack() -> None:
         finished=True,
     )
     outcome, delta = settle_hand(
-        hand=hand, dealer=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")], rng=Random(x=0)
+        hand=hand, dealer=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")]
     )
     assert outcome == "lose"
     assert delta == -100
@@ -823,7 +828,6 @@ def test_split_twenty_one_pushes_dealer_non_natural_twenty_one() -> None:
     outcome, delta = settle_hand(
         hand=hand,
         dealer=[Card(rank="7", suit="♣"), Card(rank="7", suit="♦"), Card(rank="7", suit="♠")],
-        rng=Random(x=0),
     )
     assert outcome == "push"
     assert delta == 0
@@ -842,7 +846,7 @@ def test_surrender_marks_hand_with_half_bet_refund() -> None:
     alice = round_state.players[0].hands[0]
     assert alice.surrendered is True
     assert alice.finished is True
-    outcome, delta = settle_hand(hand=alice, dealer=round_state.dealer, rng=round_state.rng)
+    outcome, delta = settle_hand(hand=alice, dealer=round_state.dealer)
     assert outcome == "surrender"
     assert delta == -50
 
@@ -859,7 +863,7 @@ def test_surrender_uses_ceil_half_loss_for_integer_chips(bet: int, expected_delt
     )
 
     outcome, delta = settle_hand(
-        hand=hand, dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")], rng=Random(x=0)
+        hand=hand, dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     )
 
     assert outcome == "surrender"

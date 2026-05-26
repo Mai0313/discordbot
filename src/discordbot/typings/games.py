@@ -124,18 +124,6 @@ class WagerSettlement(BaseModel):
     is_vip: bool = False
 
 
-class BlackjackSettlement(WagerSettlement):
-    """Database-backed settlement result for a finished Blackjack round.
-
-    Attributes:
-        outcome: Player-facing outcome label from the Blackjack rules engine.
-        detail: Short game-state summary for the dealer AI prompt.
-    """
-
-    outcome: SettleOutcome
-    detail: str
-
-
 class BlackjackHandSettlement(BaseModel):
     """Per-hand result for one sub-hand of a Blackjack player.
 
@@ -287,7 +275,6 @@ __all__ = [
     "BlackjackInsuranceSettlement",
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
-    "BlackjackSettlement",
     "Card",
     "DealerIdentity",
     "DragonGatePlayerResult",
