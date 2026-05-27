@@ -14,6 +14,7 @@ from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, _DISCORD_MESSAGE_LIMIT, ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.utils.discord_messages import DiscordMessageOperations
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -281,6 +282,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
+    cog.discord_messages = DiscordMessageOperations(bot=cog.bot)
     cog.__dict__["client"] = FakeClient()
     return cog
 
@@ -510,6 +512,22 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
 
 
+async def test_discord_message_operations_sets_status_reaction() -> None:
+    """Verifies status reaction transitions return the active emoji."""
+    bot_user = FakeAuthor(bot=True, user_id=999)
+    message = FakeMessage()
+    operations = DiscordMessageOperations(bot=SimpleNamespace(user=bot_user))
+
+    current = await operations.set_status_reaction(message=message, emoji="🔀")
+    assert current == "🔀"
+    assert message.added_reactions == ["🔀"]
+
+    current = await operations.set_status_reaction(message=message, emoji="🎨", previous=current)
+    assert current == "🎨"
+    assert message.added_reactions == ["🔀", "🎨"]
+    assert message.removed_reactions == [("🔀", bot_user)]
+
+
 async def test_gen_reply_processes_history_reference_and_current_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -608,9 +626,11 @@ async def test_gen_reply_on_message_dispatches_routes(
         """Returns the parametrized route."""
         return route
 
-    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> None:
+    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> str:
         """Records reaction state transitions."""
+        del message, previous
         calls.append(f"reaction:{emoji}")
+        return emoji
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records image handler dispatch."""
@@ -627,7 +647,7 @@ async def test_gen_reply_on_message_dispatches_routes(
         calls.append("_handle_message_reply")
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
-    monkeypatch.setattr(cog, "_handle_reaction", fake_reaction)
+    monkeypatch.setattr(cog.discord_messages, "set_status_reaction", fake_reaction)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)
     monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)

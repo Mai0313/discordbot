@@ -27,6 +27,7 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
 from discordbot.cogs._economy.database import credit_with_repayment
+from discordbot.utils.discord_messages import DiscordMessageOperations
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -71,6 +72,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self.discord_messages = DiscordMessageOperations(bot=bot)
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -444,16 +446,6 @@ class ReplyGeneratorCogs(commands.Cog):
         final_content = f"{message.author.mention} {image_description}"
         await message.reply(content=final_content, file=image_file)
 
-    async def _handle_reaction(
-        self, message: Message, emoji: str, previous: str | None = None
-    ) -> None:
-        """Handles adding and removing reactions on a message."""
-        if previous and self.bot.user:
-            with contextlib.suppress(Exception):
-                await message.remove_reaction(emoji=previous, member=self.bot.user)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(emoji=emoji)
-
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
         """Routes the message to the appropriate handler."""
         message_list: list[EasyInputMessageParam] = []
@@ -617,7 +609,7 @@ class ReplyGeneratorCogs(commands.Cog):
         stored_content += usage_footer
 
         if used_web_search:
-            await self._handle_reaction(message=message, emoji="🌐")
+            await self.discord_messages.set_status_reaction(message=message, emoji="🌐")
 
         return stored_content
 
@@ -675,39 +667,46 @@ class ReplyGeneratorCogs(commands.Cog):
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
-            await self._handle_reaction(message=message, emoji="❓")
+            await self.discord_messages.set_status_reaction(message=message, emoji="❓")
             await message.reply(content="?")
             return
 
         try:
-            await self._handle_reaction(message=message, emoji="🔀")
-            current_emoji = "🔀"
+            current_emoji = await self.discord_messages.set_status_reaction(
+                message=message, emoji="🔀"
+            )
             route = await self._route_message(message=message)
             if route == "IMAGE":
-                await self._handle_reaction(message=message, emoji="🎨", previous=current_emoji)
-                current_emoji = "🎨"
+                current_emoji = await self.discord_messages.set_status_reaction(
+                    message=message, emoji="🎨", previous=current_emoji
+                )
                 await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
-                await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
-                current_emoji = "🎬"
+                current_emoji = await self.discord_messages.set_status_reaction(
+                    message=message, emoji="🎬", previous=current_emoji
+                )
                 await self._handle_video_reply(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
-                await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
-                current_emoji = "📖"
+                current_emoji = await self.discord_messages.set_status_reaction(
+                    message=message, emoji="📖", previous=current_emoji
+                )
                 await self._handle_message_reply(
                     message=message, system_prompt=SUMMARY_PROMPT, history_limit=50
                 )
             else:
-                await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
-                current_emoji = "❓"
+                current_emoji = await self.discord_messages.set_status_reaction(
+                    message=message, emoji="❓", previous=current_emoji
+                )
                 await self._handle_message_reply(
                     message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
-            await self._handle_reaction(message=message, emoji="🆗", previous=current_emoji)
+            await self.discord_messages.set_status_reaction(
+                message=message, emoji="🆗", previous=current_emoji
+            )
         except Exception as e:
             logfire.error("Failed to generate reply", user_id=message.author.name, _exc_info=True)
             with contextlib.suppress(Exception):
-                await self._handle_reaction(message=message, emoji="❌")
+                await self.discord_messages.set_status_reaction(message=message, emoji="❌")
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
