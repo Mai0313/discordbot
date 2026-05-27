@@ -65,48 +65,78 @@ BOT_PLAYER_PERSONA = f"""
 - 不要重複輸入裡的金額格式, 用自然語言講金額 ({CURRENCY_NAME})
 """
 
+BLACKJACK_RULES_BRIEF = """
+21 點規則摘要:
+- 牌面值: A 可以算 1 或 11, 2 到 10 照面值, J/Q/K 都算 10
+- 目標: 手牌總點數越接近 21 越好, 超過 21 即爆牌 (bust) 直接輸
+- 起手就 21 點 (A + 10/J/Q/K) 稱為 Blackjack, 賠率 1.5 倍
+- 莊家規則: 採 H17, 點數 <= 16 必補牌, soft 17 也補, hard 17 以上才停
+- 玩家可選動作:
+  - hit (要牌): 再抽一張, 可重複
+  - stand (停牌): 停手不再要牌
+  - double (加倍): 把這手下注變兩倍, 只能再抽一張就強制停牌
+  - split (分牌): 起手是對子 (同點數) 時可拆成兩手, 各自獨立玩, 需要追加同額下注
+  - surrender (投降): 第一個動作可選, 退回一半本金不玩了
+  - insurance (保險): 莊家明牌是 A 時可下半額保險, 若莊家湊出 Blackjack 賠 2:1
+- 過五關 (five-card 21): 抽到五張且總點數正好 21 點, 屬於額外加碼支付的特殊結果
+"""
+
 BOT_PLAYER_BET_PROMPT = f"""
 {BOT_PLAYER_PERSONA}
 
-任務: 你要決定這一局 21 點下注多少 {CURRENCY_NAME}
-- 餘額有限, 不要 all in (除非餘額已經很少)
-- 參考桌上其他玩家的下注 (table_bet), 但不需要完全跟風
-- 一般情況下, 控制在餘額的 1% ~ 5% 之間
-- 餘額越少越保守, 餘額越多可以稍微大膽一點, 但仍要保留資金週轉
-- bet_amount 必須是正整數, 不可超過餘額
-- reason 用繁體中文, 30 字以內, 描述你下這個金額的理由
+{BLACKJACK_RULES_BRIEF}
+
+任務: 根據規則與賠率, 自行決定這一局要下注多少 {CURRENCY_NAME}
+
+可以考慮的因素 (不是規則, 是你自己權衡):
+- 你的目前餘額能讓你玩幾局
+- 桌上其他玩家的下注金額 (table_bet) 透露的桌風
+- 你想保守還是冒險
+
+硬性限制:
+- bet_amount 必須是 >= 1 的正整數, 不可超過你的餘額
+- reason 用繁體中文, 30 字以內, 簡短描述你的判斷
 
 只能輸出 bet_amount 與 reason 的 structured result
 """
 
-BOT_PLAYER_ACTION_PROMPT = """
-你是 21 點桌上的一個玩家, 現在輪到你決定動作
+BOT_PLAYER_ACTION_PROMPT = f"""
+{BOT_PLAYER_PERSONA}
 
-硬性規則:
+{BLACKJACK_RULES_BRIEF}
+
+任務: 你看到自己手牌、莊家明牌、可選動作後, 自行決定要做哪個動作
+
+可以考慮的因素 (不是規則, 是你自己權衡):
+- 你手上幾張、總點數多少、是否含 Ace
+- 莊家明牌透露的爆牌機率
+- 還能要哪些動作 (allowed_actions)
+- 雙倍下注 / 分牌帶來的額外風險與回報
+
+硬性限制:
 - 只能輸出 action 與 reason 的 structured result
-- action 必須是 allowed_actions 列表裡的其中一個
-- reason 用繁體中文, 30 字以內
-
-決策原則 (basic strategy 為基準):
-- 玩家手牌總點數 <= 11 通常 hit
-- 玩家手牌總點數 12 ~ 16, 看莊家明牌
-  - 莊家明牌 2 ~ 6, 通常 stand (莊家較容易爆)
-  - 莊家明牌 7 ~ A, 通常 hit
-- 玩家手牌總點數 >= 17 通常 stand
-- 起手對子 A 或 8, 若可以 split 就 split
-- 起手對子 10/J/Q/K, 不要 split, 直接 stand
-- 起手 9, 10, 11 對莊家明牌 5/6 可以考慮 double
-- surrender 一般不選, 除非手牌 15/16 對上莊家 9/10/A 才考慮
+- action 必須是 allowed_actions 列表裡的其中一個, 不在列表裡的不能選
+- reason 用繁體中文, 30 字以內, 簡短描述你的判斷
 """
 
-BOT_PLAYER_INSURANCE_PROMPT = """
-你是 21 點桌上的玩家, 莊家亮 A, 你要決定是否買保險
+BOT_PLAYER_INSURANCE_PROMPT = f"""
+{BOT_PLAYER_PERSONA}
 
-硬性規則:
+{BLACKJACK_RULES_BRIEF}
+
+任務: 莊家明牌是 A, 你要決定要不要下保險
+
+保險規則細節:
+- 下注金額是你本局主注的一半
+- 若莊家暗牌湊出 Blackjack, 保險賠 2:1; 否則保險輸掉
+- 等同於押注「莊家暗牌是 10 / J / Q / K」
+
+可以考慮的因素 (不是規則, 是你自己權衡):
+- 莊家湊出 Blackjack 的機率
+- 保險的長期期望值
+- 你目前手牌的狀況
+
+硬性限制:
 - 只能輸出 take_insurance (true/false) 與 reason 的 structured result
-- reason 用繁體中文, 30 字以內
-
-決策原則:
-- 保險的長期期望值是負的, 一般情況下不買
-- 只有在你已經算過剩餘 10 點牌特別多時才考慮買 (本桌沒有算牌條件, 所以基本上永遠 false)
+- reason 用繁體中文, 30 字以內, 簡短描述你的判斷
 """
