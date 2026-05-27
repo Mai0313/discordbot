@@ -30,6 +30,17 @@ BOT_INSURANCE_AI_TIMEOUT_SECONDS = 4.0
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
+def _ascii_header_safe(text: str) -> str:
+    """Returns a header-safe rendition of `text` (non-ASCII chars become '?').
+
+    HTTP headers default to ASCII encoding under httpx, so bot accounts with
+    CJK display names would otherwise raise UnicodeEncodeError when LiteLLM
+    sees the end-user-id header. We only ever use this value as a tracking
+    label, so a lossy ASCII replacement is acceptable.
+    """
+    return text.encode("ascii", errors="replace").decode("ascii")
+
+
 class BotPlayerBetDecision(BaseModel):
     """Structured bet decision returned by the bot player AI."""
 
@@ -138,7 +149,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerBetDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -193,7 +204,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerActionDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -232,7 +243,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerInsuranceDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:

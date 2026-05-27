@@ -20,6 +20,17 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME
 NARRATOR_AI_TIMEOUT_SECONDS = 5.0
 
 
+def _ascii_header_safe(text: str) -> str:
+    """Returns a header-safe rendition of `text` (non-ASCII chars become '?').
+
+    httpx encodes outgoing HTTP headers as ASCII; CJK display names would
+    otherwise raise UnicodeEncodeError when LiteLLM receives the end-user-id
+    header. The value is only used as a tracking label, so a lossy ASCII
+    replacement is acceptable.
+    """
+    return text.encode("ascii", errors="replace").decode("ascii")
+
+
 class SystemNarrator(BaseModel):
     """Wraps fast-model calls for the casino system's neutral broadcast lines.
 
@@ -48,7 +59,7 @@ class SystemNarrator(BaseModel):
                     ),
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
