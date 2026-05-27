@@ -14,25 +14,24 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, ValidationError
 import requests
 
-_UPSTREAM_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
-)
-
 
 class ModelPriceEntry(BaseModel):
     """Subset of one LiteLLM price-table entry used by this bot."""
 
     model_config = ConfigDict(extra="ignore")
 
-    input_cost_per_token: float = 0.0
-    output_cost_per_token: float = 0.0
+    input_cost_per_token: float = Field(default=0.0)
+    output_cost_per_token: float = Field(default=0.0)
     supported_modalities: list[str] = Field(default=["text", "image"])
 
 
 def _fetch_upstream() -> dict[str, object]:
     """Fetches the upstream price table; returns `{}` on network or parse error."""
     try:
-        response = requests.get(url=_UPSTREAM_URL, timeout=5)
+        response = requests.get(
+            url="https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+            timeout=5,
+        )
         response.raise_for_status()
         data = response.json()
     except (requests.RequestException, ValueError) as exc:
