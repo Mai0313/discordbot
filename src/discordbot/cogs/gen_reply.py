@@ -124,8 +124,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """Converts an image source to a content part for the API."""
         try:
             if isinstance(source, str):
-                b64 = get_image_data(image_file=source)
-                data_uri = convert_base64_to_data_uri(base64_image=b64)
+                b64_data = get_image_data(image_file=source)
+                data_uri = convert_base64_to_data_uri(base64_image=b64_data)
                 return ResponseInputImageParam(
                     image_url=data_uri, detail="low", type="input_image"
                 )
@@ -134,8 +134,8 @@ class ReplyGeneratorCogs(commands.Cog):
             else:
                 content_type = guess_type(source.url)[0] or "image/png"
             file_bytes = await source.read()
-            b64 = base64.b64encode(file_bytes).decode("utf-8")
-            data_uri = f"data:{content_type};base64,{b64}"
+            b64_data = base64.b64encode(file_bytes).decode("utf-8")
+            data_uri = f"data:{content_type};base64,{b64_data}"
             return ResponseInputImageParam(image_url=data_uri, detail="low", type="input_image")
         except Exception:
             logfire.warn("Failed to convert this image")
@@ -144,9 +144,9 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
         """Converts a file attachment to a content part for the API."""
         try:
+            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             file_bytes = await attachment.read()
             b64_data = base64.b64encode(file_bytes).decode()
-            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             mime_type = content_type.split(";")[0].strip()
             if not mime_type:
                 logfire.warn(
