@@ -70,6 +70,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.typings.economy import (
+    MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
     MAX_LOAN_MONTHLY_RATE_BPS,
@@ -2892,6 +2893,14 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
         )
         borrower_balance = credit_result.scalar_one()
         invalidate_economy_leaderboard_cache()
+        # Prepay MIN_INTEREST_DAYS of interest so borrowers cannot dodge interest
+        # by repaying immediately. last_interest_accrued_at points past the
+        # prepaid window, so _loan_interest_delta returns 0 until real time
+        # catches up and then accrues normally.
+        prepaid_interest = (
+            proposal.amount * proposal.monthly_rate_bps * MIN_INTEREST_DAYS // (10_000 * 30)
+        )
+        prepaid_end = now + timedelta(days=MIN_INTEREST_DAYS)
         contract = LoanContract(
             proposal_id=proposal.id,
             lender_type=proposal.lender_type,
@@ -2903,13 +2912,13 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             borrower_avatar_url=proposal.borrower_avatar_url,
             original_principal=proposal.amount,
             principal_remaining=proposal.amount,
-            interest_due=0,
+            interest_due=prepaid_interest,
             total_interest_paid=0,
             total_principal_paid=0,
             monthly_rate_bps=proposal.monthly_rate_bps,
             status=LoanContractStatus.ACTIVE,
             opened_at=now,
-            last_interest_accrued_at=now,
+            last_interest_accrued_at=prepaid_end,
             updated_at=now,
         )
         session.add(contract)

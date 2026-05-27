@@ -6,7 +6,11 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import text, select, update
 
-from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS, LoanProposalStatus
+from discordbot.typings.economy import (
+    MIN_INTEREST_DAYS,
+    LOAN_PROPOSAL_TIMEOUT_SECONDS,
+    LoanProposalStatus,
+)
 from discordbot.cogs._economy.database import (
     LoanContract,
     LoanProposal,
@@ -34,12 +38,15 @@ async def _add_balance(user_id: int, name: str, amount: int) -> int:
 
 
 async def _backdate_contract(contract_id: int, days: int) -> None:
-    """Moves a loan contract's accrual timestamp into the past."""
+    """Ages a loan contract by `days`, keeping the MIN_INTEREST_DAYS prepaid window aligned."""
+    now = _database_now()
+    opened_at = now - timedelta(days=days)
+    last_accrued_at = opened_at + timedelta(days=MIN_INTEREST_DAYS)
     async with open_session() as session:
         await session.execute(
             statement=update(LoanContract)
             .where(LoanContract.id == contract_id)
-            .values(last_interest_accrued_at=_database_now() - timedelta(days=days))
+            .values(opened_at=opened_at, last_interest_accrued_at=last_accrued_at)
         )
         await session.commit()
 
@@ -138,13 +145,14 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
             params={"contract_id": accepted.contract.contract_id},
         )
 
+    prepaid_interest = large_amount * 300 * MIN_INTEREST_DAYS // (10_000 * 30)
     assert proposal_result.one() == (str(large_amount), "text", "0", "text")
     assert contract_result.one() == (
         str(large_amount),
         "text",
         str(large_amount),
         "text",
-        "0",
+        str(prepaid_interest),
         "text",
     )
 

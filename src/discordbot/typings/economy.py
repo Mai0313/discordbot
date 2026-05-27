@@ -11,6 +11,9 @@ LOAN_PROPOSAL_TIMEOUT_SECONDS: Final[int] = 180
 DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
 MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
 MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
+# Minimum interest a borrower owes on a contract regardless of repayment timing.
+# Prepaid at acceptance so borrow-then-immediately-repay still costs MIN_INTEREST_DAYS worth.
+MIN_INTEREST_DAYS: Final[int] = 30
 # Daily check-in streak cycles through 1..7 then loops back to 1.
 CHECKIN_STREAK_CYCLE: Final[int] = 7
 
@@ -369,6 +372,7 @@ __all__ = [
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
+    "MIN_INTEREST_DAYS",
     "MIN_LOAN_MONTHLY_RATE_BPS",
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
