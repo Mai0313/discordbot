@@ -605,9 +605,10 @@ async def test_gen_reply_on_message_dispatches_routes(
         """Returns the parametrized route."""
         return route
 
-    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> None:
+    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> str:
         """Records reaction state transitions."""
         calls.append(f"reaction:{emoji}")
+        return emoji
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records image handler dispatch."""

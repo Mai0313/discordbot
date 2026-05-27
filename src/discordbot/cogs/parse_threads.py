@@ -35,13 +35,14 @@ class ThreadsCogs(commands.Cog):
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous_emoji: str | None = None
-    ) -> None:
+    ) -> str:
         """Handles adding and removing reactions on a message."""
         if previous_emoji and self.bot.user:
             with contextlib.suppress(Exception):
                 await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
+        return emoji
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -138,8 +139,7 @@ class ThreadsCogs(commands.Cog):
             return
 
         url = match.group(0)
-        current_emoji = "🔗"
-        await self._handle_reaction(message=message, emoji=current_emoji)
+        current_emoji = await self._handle_reaction(message=message, emoji="🔗")
 
         try:
             with self.downloader.parse(url) as results:

@@ -472,13 +472,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _handle_reaction(
         self, message: Message, emoji: str, previous: str | None = None
-    ) -> None:
+    ) -> str:
         """Handles adding and removing reactions on a message."""
         if previous and self.bot.user:
             with contextlib.suppress(Exception):
                 await message.remove_reaction(emoji=previous, member=self.bot.user)
         with contextlib.suppress(Exception):
             await message.add_reaction(emoji=emoji)
+        return emoji
 
     async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
         """Routes the message to the appropriate handler."""
@@ -706,26 +707,29 @@ class ReplyGeneratorCogs(commands.Cog):
             return
 
         try:
-            await self._handle_reaction(message=message, emoji="🔀")
-            current_emoji = "🔀"
+            current_emoji = await self._handle_reaction(message=message, emoji="🔀")
             route = await self._route_message(message=message)
             if route == "IMAGE":
-                await self._handle_reaction(message=message, emoji="🎨", previous=current_emoji)
-                current_emoji = "🎨"
+                current_emoji = await self._handle_reaction(
+                    message=message, emoji="🎨", previous=current_emoji
+                )
                 await self._handle_image_reply(message=message, user_prompt=user_prompt)
             elif route == "VIDEO":
-                await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
-                current_emoji = "🎬"
+                current_emoji = await self._handle_reaction(
+                    message=message, emoji="🎬", previous=current_emoji
+                )
                 await self._handle_video_reply(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
-                await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
-                current_emoji = "📖"
+                current_emoji = await self._handle_reaction(
+                    message=message, emoji="📖", previous=current_emoji
+                )
                 await self._handle_message_reply(
                     message=message, system_prompt=SUMMARY_PROMPT, history_limit=50
                 )
             else:
-                await self._handle_reaction(message=message, emoji="❓", previous=current_emoji)
-                current_emoji = "❓"
+                current_emoji = await self._handle_reaction(
+                    message=message, emoji="❓", previous=current_emoji
+                )
                 await self._handle_message_reply(
                     message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
