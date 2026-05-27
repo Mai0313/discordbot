@@ -303,57 +303,29 @@ async def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[Si
         yield event
 
 
-def _stub_streaming_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skips pricing and DB writes in streaming behavior tests."""
-
-    def fake_calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
-        del model_name, input_tokens, output_tokens
-        return 0.0
-
-    async def fake_award(self: ReplyGeneratorCogs, message: FakeMessage, amount: int) -> None:
-        del self, message, amount
-
-    monkeypatch.setattr(ReplyGeneratorCogs, "_calculate_cost", staticmethod(fake_calculate_cost))
-    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", fake_award)
-
-
 async def test_handle_streaming_allows_missing_output_token_details(
-    monkeypatch: pytest.MonkeyPatch,
+    economy_isolated_db: None,
 ) -> None:
     """Regression: LiteLLM may return usage with output_tokens_details=null."""
-
-    def fake_calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
-        """Verifies token counts passed to cost calculation."""
-        assert model_name == TEST_LLM_MODEL
-        assert input_tokens == 12
-        assert output_tokens == 34
-        return 0.0
-
-    async def fake_award(self: ReplyGeneratorCogs, message: FakeMessage, amount: int) -> None:
-        """Skips database writes for chat reward accounting."""
-        # Stub the DB-touching coroutine so the test doesn't write to data/economy.db.
-        del self, message, amount
-
-    monkeypatch.setattr(ReplyGeneratorCogs, "_calculate_cost", staticmethod(fake_calculate_cost))
-    monkeypatch.setattr(ReplyGeneratorCogs, "_award_chat_points", fake_award)
-
+    del economy_isolated_db
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     message = FakeMessage()
 
     result = await cog._handle_streaming(responses=_stream_events(), message=message)
 
     expected = (
-        f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000 · +46 虛擬歡樂豆"
+        f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
+        " · 46 虛擬歡樂豆 (+46 虛擬歡樂豆)"
     )
     assert result == expected
     assert message.replies[0].content == result
 
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain(
-    monkeypatch: pytest.MonkeyPatch,
+    economy_isolated_db: None,
 ) -> None:
     """Verifies replies over Discord's content limit continue as a reply chain."""
-    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    del economy_isolated_db
     cog = _cog()
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
@@ -374,7 +346,9 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
         message=message,
     )
 
-    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · +3 虛擬歡樂豆"
+    usage_footer = (
+        f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 3 虛擬歡樂豆 (+3 虛擬歡樂豆)"
+    )
     assert result == f"{body}{usage_footer}"
 
     parent = message.replies[0]
@@ -393,10 +367,10 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
 
 
 async def test_handle_streaming_marks_web_search_from_call_event(
-    monkeypatch: pytest.MonkeyPatch,
+    economy_isolated_db: None,
 ) -> None:
     """Verifies native web_search_call events trigger the web reaction."""
-    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    del economy_isolated_db
     cog = _cog()
     message = FakeMessage()
 
@@ -421,7 +395,7 @@ async def test_handle_streaming_marks_web_search_from_call_event(
 
 
 async def test_handle_streaming_marks_web_search_from_annotation(
-    monkeypatch: pytest.MonkeyPatch,
+    economy_isolated_db: None,
 ) -> None:
     """Verifies any annotation event also triggers the web reaction.
 
@@ -429,7 +403,7 @@ async def test_handle_streaming_marks_web_search_from_annotation(
     emitting web_search_call.* events, so annotation alone is treated as
     a search signal.
     """
-    _stub_streaming_accounting(monkeypatch=monkeypatch)
+    del economy_isolated_db
     cog = _cog()
     message = FakeMessage()
 

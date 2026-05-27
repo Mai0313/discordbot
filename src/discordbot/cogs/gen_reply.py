@@ -182,16 +182,16 @@ class ReplyGeneratorCogs(commands.Cog):
         """Extracts attachment content parts from a message."""
         slow_model = self.runtime_models.slow_model
         modalities = get_supported_modalities(model_name=slow_model.name)
-        _content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
+        content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
 
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             required = self._required_modality(content_type=content_type)
             if required in modalities:
                 if content_type.startswith("image/"):
-                    _content_parts.append(await self._image_to_part(source=attachment))
+                    content_parts.append(await self._image_to_part(source=attachment))
                 else:
-                    _content_parts.append(await self._attachment_to_part(attachment=attachment))
+                    content_parts.append(await self._attachment_to_part(attachment=attachment))
             else:
                 logfire.warn(
                     f"Skipping {required} attachment for {slow_model.name}: {attachment.filename}"
@@ -199,19 +199,16 @@ class ReplyGeneratorCogs(commands.Cog):
 
         if "image" in modalities:
             for sticker in message.stickers:
-                _content_parts.append(await self._image_to_part(source=sticker))
+                content_parts.append(await self._image_to_part(source=sticker))
 
-            # Prefer Discord's proxy_url (media.discordapp.net) over the original URL,
-            # since sources like Threads CDN expire and reject requests without specific headers.
+            # Prefer Discord's proxy_url (media.discordapp.net) over the original URL, since sources like Threads CDN expire and reject requests without specific headers.
             for embed in message.embeds:
                 if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                    _content_parts.append(await self._image_to_part(source=url))
+                    content_parts.append(await self._image_to_part(source=url))
                 if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                    _content_parts.append(await self._image_to_part(source=url))
+                    content_parts.append(await self._image_to_part(source=url))
 
-        content_parts: list[ResponseInputImageParam | ResponseInputFileParam] = [
-            part for part in _content_parts if part is not None
-        ]
+        content_parts = [part for part in content_parts if part is not None]
         return content_parts
 
     async def _process_single_message(self, message: Message) -> EasyInputMessageParam:
@@ -490,31 +487,6 @@ class ReplyGeneratorCogs(commands.Cog):
             return "QA"
 
     @staticmethod
-    def _calculate_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculates the cost of a model response based on token usage."""
-        input_rate, output_rate = get_token_rates(model_name=model_name)
-        return input_rate * input_tokens + output_rate * output_tokens
-
-    async def _award_chat_points(self, message: Message, amount: int) -> int | None:
-        """Persists chat-reward points for a Discord message author."""
-        if amount <= 0:
-            return None
-        avatar_url = await guild_avatar_url(
-            user=message.author, guild=getattr(message, "guild", None)
-        )
-        try:
-            result = await credit_with_repayment(
-                user_id=message.author.id,
-                name=message.author.name,
-                avatar_url=avatar_url,
-                amount=amount,
-            )
-            return result.new_balance
-        except Exception:
-            logfire.warn("Failed to award chat points", _exc_info=True)
-            return None
-
-    @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
         """Splits a completed reply into one parent message plus follow-up chunks."""
         if len(f"{content}{footer}") <= _DISCORD_MESSAGE_LIMIT:
@@ -614,19 +586,26 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                     counted_content = 0
 
-        cost = self._calculate_cost(
-            model_name=model_name, input_tokens=input_tokens, output_tokens=output_tokens
-        )
+        input_rate, output_rate = get_token_rates(model_name=model_name)
+        cost = input_rate * input_tokens + output_rate * output_tokens
 
         # Award chat points equal to total tokens used. We await this (rather than fire-and-forget)
         # so the resulting balance can land in the footer.
         # On DB failure, it returns None and the footer falls back to the delta-only format.
         total_tokens = input_tokens + output_tokens
-        new_balance = await self._award_chat_points(message=message, amount=total_tokens)
+        avatar_url = await guild_avatar_url(
+            user=message.author, guild=getattr(message, "guild", None)
+        )
+        result = await credit_with_repayment(
+            user_id=message.author.id,
+            name=message.author.name,
+            avatar_url=avatar_url,
+            amount=total_tokens,
+        )
 
         stored_content = _CODED_MENTION_RE.sub(r"\1", stored_content)
-        if new_balance is not None:
-            balance_text = f"{currency_text(amount=new_balance, compact=True)} ({currency_text(amount=total_tokens, signed=True, compact=True)})"
+        if result.new_balance is not None:
+            balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=total_tokens, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=total_tokens, signed=True, compact=True)
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
