@@ -502,10 +502,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     img_embed = Embed()
     img_embed.set_image(url="https://example.test/image.png")
     message.embeds = [img_embed]
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.get_pil_image",
-        lambda image_file: Image.new(mode="RGB", size=(1, 1), color=(0, 0, 0)),
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.get_image_data", lambda image_file: _png_b64())
     parts = await cog._get_attachment_parts(message=message)
     assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
 
