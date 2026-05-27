@@ -9,7 +9,6 @@ from functools import cached_property
 from mimetypes import guess_type
 import contextlib
 
-from PIL import Image
 from openai import AsyncOpenAI, AsyncStream
 import logfire
 from nextcord import File, Embed, Message, Attachment, StickerItem
@@ -22,7 +21,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.images import get_pil_image, get_image_data, convert_base64_to_data_uri
+from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
@@ -123,22 +122,23 @@ class ReplyGeneratorCogs(commands.Cog):
         self, source: Attachment | StickerItem | str
     ) -> ResponseInputImageParam | None:
         """Converts an image source to a content part for the API."""
-        url = source if isinstance(source, str) else source.url
         try:
             if isinstance(source, str):
-                downloaded = get_pil_image(image_file=source)
+                b64 = get_image_data(image_file=source)
+                data_uri = convert_base64_to_data_uri(base64_image=b64)
+                return ResponseInputImageParam(
+                    image_url=data_uri, detail="low", type="input_image"
+                )
+            if isinstance(source, Attachment):
+                content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
             else:
-                downloaded = Image.open(BytesIO(await source.read()))
-            downloaded.thumbnail(size=(1568, 1568))
-            if downloaded.mode != "RGB":
-                downloaded = downloaded.convert("RGB")
-            buffer = BytesIO()
-            downloaded.save(buffer, format="JPEG", quality=85, optimize=True)
-            b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-            converted = convert_base64_to_data_uri(b64)
-            return ResponseInputImageParam(image_url=converted, detail="auto", type="input_image")
+                content_type = guess_type(source.url)[0] or "image/png"
+            file_bytes = await source.read()
+            b64 = base64.b64encode(file_bytes).decode("utf-8")
+            data_uri = f"data:{content_type};base64,{b64}"
+            return ResponseInputImageParam(image_url=data_uri, detail="low", type="input_image")
         except Exception:
-            logfire.warn(f"Failed to convert this image: {url}")
+            logfire.warn("Failed to convert this image")
             return None
 
     async def _attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
