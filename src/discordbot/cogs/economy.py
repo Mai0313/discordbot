@@ -42,6 +42,7 @@ from discordbot.cogs._economy.database import (
     get_portfolio,
     adjust_balance,
     checkin_reward,
+    get_casino_ledger,
     get_central_banker,
     call_personal_loans,
     list_loan_contracts,
@@ -71,7 +72,7 @@ _LEADERBOARD_COLOR = 0xFEE75C
 _LOSS_LEADERBOARD_COLOR = 0xE67E22
 _TRANSFER_COLOR = 0x5865F2
 _ADMIN_COLOR = 0x3498DB
-_HOUSE_COLOR = 0xEB459E
+_CASINO_COLOR = 0xEB459E
 _BORROW_COLOR = 0xF1C40F
 _REPAY_COLOR = 0x2ECC71
 _CENTRAL_BANK_COLOR = 0x1ABC9C
@@ -886,10 +887,7 @@ class EconomyCogs(commands.Cog):
             interaction: The interaction that triggered the command.
         """
         await interaction.response.defer()
-        # Exclude the bot's own house-ledger row so the casino's house P&L
-        # never crowds out real players on the leaderboard.
-        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_n(limit=10, exclude_user_ids=exclude_user_ids)
+        rows = await top_n(limit=10)
         if not rows:
             embed = Embed(
                 title=f"🏆 {CURRENCY_NAME} Top 10",
@@ -932,8 +930,7 @@ class EconomyCogs(commands.Cog):
             interaction: The interaction that triggered the command.
         """
         await interaction.response.defer()
-        exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        rows = await top_losers(limit=10, exclude_user_ids=exclude_user_ids)
+        rows = await top_losers(limit=10)
         if not rows:
             embed = Embed(
                 title=f"💸 今日輸局累計 {CURRENCY_NAME}",
@@ -1061,21 +1058,58 @@ class EconomyCogs(commands.Cog):
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
-        name="house",
-        description="Show the Blackjack dealer ledger profit and loss.",
-        name_localizations={Locale.zh_TW: "莊家戰績", Locale.ja: "ディーラー戦績"},
+        name="casino",
+        description="Show the casino system's cumulative profit and loss.",
+        name_localizations={Locale.zh_TW: "賭場", Locale.ja: "カジノ"},
         description_localizations={
-            Locale.zh_TW: "顯示 Blackjack 莊家 ledger 累積 P&L (跨伺服器)",
-            Locale.ja: "Blackjack dealer ledger の累計 P&L を表示します。",
+            Locale.zh_TW: "顯示賭場系統累積 P&L (跨伺服器)",
+            Locale.ja: "カジノシステムの累計 P&L を表示します。",
         },
         nsfw=False,
     )
-    async def house(self, interaction: Interaction) -> None:
-        """Shows the bot's accumulated Blackjack dealer P&L.
+    async def casino(self, interaction: Interaction) -> None:
+        """Shows the casino system's accumulated P&L (was `/house`)."""
+        await interaction.response.defer()
+        snapshot = await get_casino_ledger()
+        balance = snapshot.balance
+        total_earned = snapshot.total_earned
+        total_spent = snapshot.total_spent
 
-        Args:
-            interaction: The interaction that triggered the command.
-        """
+        if balance > 0:
+            verdict = rf"\+ {bold_currency(amount=balance, compact=True)}"
+            color = _BALANCE_COLOR
+        elif balance < 0:
+            verdict = rf"\- {bold_currency(amount=abs(balance), compact=True)}"
+            color = _ERROR_COLOR
+        else:
+            verdict = "⚖️ 打平"
+            color = _CASINO_COLOR
+
+        embed = Embed(title="🎰 賭場戰績", description=f"## {verdict}", color=color)
+        embed.set_author(name="賭場系統")
+        embed.add_field(
+            name="流水",
+            value=(
+                f"贏到 {amount_code(amount=total_earned, compact=True)}\n"
+                f"賠出 {amount_code(amount=total_spent, compact=True)}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="跨伺服器累積 | 賭場資金無上限")
+        await _send_expiring_followup(interaction=interaction, embed=embed)
+
+    @nextcord.slash_command(
+        name="pocat",
+        description="Show the bot player's own wallet (shortcut for /balance @bot).",
+        name_localizations={Locale.zh_TW: "破貓", Locale.ja: "ポキャット"},
+        description_localizations={
+            Locale.zh_TW: "顯示機器人玩家自己的錢包 (等同 /balance @bot)",
+            Locale.ja: "ボットプレイヤー自身の財布を表示します (/balance @bot のショートカット)。",
+        },
+        nsfw=False,
+    )
+    async def pocat(self, interaction: Interaction) -> None:
+        """Shows the bot player's `user_wallet` balance and gross flows."""
         await interaction.response.defer()
         if self.bot.user is None:
             embed = Embed(
@@ -1086,8 +1120,6 @@ class EconomyCogs(commands.Cog):
 
         bot_user = self.bot.user
         account = await get_account(user_id=bot_user.id)
-        # No row yet means nobody's played a round; show a fresh-house view
-        # rather than treating it as an error.
         name = bot_user.display_name
         if account is None:
             balance, total_earned, total_spent = 0, 0, 0
@@ -1098,17 +1130,17 @@ class EconomyCogs(commands.Cog):
             name = name or account.name
 
         if balance > 0:
-            verdict = rf"\+ {bold_currency(amount=balance, compact=True)}"
+            verdict = rf"{bold_currency(amount=balance, compact=True)}"
             color = _BALANCE_COLOR
         elif balance < 0:
             verdict = rf"\- {bold_currency(amount=abs(balance), compact=True)}"
             color = _ERROR_COLOR
         else:
-            verdict = "⚖️ 打平"
-            color = _HOUSE_COLOR
+            verdict = "餘額 0"
+            color = _CASINO_COLOR
 
-        embed = Embed(title="🎰 莊家戰績", description=f"## {verdict}", color=color)
-        embed.set_author(name=f"{name} 的賭場", icon_url=bot_user.display_avatar.url)
+        embed = Embed(title="🐱 破貓戰績", description=f"## {verdict}", color=color)
+        embed.set_author(name=name, icon_url=bot_user.display_avatar.url)
         _set_optional_thumbnail(embed=embed, avatar_url=bot_user.display_avatar.url)
         embed.add_field(
             name="流水",
@@ -1118,7 +1150,7 @@ class EconomyCogs(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="跨伺服器累積 | 莊家資金無上限")
+        embed.set_footer(text="bot 玩家錢包")
         await _send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(

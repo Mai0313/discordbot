@@ -15,7 +15,7 @@ SettleOutcome = Literal[
 ]
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
-BlackjackDealerStepSource = Literal["ai", "auto", "fallback", "guard"]
+BlackjackDealerStepSource = Literal["auto", "guard"]
 
 
 class Card(BaseModel):
@@ -71,14 +71,14 @@ class GameParticipantIdentity(BaseModel):
     avatar_url: str = ""
 
 
-class DealerIdentity(BaseModel):
-    """Discord identity used for the AI dealer in game views."""
+class SystemIdentity(BaseModel):
+    """Discord identity used for the casino system narrator in game views."""
 
     model_config = ConfigDict(frozen=True)
 
-    dealer_id: int
-    dealer_name: str
-    dealer_avatar_url: str = ""
+    system_id: int
+    system_name: str
+    system_avatar_url: str = ""
 
 
 class ParticipantPreparationResult(BaseModel):
@@ -106,7 +106,7 @@ class WagerSettlement(BaseModel):
         delta: Net point change for the round.
         payout: Positive player credit from the round, excluding losses and pushes.
         new_balance: Player balance after applying the signed round delta.
-        house_balance: Dealer ledger balance after applying the dealer-side settlement.
+        casino_balance: Casino ledger balance after applying the casino-side settlement.
         base_delta: Net point change before any VIP payout bonus. `None` for
             legacy/manual test settlements that do not carry bonus details.
         vip_bonus: Extra points added by the VIP payout bonus.
@@ -118,7 +118,7 @@ class WagerSettlement(BaseModel):
     delta: int
     payout: int
     new_balance: int
-    house_balance: int
+    casino_balance: int
     base_delta: int | None = None
     vip_bonus: int = 0
     is_vip: bool = False
@@ -231,7 +231,7 @@ class BlackjackDealerStep(BaseModel):
     total_before: int
     action: BlackjackDealerAction
     reason: str
-    source: BlackjackDealerStepSource = "ai"
+    source: BlackjackDealerStepSource = "auto"
     drawn_card: Card | None = None
     total_after: int | None = None
     fallback: bool = False
@@ -276,7 +276,6 @@ __all__ = [
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
     "Card",
-    "DealerIdentity",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
@@ -284,5 +283,6 @@ __all__ = [
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",
+    "SystemIdentity",
     "WagerSettlement",
 ]

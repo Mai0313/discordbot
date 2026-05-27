@@ -18,9 +18,10 @@ from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_v
 
 if TYPE_CHECKING:
     from random import Random
+    from collections.abc import Iterable
 
     from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
-    from discordbot.cogs._games.dealer import DealerAI
+    from discordbot.cogs._games.dealer import SystemNarrator
 
 
 class PrepareParticipant(Protocol):
@@ -62,24 +63,28 @@ class BaseGameLobbyView(View):
         self,
         owner: GameParticipant,
         rng: Random,
-        dealer: DealerAI,
-        dealer_name: str,
-        dealer_avatar_url: str,
+        narrator: SystemNarrator,
+        system_name: str,
+        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         timeout: int,
+        extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
         """Initializes shared lobby state and registers the owner."""
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
-        self.dealer = dealer
-        self.dealer_name = dealer_name
-        self.dealer_avatar_url = dealer_avatar_url
+        self.narrator = narrator
+        self.system_name = system_name
+        self.system_avatar_url = system_avatar_url
         self.prepare_participant = prepare_participant
         self.refresh_participants = refresh_participants
         self.message: Message | None = None
         self._participants: dict[int, GameParticipant] = {owner.user_id: owner}
+        for extra in extra_initial_participants or ():
+            if extra.user_id != owner.user_id:
+                self._participants[extra.user_id] = extra
         self._lock = asyncio.Lock()
         self._started = False
 
@@ -224,25 +229,27 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        dealer: DealerAI,
-        dealer_name: str,
-        dealer_avatar_url: str,
+        narrator: SystemNarrator,
+        system_name: str,
+        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
         timeout: int,
         initial_jackpot_generation: int | None = None,
+        extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
         """Initializes jackpot lobby state with the live pool snapshot."""
         super().__init__(
             owner=owner,
             rng=rng,
-            dealer=dealer,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
+            narrator=narrator,
+            system_name=system_name,
+            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=timeout,
+            extra_initial_participants=extra_initial_participants,
         )
         self._jackpot_snapshot = initial_jackpot
         self._jackpot_generation = initial_jackpot_generation

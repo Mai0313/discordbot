@@ -37,7 +37,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance [member]` balance, loans, stock holdings, net worth, and VIP · `/give` transfer to members or bots · `/checkin` daily reward\n"
-            "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
+            "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/casino` casino system ledger · `/pocat` bot player wallet\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),
         "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
@@ -73,7 +73,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance [member]` 餘額、借貸、stock holdings、淨資產和 VIP · `/give` 可轉給成員或 bot · `/checkin` 每日簽到\n"
-            "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/house` 莊家 ledger\n"
+            "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/casino` 賭場系統 ledger · `/pocat` 機器人玩家錢包\n"
             "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整，amount 可輸入逗號格式"
         ),
         "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
@@ -109,7 +109,7 @@ _HELP_CONTENT = {
         "points": (
             f"**{CURRENCY_NAME} / Economy**\n"
             "`/balance [member]` balance、loan、stock holdings、net worth、VIP · `/give` transfer to members or bots · `/checkin` daily reward\n"
-            "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/house` dealer ledger\n"
+            "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/casino` casino system ledger · `/pocat` bot player wallet\n"
             "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
         ),
         "checkin": (

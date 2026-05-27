@@ -16,7 +16,6 @@ from discordbot.typings.games import (
     SettleOutcome,
     GameParticipant,
     BlackjackDealerStep,
-    BlackjackDealerAction,
     BlackjackPlayerResult,
     BlackjackDealerStepSource,
 )
@@ -62,7 +61,7 @@ from discordbot.cogs._games.presentation import (
     settlement_metadata,
     player_result_inline,
     lobby_participant_line,
-    build_dealer_talk_embed,
+    build_system_talk_embed,
     blackjack_outcome_presentation,
 )
 from discordbot.cogs._economy.presentation import amount_code, currency_text
@@ -71,7 +70,8 @@ if TYPE_CHECKING:
     from random import Random
     from collections.abc import Coroutine
 
-    from discordbot.cogs._games.dealer import DealerAI
+    from discordbot.cogs._games.dealer import SystemNarrator
+    from discordbot.cogs._games.bot_player import BotAction, BotPlayerAI
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 5
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
@@ -80,15 +80,15 @@ FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 HintRefreshContext = tuple[int, str, str, int, int]
 BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
-    "win": "算你今天運氣好, 下一把不會這麼順",
-    "lose": "下次再來送錢吧",
-    "push": "白忙一場, 賭場最開心的就是這種局",
-    "blackjack": "Blackjack? 算你會玩, 下一把見真章",
-    "five_card_win": "過五關沒爆, 這把讓你過",
-    "five_card_twenty_one": "過五關也給你摸到, 這把算你有耐心",
-    "player_bust": "爆了爆了, 沒事多算算數字好嗎",
-    "dealer_bust": "靠杯, 這把莊家自爆, 你撿到便宜了",
-    "surrender": "投降也算會止血, 下一把再說",
+    "win": "本局玩家獲勝, 賭場已支付賠付",
+    "lose": "本局玩家未過關, 籌碼歸入賭場",
+    "push": "本局雙方點數一致, 押注全額退回",
+    "blackjack": "Blackjack 達成, 賭場依規則支付 1.5 倍賠付",
+    "five_card_win": "過五關未爆, 玩家獲得本局勝利",
+    "five_card_twenty_one": "過五關 21 點, 額外加碼支付",
+    "player_bust": "玩家點數超過 21, 本局結算為輸",
+    "dealer_bust": "莊家點數超過 21, 本局玩家獲勝",
+    "surrender": "玩家投降, 退回一半本金",
 }
 
 
@@ -115,12 +115,7 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats compact dealer actions for the final embed."""
     if not steps:
         return ""
-    source_labels: dict[BlackjackDealerStepSource, str] = {
-        "ai": "AI",
-        "auto": "自動抽牌",
-        "fallback": "fallback basic rule",
-        "guard": "guard",
-    }
+    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "guard"}
     parts: list[str] = []
     for step in steps:
         part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
@@ -243,7 +238,7 @@ def _footer_status(round_state: BlackjackRound) -> str:
 
 
 def build_in_progress_embed(
-    dealer_name: str, round_state: BlackjackRound, force_show_hole: bool = False
+    system_name: str, round_state: BlackjackRound, force_show_hole: bool = False
 ) -> Embed:
     """Builds the shared Blackjack table embed while players are acting.
 
@@ -251,7 +246,7 @@ def build_in_progress_embed(
     hole card is uncovered even before the round reaches the dealer phase.
     """
     description_parts: list[str] = [
-        f"### {dealer_name}",
+        f"### {system_name}",
         _format_dealer_block(round_state=round_state, hide_hole=not force_show_hole),
     ]
     for player_index, player in enumerate(round_state.players):
@@ -300,82 +295,6 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     return "；".join(lines)
 
 
-def _dealer_hand_status(hand: BlackjackHandState) -> str:
-    """Returns a compact status label for one sub-hand."""
-    if hand.surrendered:
-        status = "surrender"
-    elif hand.is_blackjack():
-        status = "blackjack"
-    elif hand.is_bust():
-        status = "bust"
-    elif is_five_card_twenty_one(cards=hand.cards):
-        status = "five-card 21"
-    elif is_five_card_win(cards=hand.cards):
-        status = "five-card win"
-    elif hand.doubled:
-        status = "doubled"
-    elif hand.finished:
-        status = "stand"
-    else:
-        status = "acting"
-    return status
-
-
-def _dealer_insurance_status(round_state: BlackjackRound, player: BlackjackPlayerHand) -> str:
-    """Returns the player's insurance state for the AI dealer prompt."""
-    if not round_state.insurance_offered:
-        return "not offered"
-    if player.insurance_bet > 0:
-        return f"taken, bet={player.insurance_bet}"
-    if player.insurance_resolved:
-        return "declined"
-    return "pending"
-
-
-def _dealer_decision_table_state(round_state: BlackjackRound) -> str:
-    """Builds the full table state sent to the AI dealer."""
-    soft, total = round_state.dealer_is_soft_total()
-    lines: list[str] = [
-        "遊戲: 21 點",
-        f"莊家手牌: {render_hand(cards=round_state.dealer)}",
-        f"莊家總點數: {total}",
-        f"莊家是否 soft total: {'是' if soft else '否'}",
-        f"莊家是否 soft 17: {'是' if round_state.dealer_is_soft_17() else '否'}",
-        f"保險是否提供: {'是' if round_state.insurance_offered else '否'}",
-        f"莊家 peek 是否 Blackjack: {'是' if round_state.peeked_blackjack else '否'}",
-        "玩家:",
-    ]
-    for player_number, player in enumerate(round_state.players, start=1):
-        insurance = _dealer_insurance_status(round_state=round_state, player=player)
-        for index, hand in enumerate(player.hands):
-            # Discord display names are user controlled, and this prompt drives game mechanics.
-            label = f"玩家{player_number}"
-            label = label if len(player.hands) == 1 else f"{label} (手{index + 1})"
-            hand_soft, hand_total = hand.soft_total()
-            player_draws = max(len(hand.cards) - 2, 0)
-            split_label = (
-                "split A" if hand.is_split_aces else "split" if hand.is_split_hand else "no"
-            )
-            five_card = is_five_card_win(cards=hand.cards)
-            five_card_twenty_one = is_five_card_twenty_one(cards=hand.cards)
-            lines.append(
-                f"- {label}: "
-                f"cards={render_hand(cards=hand.cards)}, "
-                f"total={hand_total}, "
-                f"soft={'yes' if hand_soft else 'no'}, "
-                f"bet={hand.bet}, "
-                f"base_bet={hand.base_bet}, "
-                f"status={_dealer_hand_status(hand=hand)}, "
-                f"player_draws_after_initial={player_draws}, "
-                f"actions_taken={hand.actions_taken}, "
-                f"split={split_label}, "
-                f"five_card_win={'yes' if five_card else 'no'}, "
-                f"five_card_twenty_one={'yes' if five_card_twenty_one else 'no'}, "
-                f"insurance={insurance}"
-            )
-    return "\n".join(lines)
-
-
 def _table_color(results: list[BlackjackPlayerResult]) -> int:
     """Returns the final embed color from the table's net player result."""
     total_delta = sum(result.settlement.delta for result in results)
@@ -417,16 +336,16 @@ def _final_title(
 
 
 def build_final_embed(
-    dealer_name: str,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
+    system_name: str = "賭場系統",
     dealer_steps: list[BlackjackDealerStep] | None = None,
 ) -> Embed:
     """Builds the final embed for a settled Blackjack table."""
     dealer_total = round_state.dealer_total()
     dealer_decision_path = _format_dealer_decision_path(steps=dealer_steps or [])
     description_parts: list[str] = [
-        f"### {dealer_name}",
+        f"### {system_name}",
         _format_dealer_block(round_state=round_state, hide_hole=False),
     ]
     if dealer_decision_path:
@@ -495,26 +414,30 @@ class BlackjackLobbyView(BaseGameLobbyView):
         owner: GameParticipant,
         requested_bet: int,
         rng: Random,
-        dealer: DealerAI,
-        dealer_id: int,
-        dealer_name: str,
-        dealer_avatar_url: str,
+        narrator: SystemNarrator,
+        system_name: str,
+        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
+        bot_player_ai: BotPlayerAI | None = None,
+        bot_user_id: int | None = None,
+        extra_initial_participants: list[GameParticipant] | None = None,
     ) -> None:
-        """Initializes a Blackjack lobby with wager and dealer identity."""
+        """Initializes a Blackjack lobby with wager and system identity."""
         super().__init__(
             owner=owner,
             rng=rng,
-            dealer=dealer,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
+            narrator=narrator,
+            system_name=system_name,
+            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS,
+            extra_initial_participants=extra_initial_participants,
         )
         self.requested_bet = requested_bet
-        self.dealer_id = dealer_id
+        self.bot_player_ai = bot_player_ai
+        self.bot_user_id = bot_user_id
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
@@ -536,7 +459,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         round_state.deal_initial()
         table_bet = sum(participant.bet for participant in self.participants)
         table_balance = sum(participant.balance_at_start for participant in self.participants)
-        dealer_line = await self.dealer.taunt_bet(
+        system_line = await self.narrator.taunt_bet(
             author_name=self.owner.account_name,
             player_name=f"{len(self.participants)} 位玩家",
             balance_at_start=table_balance,
@@ -544,14 +467,15 @@ class BlackjackLobbyView(BaseGameLobbyView):
             game="blackjack",
         )
         view = BlackjackView(
-            dealer=self.dealer,
+            narrator=self.narrator,
             round_state=round_state,
             starter_id=self.owner.user_id,
             author_name=self.owner.account_name,
-            dealer_id=self.dealer_id,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
-            dealer_line=dealer_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            system_line=system_line,
+            bot_player_ai=self.bot_player_ai,
+            bot_user_id=self.bot_user_id,
         )
         view.message = message
         if round_state.finished:
@@ -561,45 +485,48 @@ class BlackjackLobbyView(BaseGameLobbyView):
         await edit_message_with_retry(
             message=message,
             embeds=[
-                build_dealer_talk_embed(
-                    dealer_line=dealer_line,
-                    dealer_name=self.dealer_name,
-                    dealer_avatar_url=self.dealer_avatar_url,
+                build_system_talk_embed(
+                    system_line=system_line,
+                    system_name=self.system_name,
+                    system_avatar_url=self.system_avatar_url,
                 ),
-                build_in_progress_embed(dealer_name=self.dealer_name, round_state=round_state),
+                build_in_progress_embed(system_name=self.system_name, round_state=round_state),
             ],
             view=view,
         )
+        await view.maybe_play_bot_turn(message=message)
         return True
 
 
 class BlackjackView(View):
     """Hit / Stand / Double / Split / Surrender / Insurance controls."""
 
-    def __init__(  # noqa: PLR0913 -- view needs table, dealer, and ledger identity
+    def __init__(  # noqa: PLR0913 -- view needs table, narrator, and bot context
         self,
-        dealer: DealerAI,
+        narrator: SystemNarrator,
         round_state: BlackjackRound,
         starter_id: int,
         author_name: str,
-        dealer_id: int,
-        dealer_name: str,
-        dealer_avatar_url: str = "",
-        dealer_line: str = "下好離手, 不要等下哭",
+        system_name: str = "賭場系統",
+        system_avatar_url: str = "",
+        system_line: str = "賭場已收到下注, 牌桌即將發牌",
+        bot_player_ai: BotPlayerAI | None = None,
+        bot_user_id: int | None = None,
     ) -> None:
         """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
-        self.dealer = dealer
+        self.narrator = narrator
         self.round_state = round_state
         self.starter_id = starter_id
         self.author_name = author_name
-        self.dealer_id = dealer_id
-        self.dealer_name = dealer_name
-        self.dealer_avatar_url = dealer_avatar_url
+        self.system_name = system_name
+        self.system_avatar_url = system_avatar_url
+        self.bot_player_ai = bot_player_ai
+        self.bot_user_id = bot_user_id
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self._dealer_line = dealer_line
+        self._system_line = system_line
         self.round_state.auto_play_dealer = False
         self._dealer_steps: list[BlackjackDealerStep] = []
         self._peek_animated = False
@@ -715,6 +642,7 @@ class BlackjackView(View):
                     self.round_state.dealer_visible_value(),
                 )
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
             if hint_context is not None:
                 self._track_background_task(
                     self._refresh_hint_later(
@@ -749,6 +677,7 @@ class BlackjackView(View):
                 await self._finalize_locked(message=interaction.message)
                 return
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     @nextcord.ui.button(
         label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=1
@@ -777,6 +706,7 @@ class BlackjackView(View):
                 await self._finalize_locked(message=interaction.message)
                 return
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     @nextcord.ui.button(
         label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=1
@@ -805,6 +735,7 @@ class BlackjackView(View):
                 await self._finalize_locked(message=interaction.message)
                 return
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     @nextcord.ui.button(
         label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=1
@@ -833,6 +764,7 @@ class BlackjackView(View):
                 await self._finalize_locked(message=interaction.message)
                 return
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     @nextcord.ui.button(
         label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
@@ -880,6 +812,7 @@ class BlackjackView(View):
                 return
             await self._maybe_animate_insurance_close_locked(message=interaction.message)
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     @nextcord.ui.button(
         label="不保險", emoji="❌", style=ButtonStyle.secondary, custom_id="bj:insure_no", row=1
@@ -905,11 +838,156 @@ class BlackjackView(View):
                 return
             await self._maybe_animate_insurance_close_locked(message=interaction.message)
             await self._edit_in_progress_locked(message=interaction.message)
+            await self._maybe_play_bot_turn_locked(message=interaction.message)
 
     async def finalize(self, message: Message) -> None:
         """Settles every player exactly once."""
         async with self._round_lock:
             await self._finalize_locked(message=message)
+
+    async def maybe_play_bot_turn(self, message: Message) -> None:
+        """Public entry point that drives the bot's turn(s) under the round lock."""
+        async with self._round_lock:
+            await self._maybe_play_bot_turn_locked(message=message)
+
+    async def _maybe_play_bot_turn_locked(self, message: Message) -> None:
+        """Plays consecutive bot moves until the active seat is non-bot or finished."""
+        if self.bot_player_ai is None or self.bot_user_id is None:
+            return
+        bot_user_id = self.bot_user_id
+        bot_ai = self.bot_player_ai
+        while True:
+            if self._settled or self.round_state.finished:
+                return
+            if self.round_state.phase == "insurance":
+                bot_player = self._find_player_by_user_id(user_id=bot_user_id)
+                if (
+                    bot_player is None
+                    or bot_player.insurance_resolved
+                    or not self.round_state.insurance_offered
+                ):
+                    return
+                await self._dispatch_bot_insurance_locked(
+                    message=message, bot_player=bot_player, bot_ai=bot_ai
+                )
+                continue
+            active = self.round_state.active_player()
+            if active is None or active.participant.user_id != bot_user_id:
+                return
+            await self._dispatch_bot_action_locked(message=message, active=active, bot_ai=bot_ai)
+
+    def _find_player_by_user_id(self, *, user_id: int) -> BlackjackPlayerHand | None:
+        """Returns the player hand container matching a user_id, if any."""
+        for candidate in self.round_state.players:
+            if candidate.participant.user_id == user_id:
+                return candidate
+        return None
+
+    async def _dispatch_bot_insurance_locked(
+        self, *, message: Message, bot_player: BlackjackPlayerHand, bot_ai: BotPlayerAI
+    ) -> None:
+        """Asks the bot AI whether to take insurance, then applies the decision."""
+        first_hand = bot_player.hands[0] if bot_player.hands else None
+        if first_hand is None:
+            return
+        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
+        take_insurance = await bot_ai.decide_bot_insurance(
+            end_user_id=bot_player.participant.account_name,
+            dealer_up=dealer_up,
+            hand_repr=render_hand(cards=first_hand.cards),
+        )
+        try:
+            if take_insurance:
+                self.round_state.take_insurance(
+                    user_id=bot_player.participant.user_id, amount=bot_player.participant.bet // 2
+                )
+            else:
+                self.round_state.decline_insurance(user_id=bot_player.participant.user_id)
+        except ValueError:
+            logfire.warn(
+                "Bot insurance action rejected; declining as fallback",
+                user_id=bot_player.participant.user_id,
+            )
+            with contextlib.suppress(ValueError):
+                self.round_state.decline_insurance(user_id=bot_player.participant.user_id)
+        self._state_revision += 1
+        if self.round_state.finished:
+            await self._finalize_locked(message=message)
+            return
+        await self._maybe_animate_insurance_close_locked(message=message)
+        await self._edit_in_progress_locked(message=message)
+
+    async def _dispatch_bot_action_locked(
+        self, *, message: Message, active: BlackjackPlayerHand, bot_ai: BotPlayerAI
+    ) -> None:
+        """Asks the bot AI for an action on its active hand, then applies it."""
+        hand = self.round_state.active_hand()
+        if hand is None:
+            return
+        balance_remaining = active.participant.balance_at_start - committed_wagers(player=active)
+        allowed: list[BotAction] = []
+        if not hand.finished and not hand.is_split_aces:
+            allowed.append("hit")
+            allowed.append("stand")
+        if can_double(hand=hand, balance_remaining=balance_remaining):
+            allowed.append("double")
+        if can_split(hand=hand, balance_remaining=balance_remaining):
+            allowed.append("split")
+        if can_surrender(hand=hand, peeked_blackjack=self.round_state.peeked_blackjack):
+            allowed.append("surrender")
+        if not allowed:
+            with contextlib.suppress(ValueError):
+                self.round_state.stand(user_id=active.participant.user_id)
+            self._state_revision += 1
+            if self.round_state.finished:
+                await self._finalize_locked(message=message)
+            else:
+                await self._edit_in_progress_locked(message=message)
+            return
+        dealer_up = dealer_up_card(dealer=self.round_state.dealer)
+        action = await bot_ai.decide_bot_action(
+            end_user_id=active.participant.account_name,
+            hand_total=hand.total(),
+            hand_repr=render_hand(cards=hand.cards),
+            dealer_up=dealer_up,
+            is_pair_hand=len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed,
+            allowed_actions=tuple(allowed),
+        )
+        applied = self._apply_bot_action(
+            user_id=active.participant.user_id, action=action, allowed=tuple(allowed)
+        )
+        if not applied:
+            with contextlib.suppress(ValueError):
+                self.round_state.stand(user_id=active.participant.user_id)
+        self._state_revision += 1
+        if self.round_state.finished:
+            await self._finalize_locked(message=message)
+            return
+        await self._edit_in_progress_locked(message=message)
+
+    def _apply_bot_action(
+        self, *, user_id: int, action: BotAction, allowed: tuple[BotAction, ...]
+    ) -> bool:
+        """Routes the bot AI decision through the BlackjackRound API, returning success."""
+        if action not in allowed:
+            return False
+        try:
+            if action == "hit":
+                self.round_state.hit(user_id=user_id)
+            elif action == "stand":
+                self.round_state.stand(user_id=user_id)
+            elif action == "double":
+                self.round_state.double_down(user_id=user_id)
+            elif action == "split":
+                self.round_state.split(user_id=user_id)
+            elif action == "surrender":
+                self.round_state.surrender(user_id=user_id)
+        except ValueError:
+            logfire.warn(
+                "Bot action raised on BlackjackRound; falling back", user_id=user_id, action=action
+            )
+            return False
+        return True
 
     def sync_buttons(self) -> None:
         """Shows only the controls that are currently actionable."""
@@ -950,15 +1028,15 @@ class BlackjackView(View):
             set_view_item_visible(view=self, item=button, visible=visible[custom_id])
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
-        """Refreshes dealer talk and table embeds while holding the round lock."""
+        """Refreshes system narrator and table embeds while holding the round lock."""
         self.sync_buttons()
-        talk_embed = build_dealer_talk_embed(
-            dealer_line=self._dealer_line,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
+        talk_embed = build_system_talk_embed(
+            system_line=self._system_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
         )
         main_embed = build_in_progress_embed(
-            dealer_name=self.dealer_name, round_state=self.round_state
+            system_name=self.system_name, round_state=self.round_state
         )
         await message.edit(embeds=[talk_embed, main_embed], view=self)
 
@@ -1010,21 +1088,18 @@ class BlackjackView(View):
                 player_id=participant.user_id,
                 player_account_name=participant.account_name,
                 player_avatar_url=participant.avatar_url,
-                dealer_id=self.dealer_id,
-                dealer_name=self.dealer_name,
-                dealer_avatar_url=self.dealer_avatar_url,
             )
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.info("Blackjack settlement done", results=len(results))
 
-        dealer_line = self._fallback_settlement_line(results=results)
-        talk_embed = build_dealer_talk_embed(
-            dealer_line=dealer_line,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
+        system_line = self._fallback_settlement_line(results=results)
+        talk_embed = build_system_talk_embed(
+            system_line=system_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
         )
         final_embed = build_final_embed(
-            dealer_name=self.dealer_name,
+            system_name=self.system_name,
             round_state=self.round_state,
             results=results,
             dealer_steps=self._dealer_steps,
@@ -1058,13 +1133,13 @@ class BlackjackView(View):
         safely chain finalize / further edits after the animation returns.
         """
         self._disable_buttons()
-        intro_talk = build_dealer_talk_embed(
-            dealer_line=intro_line,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
+        intro_talk = build_system_talk_embed(
+            system_line=intro_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
         )
         body_hidden = build_in_progress_embed(
-            dealer_name=self.dealer_name, round_state=self.round_state
+            system_name=self.system_name, round_state=self.round_state
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
@@ -1073,13 +1148,13 @@ class BlackjackView(View):
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
-        reveal_talk = build_dealer_talk_embed(
-            dealer_line=reveal_line,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
+        reveal_talk = build_system_talk_embed(
+            system_line=reveal_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
         )
         reveal_body = build_in_progress_embed(
-            dealer_name=self.dealer_name, round_state=self.round_state, force_show_hole=True
+            system_name=self.system_name, round_state=self.round_state, force_show_hole=True
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
@@ -1122,7 +1197,7 @@ class BlackjackView(View):
         await self._animate_peek_no_bj_locked(message=message)
 
     async def _play_dealer_locked(self) -> None:
-        """Runs the dealer phase before settlement."""
+        """Runs the dealer phase using H17 rules (no AI involved)."""
         if self.round_state.dealer_played or not self.round_state.needs_dealer_play():
             return
 
@@ -1131,36 +1206,21 @@ class BlackjackView(View):
             if total_before > 21:
                 self.round_state.mark_dealer_played()
                 return
-            if total_before >= 17:
-                decision = await self.dealer.decide_blackjack_action(
-                    author_name=self.author_name,
-                    table_state=_dealer_decision_table_state(round_state=self.round_state),
-                    dealer_total=total_before,
-                )
-                action: BlackjackDealerAction = decision.action
-                reason = decision.reason
-                fallback = reason.startswith("basic rule:")
-                forced = False
-            else:
-                action = "hit"
-                reason = "guard: 16 點以下必 hit"
-                fallback = False
-                forced = True
-
-            if action == "stand":
+            soft_17 = self.round_state.dealer_is_soft_17()
+            should_hit = total_before < 17 or (total_before == 17 and soft_17)
+            if not should_hit:
                 self._dealer_steps.append(
                     BlackjackDealerStep(
                         total_before=total_before,
                         action="stand",
-                        reason=reason,
-                        source="fallback" if fallback else "ai",
-                        fallback=fallback,
-                        forced=forced,
+                        reason="規則: 已達 17 點且非 soft 17",
+                        source="auto",
+                        forced=True,
                     )
                 )
                 self.round_state.mark_dealer_played()
                 return
-
+            reason = "規則: soft 17 追牌" if soft_17 else "規則: 未滿 17 點"
             drawn_card = self.round_state.draw_dealer_card()
             total_after = self.round_state.dealer_total()
             self._dealer_steps.append(
@@ -1168,11 +1228,10 @@ class BlackjackView(View):
                     total_before=total_before,
                     action="hit",
                     reason=reason,
-                    source="fallback" if fallback else "auto" if forced else "ai",
+                    source="auto",
                     drawn_card=drawn_card,
                     total_after=total_after,
-                    fallback=fallback,
-                    forced=forced,
+                    forced=True,
                 )
             )
         logfire.warn(
@@ -1191,53 +1250,53 @@ class BlackjackView(View):
         self.round_state.mark_dealer_played()
 
     def _fallback_settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
-        """Returns the immediate non-LLM dealer line for a final table."""
+        """Returns the immediate non-LLM narrator line for a final table."""
         if len(results) == 1:
             return BLACKJACK_SETTLEMENT_FALLBACK_LINES[results[0].settlement.outcome]
         net_delta = sum(result.settlement.delta for result in results)
         if net_delta > 0:
-            return "今天這桌有點旺, 但賭場不會天天讓你們舒服"
+            return "本桌整體玩家略勝, 賭場結算後支付差額"
         if net_delta < 0:
-            return "一桌人一起送, 我收得都不好意思了"
-        return "忙了半天打平, 這桌也算會拖時間"
+            return "本桌整體玩家未過關, 籌碼流向賭場"
+        return "本桌全部結算後雙方持平"
 
     async def _refresh_hint_later(
         self, *, message: Message, hint_context: HintRefreshContext
     ) -> None:
-        """Refreshes the in-progress dealer hint if the table did not advance."""
+        """Refreshes the in-progress narrator line if the table did not advance."""
         revision, author_name, player_name, player_total, dealer_visible = hint_context
         try:
-            dealer_line = await self.dealer.hint(
+            system_line = await self.narrator.hint(
                 author_name=author_name,
                 player_name=player_name,
                 player_total=player_total,
                 dealer_visible=dealer_visible,
             )
         except Exception:
-            logfire.warn("Blackjack dealer hint refresh failed", _exc_info=True)
+            logfire.warn("Blackjack narrator hint refresh failed", _exc_info=True)
             return
         async with self._round_lock:
             if self._settled or self._state_revision != revision:
                 return
-            self._dealer_line = dealer_line
+            self._system_line = system_line
             await self._edit_in_progress_locked(message=message)
 
     async def _refresh_settlement_line_later(
         self, *, message: Message, results: list[BlackjackPlayerResult], final_embed: Embed
     ) -> None:
-        """Refreshes the final dealer line with LLM banter after results are visible."""
+        """Refreshes the final narrator line with LLM banter after results are visible."""
         try:
-            dealer_line = await self._settlement_line(results=results)
+            system_line = await self._settlement_line(results=results)
         except Exception:
             logfire.warn("Blackjack settlement banter refresh failed", _exc_info=True)
             return
         async with self._round_lock:
             if not self._settled:
                 return
-            talk_embed = build_dealer_talk_embed(
-                dealer_line=dealer_line,
-                dealer_name=self.dealer_name,
-                dealer_avatar_url=self.dealer_avatar_url,
+            talk_embed = build_system_talk_embed(
+                system_line=system_line,
+                system_name=self.system_name,
+                system_avatar_url=self.system_avatar_url,
             )
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
@@ -1246,10 +1305,10 @@ class BlackjackView(View):
                 )
 
     async def _settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
-        """Builds single-player or table-level dealer settlement banter."""
+        """Builds single-player or table-level narrator settlement broadcast."""
         if len(results) == 1:
             result = results[0]
-            return await self.dealer.settle(
+            return await self.narrator.settle(
                 author_name=result.participant.account_name,
                 player_name=result.participant.display_name,
                 outcome=result.settlement.outcome,
@@ -1259,7 +1318,7 @@ class BlackjackView(View):
                 game="blackjack",
                 detail=result.settlement.detail,
             )
-        return await self.dealer.table_settle(
+        return await self.narrator.table_settle(
             author_name=self.author_name,
             table_name="Blackjack table",
             player_count=len(results),

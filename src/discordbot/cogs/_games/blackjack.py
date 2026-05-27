@@ -832,9 +832,16 @@ class BlackjackRound(BaseModel):
         return False
 
     def _play_dealer(self) -> None:
-        """Draws dealer cards until the standing threshold is reached."""
-        while hand_value(cards=self.dealer) < 17:
-            self.draw_dealer_card()
+        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+)."""
+        while True:
+            total = hand_value(cards=self.dealer)
+            if total < 17:
+                self.draw_dealer_card()
+                continue
+            if total == 17 and is_soft_17(cards=self.dealer):
+                self.draw_dealer_card()
+                continue
+            break
         self.mark_dealer_played()
 
 

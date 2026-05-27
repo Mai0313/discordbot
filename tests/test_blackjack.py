@@ -353,8 +353,8 @@ def test_dealer_keeps_drawing_below_17() -> None:
     assert final >= 17 or is_bust(cards=round_state.dealer)
 
 
-def test_round_dealer_stops_on_hard_and_soft_seventeen() -> None:
-    """The production round dealer stops drawing at hard and soft 17."""
+def test_round_dealer_stops_on_hard_17_and_hits_soft_17() -> None:
+    """Under H17 the dealer stops on hard 17 but keeps drawing on soft 17."""
     hard = BlackjackRound.from_participants(
         rng=Random(x=12345), participants=[_participant(user_id=1, display_name="Alice")]
     )
@@ -370,7 +370,8 @@ def test_round_dealer_stops_on_hard_and_soft_seventeen() -> None:
     soft.stand(user_id=1)
 
     assert [str(card) for card in hard.dealer] == ["10♣", "7♦"]
-    assert [str(card) for card in soft.dealer] == ["A♣", "6♦"]
+    assert len(soft.dealer) >= 3, "H17 requires the dealer to draw on soft 17"
+    assert soft.dealer[:2] == [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
 
 
 def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
@@ -468,7 +469,7 @@ def test_blackjack_in_progress_embed_shows_hole_card_marker_and_up_card() -> Non
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
 
-    embed = build_in_progress_embed(dealer_name="Dealer", round_state=round_state)
+    embed = build_in_progress_embed(system_name="賭場系統", round_state=round_state)
 
     assert isinstance(embed.description, str)
     assert "🂠" in embed.description
@@ -484,7 +485,7 @@ def test_blackjack_in_progress_embed_single_dealer_card_is_visible() -> None:
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣")]
 
-    embed = build_in_progress_embed(dealer_name="Dealer", round_state=round_state)
+    embed = build_in_progress_embed(system_name="賭場系統", round_state=round_state)
 
     assert isinstance(embed.description, str)
     assert "8♣" in embed.description

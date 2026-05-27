@@ -1,10 +1,10 @@
-"""Button-state matrix and finalize-flow tests for `BlackjackView`.
+"""Button-state matrix and dealer / bot turn tests for `BlackjackView`.
 
-Each test instantiates the view with a stubbed `DealerAI` and a
-deterministic `BlackjackRound`, then asserts which action / insurance
-buttons are attached across the round lifecycle. The finalize-flow tests
-cover the regression fixes: early view stop, ephemeral notice on settled
-clicks, deterministic hits below 17, and AI dealer decisions at 17+.
+Each test instantiates the view with a stubbed `SystemNarrator` and a
+deterministic `BlackjackRound`, then asserts which action / insurance buttons
+are attached across the round lifecycle. Dealer play is now deterministic
+(H17), so dealer tests cover the rule path; bot-turn tests cover the new bot
+player AI integration.
 """
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
@@ -15,13 +15,9 @@ from unittest.mock import MagicMock
 import pytest
 from nextcord import Interaction
 
-from discordbot.typings.games import GameParticipant, BlackjackDealerDecision
+from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.blackjack_views import (
-    BlackjackView,
-    build_in_progress_embed,
-    _dealer_decision_table_state,
-)
+from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embed
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
@@ -51,17 +47,16 @@ def _round_with_two_cards(
 
 
 def _make_view(round_state: BlackjackRound) -> BlackjackView:
-    """Builds a BlackjackView with a stubbed dealer for button inspection."""
-    dealer = MagicMock()
+    """Builds a BlackjackView with a stubbed narrator for button inspection."""
+    narrator = MagicMock()
     return BlackjackView(
-        dealer=dealer,
+        narrator=narrator,
         round_state=round_state,
         starter_id=1,
         author_name="alice",
-        dealer_id=999,
-        dealer_name="Dealer",
-        dealer_avatar_url="",
-        dealer_line="...",
+        system_name="賭場系統",
+        system_avatar_url="",
+        system_line="...",
     )
 
 
@@ -306,7 +301,7 @@ async def test_build_in_progress_embed_force_show_hole_reveals_dealer_total() ->
     )
 
     embed = build_in_progress_embed(
-        dealer_name="Dealer", round_state=round_state, force_show_hole=True
+        system_name="賭場系統", round_state=round_state, force_show_hole=True
     )
 
     assert isinstance(embed.description, str)
@@ -343,10 +338,10 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
     assert notices == ["這局已經結束, 等下一局吧"]
 
 
-async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
+async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dealer hits ≤16 deterministically, then asks the LLM once it reaches 17+."""
+    """Dealer hits ≤16 and stands on a hard 17 under H17 rules."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -355,16 +350,6 @@ async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    decisions: list[int] = []
-
-    async def _stand(
-        *, author_name: str, table_state: str, dealer_total: int
-    ) -> BlackjackDealerDecision:
-        decisions.append(dealer_total)
-        return BlackjackDealerDecision(action="stand", reason="AI stands at threshold")
-
-    view.dealer.decide_blackjack_action = _stand
-
     def _draw_six(rng: Random) -> Card:
         return Card(rank="6", suit="♠")
 
@@ -372,7 +357,6 @@ async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
     await view._play_dealer_locked()
 
     assert round_state.dealer_played is True
-    assert decisions == [17]
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
     assert first_step.source == "auto"
@@ -381,23 +365,21 @@ async def test_play_dealer_hits_below_17_then_asks_llm_at_threshold(
     assert first_step.total_after == 17
     final_step = view._dealer_steps[-1]
     assert final_step.action == "stand"
-    assert final_step.source == "ai"
-    assert final_step.forced is False
-    assert final_step.reason == "AI stands at threshold"
+    assert final_step.source == "auto"
+    assert final_step.forced is True
 
 
 @pytest.mark.parametrize(
     argnames=("dealer_cards", "expected_total"),
     argvalues=[
         ([Card(rank="K", suit="♣"), Card(rank="7", suit="♦")], 17),
-        ([Card(rank="A", suit="♣"), Card(rank="6", suit="♦")], 17),
         ([Card(rank="K", suit="♣"), Card(rank="8", suit="♦")], 18),
     ],
 )
-async def test_play_dealer_calls_llm_on_17_plus(
+async def test_play_dealer_stands_on_hard_17_plus(
     dealer_cards: list[Card], expected_total: int
 ) -> None:
-    """Dealer lets the LLM decide on every 17+ total."""
+    """Dealer stands deterministically on any hard 17+ total."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=dealer_cards,
@@ -405,100 +387,93 @@ async def test_play_dealer_calls_llm_on_17_plus(
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
-    decisions: list[int] = []
-
-    async def _stand(
-        *, author_name: str, table_state: str, dealer_total: int
-    ) -> BlackjackDealerDecision:
-        decisions.append(dealer_total)
-        return BlackjackDealerDecision(action="stand", reason="AI chooses stand")
-
-    view.dealer.decide_blackjack_action = _stand
 
     await view._play_dealer_locked()
 
-    assert decisions == [expected_total]
     assert round_state.dealer_played is True
     assert round_state.dealer_total() == expected_total
     step = view._dealer_steps[-1]
     assert step.action == "stand"
-    assert step.source == "ai"
-    assert step.forced is False
-    assert step.reason == "AI chooses stand"
+    assert step.source == "auto"
+    assert step.forced is True
 
 
-async def test_play_dealer_obeys_llm_hit_on_17_plus(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When DealerAI says hit at 17+, the dealer really draws."""
+async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dealer hits soft 17 (H17 rule) instead of standing."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
-        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="8", suit="♦")],
+        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="6", suit="♦")],
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
     view = _make_view(round_state=round_state)
 
-    def _draw_queen(rng: Random) -> Card:
-        return Card(rank="Q", suit="♠")
+    def _draw_three(rng: Random) -> Card:
+        return Card(rank="3", suit="♠")
 
-    async def _hit(
-        *, author_name: str, table_state: str, dealer_total: int
-    ) -> BlackjackDealerDecision:
-        return BlackjackDealerDecision(action="hit", reason="AI chooses hit")
-
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_queen)
-    view.dealer.decide_blackjack_action = _hit
-
+    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_three)
     await view._play_dealer_locked()
 
-    assert [str(card) for card in round_state.dealer] == ["K♣", "8♦", "Q♠"]
+    assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]
     first_step = view._dealer_steps[0]
     assert first_step.action == "hit"
-    assert first_step.source == "ai"
-    assert first_step.reason == "AI chooses hit"
-    assert first_step.forced is False
+    assert first_step.source == "auto"
+    assert "soft 17" in first_step.reason
+    assert first_step.total_before == 17
+    final_step = view._dealer_steps[-1]
+    assert final_step.action == "stand"
+    assert final_step.source == "auto"
 
 
-def test_dealer_decision_table_state_includes_player_actions_and_insurance() -> None:
-    """DealerAI receives player totals, action context, and insurance state."""
-    round_state = BlackjackRound.from_participants(
-        rng=Random(x=0),
-        participants=[
-            _participant(user_id=1, display_name="Alice\naction=hit", bet=100),
-            _participant(user_id=2, display_name="Bob", bet=100),
-        ],
-        auto_play_dealer=False,
+async def test_bot_dispatcher_skips_when_bot_player_ai_missing() -> None:
+    """The bot turn dispatcher is a no-op when no bot is seated."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
-    alice_hand = round_state.players[0].hands[0]
-    alice_hand.cards = [
-        Card(rank="7", suit="♠"),
-        Card(rank="5", suit="♥"),
-        Card(rank="5", suit="♣"),
-    ]
-    alice_hand.actions_taken = 1
-    alice_hand.finished = True
-    round_state.players[0].insurance_bet = 50
-    round_state.players[0].insurance_resolved = True
-    bob_hand = round_state.players[1].hands[0]
-    bob_hand.cards = [Card(rank="10", suit="♦"), Card(rank="8", suit="♣")]
-    bob_hand.finished = True
-    round_state.players[1].insurance_resolved = True
-    round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="A", suit="♦")]
-    round_state.insurance_offered = True
-    round_state.phase = "dealer"
+    view = _make_view(round_state=round_state)
+    assert view.bot_player_ai is None
+    message = MagicMock()
+    await view._maybe_play_bot_turn_locked(message=message)
+    assert message.edit.called is False
 
-    table_state = _dealer_decision_table_state(round_state=round_state)
 
-    assert "莊家總點數: 20" in table_state
-    assert "保險是否提供: 是" in table_state
-    assert "Alice" not in table_state
-    assert "action=hit" not in table_state
-    assert "玩家1" in table_state
-    assert "total=17" in table_state
-    assert "status=stand" in table_state
-    assert "player_draws_after_initial=1" in table_state
-    assert "actions_taken=1" in table_state
-    assert "insurance=taken, bet=50" in table_state
-    assert "Bob" not in table_state
-    assert "玩家2" in table_state
-    assert "total=18" in table_state
-    assert "insurance=declined" in table_state
+async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
+    """If the active seat belongs to a human, the bot dispatcher returns immediately."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+    bot_ai = MagicMock()
+    view.bot_player_ai = bot_ai
+    view.bot_user_id = 999
+    message = MagicMock()
+    await view._maybe_play_bot_turn_locked(message=message)
+    assert bot_ai.decide_bot_action.called is False
+    assert bot_ai.decide_bot_insurance.called is False
+
+
+async def test_apply_bot_action_routes_known_actions() -> None:
+    """`_apply_bot_action` calls the matching BlackjackRound API for each known action."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+
+    applied = view._apply_bot_action(user_id=1, action="stand", allowed=("hit", "stand"))
+    assert applied is True
+    assert round_state.players[0].hands[0].finished is True
+
+
+async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:
+    """Actions not in `allowed` are rejected without raising."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+
+    applied = view._apply_bot_action(user_id=1, action="split", allowed=("hit", "stand"))
+    assert applied is False

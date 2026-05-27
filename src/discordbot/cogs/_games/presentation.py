@@ -1,6 +1,6 @@
 """Shared presentation helpers for casino game embeds."""
 
-from typing import Literal
+from typing import Final, Literal
 
 from nextcord import Embed
 
@@ -12,6 +12,8 @@ WIN_COLOR = 0x57F287
 LOSE_COLOR = 0xED4245
 PUSH_COLOR = 0xFEE75C
 ERROR_COLOR = 0xED4245
+
+SYSTEM_NARRATOR_NAME: Final[str] = "賭場系統"
 
 DEALER_FIELD_EMOJI = "🎩"
 PLAYER_FIELD_EMOJI = "👤"
@@ -98,27 +100,27 @@ def metadata_line(text: str) -> str:
     return f"-# {text}"
 
 
-def dealer_talk_field_value(text: str) -> str:
-    """Formats dealer banter for placement inside its own embed field."""
+def system_talk_field_value(text: str) -> str:
+    """Formats the system narrator line for placement inside its own embed field."""
     if not text:
         return "> ..."
     return "> " + text.replace("\n", "\n> ")
 
 
-def build_dealer_talk_embed(
-    dealer_line: str, dealer_name: str, dealer_avatar_url: str = ""
+def build_system_talk_embed(
+    system_line: str, system_name: str, system_avatar_url: str = ""
 ) -> Embed:
-    """Builds a standalone embed dedicated to the dealer's quote.
+    """Builds a standalone embed dedicated to the system narrator quote.
 
-    The author slot shows the dealer name and avatar in the top-left corner so
-    readers immediately know who is speaking; the description carries the
+    The author slot shows the system name and avatar in the top-left corner so
+    readers immediately know who is broadcasting; the description carries the
     quoted line itself.
     """
-    embed = Embed(description=dealer_talk_field_value(text=dealer_line), color=IN_PROGRESS_COLOR)
-    if dealer_avatar_url:
-        embed.set_author(name=dealer_name, icon_url=dealer_avatar_url)
+    embed = Embed(description=system_talk_field_value(text=system_line), color=IN_PROGRESS_COLOR)
+    if system_avatar_url:
+        embed.set_author(name=system_name, icon_url=system_avatar_url)
     else:
-        embed.set_author(name=dealer_name)
+        embed.set_author(name=system_name)
     return embed
 
 
