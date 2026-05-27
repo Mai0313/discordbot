@@ -1,9 +1,9 @@
 import re
 import sys
-import warnings
 from typing import TextIO
 from pathlib import Path
 from datetime import datetime
+import warnings
 from importlib.metadata import version
 
 import dotenv
@@ -62,9 +62,7 @@ def setup_logging() -> None:
     # pydantic's discriminated-union serializer does not recognise, producing a
     # noisy multi-line UserWarning on every reply. The payload still streams fine.
     warnings.filterwarnings(
-        action="ignore",
-        message=r"Pydantic serializer warnings:",
-        category=UserWarning,
+        action="ignore", message=r"Pydantic serializer warnings:", category=UserWarning
     )
     started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_path = Path(f"./data/logs/{started_at}.log")
