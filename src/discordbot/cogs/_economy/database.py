@@ -1036,6 +1036,15 @@ async def _read_casino_ledger_balance_in_session(session: AsyncSession) -> int:
     return result.scalar_one_or_none() or 0
 
 
+async def _rollback_sessions(*sessions: AsyncSession) -> None:
+    """Rolls back sessions without masking the original settlement exception."""
+    for session in sessions:
+        try:
+            await session.rollback()
+        except Exception:
+            logfire.warn("Failed to roll back settlement session", _exc_info=True)
+
+
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
     """Returns the cumulative casino system ledger snapshot."""
     await _ensure_global_state_schema()
@@ -1359,8 +1368,10 @@ async def apply_round_settlement(
     deltas clamp at zero; when a loss cannot be fully collected, the casino
     ledger only records the actual collected debit. The player write lives in
     `data/economy.db` and the casino mirror lives in `data/global_state.db`;
-    ordinary exceptions roll both sessions back before either commit, matching
-    the jackpot helper's cross-engine guarantee.
+    ordinary exceptions before the final commits roll both sessions back. The
+    player wallet commits before the casino mirror so player-facing balance is
+    preferred if only one final commit succeeds. As with jackpot settlement, a
+    hard crash between the two database-file commits is not cross-file atomic.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1399,11 +1410,10 @@ async def apply_round_settlement(
                 casino_balance = await _apply_casino_ledger_delta_in_session(
                     session=global_session, delta=casino_delta_to_apply, now=now
                 )
-            await global_session.commit()
             await economy_session.commit()
+            await global_session.commit()
         except Exception:
-            await economy_session.rollback()
-            await global_session.rollback()
+            await _rollback_sessions(economy_session, global_session)
             raise
     invalidate_economy_leaderboard_cache()
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
@@ -1416,7 +1426,7 @@ async def apply_blackjack_settlement(
     casino_delta: int,
     player_avatar_url: str = "",
 ) -> RoundSettlementResult:
-    """Applies Blackjack player payout and casino ledger deltas atomically.
+    """Applies Blackjack player payout and casino ledger deltas.
 
     Blackjack can include system-funded bonuses (e.g. five-card 21) that credit
     the player and count as casino payout but must not move the `/casino`
