@@ -46,6 +46,29 @@ BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 _BET_END_USER_ID: Final[str] = "bot_player_bet"
 _ACTION_END_USER_ID: Final[str] = "bot_player_action"
 _INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
+_PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
+    11: frozenset(range(2, 12)),
+    8: frozenset(range(2, 12)),
+    9: frozenset({2, 3, 4, 5, 6, 8, 9}),
+    7: frozenset(range(2, 8)),
+    6: frozenset(range(2, 7)),
+    4: frozenset({5, 6}),
+    3: frozenset(range(2, 8)),
+    2: frozenset(range(2, 8)),
+}
+_HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
+    9: frozenset({3, 4, 5, 6}),
+    10: frozenset(range(2, 10)),
+    11: frozenset(range(2, 12)),
+}
+_SOFT_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
+    13: frozenset({5, 6}),
+    14: frozenset({5, 6}),
+    15: frozenset({4, 5, 6}),
+    16: frozenset({4, 5, 6}),
+    17: frozenset({3, 4, 5, 6}),
+    18: frozenset(range(2, 7)),
+}
 
 
 def _dealer_up_value(*, up_card: Card | None) -> int:
@@ -57,6 +80,67 @@ def _dealer_up_value(*, up_card: Card | None) -> int:
     if up_card.rank in ("J", "Q", "K"):
         return 10
     return int(up_card.rank)
+
+
+def _card_blackjack_value(*, card: Card) -> int:
+    """Returns the Blackjack value used by fallback strategy tables."""
+    if card.rank == "A":
+        return 11
+    if card.rank in ("J", "Q", "K"):
+        return 10
+    return int(card.rank)
+
+
+def _hand_total_and_soft(*, cards: list[Card]) -> tuple[int, bool]:
+    """Returns the best total and whether at least one Ace remains high."""
+    total = 0
+    aces = 0
+    for card in cards:
+        if card.rank == "A":
+            aces += 1
+        total += _card_blackjack_value(card=card)
+    aces_high = aces
+    while total > 21 and aces_high > 0:
+        total -= 10
+        aces_high -= 1
+    return total, aces_high > 0
+
+
+def _pair_value(*, cards: list[Card]) -> int | None:
+    """Returns the pair value for same-value two-card hands."""
+    if len(cards) != 2:
+        return None
+    first = _card_blackjack_value(card=cards[0])
+    second = _card_blackjack_value(card=cards[1])
+    return first if first == second else None
+
+
+def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
+    """Returns whether late surrender is the fallback table choice."""
+    return (hand_total == 16 and dealer_value in {9, 10, 11}) or (
+        hand_total == 15 and dealer_value == 10
+    )
+
+
+def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
+    """Returns whether double down is the fallback table choice."""
+    _, is_soft = _hand_total_and_soft(cards=cards)
+    double_dealers = (
+        _SOFT_DOUBLE_DEALERS.get(hand_total, frozenset())
+        if is_soft
+        else _HARD_DOUBLE_DEALERS.get(hand_total, frozenset())
+    )
+    return dealer_value in double_dealers
+
+
+def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
+    """Returns whether stand is the fallback table choice."""
+    _, is_soft = _hand_total_and_soft(cards=cards)
+    if is_soft:
+        return hand_total >= 19 or (hand_total == 18 and 2 <= dealer_value <= 8)
+    return hand_total >= 17 or (13 <= hand_total <= 16 and dealer_value <= 6) or (
+        hand_total == 12 and 4 <= dealer_value <= 6
+    )
 
 
 def fallback_bet(*, balance: int, table_bet: int) -> int:
@@ -72,6 +156,7 @@ def fallback_bet(*, balance: int, table_bet: int) -> int:
 
 def fallback_action(
     *,
+    hand_cards: list[Card],
     hand_total: int,
     dealer_up: Card | None,
     is_pair_hand: bool,
@@ -79,13 +164,24 @@ def fallback_action(
 ) -> BotAction:
     """Deterministic basic-strategy fallback that only emits allowed actions."""
     dealer_value = _dealer_up_value(up_card=dealer_up)
-    if is_pair_hand and "split" in allowed_actions and dealer_value <= 7:
+    pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
+    if (
+        pair_value is not None
+        and "split" in allowed_actions
+        and dealer_value in _PAIR_SPLIT_DEALERS.get(pair_value, frozenset())
+    ):
         return "split"
-    if hand_total >= 17 and "stand" in allowed_actions:
-        return "stand"
-    if hand_total <= 11 and "hit" in allowed_actions:
-        return "hit"
-    if 12 <= hand_total <= 16 and dealer_value <= 6 and "stand" in allowed_actions:
+    if "surrender" in allowed_actions and _should_surrender(
+        hand_total=hand_total, dealer_value=dealer_value
+    ):
+        return "surrender"
+    if "double" in allowed_actions and _should_double(
+        cards=hand_cards, hand_total=hand_total, dealer_value=dealer_value
+    ):
+        return "double"
+    if "stand" in allowed_actions and _should_stand(
+        cards=hand_cards, hand_total=hand_total, dealer_value=dealer_value
+    ):
         return "stand"
     if "hit" in allowed_actions:
         return "hit"
@@ -193,6 +289,7 @@ class BotPlayerAI(BaseModel):
     async def decide_bot_action(  # noqa: PLR0913 -- bot action decision needs full table context
         self,
         *,
+        hand_cards: list[Card],
         hand_total: int,
         hand_repr: str,
         dealer_up: Card | None,
@@ -207,6 +304,7 @@ class BotPlayerAI(BaseModel):
         """Returns the bot's next action with reasoning, falling back to basic strategy."""
         fallback_decision = BotPlayerActionDecision(
             action=fallback_action(
+                hand_cards=hand_cards,
                 hand_total=hand_total,
                 dealer_up=dealer_up,
                 is_pair_hand=is_pair_hand,

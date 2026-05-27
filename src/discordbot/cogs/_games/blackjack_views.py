@@ -1171,6 +1171,7 @@ class BlackjackView(View):
         other_players = self._build_other_players_views(exclude_user_id=active.participant.user_id)
         own_other_hands = self._own_other_hand_reprs(bot_player=active)
         decision = await bot_ai.decide_bot_action(
+            hand_cards=hand.cards,
             hand_total=hand.total(),
             hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
