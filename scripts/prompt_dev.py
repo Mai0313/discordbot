@@ -2,6 +2,7 @@
 
 import time
 from typing import TYPE_CHECKING
+from pathlib import Path
 
 from google import genai
 from openai import OpenAI
@@ -44,11 +45,27 @@ def gen_reply(user_prompt: str) -> None:
         user_prompt: User message to send as the single prompt input.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
+    file_path = Path("./README.md")
+    file = client.files.create(
+        file=file_path.open("rb"),
+        purpose="user_data",
+        extra_headers={"x-litellm-end-user-id": "prompt_dev"},
+        extra_body={"target_model_names": SLOW_MODEL.name},
+    )
+    console.print(file.model_dump())
     start = time.time()
     responses = client.responses.create(
         model=SLOW_MODEL.name,
         instructions=REPLY_PROMPT,
-        input=[{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_file", "file_id": file.id},
+                    {"type": "input_text", "text": user_prompt},
+                ],
+            }
+        ],
         reasoning=SLOW_MODEL.reasoning,
         tools=SLOW_MODEL.tools,
         stream=True,
