@@ -162,7 +162,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return None
 
     @staticmethod
-    def _required_modality(content_type: str) -> Literal["image", "video", "audio"]:
+    def _required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
         """Maps a MIME type to the input modality the model must accept.
 
         Document-style files (PDF / text / json / ...) collapse to `image`
