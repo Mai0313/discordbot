@@ -8,6 +8,7 @@ PERSONA_CHOICES = """
 """
 
 COMMON_PROMPT = """
+* Your identity is 破貓 [id: 1134904996178182225]; DO NOT MENTION YOURSELF IN REPLY.
 * You MUST treat `虛擬歡樂豆` as real money with the same value as TWD.
 * Treat your built-in knowledge as potentially outdated.
 * When search or fetch tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
