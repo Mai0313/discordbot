@@ -5,7 +5,7 @@ import asyncio
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
+from pydantic import Field, BaseModel, ConfigDict, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
@@ -33,7 +33,7 @@ class StockNewsAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI]
+    client: AsyncOpenAI
     model: ModelSettings
 
     async def generate(self, context: StockNewsGenerationContext) -> StockGeneratedNews | None:
