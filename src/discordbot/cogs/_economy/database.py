@@ -87,6 +87,7 @@ from discordbot.typings.economy import (
     WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
+    CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
     LoanProposalKind,
@@ -1056,6 +1057,32 @@ async def get_casino_ledger() -> CasinoLedgerSnapshot:
     return CasinoLedgerSnapshot(
         balance=balance, total_earned=total_earned, total_spent=total_spent, updated_at=updated_at
     )
+
+
+async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
+    """Returns the current-day casino loss/win/net for one user.
+
+    Returns all-zero when no row exists or when the stored counters are from a
+    previous Taipei day (the next casino settlement will reset them anyway).
+    """
+    await _ensure_schema()
+    today_midnight = _taipei_midnight(now=_database_now())
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(
+                CasinoAccount.daily_loss,
+                CasinoAccount.daily_win,
+                CasinoAccount.daily_net,
+                CasinoAccount.day_started_at,
+            ).where(CasinoAccount.user_id == user_id)
+        )
+        row = result.one_or_none()
+    if row is None:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    daily_loss, daily_win, daily_net, day_started_at = row
+    if day_started_at != today_midnight:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)
 
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata

@@ -27,8 +27,8 @@ from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
     schedule_public_message_delete,
 )
-from discordbot.cogs._economy.database import get_balance
-from discordbot.cogs._games.bot_player import BotPlayerAI, fallback_bet
+from discordbot.cogs._economy.database import get_account, get_balance, get_casino_daily_stats
+from discordbot.cogs._games.bot_player import BotPlayerAI, BotFinancialContext, fallback_bet
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
@@ -107,21 +107,35 @@ class GamesCogs(commands.Cog):
         )
 
     async def _bot_blackjack_participant(
-        self, *, guild: nextcord.Guild | None, table_bet: int
+        self,
+        *,
+        guild: nextcord.Guild | None,
+        table_bet: int,
+        other_player_bets: list[tuple[str, int]],
     ) -> GameParticipant | None:
         """Returns a Blackjack participant for the bot player, or None if it cannot join."""
         bot_user = self.bot.user
         if bot_user is None:
             return None
-        balance = await get_balance(user_id=bot_user.id)
+        account = await get_account(user_id=bot_user.id)
+        balance = account.balance if account is not None else 0
         if balance <= 0:
             logfire.info(
                 "Bot player skipped Blackjack lobby; wallet is empty", user_id=bot_user.id
             )
             return None
+        daily_stats = await get_casino_daily_stats(user_id=bot_user.id)
+        finance = BotFinancialContext(
+            balance=balance,
+            total_earned=account.total_earned if account is not None else 0,
+            total_spent=account.total_spent if account is not None else 0,
+            daily_loss=daily_stats.daily_loss,
+            daily_win=daily_stats.daily_win,
+            daily_net=daily_stats.daily_net,
+        )
         try:
             decided_bet = await self.bot_player_ai.decide_bot_bet(
-                balance=balance, table_bet=table_bet
+                finance=finance, table_bet=table_bet, other_player_bets=other_player_bets
             )
         except Exception:
             logfire.warn("Bot bet decision raised; using deterministic fallback", _exc_info=True)
@@ -347,7 +361,9 @@ class GamesCogs(commands.Cog):
 
         table_bet = owner.bet
         system_identity = await self._system_identity(guild=guild)
-        bot_participant = await self._bot_blackjack_participant(guild=guild, table_bet=table_bet)
+        bot_participant = await self._bot_blackjack_participant(
+            guild=guild, table_bet=table_bet, other_player_bets=[(owner.display_name, owner.bet)]
+        )
         extra_initial_participants: list[GameParticipant] = (
             [bot_participant] if bot_participant is not None else []
         )

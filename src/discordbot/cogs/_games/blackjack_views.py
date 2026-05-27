@@ -35,6 +35,8 @@ from discordbot.cogs._games.blackjack import (
     is_five_card_twenty_one,
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
+from discordbot.cogs._economy.database import get_account, get_casino_daily_stats
+from discordbot.cogs._games.bot_player import OtherPlayerView, BotFinancialContext
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -881,6 +883,55 @@ class BlackjackView(View):
                 return candidate
         return None
 
+    async def _build_bot_finance_context(self, *, user_id: int) -> BotFinancialContext:
+        """Snapshots the bot's wallet + daily casino counters for AI context."""
+        account = await get_account(user_id=user_id)
+        daily_stats = await get_casino_daily_stats(user_id=user_id)
+        return BotFinancialContext(
+            balance=account.balance if account is not None else 0,
+            total_earned=account.total_earned if account is not None else 0,
+            total_spent=account.total_spent if account is not None else 0,
+            daily_loss=daily_stats.daily_loss,
+            daily_win=daily_stats.daily_win,
+            daily_net=daily_stats.daily_net,
+        )
+
+    def _build_other_players_views(self, *, exclude_user_id: int) -> list[OtherPlayerView]:
+        """Returns visible state for every non-bot player at the table."""
+        views: list[OtherPlayerView] = []
+        for candidate in self.round_state.players:
+            if candidate.participant.user_id == exclude_user_id:
+                continue
+            hand_reprs: list[str] = []
+            for hand in candidate.hands:
+                if hand.cards:
+                    hand_reprs.append(f"{render_hand(cards=hand.cards)} = {hand.total()}")
+            is_finished = (
+                all(hand.finished for hand in candidate.hands) if candidate.hands else False
+            )
+            views.append(
+                OtherPlayerView(
+                    display_name=candidate.participant.display_name,
+                    bet=candidate.participant.bet,
+                    hands=hand_reprs,
+                    is_finished=is_finished,
+                )
+            )
+        return views
+
+    def _own_other_hand_reprs(self, *, bot_player: BlackjackPlayerHand) -> list[str]:
+        """Returns labels for the bot's non-active split hands."""
+        active_hand = self.round_state.active_hand()
+        labels: list[str] = []
+        for hand in bot_player.hands:
+            if hand is active_hand:
+                continue
+            if not hand.cards:
+                continue
+            status = "已停" if hand.finished else "進行中"
+            labels.append(f"{render_hand(cards=hand.cards)} = {hand.total()} ({status})")
+        return labels
+
     async def _dispatch_bot_insurance_locked(
         self, *, message: Message, bot_player: BlackjackPlayerHand, bot_ai: BotPlayerAI
     ) -> None:
@@ -889,8 +940,16 @@ class BlackjackView(View):
         if first_hand is None:
             return
         dealer_up = dealer_up_card(dealer=self.round_state.dealer)
+        finance = await self._build_bot_finance_context(user_id=bot_player.participant.user_id)
+        other_players = self._build_other_players_views(
+            exclude_user_id=bot_player.participant.user_id
+        )
         take_insurance = await bot_ai.decide_bot_insurance(
-            dealer_up=dealer_up, hand_repr=render_hand(cards=first_hand.cards)
+            dealer_up=dealer_up,
+            hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
+            bet=bot_player.participant.bet,
+            finance=finance,
+            other_players=other_players,
         )
         try:
             if take_insurance:
@@ -941,12 +1000,20 @@ class BlackjackView(View):
                 await self._edit_in_progress_locked(message=message)
             return
         dealer_up = dealer_up_card(dealer=self.round_state.dealer)
+        finance = await self._build_bot_finance_context(user_id=active.participant.user_id)
+        other_players = self._build_other_players_views(exclude_user_id=active.participant.user_id)
+        own_other_hands = self._own_other_hand_reprs(bot_player=active)
         action = await bot_ai.decide_bot_action(
             hand_total=hand.total(),
             hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
             is_pair_hand=len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed,
             allowed_actions=tuple(allowed),
+            bet=hand.bet,
+            balance_remaining=balance_remaining,
+            finance=finance,
+            other_players=other_players,
+            own_other_hands=own_other_hands,
         )
         applied = self._apply_bot_action(
             user_id=active.participant.user_id, action=action, allowed=tuple(allowed)

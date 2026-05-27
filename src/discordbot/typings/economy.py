@@ -241,6 +241,20 @@ class CasinoLedgerSnapshot(BaseModel):
     updated_at: datetime
 
 
+class CasinoDailyStats(BaseModel):
+    """Per-user current-day casino loss/win/net totals.
+
+    Returned by `get_casino_daily_stats`; all zero when no row exists or the
+    stored counters belong to a previous Taipei day.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    daily_loss: int
+    daily_win: int
+    daily_net: int
+
+
 class RoundSettlementResult(BaseModel):
     """Outcome of an atomic player + casino ledger settlement."""
 
@@ -398,6 +412,7 @@ __all__ = [
     "AccountSnapshot",
     "AdminAccount",
     "BalanceAdjustmentResult",
+    "CasinoDailyStats",
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
     "CentralBankerAccount",
