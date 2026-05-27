@@ -30,7 +30,7 @@ from discordbot.cogs._games.blackjack import (
 )
 from discordbot.cogs._games.settlement import blackjack_player_early_finish_note
 from discordbot.cogs._games.presentation import settlement_metadata
-from discordbot.cogs._games.blackjack_views import build_in_progress_embed
+from discordbot.cogs._games.blackjack_views import build_in_progress_embeds
 
 
 def test_hand_value_no_aces() -> None:
@@ -461,23 +461,26 @@ def test_dealer_visible_value_uses_up_card() -> None:
     assert dealer_visible_value(dealer=[Card(rank="7", suit="♠")]) == 7
 
 
-def test_blackjack_in_progress_embed_shows_hole_card_marker_and_up_card() -> None:
-    """The dealer block shows one hidden card marker plus the visible up-card."""
+def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:
+    """The dealer seat embed shows one hidden card marker plus the visible up-card."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
     )
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣"), Card(rank="K", suit="♦")]
 
-    embed = build_in_progress_embed(system_name="賭場系統", round_state=round_state)
+    embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url=""
+    )
+    dealer_embed = embeds[0]
 
-    assert isinstance(embed.description, str)
-    assert "🂠" in embed.description
-    assert "K♦" in embed.description
-    assert "8♣" not in embed.description
+    assert isinstance(dealer_embed.description, str)
+    assert "🂠" in dealer_embed.description
+    assert "K♦" in dealer_embed.description
+    assert "8♣" not in dealer_embed.description
 
 
-def test_blackjack_in_progress_embed_single_dealer_card_is_visible() -> None:
+def test_blackjack_in_progress_dealer_seat_single_card_is_visible() -> None:
     """A one-card dealer fallback should not render as a hidden hole card."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
@@ -485,11 +488,14 @@ def test_blackjack_in_progress_embed_single_dealer_card_is_visible() -> None:
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="8", suit="♣")]
 
-    embed = build_in_progress_embed(system_name="賭場系統", round_state=round_state)
+    embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url=""
+    )
+    dealer_embed = embeds[0]
 
-    assert isinstance(embed.description, str)
-    assert "8♣" in embed.description
-    assert "🂠" not in embed.description
+    assert isinstance(dealer_embed.description, str)
+    assert "8♣" in dealer_embed.description
+    assert "🂠" not in dealer_embed.description
 
 
 # Helper predicates ---------------------------------------------------------

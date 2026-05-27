@@ -18,6 +18,7 @@ from discordbot.typings.games import (
     BlackjackDealerStep,
     BlackjackPlayerResult,
     BlackjackDealerStepSource,
+    BlackjackPlayerSettlement,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
 from discordbot.cogs._games.blackjack import (
@@ -54,14 +55,12 @@ from discordbot.cogs._games.presentation import (
     WIN_RESULT_EMOJI,
     BUST_RESULT_EMOJI,
     IN_PROGRESS_COLOR,
-    LOSE_RESULT_EMOJI,
     NATURAL_RESULT_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
     card_line,
     metadata_line,
     player_result_title,
     settlement_metadata,
-    player_result_inline,
     lobby_participant_line,
     build_system_talk_embed,
     blackjack_outcome_presentation,
@@ -75,7 +74,7 @@ if TYPE_CHECKING:
     from discordbot.cogs._games.dealer import SystemNarrator
     from discordbot.cogs._games.bot_player import BotAction, BotPlayerAI
 
-MAX_BLACKJACK_PLAYERS: Final[int] = 5
+MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
@@ -247,20 +246,221 @@ def _footer_status(round_state: BlackjackRound) -> str:
     return f"輪到 {active.participant.display_name}"
 
 
-def build_in_progress_embed(
-    system_name: str, round_state: BlackjackRound, force_show_hole: bool = False
-) -> Embed:
-    """Builds the shared Blackjack table embed while players are acting.
+def _dealer_in_progress_color(round_state: BlackjackRound) -> int:
+    """Returns the in-progress dealer seat color."""
+    if round_state.phase == "insurance":
+        return IN_PROGRESS_COLOR
+    return PUSH_COLOR
 
-    Pass `force_show_hole=True` during peek-reveal animations so the dealer
-    hole card is uncovered even before the round reaches the dealer phase.
+
+def _player_seat_color(
+    player: BlackjackPlayerHand,
+    *,
+    settlement: BlackjackPlayerSettlement | None,
+    is_active: bool,
+    insurance_phase: bool,
+) -> int:
+    """Picks a player seat embed color from settlement or in-progress state."""
+    if settlement is not None:
+        if settlement.delta > 0:
+            return WIN_COLOR
+        if settlement.delta < 0:
+            return LOSE_COLOR
+        return PUSH_COLOR
+    if insurance_phase:
+        return IN_PROGRESS_COLOR
+    if is_active:
+        return IN_PROGRESS_COLOR
+    return PUSH_COLOR
+
+
+def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + identity + render flags
+    *,
+    round_state: BlackjackRound,
+    system_name: str,
+    system_avatar_url: str,
+    hide_hole: bool,
+    dealer_steps: list[BlackjackDealerStep] | None = None,
+    is_settled: bool = False,
+) -> Embed:
+    """Builds the dealer seat embed shown alongside player seats.
+
+    Pass `hide_hole=False` during the dealer phase or peek-reveal animations so
+    the hole card is visible; `dealer_steps` populates the rule-driven action
+    log once dealer play starts.
     """
     description_parts: list[str] = [
-        f"### {system_name}",
-        _format_dealer_block(round_state=round_state, hide_hole=not force_show_hole),
+        _format_dealer_block(round_state=round_state, hide_hole=hide_hole)
     ]
+    decision_path = _format_dealer_decision_path(steps=dealer_steps or [])
+    if decision_path:
+        description_parts.append(metadata_line(text=f"動作: {decision_path}"))
+    if not is_settled and not hide_hole:
+        # We are still showing the table while the dealer plays.
+        description_parts.append(metadata_line(text="莊家正在依規則出牌"))
+    elif not is_settled:
+        description_parts.append(metadata_line(text="莊家暗牌待揭示"))
+    color = _dealer_in_progress_color(round_state=round_state)
+    if is_settled:
+        if round_state.dealer_total() > 21:
+            color = LOSE_COLOR  # red — dealer bust is bad for the casino
+        elif round_state.dealer_total() >= 17:
+            color = WIN_COLOR  # green — dealer stood pat
+    embed = Embed(
+        title=f"♠️ 莊家 · {system_name}",
+        description="\n".join(part for part in description_parts if part),
+        color=color,
+    )
+    if system_avatar_url:
+        embed.set_author(name=system_name, icon_url=system_avatar_url)
+    else:
+        embed.set_author(name=system_name)
+    embed.set_footer(text="莊家規則: <=16 必補, soft 17 補, hard 17+ 停")
+    return embed
+
+
+def _player_seat_status_footer(
+    *, round_state: BlackjackRound, is_active: bool, insurance_phase: bool
+) -> str:
+    """Returns the per-player seat footer."""
+    if insurance_phase:
+        return "保險決定中"
+    if is_active:
+        return f"進行中 · 不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
+    if round_state.phase == "settled" or round_state.finished:
+        return "已結算"
+    return "待輪到"
+
+
+def _format_settlement_insurance_line(settlement: BlackjackPlayerSettlement) -> str | None:
+    """Returns the small-text insurance settlement line, if any."""
+    ins = settlement.insurance
+    if ins is None:
+        return None
+    if ins.won:
+        return (
+            f"保險 {amount_code(amount=ins.bet, compact=True)} → 中獎 "
+            f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
+        )
+    return (
+        f"保險 {amount_code(amount=ins.bet, compact=True)} → 莊家無 BJ "
+        f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
+    )
+
+
+def build_player_seat_embed(  # noqa: PLR0913, C901, PLR0912 -- seat needs round, player, optional settlement, bot reason
+    *,
+    player: BlackjackPlayerHand,
+    round_state: BlackjackRound,
+    active_hand_index: int | None,
+    insurance_status: str | None,
+    settlement: BlackjackPlayerSettlement | None = None,
+    dealer_total: int | None = None,
+    bot_reason: str | None = None,
+) -> Embed:
+    """Builds one player's seat embed.
+
+    Same shape for human and bot players. `bot_reason`, when provided, surfaces
+    the AI's last decision reasoning as a `💭` metadata line — humans pass
+    `None`.
+    """
+    is_active = active_hand_index is not None
+    insurance_phase = round_state.phase == "insurance"
+    color = _player_seat_color(
+        player=player, settlement=settlement, is_active=is_active, insurance_phase=insurance_phase
+    )
+    description_parts: list[str] = []
+    hand_count = len(player.hands)
+    # In-progress vs settled hand rendering: settled uses settlement.hands so
+    # the result label + outcome surface lines up with the actually-applied
+    # delta. In-progress reads hands directly off `player.hands`.
+    if settlement is not None:
+        for hand_index, hand_settlement in enumerate(settlement.hands):
+            if hand_count > 1:
+                description_parts.append(_split_hand_header(index=hand_index, total=hand_count))
+            summary = _hand_summary_line(cards=hand_settlement.cards)
+            title = player_result_title(
+                outcome=hand_settlement.outcome,
+                player_total=hand_value(cards=hand_settlement.cards),
+                dealer_total=dealer_total or 0,
+            )
+            description_parts.append(f"{summary}\n{title}")
+    else:
+        for index, hand in enumerate(player.hands):
+            this_active = active_hand_index == index
+            if hand_count > 1:
+                description_parts.append(_split_hand_header(index=index, total=hand_count))
+            suffix = _hand_status_suffix(hand=hand, is_active=this_active)
+            description_parts.append(_hand_summary_line(cards=hand.cards, suffix=suffix))
+            description_parts.append(
+                metadata_line(text=_hand_metadata_text(hand=hand, participant=player.participant))
+            )
+    if insurance_status:
+        description_parts.append(metadata_line(text=insurance_status))
+    if settlement is not None:
+        ins_line = _format_settlement_insurance_line(settlement=settlement)
+        if ins_line:
+            description_parts.append(metadata_line(text=ins_line))
+        description_parts.append(
+            settlement_metadata(
+                delta=settlement.delta,
+                new_balance=settlement.new_balance,
+                is_allin=player.participant.is_allin,
+                base_delta=settlement.base_delta,
+                vip_bonus=settlement.vip_bonus,
+                five_card_bonus=settlement.five_card_bonus,
+            )
+        )
+        note = blackjack_player_early_finish_note(
+            player=player, dealer=round_state.dealer, peeked_blackjack=round_state.peeked_blackjack
+        )
+        if note:
+            description_parts.append(metadata_line(text=note))
+    if bot_reason:
+        description_parts.append(metadata_line(text=f"💭 {bot_reason}"))
+    embed = Embed(description="\n".join(part for part in description_parts if part), color=color)
+    if player.participant.avatar_url:
+        embed.set_author(
+            name=player.participant.display_name, icon_url=player.participant.avatar_url
+        )
+    else:
+        embed.set_author(name=player.participant.display_name)
+    embed.set_footer(
+        text=_player_seat_status_footer(
+            round_state=round_state, is_active=is_active, insurance_phase=insurance_phase
+        )
+    )
+    return embed
+
+
+def build_in_progress_embeds(  # noqa: PLR0913 -- table render needs identity, optional dealer steps, and bot context
+    *,
+    round_state: BlackjackRound,
+    system_name: str,
+    system_avatar_url: str,
+    dealer_steps: list[BlackjackDealerStep] | None = None,
+    force_show_hole: bool = False,
+    bot_user_id: int | None = None,
+    bot_reasons: dict[int, str] | None = None,
+) -> list[Embed]:
+    """Builds dealer + per-player seat embeds for the in-progress table.
+
+    Pass `force_show_hole=True` for peek-reveal animations to expose the
+    dealer hole card before settlement.
+    """
+    bot_reasons = bot_reasons or {}
+    embeds: list[Embed] = [
+        build_dealer_seat_embed(
+            round_state=round_state,
+            system_name=system_name,
+            system_avatar_url=system_avatar_url,
+            hide_hole=not force_show_hole,
+            dealer_steps=dealer_steps,
+            is_settled=False,
+        )
+    ]
+    insurance_phase = round_state.phase == "insurance"
     for player_index, player in enumerate(round_state.players):
-        participant = player.participant
         active_hand_index: int | None = None
         if (
             round_state.current_player_index == player_index
@@ -268,35 +468,29 @@ def build_in_progress_embed(
         ):
             active_hand_index = round_state.current_hand_index
         insurance_status: str | None = None
-        if round_state.phase == "insurance":
+        if insurance_phase:
             insurance_status = _insurance_phase_status(player=player)
         elif player.insurance_bet > 0:
             insurance_status = f"保險 {amount_code(amount=player.insurance_bet, compact=True)}"
-        description_parts.append("")
-        description_parts.append(f"### {participant.display_name}")
-        description_parts.append(
-            _format_player_block(
+        reason = (
+            bot_reasons.get(player.participant.user_id)
+            if player.participant.user_id == bot_user_id
+            else None
+        )
+        embeds.append(
+            build_player_seat_embed(
                 player=player,
+                round_state=round_state,
                 active_hand_index=active_hand_index,
                 insurance_status=insurance_status,
+                bot_reason=reason,
             )
         )
-
-    color = IN_PROGRESS_COLOR if round_state.phase == "insurance" else PUSH_COLOR
-    embed = Embed(title="♠️ 二十一點", description="\n".join(description_parts), color=color)
-    if round_state.players and round_state.players[0].participant.avatar_url:
-        embed.set_thumbnail(url=round_state.players[0].participant.avatar_url)
-    embed.set_footer(
-        text=(
-            f"{_footer_status(round_state=round_state)} · "
-            f"不操作 {BLACKJACK_ACTION_TIMEOUT_SECONDS} 秒會自動 stand"
-        )
-    )
-    return embed
+    return embeds
 
 
 def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
-    """Formats compact per-player settlement details for dealer banter."""
+    """Formats compact per-player settlement details for narrator banter."""
     lines: list[str] = []
     for result in results:
         outcome_label, _color = blackjack_outcome_presentation(outcome=result.settlement.outcome)
@@ -305,114 +499,52 @@ def _table_result_detail(results: list[BlackjackPlayerResult]) -> str:
     return "；".join(lines)
 
 
-def _table_color(results: list[BlackjackPlayerResult]) -> int:
-    """Returns the final embed color from the table's net player result."""
-    total_delta = sum(result.settlement.delta for result in results)
-    if total_delta > 0:
-        return WIN_COLOR
-    if total_delta < 0:
-        return LOSE_COLOR
-    return PUSH_COLOR
-
-
-def _final_title(
-    results: list[BlackjackPlayerResult], dealer_total: int, round_state: BlackjackRound
-) -> str:
-    """Builds the final Blackjack title for single or multiplayer results."""
-    if len(results) == 1:
-        result = results[0]
-        player = next(
-            player
-            for player in round_state.players
-            if player.participant.user_id == result.participant.user_id
-        )
-        if len(player.hands) == 1 and result.settlement.insurance is None:
-            return "♠️ 二十一點 · " + player_result_inline(
-                outcome=result.settlement.outcome,
-                player_total=player.hands[0].total(),
-                dealer_total=dealer_total,
-            )
-    wins = sum(1 for result in results if result.settlement.delta > 0)
-    losses = sum(1 for result in results if result.settlement.delta < 0)
-    pushes = len(results) - wins - losses
-    parts: list[str] = []
-    if wins:
-        parts.append(f"{WIN_RESULT_EMOJI} {wins} 勝")
-    if losses:
-        parts.append(f"{LOSE_RESULT_EMOJI} {losses} 負")
-    if pushes:
-        parts.append(f"{pushes} 平")
-    return "♠️ 二十一點 · " + " ".join(parts)
-
-
-def build_final_embed(
+def build_final_embeds(  # noqa: PLR0913 -- final render mirrors in-progress signature
+    *,
     round_state: BlackjackRound,
     results: list[BlackjackPlayerResult],
     system_name: str = "賭場系統",
+    system_avatar_url: str = "",
     dealer_steps: list[BlackjackDealerStep] | None = None,
-) -> Embed:
-    """Builds the final embed for a settled Blackjack table."""
+    bot_user_id: int | None = None,
+    bot_reasons: dict[int, str] | None = None,
+) -> list[Embed]:
+    """Builds dealer + per-player seat embeds for the settled table."""
+    bot_reasons = bot_reasons or {}
     dealer_total = round_state.dealer_total()
-    dealer_decision_path = _format_dealer_decision_path(steps=dealer_steps or [])
-    description_parts: list[str] = [
-        f"### {system_name}",
-        _format_dealer_block(round_state=round_state, hide_hole=False),
+    embeds: list[Embed] = [
+        build_dealer_seat_embed(
+            round_state=round_state,
+            system_name=system_name,
+            system_avatar_url=system_avatar_url,
+            hide_hole=False,
+            dealer_steps=dealer_steps,
+            is_settled=True,
+        )
     ]
-    if dealer_decision_path:
-        description_parts.append(metadata_line(text=f"{dealer_decision_path}"))
-    for result in results:
-        participant = result.participant
-        player = next(
-            player
-            for player in round_state.players
-            if player.participant.user_id == participant.user_id
+    results_by_user: dict[int, BlackjackPlayerResult] = {
+        result.participant.user_id: result for result in results
+    }
+    for player in round_state.players:
+        result = results_by_user.get(player.participant.user_id)
+        settlement = result.settlement if result is not None else None
+        reason = (
+            bot_reasons.get(player.participant.user_id)
+            if player.participant.user_id == bot_user_id
+            else None
         )
-        description_parts.append("")
-        description_parts.append(f"### {participant.display_name}")
-        hand_count = len(result.settlement.hands)
-        for hand_index, hand_settlement in enumerate(result.settlement.hands):
-            cards = hand_settlement.cards
-            summary = _hand_summary_line(cards=cards)
-            hand_total = hand_value(cards=cards)
-            title = player_result_title(
-                outcome=hand_settlement.outcome, player_total=hand_total, dealer_total=dealer_total
+        embeds.append(
+            build_player_seat_embed(
+                player=player,
+                round_state=round_state,
+                active_hand_index=None,
+                insurance_status=None,
+                settlement=settlement,
+                dealer_total=dealer_total,
+                bot_reason=reason,
             )
-            if hand_count > 1:
-                description_parts.append(_split_hand_header(index=hand_index, total=hand_count))
-            description_parts.append(f"{summary}\n{title}")
-        if result.settlement.insurance is not None:
-            ins = result.settlement.insurance
-            label = (
-                f"保險 {amount_code(amount=ins.bet, compact=True)} → 中獎 "
-                f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
-                if ins.won
-                else f"保險 {amount_code(amount=ins.bet, compact=True)} → 莊家無 BJ "
-                f"{amount_code(amount=ins.delta, signed=True, compact=True)}"
-            )
-            description_parts.append(metadata_line(text=label))
-        metadata = settlement_metadata(
-            delta=result.settlement.delta,
-            new_balance=result.settlement.new_balance,
-            is_allin=participant.is_allin,
-            base_delta=result.settlement.base_delta,
-            vip_bonus=result.settlement.vip_bonus,
-            five_card_bonus=result.settlement.five_card_bonus,
         )
-        description_parts.append(metadata)
-        note = blackjack_player_early_finish_note(
-            player=player, dealer=round_state.dealer, peeked_blackjack=round_state.peeked_blackjack
-        )
-        if note:
-            description_parts.append(metadata_line(text=note))
-
-    embed = Embed(
-        title=_final_title(results=results, dealer_total=dealer_total, round_state=round_state),
-        description="\n".join(description_parts),
-        color=_table_color(results=results),
-    )
-    if round_state.players and round_state.players[0].participant.avatar_url:
-        embed.set_thumbnail(url=round_state.players[0].participant.avatar_url)
-    return embed
+    return embeds
 
 
 class BlackjackLobbyView(BaseGameLobbyView):
@@ -492,17 +624,20 @@ class BlackjackLobbyView(BaseGameLobbyView):
             await view.finalize(message=message)
             return True
         view.sync_buttons()
+        talk_embed = build_system_talk_embed(
+            system_line=system_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+        )
+        seat_embeds = build_in_progress_embeds(
+            round_state=round_state,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            bot_user_id=self.bot_user_id,
+            bot_reasons={},
+        )
         await edit_message_with_retry(
-            message=message,
-            embeds=[
-                build_system_talk_embed(
-                    system_line=system_line,
-                    system_name=self.system_name,
-                    system_avatar_url=self.system_avatar_url,
-                ),
-                build_in_progress_embed(system_name=self.system_name, round_state=round_state),
-            ],
-            view=view,
+            message=message, embeds=[talk_embed, *seat_embeds], view=view
         )
         await view.maybe_play_bot_turn(message=message)
         return True
@@ -542,6 +677,9 @@ class BlackjackView(View):
         self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
+        # Last LLM-decided reason per user_id (bot only). Surfaced in the seat
+        # embed so observers can see *why* the bot picked an action / insurance.
+        self._bot_reasons: dict[int, str] = {}
         self._action_buttons: dict[str, Button] = {
             "bj:hit": cast("Button", self.hit),
             "bj:stand": cast("Button", self.stand),
@@ -953,15 +1091,18 @@ class BlackjackView(View):
         other_players = self._build_other_players_views(
             exclude_user_id=bot_player.participant.user_id
         )
-        take_insurance = await bot_ai.decide_bot_insurance(
+        decision = await bot_ai.decide_bot_insurance(
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,
             finance=finance,
             other_players=other_players,
         )
+        self._bot_reasons[bot_player.participant.user_id] = (
+            f"{'買保險' if decision.take_insurance else '不買保險'}: {decision.reason}"
+        )
         try:
-            if take_insurance:
+            if decision.take_insurance:
                 self.round_state.take_insurance(
                     user_id=bot_player.participant.user_id, amount=bot_player.participant.bet // 2
                 )
@@ -1012,7 +1153,7 @@ class BlackjackView(View):
         finance = await self._build_bot_finance_context(user_id=active.participant.user_id)
         other_players = self._build_other_players_views(exclude_user_id=active.participant.user_id)
         own_other_hands = self._own_other_hand_reprs(bot_player=active)
-        action = await bot_ai.decide_bot_action(
+        decision = await bot_ai.decide_bot_action(
             hand_total=hand.total(),
             hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
@@ -1024,8 +1165,9 @@ class BlackjackView(View):
             other_players=other_players,
             own_other_hands=own_other_hands,
         )
+        self._bot_reasons[active.participant.user_id] = f"{decision.action}: {decision.reason}"
         applied = self._apply_bot_action(
-            user_id=active.participant.user_id, action=action, allowed=tuple(allowed)
+            user_id=active.participant.user_id, action=decision.action, allowed=tuple(allowed)
         )
         if not applied:
             with contextlib.suppress(ValueError):
@@ -1099,17 +1241,22 @@ class BlackjackView(View):
             set_view_item_visible(view=self, item=button, visible=visible[custom_id])
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
-        """Refreshes system narrator and table embeds while holding the round lock."""
+        """Refreshes system narrator and per-seat embeds while holding the round lock."""
         self.sync_buttons()
         talk_embed = build_system_talk_embed(
             system_line=self._system_line,
             system_name=self.system_name,
             system_avatar_url=self.system_avatar_url,
         )
-        main_embed = build_in_progress_embed(
-            system_name=self.system_name, round_state=self.round_state
+        seat_embeds = build_in_progress_embeds(
+            round_state=self.round_state,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            dealer_steps=self._dealer_steps,
+            bot_user_id=self.bot_user_id,
+            bot_reasons=self._bot_reasons,
         )
-        await message.edit(embeds=[talk_embed, main_embed], view=self)
+        await message.edit(embeds=[talk_embed, *seat_embeds], view=self)
 
     async def _reject_stale_action_locked(
         self, interaction: Interaction, message: Message
@@ -1169,22 +1316,25 @@ class BlackjackView(View):
             system_name=self.system_name,
             system_avatar_url=self.system_avatar_url,
         )
-        final_embed = build_final_embed(
-            system_name=self.system_name,
+        seat_embeds = build_final_embeds(
             round_state=self.round_state,
             results=results,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
             dealer_steps=self._dealer_steps,
+            bot_user_id=self.bot_user_id,
+            bot_reasons=self._bot_reasons,
         )
         self.clear_items()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(embeds=[talk_embed, final_embed], view=None),
+                message.edit(embeds=[talk_embed, *seat_embeds], view=None),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
         logfire.info("Blackjack final edit done")
         self._track_background_task(
             self._refresh_settlement_line_later(
-                message=message, results=results, final_embed=final_embed
+                message=message, results=results, seat_embeds=seat_embeds
             )
         )
         schedule_public_message_delete(message=message, user_name=self.author_name)
@@ -1209,12 +1359,17 @@ class BlackjackView(View):
             system_name=self.system_name,
             system_avatar_url=self.system_avatar_url,
         )
-        body_hidden = build_in_progress_embed(
-            system_name=self.system_name, round_state=self.round_state
+        body_hidden = build_in_progress_embeds(
+            round_state=self.round_state,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            dealer_steps=self._dealer_steps,
+            bot_user_id=self.bot_user_id,
+            bot_reasons=self._bot_reasons,
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(embeds=[intro_talk, body_hidden], view=self),
+                message.edit(embeds=[intro_talk, *body_hidden], view=self),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
@@ -1224,12 +1379,18 @@ class BlackjackView(View):
             system_name=self.system_name,
             system_avatar_url=self.system_avatar_url,
         )
-        reveal_body = build_in_progress_embed(
-            system_name=self.system_name, round_state=self.round_state, force_show_hole=True
+        reveal_body = build_in_progress_embeds(
+            round_state=self.round_state,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            dealer_steps=self._dealer_steps,
+            force_show_hole=True,
+            bot_user_id=self.bot_user_id,
+            bot_reasons=self._bot_reasons,
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(embeds=[reveal_talk, reveal_body], view=self),
+                message.edit(embeds=[reveal_talk, *reveal_body], view=self),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
@@ -1350,7 +1511,7 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=message)
 
     async def _refresh_settlement_line_later(
-        self, *, message: Message, results: list[BlackjackPlayerResult], final_embed: Embed
+        self, *, message: Message, results: list[BlackjackPlayerResult], seat_embeds: list[Embed]
     ) -> None:
         """Refreshes the final narrator line with LLM banter after results are visible."""
         try:
@@ -1368,7 +1529,7 @@ class BlackjackView(View):
             )
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
-                    message.edit(embeds=[talk_embed, final_embed], view=None),
+                    message.edit(embeds=[talk_embed, *seat_embeds], view=None),
                     timeout=FINAL_EDIT_TIMEOUT_SECONDS,
                 )
 
@@ -1422,6 +1583,8 @@ __all__: list[str] = [
     "RefreshParticipants",
     "blackjack_outcome_presentation",
     "build_blackjack_lobby_embed",
-    "build_final_embed",
-    "build_in_progress_embed",
+    "build_dealer_seat_embed",
+    "build_final_embeds",
+    "build_in_progress_embeds",
+    "build_player_seat_embed",
 ]

@@ -67,7 +67,7 @@ from discordbot.cogs._economy.database import (
     invalidate_economy_leaderboard_cache,
 )
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embed
+from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embeds
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
@@ -2204,13 +2204,13 @@ async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:
     round_state.phase = "settled"
     settlement = await _settle_player(round_state=round_state)
 
-    embed = build_final_embed(
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · ✨ 過五關 · 21"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## ✨ 過五關 · 21" in description
     assert "過五關 bonus `+1萬`" in description
 
@@ -2240,13 +2240,13 @@ async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata(
     round_state.phase = "settled"
     settlement = await _settle_player(round_state=round_state)
 
-    embed = build_final_embed(
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · 🎉 過五關 · 20"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## 🎉 過五關 · 20" in description
     assert "過五關 bonus" not in description
 
@@ -2296,16 +2296,15 @@ async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> No
     round_state.phase = "settled"
 
     settlement = await _settle_player(round_state=round_state)
-    embed = build_final_embed(
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · 1 平"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## 😢 你輸了 · 17 < 21" in description
     assert "保險 `50` → 中獎 `+100`" in description
-    assert "17 = 21" not in embed.title
 
 
 async def test_settle_blackjack_player_insurance_lost_when_no_dealer_blackjack() -> None:

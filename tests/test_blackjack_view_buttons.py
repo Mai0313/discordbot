@@ -17,7 +17,7 @@ from nextcord import Interaction
 
 from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embed
+from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
@@ -293,21 +293,22 @@ async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None
     assert "bj:insure_no" in ids
 
 
-async def test_build_in_progress_embed_force_show_hole_reveals_dealer_total() -> None:
-    """`force_show_hole=True` flips the hole card face-up for peek reveal."""
+async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -> None:
+    """`force_show_hole=True` flips the dealer hole card face-up for peek reveal."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="A", suit="♣"), Card(rank="K", suit="♦")],
     )
 
-    embed = build_in_progress_embed(
-        system_name="賭場系統", round_state=round_state, force_show_hole=True
+    embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url="", force_show_hole=True
     )
+    dealer_embed = embeds[0]
 
-    assert isinstance(embed.description, str)
-    assert "A♣" in embed.description
-    assert "K♦" in embed.description
-    assert "🂠" not in embed.description
+    assert isinstance(dealer_embed.description, str)
+    assert "A♣" in dealer_embed.description
+    assert "K♦" in dealer_embed.description
+    assert "🂠" not in dealer_embed.description
 
 
 async def test_interaction_check_sends_ephemeral_notice_when_settled(

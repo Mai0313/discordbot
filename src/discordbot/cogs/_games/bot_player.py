@@ -254,13 +254,16 @@ class BotPlayerAI(BaseModel):
         finance: BotFinancialContext,
         other_players: list[OtherPlayerView],
         own_other_hands: list[str],
-    ) -> BotAction:
-        """Returns the bot's next action, falling back to basic strategy on error."""
-        fallback = fallback_action(
-            hand_total=hand_total,
-            dealer_up=dealer_up,
-            is_pair_hand=is_pair_hand,
-            allowed_actions=allowed_actions,
+    ) -> BotPlayerActionDecision:
+        """Returns the bot's next action with reasoning, falling back to basic strategy."""
+        fallback_decision = BotPlayerActionDecision(
+            action=fallback_action(
+                hand_total=hand_total,
+                dealer_up=dealer_up,
+                is_pair_hand=is_pair_hand,
+                allowed_actions=allowed_actions,
+            ),
+            reason="基本策略 fallback",
         )
         dealer_label = str(dealer_up) if dealer_up else "未知"
         allowed_text = ", ".join(allowed_actions)
@@ -301,18 +304,18 @@ class BotPlayerAI(BaseModel):
                 "Bot action decision timed out; using basic-strategy fallback",
                 timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
             )
-            return fallback
+            return fallback_decision
         except (ValidationError, Exception):
             logfire.warn(
                 "Bot action decision failed; using basic-strategy fallback", _exc_info=True
             )
-            return fallback
+            return fallback_decision
         if responses.output_parsed is None:
-            return fallback
-        candidate = responses.output_parsed.action
-        if candidate in allowed_actions:
+            return fallback_decision
+        candidate = responses.output_parsed
+        if candidate.action in allowed_actions:
             return candidate
-        return fallback
+        return fallback_decision
 
     async def decide_bot_insurance(
         self,
@@ -322,8 +325,11 @@ class BotPlayerAI(BaseModel):
         bet: int,
         finance: BotFinancialContext,
         other_players: list[OtherPlayerView],
-    ) -> bool:
-        """Returns whether the bot takes insurance, falling back to False on error."""
+    ) -> BotPlayerInsuranceDecision:
+        """Returns whether the bot takes insurance with reasoning, falling back to False."""
+        fallback_decision = BotPlayerInsuranceDecision(
+            take_insurance=fallback_insurance(), reason="保險長期 EV 為負, 直接拒絕"
+        )
         dealer_label = str(dealer_up) if dealer_up else "未知"
         insurance_cost = bet // 2
         user_text = (
@@ -355,10 +361,10 @@ class BotPlayerAI(BaseModel):
                 "Bot insurance decision timed out; declining insurance",
                 timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
             )
-            return fallback_insurance()
+            return fallback_decision
         except (ValidationError, Exception):
             logfire.warn("Bot insurance decision failed; declining insurance", _exc_info=True)
-            return fallback_insurance()
+            return fallback_decision
         if responses.output_parsed is None:
-            return fallback_insurance()
-        return responses.output_parsed.take_insurance
+            return fallback_decision
+        return responses.output_parsed
