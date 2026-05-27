@@ -26,9 +26,12 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME
 BOT_BET_AI_TIMEOUT_SECONDS = 4.0
 BOT_ACTION_AI_TIMEOUT_SECONDS = 4.0
 BOT_INSURANCE_AI_TIMEOUT_SECONDS = 4.0
-# Bot decisions are system-side LLM calls; use a fixed ASCII label to mirror
-# `auto_unmute.py` / `_stock/news.py` and avoid CJK-in-HTTP-header crashes.
-_BOT_PLAYER_END_USER_ID: Final[str] = "bot_player"
+# Bot decisions are system-side LLM calls. ASCII labels per method let LiteLLM
+# telemetry split bet / action / insurance traffic, mirroring the
+# `auto_unmute.py` / `_stock/news.py` / `prompt_dev.py` pattern.
+_BET_END_USER_ID: Final[str] = "bot_player_bet"
+_ACTION_END_USER_ID: Final[str] = "bot_player_action"
+_INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
 
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
@@ -141,7 +144,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerBetDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
+                    extra_headers={"x-litellm-end-user-id": _BET_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -195,7 +198,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerActionDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
+                    extra_headers={"x-litellm-end-user-id": _ACTION_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -232,7 +235,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerInsuranceDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
+                    extra_headers={"x-litellm-end-user-id": _INSURANCE_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
