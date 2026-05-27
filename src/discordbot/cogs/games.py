@@ -78,8 +78,13 @@ class GamesCogs(commands.Cog):
 
     @cached_property
     def bot_player_ai(self) -> BotPlayerAI:
-        """The cached bot-player decision AI shared across Blackjack tables."""
-        return BotPlayerAI(client=self.client, model=self.runtime_models.fast_model)
+        """The cached bot-player decision AI shared across Blackjack tables.
+
+        Uses `slow_model` so the bot reasons about bet sizing, hit/stand,
+        double/split, and insurance with real strategic depth. Bot turns run
+        between human turns, so the extra latency is acceptable.
+        """
+        return BotPlayerAI(client=self.client, model=self.runtime_models.slow_model)
 
     async def _system_identity(self, guild: nextcord.Guild | None = None) -> SystemIdentity:
         """Returns the casino system identity used for narrator embeds.

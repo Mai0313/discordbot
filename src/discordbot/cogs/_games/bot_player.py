@@ -23,9 +23,9 @@ from discordbot.cogs._games.prompts import (
 )
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-BOT_BET_AI_TIMEOUT_SECONDS = 4.0
-BOT_ACTION_AI_TIMEOUT_SECONDS = 4.0
-BOT_INSURANCE_AI_TIMEOUT_SECONDS = 4.0
+BOT_BET_AI_TIMEOUT_SECONDS = 30.0
+BOT_ACTION_AI_TIMEOUT_SECONDS = 30.0
+BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 # Bot decisions are system-side LLM calls. ASCII labels per method let LiteLLM
 # telemetry split bet / action / insurance traffic, mirroring the
 # `auto_unmute.py` / `_stock/news.py` / `prompt_dev.py` pattern.

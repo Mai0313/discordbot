@@ -90,25 +90,27 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`, `dealer`.
+        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`,
+        `SystemNarrator`.
 
         Returns:
-            Fast model settings used for routing, image captions, and short
-            Discord replies.
+            Fast model settings used for routing, image captions, short
+            Discord replies, and casino system narrator lines.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
 
     @property
     def slow_model(self) -> ModelSettings:
-        """The model settings for full text replies and summaries.
+        """The model settings for full text replies and strategic reasoning.
 
         Uses `gemini-flash-latest` during UTC weekday 08:00 to 17:00 peak hours and `gemini-3.5-flash` outside that peak window.
 
-        Callers: `_get_attachment_parts`, `_handle_message_reply`.
+        Callers: `_get_attachment_parts`, `_handle_message_reply`, `BotPlayerAI`.
 
         Returns:
-            Slow-path model settings for reply and summary generation.
+            Slow-path model settings for reply generation, summaries, and
+            bot-player Blackjack decisions.
         """
         if self.is_peak:
             return ModelSettings(name="gemini-flash-latest", effort="high")
