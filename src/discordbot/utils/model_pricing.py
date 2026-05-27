@@ -66,7 +66,8 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
     Returns:
         Input and output token rates for the model.
     """
-    info = _load_model_prices().get(model_name) or ModelPriceEntry()
+    model_info = _load_model_prices()
+    info = model_info.get(model_name, ModelPriceEntry())
     return info.input_cost_per_token, info.output_cost_per_token
 
 
@@ -84,5 +85,6 @@ def get_supported_modalities(model_name: str) -> set[str]:
     Returns:
         Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
     """
-    info = _load_model_prices().get(model_name) or ModelPriceEntry()
+    model_info = _load_model_prices()
+    info = model_info.get(model_name, ModelPriceEntry())
     return set(info.supported_modalities)
