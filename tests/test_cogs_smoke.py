@@ -17,8 +17,8 @@ from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs.template import TemplateCogs
-from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.typings.games import GameParticipant
+from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
@@ -1617,9 +1617,7 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
         is_allin=False,
     )
 
-    refreshed = await cog._refresh_participants(
-        participants=[owner, bot_player], mode="clamp"
-    )
+    refreshed = await cog._refresh_participants(participants=[owner, bot_player], mode="clamp")
 
     assert [participant.bet for participant in refreshed.participants] == [300, 125]
     assert [participant.balance_at_start for participant in refreshed.participants] == [500, 1_000]

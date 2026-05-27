@@ -482,9 +482,7 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
     assert calls == 1
 
 
-async def test_bot_dispatcher_paces_consecutive_actions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Consecutive bot-owned decisions wait briefly between message edits."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],

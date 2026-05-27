@@ -1053,9 +1053,7 @@ class BlackjackView(View):
             await self._dispatch_bot_action_locked(message=message, active=active, bot_ai=bot_ai)
             steps += 1
             if self._bot_turn_dispatch_stalled(
-                before_revision=before_revision,
-                bot_user_id=bot_user_id,
-                action_label="action",
+                before_revision=before_revision, bot_user_id=bot_user_id, action_label="action"
             ):
                 return
             await self._pace_next_bot_turn_if_pending(bot_user_id=bot_user_id)

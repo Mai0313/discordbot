@@ -138,8 +138,10 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
     _, is_soft = _hand_total_and_soft(cards=cards)
     if is_soft:
         return hand_total >= 19 or (hand_total == 18 and 2 <= dealer_value <= 8)
-    return hand_total >= 17 or (13 <= hand_total <= 16 and dealer_value <= 6) or (
-        hand_total == 12 and 4 <= dealer_value <= 6
+    return (
+        hand_total >= 17
+        or (13 <= hand_total <= 16 and dealer_value <= 6)
+        or (hand_total == 12 and 4 <= dealer_value <= 6)
     )
 
 

@@ -50,6 +50,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from collections.abc import Sequence
 
+import logfire
 from sqlalchemy import (
     Index,
     String,
