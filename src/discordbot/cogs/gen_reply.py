@@ -174,7 +174,9 @@ class ReplyGeneratorCogs(commands.Cog):
             return "video"
         if content_type.startswith("audio/"):
             return "audio"
-        return "image"
+        if content_type.startswith("image/"):
+            return "image"
+        return "unknown"
 
     async def _get_attachment_parts(
         self, message: Message
