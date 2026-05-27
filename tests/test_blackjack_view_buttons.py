@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from nextcord import Interaction
 
+from discordbot.cogs._games import blackjack_views
 from discordbot.typings.games import GameParticipant
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
@@ -479,6 +480,39 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
     await view._maybe_play_bot_turn_locked(message=MagicMock())
 
     assert calls == 1
+
+
+async def test_bot_dispatcher_paces_consecutive_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive bot-owned decisions wait briefly between message edits."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+    view.bot_player_ai = MagicMock()
+    view.bot_user_id = 1
+    dispatch_calls = 0
+    sleep_calls: list[float] = []
+
+    async def fake_dispatch(**_kwargs: object) -> None:
+        nonlocal dispatch_calls
+        dispatch_calls += 1
+        view._state_revision += 1
+        if dispatch_calls == 2:
+            view.round_state.stand(user_id=1)
+
+    async def fake_sleep(*, delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(view, "_dispatch_bot_action_locked", fake_dispatch)
+    monkeypatch.setattr(blackjack_views.asyncio, "sleep", fake_sleep)
+
+    await view._maybe_play_bot_turn_locked(message=MagicMock())
+
+    assert dispatch_calls == 2
+    assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
