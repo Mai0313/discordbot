@@ -154,12 +154,17 @@ def _hand_metadata_text(hand: BlackjackHandState, participant: GameParticipant) 
     """Returns the small-text metadata for one sub-hand."""
     parts: list[str] = [f"下注 {amount_code(amount=hand.bet, compact=True)}"]
     if hand.is_split_hand:
-        parts.append("split A" if hand.is_split_aces else "split")
+        parts.append("分牌 A" if hand.is_split_aces else "分牌")
     if hand.doubled:
-        parts.append("doubled")
+        parts.append("加倍")
     if participant.is_allin and not hand.is_split_hand and not hand.doubled:
         parts.append("all-in")
     return " · ".join(parts)
+
+
+def _split_hand_header(index: int, total: int) -> str:
+    """Returns the heading line announcing one sub-hand of a split player."""
+    return f"### 🪓 分牌 · 手 {index + 1} / 共 {total}"
 
 
 def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
@@ -176,8 +181,11 @@ def _format_player_block(
 ) -> str:
     """Formats one player's hands and wager metadata for the table embed."""
     lines: list[str] = []
+    is_split = len(player.hands) > 1
     for index, hand in enumerate(player.hands):
         is_active = active_hand_index == index
+        if is_split:
+            lines.append(_split_hand_header(index=index, total=len(player.hands)))
         summary = _hand_summary_line(
             cards=hand.cards, suffix=_hand_status_suffix(hand=hand, is_active=is_active)
         )
@@ -361,6 +369,7 @@ def build_final_embed(
         )
         description_parts.append("")
         description_parts.append(f"### {participant.display_name}")
+        hand_count = len(result.settlement.hands)
         for hand_index, hand_settlement in enumerate(result.settlement.hands):
             cards = hand_settlement.cards
             summary = _hand_summary_line(cards=cards)
@@ -368,8 +377,8 @@ def build_final_embed(
             title = player_result_title(
                 outcome=hand_settlement.outcome, player_total=hand_total, dealer_total=dealer_total
             )
-            if len(result.settlement.hands) > 1:
-                description_parts.append(metadata_line(text=f"手{hand_index + 1}"))
+            if hand_count > 1:
+                description_parts.append(_split_hand_header(index=hand_index, total=hand_count))
             description_parts.append(f"{summary}\n{title}")
         if result.settlement.insurance is not None:
             ins = result.settlement.insurance
