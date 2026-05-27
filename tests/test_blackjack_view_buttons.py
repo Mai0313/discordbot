@@ -349,6 +349,7 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
+    round_state.shoe = []
     view = _make_view(round_state=round_state)
 
     def _draw_six(rng: Random) -> Card:
@@ -407,6 +408,7 @@ async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
+    round_state.shoe = []
     view = _make_view(round_state=round_state)
 
     def _draw_three(rng: Random) -> Card:

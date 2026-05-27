@@ -1033,6 +1033,7 @@ async def test_blackjack_view_dealer_plays_h17_rule(monkeypatch: pytest.MonkeyPa
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
     round_state.phase = "player_actions"
+    round_state.shoe = []
 
     dealer = _DealerStub()
     message = _MessageStub()
@@ -1115,6 +1116,7 @@ async def test_blackjack_view_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatc
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
     round_state.phase = "player_actions"
+    round_state.shoe = []
 
     dealer = _DealerStub()
     message = _MessageStub()
@@ -1282,6 +1284,7 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
     bob.cards = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="7", suit="♦")]
     round_state.current_player_index = 1
+    round_state.shoe = []
 
     message = _MessageStub()
     view = BlackjackView(
@@ -1329,6 +1332,7 @@ async def test_blackjack_view_hit_hint_uses_active_split_hand_total(
     ]
     round_state.dealer = [Card(rank="9", suit="♥"), Card(rank="7", suit="♦")]
     round_state.current_hand_index = 1
+    round_state.shoe = []
 
     dealer = _DealerStub()
     message = _MessageStub()
