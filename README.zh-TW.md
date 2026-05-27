@@ -28,7 +28,7 @@
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片，檔案太大時會自動 retry 低畫質。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息與 AI 回覆獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
 - **模擬股市**：`/stock` 開啟一則公開 market message，內含 DB-managed virtual companies；選股、受 float supply、borrow cap 與單人 49% long holding cap 限制的交易、部位摘要、近期交易紀錄、liquidity-based slippage、定期刷新新聞與 7 日圖表都在同一則公開 message 內 edit 切換，只有發起 `/stock` 的 user 可以操作 controls。
-- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby，帶 AI dealer 對話、公開結果 embed 與自動清理。
+- **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (deterministic H17)，bot 本身會以玩家身份入桌並由獨立 AI 策略決策，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。
 - **MapleStory Artale 資料庫**：`/maplestory` 子命令可查詢怪物、裝備、卷軸、NPC、任務、地圖、掉落來源與資料庫統計。
 - **本地化指令**：slash command metadata 與 `/help` 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。
 
@@ -51,7 +51,8 @@
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手動調整成員或 bot 餘額。                                    |
 | `/games blackjack <bet>`                                         | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。 |
 | `/games dragon_gate`                                             | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                          |
-| `/house`                                                         | 顯示 Blackjack dealer ledger。                                          |
+| `/casino`                                                        | 顯示賭場系統累積 P&L (跨伺服器)。                                       |
+| `/pocat`                                                         | 顯示 bot 玩家自己的錢包 (等同 `/balance @bot`)。                        |
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查詢 MapleStory Artale 怪物、裝備與卷軸。                               |
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查詢 NPC、任務與地圖。                                                  |
 | `/maplestory item`, `/maplestory stats`                          | 查詢物品掉落來源與資料庫統計。                                          |
