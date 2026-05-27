@@ -324,14 +324,14 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
     else:
         color = _dealer_in_progress_color(round_state=round_state)
     embed = Embed(
-        title=f"♠️ 莊家 · {system_name}",
+        title="♠️ 莊家",
         description="\n".join(part for part in description_parts if part),
         color=color,
     )
-    if system_avatar_url:
-        embed.set_author(name=system_name, icon_url=system_avatar_url)
-    else:
-        embed.set_author(name=system_name)
+    # `system_avatar_url` is intentionally not surfaced as a thumbnail: the bot
+    # is now a player at the table, so reusing its avatar for the dealer seat
+    # would conflict with the bot's own player seat.
+    embed.set_author(name=system_name)
     embed.set_footer(text="莊家規則: <=16 必補, soft 17 補, hard 17+ 停")
     return embed
 
@@ -365,7 +365,7 @@ def _format_settlement_insurance_line(settlement: BlackjackPlayerSettlement) -> 
     )
 
 
-def build_player_seat_embed(  # noqa: PLR0913, C901, PLR0912 -- seat needs round, player, optional settlement, bot reason
+def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player, optional settlement, bot reason
     *,
     player: BlackjackPlayerHand,
     round_state: BlackjackRound,
@@ -436,12 +436,9 @@ def build_player_seat_embed(  # noqa: PLR0913, C901, PLR0912 -- seat needs round
     if bot_reason:
         description_parts.append(metadata_line(text=f"💭 {bot_reason}"))
     embed = Embed(description="\n".join(part for part in description_parts if part), color=color)
+    embed.set_author(name=player.participant.display_name)
     if player.participant.avatar_url:
-        embed.set_author(
-            name=player.participant.display_name, icon_url=player.participant.avatar_url
-        )
-    else:
-        embed.set_author(name=player.participant.display_name)
+        embed.set_thumbnail(url=player.participant.avatar_url)
     embed.set_footer(
         text=_player_seat_status_footer(
             round_state=round_state, is_active=is_active, insurance_phase=insurance_phase
