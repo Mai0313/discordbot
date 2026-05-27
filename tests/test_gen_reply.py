@@ -594,7 +594,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         """Skips video polling delay."""
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
-    await cog._handle_video_generation(message=message, user_prompt="video")
+    await cog._handle_video_reply(message=message, user_prompt="video")
     assert len(message.replies) == 1
 
     await cog._handle_image_reply(message=message, user_prompt="image")
@@ -618,7 +618,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     argnames=("route", "expected_call"),
     argvalues=[
         ("IMAGE", "_handle_image_reply"),
-        ("VIDEO", "_handle_video_generation"),
+        ("VIDEO", "_handle_video_reply"),
         ("SUMMARY", "_handle_message_reply"),
         ("QA", "_handle_message_reply"),
     ],
@@ -644,7 +644,7 @@ async def test_gen_reply_on_message_dispatches_routes(
 
     async def fake_video_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records video handler dispatch."""
-        calls.append("_handle_video_generation")
+        calls.append("_handle_video_reply")
 
     async def fake_message_handler(
         message: FakeMessage, system_prompt: str, history_limit: int
@@ -655,7 +655,7 @@ async def test_gen_reply_on_message_dispatches_routes(
     monkeypatch.setattr(cog, "_route_message", fake_route)
     monkeypatch.setattr(cog, "_handle_reaction", fake_reaction)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
-    monkeypatch.setattr(cog, "_handle_video_generation", fake_video_handler)
+    monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)
     monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
 
     message = FakeMessage(content="<@999> hello", author=FakeAuthor(user_id=1))

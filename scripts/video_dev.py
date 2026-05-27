@@ -21,7 +21,7 @@ POLL_INTERVAL = 5
 def gen_video(user_prompt: str) -> None:
     """Runs the dev video generation flow and saves the MP4 result.
 
-    Mirrors `_handle_video_generation` in `cogs/gen_reply.py` by submitting a
+    Mirrors `_handle_video_reply` in `cogs/gen_reply.py` by submitting a
     video job, polling until it completes or fails, downloading the completed
     video, and writing it to `generated.mp4`. Prints job status, polling
     progress, the saved path, and elapsed time to the console.

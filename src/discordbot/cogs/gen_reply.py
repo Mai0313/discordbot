@@ -347,7 +347,7 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _handle_video_generation(self, message: Message, user_prompt: str) -> None:
+    async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
         video = await self.client.videos.create(
@@ -711,7 +711,7 @@ class ReplyGeneratorCogs(commands.Cog):
             elif route == "VIDEO":
                 await self._handle_reaction(message=message, emoji="🎬", previous=current_emoji)
                 current_emoji = "🎬"
-                await self._handle_video_generation(message=message, user_prompt=user_prompt)
+                await self._handle_video_reply(message=message, user_prompt=user_prompt)
             elif route == "SUMMARY":
                 await self._handle_reaction(message=message, emoji="📖", previous=current_emoji)
                 current_emoji = "📖"

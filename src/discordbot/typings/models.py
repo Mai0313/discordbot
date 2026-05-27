@@ -78,7 +78,7 @@ class RuntimeModelCatalog(BaseModel):
     def video_model(self) -> ModelSettings:
         """The model settings for video generation.
 
-        Callers: `_handle_video_generation`.
+        Callers: `_handle_video_reply`.
 
         Returns:
             Model settings used with `videos.create`.
