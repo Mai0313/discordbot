@@ -457,6 +457,30 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     assert bot_ai.decide_bot_insurance.called is False
 
 
+async def test_bot_dispatcher_breaks_when_action_does_not_advance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-op bot dispatch exits instead of spinning on the same turn."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+    view.bot_player_ai = MagicMock()
+    view.bot_user_id = 1
+    calls = 0
+
+    async def no_op_dispatch(**_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(view, "_dispatch_bot_action_locked", no_op_dispatch)
+
+    await view._maybe_play_bot_turn_locked(message=MagicMock())
+
+    assert calls == 1
+
+
 async def test_apply_bot_action_routes_known_actions() -> None:
     """`_apply_bot_action` calls the matching BlackjackRound API for each known action."""
     round_state = _round_with_two_cards(

@@ -79,6 +79,7 @@ if TYPE_CHECKING:
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
+MAX_BOT_TURN_STEPS: Final[int] = 16
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 HintRefreshContext = tuple[int, str, int, int]
@@ -1014,15 +1015,24 @@ class BlackjackView(View):
         async with self._round_lock:
             await self._maybe_play_bot_turn_locked(message=message)
 
-    async def _maybe_play_bot_turn_locked(self, message: Message) -> None:
+    async def _maybe_play_bot_turn_locked(self, message: Message) -> None:  # noqa: PLR0911 -- guard clauses keep bot-turn exits explicit
         """Plays consecutive bot moves until the active seat is non-bot or finished."""
         if self.bot_player_ai is None or self.bot_user_id is None:
             return
         bot_user_id = self.bot_user_id
         bot_ai = self.bot_player_ai
+        steps = 0
         while True:
             if self._settled or self.round_state.finished:
                 return
+            if steps >= MAX_BOT_TURN_STEPS:
+                logfire.error(
+                    "Bot turn loop exceeded step limit; breaking to prevent hang",
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
+                return
+            before_revision = self._state_revision
             if self.round_state.phase == "insurance":
                 bot_player = self._find_player_by_user_id(user_id=bot_user_id)
                 if (
@@ -1034,11 +1044,27 @@ class BlackjackView(View):
                 await self._dispatch_bot_insurance_locked(
                     message=message, bot_player=bot_player, bot_ai=bot_ai
                 )
+                steps += 1
+                if self._state_revision == before_revision:
+                    logfire.error(
+                        "Bot insurance dispatch did not advance state; breaking",
+                        bot_user_id=bot_user_id,
+                        state_revision=self._state_revision,
+                    )
+                    return
                 continue
             active = self.round_state.active_player()
             if active is None or active.participant.user_id != bot_user_id:
                 return
             await self._dispatch_bot_action_locked(message=message, active=active, bot_ai=bot_ai)
+            steps += 1
+            if self._state_revision == before_revision:
+                logfire.error(
+                    "Bot action dispatch did not advance state; breaking",
+                    bot_user_id=bot_user_id,
+                    state_revision=self._state_revision,
+                )
+                return
 
     def _find_player_by_user_id(self, *, user_id: int) -> BlackjackPlayerHand | None:
         """Returns the player hand container matching a user_id, if any."""
