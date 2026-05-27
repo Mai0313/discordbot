@@ -165,18 +165,42 @@ class ReplyGeneratorCogs(commands.Cog):
     def _required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
         """Maps a MIME type to the input modality the model must accept.
 
-        Document-style files (PDF / text / json / ...) collapse to `image`
-        because LiteLLM's `supported_modalities` exposes no separate document
-        bucket, and every multimodal model that takes `input_image` also
-        accepts inline `input_file` payloads.
+        Documents (PDF / Office / text / code) fall through to `image` as a
+        proxy: LiteLLM only reports text/image/audio/video, and image-capable
+        models in practice also accept `input_file`. Known binaries (archives,
+        executables, octet-stream) are checked first and return `unknown` so
+        they are dropped before reaching the API.
         """
+        unsupported_binary_mimes = frozenset({
+            "application/octet-stream",
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/x-rar-compressed",
+            "application/vnd.rar",
+            "application/x-7z-compressed",
+            "application/x-tar",
+            "application/gzip",
+            "application/x-gzip",
+            "application/x-bzip",
+            "application/x-bzip2",
+            "application/x-xz",
+            "application/java-archive",
+            "application/x-msdownload",
+            "application/x-dosexec",
+            "application/x-executable",
+            "application/x-mach-binary",
+            "application/x-sharedlib",
+            "application/wasm",
+        })
+        if content_type in unsupported_binary_mimes:
+            return "unknown"
         if content_type.startswith("video/"):
             return "video"
         if content_type.startswith("audio/"):
             return "audio"
         if content_type.startswith("image/"):
             return "image"
-        return "unknown"
+        return "image"
 
     async def _get_attachment_parts(
         self, message: Message
