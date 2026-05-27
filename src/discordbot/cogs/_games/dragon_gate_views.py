@@ -398,7 +398,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
         table_balance = sum(participant.balance_at_start for participant in self.participants)
         system_line = await self.narrator.taunt_bet(
-            author_name=self.owner.account_name,
             player_name=f"{len(self.participants)} 位玩家",
             balance_at_start=table_balance,
             bet=ANTE * len(self.participants),
@@ -854,7 +853,6 @@ class DragonGateView(View):
         """Refreshes the final narrator line after the table result is already visible."""
         try:
             system_line = await self.narrator.table_settle(
-                author_name=self.owner.account_name,
                 table_name="射龍門",
                 player_count=len(results),
                 net_delta=sum(result.delta for result in results),

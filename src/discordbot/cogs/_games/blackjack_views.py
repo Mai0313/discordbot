@@ -78,7 +78,7 @@ BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
-HintRefreshContext = tuple[int, str, str, int, int]
+HintRefreshContext = tuple[int, str, int, int]
 BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
     "win": "本局玩家獲勝, 賭場已支付賠付",
     "lose": "本局玩家未過關, 籌碼歸入賭場",
@@ -460,7 +460,6 @@ class BlackjackLobbyView(BaseGameLobbyView):
         table_bet = sum(participant.bet for participant in self.participants)
         table_balance = sum(participant.balance_at_start for participant in self.participants)
         system_line = await self.narrator.taunt_bet(
-            author_name=self.owner.account_name,
             player_name=f"{len(self.participants)} 位玩家",
             balance_at_start=table_balance,
             bet=table_bet,
@@ -627,7 +626,7 @@ class BlackjackView(View):
                 return
             active_after_hit = self.round_state.active_player()
             active_hand = self.round_state.active_hand()
-            hint_context: tuple[int, str, str, int, int] | None = None
+            hint_context: HintRefreshContext | None = None
             if (
                 active_after_hit is not None
                 and active_after_hit.participant.user_id == interaction.user.id
@@ -636,7 +635,6 @@ class BlackjackView(View):
             ):
                 hint_context = (
                     self._state_revision,
-                    active_after_hit.participant.account_name,
                     active_after_hit.participant.display_name,
                     active_hand.total(),
                     self.round_state.dealer_visible_value(),
@@ -892,9 +890,7 @@ class BlackjackView(View):
             return
         dealer_up = dealer_up_card(dealer=self.round_state.dealer)
         take_insurance = await bot_ai.decide_bot_insurance(
-            end_user_id=bot_player.participant.account_name,
-            dealer_up=dealer_up,
-            hand_repr=render_hand(cards=first_hand.cards),
+            dealer_up=dealer_up, hand_repr=render_hand(cards=first_hand.cards)
         )
         try:
             if take_insurance:
@@ -946,7 +942,6 @@ class BlackjackView(View):
             return
         dealer_up = dealer_up_card(dealer=self.round_state.dealer)
         action = await bot_ai.decide_bot_action(
-            end_user_id=active.participant.account_name,
             hand_total=hand.total(),
             hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
@@ -1264,13 +1259,10 @@ class BlackjackView(View):
         self, *, message: Message, hint_context: HintRefreshContext
     ) -> None:
         """Refreshes the in-progress narrator line if the table did not advance."""
-        revision, author_name, player_name, player_total, dealer_visible = hint_context
+        revision, player_name, player_total, dealer_visible = hint_context
         try:
             system_line = await self.narrator.hint(
-                author_name=author_name,
-                player_name=player_name,
-                player_total=player_total,
-                dealer_visible=dealer_visible,
+                player_name=player_name, player_total=player_total, dealer_visible=dealer_visible
             )
         except Exception:
             logfire.warn("Blackjack narrator hint refresh failed", _exc_info=True)
@@ -1309,7 +1301,6 @@ class BlackjackView(View):
         if len(results) == 1:
             result = results[0]
             return await self.narrator.settle(
-                author_name=result.participant.account_name,
                 player_name=result.participant.display_name,
                 outcome=result.settlement.outcome,
                 bet=result.participant.bet,
@@ -1319,7 +1310,6 @@ class BlackjackView(View):
                 detail=result.settlement.detail,
             )
         return await self.narrator.table_settle(
-            author_name=self.author_name,
             table_name="Blackjack table",
             player_count=len(results),
             net_delta=sum(result.settlement.delta for result in results),

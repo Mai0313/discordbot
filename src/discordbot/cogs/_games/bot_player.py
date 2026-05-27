@@ -6,7 +6,7 @@ ModelSettings) and provides deterministic fallbacks so a slow or failing LLM
 never blocks the bot's turn at the table.
 """
 
-from typing import Literal, cast
+from typing import Final, Literal, cast
 import asyncio
 
 from openai import AsyncOpenAI
@@ -26,19 +26,11 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME
 BOT_BET_AI_TIMEOUT_SECONDS = 4.0
 BOT_ACTION_AI_TIMEOUT_SECONDS = 4.0
 BOT_INSURANCE_AI_TIMEOUT_SECONDS = 4.0
+# Bot decisions are system-side LLM calls; use a fixed ASCII label to mirror
+# `auto_unmute.py` / `_stock/news.py` and avoid CJK-in-HTTP-header crashes.
+_BOT_PLAYER_END_USER_ID: Final[str] = "bot_player"
 
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
-
-
-def _ascii_header_safe(text: str) -> str:
-    """Returns a header-safe rendition of `text` (non-ASCII chars become '?').
-
-    HTTP headers default to ASCII encoding under httpx, so bot accounts with
-    CJK display names would otherwise raise UnicodeEncodeError when LiteLLM
-    sees the end-user-id header. We only ever use this value as a tracking
-    label, so a lossy ASCII replacement is acceptable.
-    """
-    return text.encode("ascii", errors="replace").decode("ascii")
 
 
 class BotPlayerBetDecision(BaseModel):
@@ -130,7 +122,7 @@ class BotPlayerAI(BaseModel):
     client: SkipValidation[AsyncOpenAI]
     model: ModelSettings
 
-    async def decide_bot_bet(self, *, end_user_id: str, balance: int, table_bet: int) -> int:
+    async def decide_bot_bet(self, *, balance: int, table_bet: int) -> int:
         """Returns the bot's bet for the upcoming round, falling back on error."""
         fallback = fallback_bet(balance=balance, table_bet=table_bet)
         user_text = (
@@ -149,7 +141,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerBetDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
+                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -166,10 +158,9 @@ class BotPlayerAI(BaseModel):
         candidate = responses.output_parsed.bet_amount
         return max(1, min(balance, candidate)) if balance > 0 else fallback
 
-    async def decide_bot_action(  # noqa: PLR0913 -- bot action decision needs full hand context
+    async def decide_bot_action(
         self,
         *,
-        end_user_id: str,
         hand_total: int,
         hand_repr: str,
         dealer_up: Card | None,
@@ -204,7 +195,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerActionDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
+                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -225,9 +216,7 @@ class BotPlayerAI(BaseModel):
             return candidate
         return fallback
 
-    async def decide_bot_insurance(
-        self, *, end_user_id: str, dealer_up: Card | None, hand_repr: str
-    ) -> bool:
+    async def decide_bot_insurance(self, *, dealer_up: Card | None, hand_repr: str) -> bool:
         """Returns whether the bot takes insurance, falling back to False on error."""
         dealer_label = str(dealer_up) if dealer_up else "未知"
         user_text = f"莊家明牌: {dealer_label}\n玩家手牌: {hand_repr}"
@@ -243,7 +232,7 @@ class BotPlayerAI(BaseModel):
                     text_format=BotPlayerInsuranceDecision,
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
+                    extra_headers={"x-litellm-end-user-id": _BOT_PLAYER_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:

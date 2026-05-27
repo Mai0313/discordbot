@@ -1,6 +1,6 @@
 """Casino system narrator that produces short neutral lines for the games."""
 
-from typing import cast
+from typing import Final, cast
 import asyncio
 
 from openai import AsyncOpenAI
@@ -18,17 +18,10 @@ from discordbot.cogs._games.prompts import (
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 NARRATOR_AI_TIMEOUT_SECONDS = 5.0
-
-
-def _ascii_header_safe(text: str) -> str:
-    """Returns a header-safe rendition of `text` (non-ASCII chars become '?').
-
-    httpx encodes outgoing HTTP headers as ASCII; CJK display names would
-    otherwise raise UnicodeEncodeError when LiteLLM receives the end-user-id
-    header. The value is only used as a tracking label, so a lossy ASCII
-    replacement is acceptable.
-    """
-    return text.encode("ascii", errors="replace").decode("ascii")
+# System-side LLM calls use a fixed ASCII label (cf. auto_unmute.py /
+# _stock/news.py); HTTP headers default to ASCII so per-user names with CJK
+# would otherwise raise UnicodeEncodeError.
+_NARRATOR_END_USER_ID: Final[str] = "casino_system"
 
 
 class SystemNarrator(BaseModel):
@@ -44,9 +37,7 @@ class SystemNarrator(BaseModel):
     client: SkipValidation[AsyncOpenAI]
     model: ModelSettings
 
-    async def _ask(
-        self, instructions: str, user_text: str, fallback: str, end_user_id: str
-    ) -> str:
+    async def _ask(self, instructions: str, user_text: str, fallback: str) -> str:
         """Calls the LLM and returns the trimmed text, falling back on any error."""
         try:
             async with asyncio.timeout(delay=NARRATOR_AI_TIMEOUT_SECONDS):
@@ -59,7 +50,7 @@ class SystemNarrator(BaseModel):
                     ),
                     reasoning=self.model.reasoning,
                     service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _ascii_header_safe(text=end_user_id)},
+                    extra_headers={"x-litellm-end-user-id": _NARRATOR_END_USER_ID},
                     extra_body={"mock_testing_fallbacks": False},
                 )
         except TimeoutError:
@@ -75,7 +66,7 @@ class SystemNarrator(BaseModel):
         return text or fallback
 
     async def taunt_bet(
-        self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: GameKind
+        self, player_name: str, balance_at_start: int, bet: int, game: GameKind
     ) -> str:
         """Returns a neutral narrator line for a newly placed bet."""
         game_labels: dict[GameKind, str] = {"blackjack": "21 點", "dragon_gate": "射龍門"}
@@ -89,12 +80,10 @@ class SystemNarrator(BaseModel):
             instructions=SYSTEM_TAUNT_BET_PROMPT,
             user_text=user_text,
             fallback="賭場已收到下注, 牌桌即將發牌",
-            end_user_id=author_name,
         )
 
     async def settle(  # noqa: PLR0913 -- the round summary needs every field for the prompt
         self,
-        author_name: str,
         player_name: str,
         outcome: SettleOutcome,
         bet: int,
@@ -140,17 +129,10 @@ class SystemNarrator(BaseModel):
             instructions=SYSTEM_SETTLE_PROMPT,
             user_text=user_text,
             fallback=fallback_lines[outcome],
-            end_user_id=author_name,
         )
 
-    async def table_settle(  # noqa: PLR0913 -- table summary needs every field for the prompt
-        self,
-        author_name: str,
-        table_name: str,
-        player_count: int,
-        net_delta: int,
-        game: GameKind,
-        detail: str,
+    async def table_settle(
+        self, table_name: str, player_count: int, net_delta: int, game: GameKind, detail: str
     ) -> str:
         """Returns one narrator line for a multiplayer table settlement."""
         game_labels: dict[GameKind, str] = {"blackjack": "21 點", "dragon_gate": "射龍門"}
@@ -168,15 +150,10 @@ class SystemNarrator(BaseModel):
             f"局面細節: {detail}"
         )
         return await self._ask(
-            instructions=SYSTEM_SETTLE_PROMPT,
-            user_text=user_text,
-            fallback=fallback,
-            end_user_id=author_name,
+            instructions=SYSTEM_SETTLE_PROMPT, user_text=user_text, fallback=fallback
         )
 
-    async def hint(
-        self, author_name: str, player_name: str, player_total: int, dealer_visible: int
-    ) -> str:
+    async def hint(self, player_name: str, player_total: int, dealer_visible: int) -> str:
         """Returns a neutral narrator line summarizing the current Blackjack state."""
         user_text = (
             f"玩家: {player_name}\n"
@@ -187,5 +164,4 @@ class SystemNarrator(BaseModel):
             instructions=SYSTEM_HINT_PROMPT,
             user_text=user_text,
             fallback="現場觀察: 玩家點數與莊家明牌已揭示, 等待玩家決策",
-            end_user_id=author_name,
         )

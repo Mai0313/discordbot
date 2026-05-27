@@ -116,7 +116,7 @@ class GamesCogs(commands.Cog):
             return None
         try:
             decided_bet = await self.bot_player_ai.decide_bot_bet(
-                end_user_id=bot_user.name, balance=balance, table_bet=table_bet
+                balance=balance, table_bet=table_bet
             )
         except Exception:
             logfire.warn("Bot bet decision raised; using deterministic fallback", _exc_info=True)

@@ -1705,7 +1705,7 @@ async def test_system_narrator_times_out_to_fallback(monkeypatch: pytest.MonkeyP
     )
 
     line = await narrator.taunt_bet(
-        author_name="alice", player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
+        player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
     )
 
     assert line == "賭場已收到下注, 牌桌即將發牌"
