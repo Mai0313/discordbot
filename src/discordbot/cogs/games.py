@@ -14,6 +14,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.games import (
     SystemIdentity,
     GameParticipant,
+    BotFinancialContext,
     GameParticipantIdentity,
     RefreshParticipantsResult,
     ParticipantPreparationResult,
@@ -28,7 +29,7 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 from discordbot.cogs._economy.database import get_account, get_balance, get_casino_daily_stats
-from discordbot.cogs._games.bot_player import BotPlayerAI, BotFinancialContext, fallback_bet
+from discordbot.cogs._games.bot_player import BotPlayerAI, fallback_bet
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency

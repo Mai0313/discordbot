@@ -13,9 +13,12 @@ from nextcord.ui import View, Button
 
 from discordbot.typings.games import (
     Card,
+    BotAction,
     SettleOutcome,
     GameParticipant,
+    OtherPlayerView,
     BlackjackDealerStep,
+    BotFinancialContext,
     BlackjackPlayerResult,
     BlackjackDealerStepSource,
     BlackjackPlayerSettlement,
@@ -37,7 +40,6 @@ from discordbot.cogs._games.blackjack import (
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import get_account, get_casino_daily_stats
-from discordbot.cogs._games.bot_player import OtherPlayerView, BotFinancialContext
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -72,7 +74,7 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from discordbot.cogs._games.dealer import SystemNarrator
-    from discordbot.cogs._games.bot_player import BotAction, BotPlayerAI
+    from discordbot.cogs._games.bot_player import BotPlayerAI
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180

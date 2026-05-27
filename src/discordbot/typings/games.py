@@ -16,6 +16,7 @@ SettleOutcome = Literal[
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
 BlackjackDealerStepSource = Literal["auto", "guard"]
+BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
 class Card(BaseModel):
@@ -223,6 +224,57 @@ class BlackjackDealerDecision(BaseModel):
     reason: str
 
 
+class BotPlayerBetDecision(BaseModel):
+    """Structured bet decision returned by the bot player AI."""
+
+    bet_amount: int = Field(ge=1)
+    reason: str
+
+
+class BotPlayerActionDecision(BaseModel):
+    """Structured hit / stand / double / split / surrender decision."""
+
+    action: BotAction
+    reason: str
+
+
+class BotPlayerInsuranceDecision(BaseModel):
+    """Structured insurance-take / decline decision."""
+
+    take_insurance: bool
+    reason: str
+
+
+class BotFinancialContext(BaseModel):
+    """Bot's lifetime + daily financial snapshot for decision context.
+
+    `balance` is the spendable wallet today; `total_earned` / `total_spent` are
+    lifetime gross flows. The three `daily_*` fields are zero outside today's
+    Taipei calendar day so the model treats yesterday's loss as already
+    "forgotten" — same convention as the loss leaderboard.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    balance: int
+    total_earned: int
+    total_spent: int
+    daily_loss: int
+    daily_win: int
+    daily_net: int
+
+
+class OtherPlayerView(BaseModel):
+    """One non-bot player's table state visible to the bot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    display_name: str
+    bet: int
+    hands: list[str]
+    is_finished: bool
+
+
 class BlackjackDealerStep(BaseModel):
     """One dealer action recorded during the Blackjack dealer phase."""
 
@@ -275,11 +327,17 @@ __all__ = [
     "BlackjackInsuranceSettlement",
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
+    "BotAction",
+    "BotFinancialContext",
+    "BotPlayerActionDecision",
+    "BotPlayerBetDecision",
+    "BotPlayerInsuranceDecision",
     "Card",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
     "GameParticipantIdentity",
+    "OtherPlayerView",
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",

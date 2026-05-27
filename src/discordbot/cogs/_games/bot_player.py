@@ -12,15 +12,23 @@ let the model reason from the actual table state rather than fall back on a
 prescriptive script.
 """
 
-from typing import Final, Literal, cast
+from typing import Final, cast
 import asyncio
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
+from pydantic import BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.typings.games import Card
+from discordbot.typings.games import (
+    Card,
+    BotAction,
+    OtherPlayerView,
+    BotFinancialContext,
+    BotPlayerBetDecision,
+    BotPlayerActionDecision,
+    BotPlayerInsuranceDecision,
+)
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import (
     BOT_PLAYER_BET_PROMPT,
@@ -38,65 +46,6 @@ BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 _BET_END_USER_ID: Final[str] = "bot_player_bet"
 _ACTION_END_USER_ID: Final[str] = "bot_player_action"
 _INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
-
-BotAction = Literal["hit", "stand", "double", "split", "surrender"]
-
-
-class BotPlayerBetDecision(BaseModel):
-    """Structured bet decision returned by the bot player AI."""
-
-    model_config = ConfigDict(frozen=True)
-
-    bet_amount: int = Field(ge=1)
-    reason: str
-
-
-class BotPlayerActionDecision(BaseModel):
-    """Structured hit / stand / double / split / surrender decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    action: BotAction
-    reason: str
-
-
-class BotPlayerInsuranceDecision(BaseModel):
-    """Structured insurance-take / decline decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    take_insurance: bool
-    reason: str
-
-
-class BotFinancialContext(BaseModel):
-    """Bot's lifetime + daily financial snapshot for decision context.
-
-    `balance` is the spendable wallet today; `total_earned` / `total_spent` are
-    lifetime gross flows. The three `daily_*` fields are zero outside today's
-    Taipei calendar day so the model treats yesterday's loss as already
-    "forgotten" — same convention as the loss leaderboard.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    balance: int
-    total_earned: int
-    total_spent: int
-    daily_loss: int
-    daily_win: int
-    daily_net: int
-
-
-class OtherPlayerView(BaseModel):
-    """One non-bot player's table state visible to the bot."""
-
-    model_config = ConfigDict(frozen=True)
-
-    display_name: str
-    bet: int
-    hands: list[str]
-    is_finished: bool
 
 
 def _dealer_up_value(*, up_card: Card | None) -> int:
