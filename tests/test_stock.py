@@ -1,5 +1,6 @@
 """Tests for the simulated stock market service."""
 
+import math
 from random import Random
 import asyncio
 from pathlib import Path
@@ -30,6 +31,7 @@ from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
 from discordbot.cogs._stock.chart import build_price_chart
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
+    NEWS_SENTIMENT_LIMIT_BPS,
     cash_ceil,
     cash_floor,
     format_price,
@@ -283,6 +285,128 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
     assert first >= 1
     assert decay_news_sentiment(sentiment_bps=500, elapsed_seconds=3 * 60 * 60) == 240
     assert decay_news_sentiment(sentiment_bps=-500, elapsed_seconds=20 * 60 * 60) == 0
+
+
+def _stock_news_row(
+    created_at: datetime, sentiment_bps: int, news_id: str = "test"
+) -> stock_db.StockNews:
+    """Builds a StockNews ORM row for impulse helper tests."""
+    return stock_db.StockNews(
+        id=news_id,
+        symbol=BCAT_SYMBOL,
+        headline="test",
+        sentiment_bps=sentiment_bps,
+        source="template",
+        model="",
+        expires_at=None,
+        created_at=created_at,
+    )
+
+
+def test_stock_news_impulse_applies_once_at_firing_boundary() -> None:
+    """Each news contributes its sentiment exactly once at its firing tick."""
+    b0 = tick_boundary(dt=datetime(2026, 1, 1, 0, 0, tzinfo=TAIWAN_TIMEZONE))
+    b1 = b0 + timedelta(seconds=STOCK_TICK_SECONDS)
+    b2 = b1 + timedelta(seconds=STOCK_TICK_SECONDS)
+    boundaries = (b0, b1, b2)
+    rows = (
+        _stock_news_row(created_at=b0 + timedelta(seconds=30), sentiment_bps=200, news_id="a"),
+        _stock_news_row(created_at=b2, sentiment_bps=-150, news_id="b"),
+    )
+    impulse = stock_db._news_impulse_by_boundary(news_rows=rows, applied_boundaries=boundaries)
+    assert impulse[b0] == 200
+    assert impulse[b1] == 0
+    assert impulse[b2] == -150
+
+
+def test_stock_news_impulse_clamps_per_news_to_sentiment_limit() -> None:
+    """Per-news sentiment is clamped to ±NEWS_SENTIMENT_LIMIT_BPS before summing."""
+    b0 = tick_boundary(dt=datetime(2026, 1, 1, 0, 0, tzinfo=TAIWAN_TIMEZONE))
+    rows = (_stock_news_row(created_at=b0, sentiment_bps=10_000, news_id="huge"),)
+    impulse = stock_db._news_impulse_by_boundary(news_rows=rows, applied_boundaries=(b0,))
+    assert impulse[b0] == NEWS_SENTIMENT_LIMIT_BPS
+
+
+def test_stock_news_impulse_skips_pre_window_news() -> None:
+    """News whose tick boundary predates all applied boundaries is dropped."""
+    b0 = tick_boundary(dt=datetime(2026, 1, 1, 1, 0, tzinfo=TAIWAN_TIMEZONE))
+    older = _stock_news_row(created_at=b0 - timedelta(hours=1), sentiment_bps=180, news_id="stale")
+    impulse = stock_db._news_impulse_by_boundary(news_rows=(older,), applied_boundaries=(b0,))
+    assert impulse[b0] == 0
+
+
+def test_stock_news_impulse_routes_skipped_news_to_next_surviving_boundary() -> None:
+    """Backlog-compressed boundaries still absorb news that fell in skipped ticks."""
+    b_first = tick_boundary(dt=datetime(2026, 1, 1, 0, 0, tzinfo=TAIWAN_TIMEZONE))
+    b_skipped = b_first + timedelta(seconds=STOCK_TICK_SECONDS)
+    b_next = b_skipped + timedelta(seconds=STOCK_TICK_SECONDS)
+    rows = (_stock_news_row(created_at=b_skipped, sentiment_bps=150, news_id="mid"),)
+    impulse = stock_db._news_impulse_by_boundary(
+        news_rows=rows, applied_boundaries=(b_first, b_next)
+    )
+    assert impulse[b_first] == 0
+    assert impulse[b_next] == 150
+
+
+def test_stock_price_formula_stays_bounded_under_impulse_news_monte_carlo() -> None:
+    """Property test: with impulse news + random pressure, prices stay bounded.
+
+    Seeded Monte Carlo using the aggressive OCTE-like profile (highest volatility
+    and biggest amplifier in the production set). If a future change weakens mean
+    reversion, removes impulse semantics, or widens tick bounds, the runaway
+    behavior surfaces here instead of silently in production.
+    """
+    base_volatility_bps = 180
+    volatility_amplifier_bps = 360
+    fair_value_cents = 9_000
+    mean_reversion_strength_bps = 55
+    max_tick_change_bps = 850
+
+    ticks_per_day = 24 * 60 * 60 // STOCK_TICK_SECONDS
+    news_cadence_ticks = 4 * ticks_per_day // 24
+    sim_days = 7
+    trials = 50
+
+    peak_log_ratios: list[float] = []
+    final_log_ratios: list[float] = []
+    for trial in range(trials):
+        rng = _rng(seed=trial)
+        price = fair_value_cents
+        pressure_bps = 0
+        peak_abs = 0.0
+        for tick in range(sim_days * ticks_per_day):
+            news_sentiment = 0
+            if tick > 0 and tick % news_cadence_ticks == 0:
+                news_sentiment = max(
+                    -NEWS_SENTIMENT_LIMIT_BPS,
+                    min(NEWS_SENTIMENT_LIMIT_BPS, int(rng.gauss(mu=0, sigma=120))),
+                )
+            pressure_bps = max(-90, min(90, pressure_bps + int(rng.gauss(mu=0, sigma=15))))
+            price = calculate_next_price_cents(
+                previous_price_cents=price,
+                news_sentiment_bps=news_sentiment,
+                pressure_bps=pressure_bps,
+                base_volatility_bps=base_volatility_bps,
+                volatility_amplifier_bps=volatility_amplifier_bps,
+                fair_value_cents=fair_value_cents,
+                mean_reversion_strength_bps=mean_reversion_strength_bps,
+                max_tick_change_bps=max_tick_change_bps,
+                rng=rng,
+            )
+            log_ratio_abs = abs(math.log(price / fair_value_cents))
+            peak_abs = max(peak_abs, log_ratio_abs)
+        peak_log_ratios.append(peak_abs)
+        final_log_ratios.append(abs(math.log(price / fair_value_cents)))
+
+    peak_max = max(peak_log_ratios)
+    assert peak_max < math.log(30), (
+        f"price ran away during simulation: peak {math.exp(peak_max):.1f}x fair_value"
+    )
+    sorted_finals = sorted(final_log_ratios)
+    final_median = sorted_finals[trials // 2]
+    assert final_median < math.log(5), (
+        f"price drifted: median final {math.exp(final_median):.1f}x fair_value"
+    )
 
 
 def test_stock_order_flow_pressure_scales_with_liquidity() -> None:

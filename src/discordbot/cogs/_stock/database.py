@@ -838,7 +838,7 @@ async def _stock_news_generation_contexts(
                 buy_side_shares=flow.buy_side_shares,
                 sell_side_shares=flow.sell_side_shares,
                 net_order_shares=flow.buy_side_shares - flow.sell_side_shares,
-                recent_news_sentiment_bps=_news_sentiment_bps_from_rows(
+                recent_news_sentiment_bps=_decayed_news_sentiment_for_context(
                     news_rows=tuple(news_rows_by_symbol.get(profile.symbol, ())), at=now
                 ),
                 latest_news_headline=latest_news_headline,
@@ -1070,8 +1070,8 @@ async def _news_rows_for_boundaries(
     return tuple(result.scalars())
 
 
-def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime) -> int:
-    """Returns decayed news sentiment from prefetched rows."""
+def _decayed_news_sentiment_for_context(news_rows: tuple[StockNews, ...], at: datetime) -> int:
+    """Returns time-decayed ambient sentiment for the AI news generation prompt only."""
     sentiment = 0
     for news in news_rows:
         if as_taipei(dt=news.created_at) > as_taipei(dt=at):
@@ -1087,6 +1087,34 @@ def _news_sentiment_bps_from_rows(news_rows: tuple[StockNews, ...], at: datetime
     return clamp_bps(
         value=sentiment, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
     )
+
+
+def _news_impulse_by_boundary(
+    news_rows: tuple[StockNews, ...], applied_boundaries: tuple[datetime, ...]
+) -> dict[datetime, int]:
+    """Maps each applied tick boundary to its one-shot news sentiment sum.
+
+    Each news row contributes its clamped sentiment exactly once, at the first
+    applied boundary at or after its own tick boundary. News whose tick boundary
+    falls before every applied boundary is skipped (its impulse already landed
+    on a previous lazy advance).
+    """
+    if not applied_boundaries or not news_rows:
+        return {}
+    sorted_boundaries = sorted(applied_boundaries)
+    impulse: dict[datetime, int] = dict.fromkeys(applied_boundaries, 0)
+    earliest = sorted_boundaries[0]
+    for news in news_rows:
+        news_boundary = tick_boundary(dt=news.created_at)
+        if news_boundary < earliest:
+            continue
+        target = next(b for b in sorted_boundaries if b >= news_boundary)
+        impulse[target] += clamp_bps(
+            value=news.sentiment_bps,
+            lower=-NEWS_SENTIMENT_LIMIT_BPS,
+            upper=NEWS_SENTIMENT_LIMIT_BPS,
+        )
+    return impulse
 
 
 async def _recent_pressure_bps(
@@ -1193,8 +1221,9 @@ async def advance_market_in_session(
     pressure_rows = await _pressure_rows_for_boundaries(
         session=session, symbol=symbol, boundaries=boundaries
     )
+    news_impulse = _news_impulse_by_boundary(news_rows=news_rows, applied_boundaries=boundaries)
     for boundary in boundaries:
-        news_sentiment = _news_sentiment_bps_from_rows(news_rows=news_rows, at=boundary)
+        news_sentiment = news_impulse.get(boundary, 0)
         pressure_bps = _recent_pressure_bps_from_rows(
             pressure_rows=pressure_rows, at=boundary, liquidity_shares=profile.liquidity_shares
         )
