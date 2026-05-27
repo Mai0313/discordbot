@@ -274,6 +274,23 @@ def _player_seat_color(
     return PUSH_COLOR
 
 
+def _dealer_settlement_color(results: list[BlackjackPlayerResult]) -> int:
+    """Picks the dealer seat color from how the casino fared this round.
+
+    The dealer is one-vs-many: lose to a single player and the casino owes a
+    payout, so we surface red as soon as any player has a positive delta. All
+    losses (no player won anything) means the casino held the line; all
+    pushes means a neutral round.
+    """
+    any_player_won = any(result.settlement.delta > 0 for result in results)
+    if any_player_won:
+        return LOSE_COLOR
+    any_player_lost = any(result.settlement.delta < 0 for result in results)
+    if any_player_lost:
+        return WIN_COLOR
+    return PUSH_COLOR
+
+
 def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + identity + render flags
     *,
     round_state: BlackjackRound,
@@ -282,12 +299,14 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
     hide_hole: bool,
     dealer_steps: list[BlackjackDealerStep] | None = None,
     is_settled: bool = False,
+    results: list[BlackjackPlayerResult] | None = None,
 ) -> Embed:
     """Builds the dealer seat embed shown alongside player seats.
 
     Pass `hide_hole=False` during the dealer phase or peek-reveal animations so
     the hole card is visible; `dealer_steps` populates the rule-driven action
-    log once dealer play starts.
+    log once dealer play starts. When `is_settled=True`, `results` drives the
+    color from the casino-vs-table outcome rather than the dealer hand total.
     """
     description_parts: list[str] = [
         _format_dealer_block(round_state=round_state, hide_hole=hide_hole)
@@ -300,12 +319,10 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
         description_parts.append(metadata_line(text="莊家正在依規則出牌"))
     elif not is_settled:
         description_parts.append(metadata_line(text="莊家暗牌待揭示"))
-    color = _dealer_in_progress_color(round_state=round_state)
     if is_settled:
-        if round_state.dealer_total() > 21:
-            color = LOSE_COLOR  # red — dealer bust is bad for the casino
-        elif round_state.dealer_total() >= 17:
-            color = WIN_COLOR  # green — dealer stood pat
+        color = _dealer_settlement_color(results=results or [])
+    else:
+        color = _dealer_in_progress_color(round_state=round_state)
     embed = Embed(
         title=f"♠️ 莊家 · {system_name}",
         description="\n".join(part for part in description_parts if part),
@@ -520,6 +537,7 @@ def build_final_embeds(  # noqa: PLR0913 -- final render mirrors in-progress sig
             hide_hole=False,
             dealer_steps=dealer_steps,
             is_settled=True,
+            results=results,
         )
     ]
     results_by_user: dict[int, BlackjackPlayerResult] = {
