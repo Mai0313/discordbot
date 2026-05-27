@@ -18,6 +18,7 @@ from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
+from discordbot.typings.games import GameParticipant
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
@@ -1584,6 +1585,44 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert bob.bet == 300
     assert bob.balance_at_start == 50_000_000
     assert bob.is_allin is False
+
+
+async def test_refresh_participants_preserves_existing_blackjack_wagers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies start-time balance refresh keeps per-seat Blackjack wagers."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+
+    async def balance_by_user(user_id: int) -> int:
+        """Returns enough balance for the owner and bot to keep their queued bets."""
+        return {1: 500, 999: 1_000}[user_id]
+
+    monkeypatch.setattr(games, "get_balance", balance_by_user)
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    owner = GameParticipant(
+        user_id=1,
+        account_name="alice",
+        display_name="Alice",
+        bet=300,
+        balance_at_start=300,
+        is_allin=True,
+    )
+    bot_player = GameParticipant(
+        user_id=999,
+        account_name="dealer",
+        display_name="Dealer",
+        bet=125,
+        balance_at_start=1_000,
+        is_allin=False,
+    )
+
+    refreshed = await cog._refresh_participants(
+        participants=[owner, bot_player], mode="clamp"
+    )
+
+    assert [participant.bet for participant in refreshed.participants] == [300, 125]
+    assert [participant.balance_at_start for participant in refreshed.participants] == [500, 1_000]
 
 
 async def test_blackjack_string_bet_accepts_large_formatted_amount(

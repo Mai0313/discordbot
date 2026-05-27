@@ -234,9 +234,9 @@ class GamesCogs(commands.Cog):
         return result.participant
 
     async def _refresh_participants(
-        self, participants: list[GameParticipant], wager: int, mode: WagerMode
+        self, participants: list[GameParticipant], mode: WagerMode
     ) -> RefreshParticipantsResult:
-        """Re-checks balances when the lobby owner starts the table."""
+        """Re-checks balances against each queued participant wager."""
         refreshed: list[GameParticipant] = []
         dropped: list[str] = []
         for participant in participants:
@@ -249,7 +249,7 @@ class GamesCogs(commands.Cog):
                     avatar_url=participant.avatar_url,
                 ),
                 balance=balance,
-                wager=wager,
+                wager=participant.bet,
                 mode=mode,
             )
             if refreshed_participant is None:
@@ -381,9 +381,7 @@ class GamesCogs(commands.Cog):
                 mode="clamp",
                 insufficient_embed_builder=self._insufficient_balance_embed,
             ),
-            refresh_participants=partial(
-                self._refresh_participants, wager=table_bet, mode="clamp"
-            ),
+            refresh_participants=partial(self._refresh_participants, mode="clamp"),
             bot_player_ai=self.bot_player_ai,
             bot_user_id=bot_participant.user_id if bot_participant is not None else None,
             extra_initial_participants=extra_initial_participants,
@@ -448,7 +446,7 @@ class GamesCogs(commands.Cog):
                 mode="exact",
                 insufficient_embed_builder=self._dragon_gate_insufficient_balance_embed,
             ),
-            refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
+            refresh_participants=partial(self._refresh_participants, mode="exact"),
             initial_jackpot=initial_jackpot.balance,
             initial_jackpot_generation=initial_jackpot.generation,
         )
