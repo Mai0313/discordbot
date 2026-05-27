@@ -50,7 +50,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Prefer string-content shorthand when there are no attachments.
 - Processed Discord messages with attachments fall back to `role=user` because assistant content cannot contain `input_image` or `input_file`.
 - Separator messages use `role=system`, not `developer`, for Gemini and Claude compatibility through LiteLLM.
-- Gemini may prepend leading newlines to streamed reasoning output when `reasoning.effort != "none"`. `_handle_streaming` strips them on the first content delta; keep that guard.
+- Gemini may prepend leading newlines to streamed reasoning output when `reasoning.effort != "none"`. `DiscordStreamOps.handle_streaming` strips them on the first content delta; keep that guard.
 - Gemini thought summaries only flow through the Responses API.
 - `client.images.edit(image=...)` needs raw `bytes`, not image-reference dicts.
 - Per-token pricing comes from `utils.model_pricing` and its cached LiteLLM JSON. Do not hardcode rates in `gen_reply.py`.

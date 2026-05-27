@@ -1,4 +1,4 @@
-"""Tests for AI reply routing, attachment handling, streaming, and regeneration."""
+"""Tests for AI reply routing, image/video handlers, and on_message dispatch."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from datetime import UTC, datetime
 
 from PIL import Image
 import pytest
-from nextcord import File, Embed
 
-from discordbot.cogs.gen_reply import _USAGE_FOOTER_RE, _DISCORD_MESSAGE_LIMIT, ReplyGeneratorCogs
+from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.utils.discord_ops import DiscordStreamOps, DiscordMessageOps
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -21,6 +21,7 @@ TEST_LLM_MODEL = "test-llm-model"
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from nextcord import File, Embed
     from openai.types.responses.response_input_param import ResponseInputParam
 
 
@@ -282,152 +283,9 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
+    cog.discord_messages = DiscordMessageOps(bot=cog.bot, runtime_models=cog.runtime_models)
+    cog.discord_stream = DiscordStreamOps(bot=cog.bot, msg_ops=cog.discord_messages)
     return cog
-
-
-async def _stream_events() -> AsyncIterator[SimpleNamespace]:
-    """Yields a minimal streaming completion with token usage."""
-    yield SimpleNamespace(type="response.output_text.delta", delta="hello from stream")
-    yield SimpleNamespace(
-        type="response.completed",
-        response=SimpleNamespace(
-            model=TEST_LLM_MODEL,
-            usage=SimpleNamespace(input_tokens=12, output_tokens=34, output_tokens_details=None),
-        ),
-    )
-
-
-async def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:
-    """Yields the provided fake streaming events in order."""
-    for event in events:
-        yield event
-
-
-async def test_handle_streaming_allows_missing_output_token_details(
-    economy_isolated_db: None,
-) -> None:
-    """Regression: LiteLLM may return usage with output_tokens_details=null."""
-    del economy_isolated_db
-    cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    message = FakeMessage()
-
-    result = await cog._handle_streaming(responses=_stream_events(), message=message)
-
-    expected = (
-        f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
-        " · 46 虛擬歡樂豆 (+46 虛擬歡樂豆)"
-    )
-    assert result == expected
-    assert message.replies[0].content == result
-
-
-async def test_handle_streaming_continues_long_reply_as_reply_chain(
-    economy_isolated_db: None,
-) -> None:
-    """Verifies replies over Discord's content limit continue as a reply chain."""
-    del economy_isolated_db
-    cog = _cog()
-    message = FakeMessage(content="<@999> explain how long Discord replies are handled")
-    body = "x" * 4500
-
-    result = await cog._handle_streaming(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta=body),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
-                    ),
-                ),
-            ]
-        ),
-        message=message,
-    )
-
-    usage_footer = (
-        f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 3 虛擬歡樂豆 (+3 虛擬歡樂豆)"
-    )
-    assert result == f"{body}{usage_footer}"
-
-    parent = message.replies[0]
-    assert parent.content == body[:_DISCORD_MESSAGE_LIMIT]
-
-    first_follow_up = parent.replies[0]
-    assert first_follow_up.content == body[_DISCORD_MESSAGE_LIMIT : _DISCORD_MESSAGE_LIMIT * 2]
-
-    second_follow_up = first_follow_up.replies[0]
-    assert second_follow_up.content == f"{body[_DISCORD_MESSAGE_LIMIT * 2 :]}{usage_footer}"
-    assert second_follow_up.replies == []
-
-    chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
-    assert all(len(chunk) <= _DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
-    assert cog.client.responses.create_models == []
-
-
-async def test_handle_streaming_marks_web_search_from_call_event(
-    economy_isolated_db: None,
-) -> None:
-    """Verifies native web_search_call events trigger the web reaction."""
-    del economy_isolated_db
-    cog = _cog()
-    message = FakeMessage()
-
-    await cog._handle_streaming(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta="answer"),
-                SimpleNamespace(type="response.web_search_call.completed"),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
-                    ),
-                ),
-            ]
-        ),
-        message=message,
-    )
-
-    assert message.added_reactions == ["🌐"]
-
-
-async def test_handle_streaming_marks_web_search_from_annotation(
-    economy_isolated_db: None,
-) -> None:
-    """Verifies any annotation event also triggers the web reaction.
-
-    LiteLLM-proxied Gemini grounds via url_citation annotations without
-    emitting web_search_call.* events, so annotation alone is treated as
-    a search signal.
-    """
-    del economy_isolated_db
-    cog = _cog()
-    message = FakeMessage()
-
-    await cog._handle_streaming(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta="grounded answer"),
-                SimpleNamespace(
-                    type="response.output_text.annotation.added",
-                    annotation={"type": "url_citation", "url": "https://example.com/article"},
-                ),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
-                    ),
-                ),
-            ]
-        ),
-        message=message,
-    )
-
-    assert message.added_reactions == ["🌐"]
 
 
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:
@@ -438,98 +296,17 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
 
 
-async def test_gen_reply_message_content_and_attachment_helpers(
+async def test_gen_reply_assembles_history_reference_and_current_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies prompt cleanup, embed extraction, and attachment conversion."""
-    cog = _cog()
-    embed = Embed(title="Title", description="Body")
-    embed.set_author(name="Author")
-    embed.add_field(name="Field", value="Value")
-    embed.set_footer(text="Footer")
-
-    assert await cog._get_user_prompt(content="hi <@999>") == "hi"
-    assert "Author" in cog._extract_embed_text(embeds=[embed])
-
-    bot_message = FakeMessage(
-        content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
-        author=FakeAuthor(bot=True, user_id=999),
-    )
-    assert await cog._get_cleaned_content(message=bot_message) == "answer"
-    assert _USAGE_FOOTER_RE.search(string=bot_message.content)
-
-    embed_message = FakeMessage()
-    embed_message.embeds = [embed]
-    assert "Title" in await cog._get_cleaned_content(message=embed_message)
-
-    system_message = FakeMessage()
-    system_message.system_content = "joined"
-    assert await cog._get_cleaned_content(message=system_message) == "joined"
-
-    assert cog._required_modality(content_type="video/mp4") == "video"
-    assert cog._required_modality(content_type="audio/mpeg") == "audio"
-    assert cog._required_modality(content_type="application/pdf") == "image"
-
-    file_part = await cog._attachment_to_part(
-        attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
-    )
-    assert file_part is not None
-    assert file_part["file_data"] == "data:text/plain;base64,YWJj"
-
-    image_part = await cog._image_to_part(
-        source=FakeAttachment(
-            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
-    )
-    assert image_part is not None
-    assert image_part["type"] == "input_image"
-
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"image"}
-    )
-    message = FakeMessage()
-    message.attachments = [
-        FakeAttachment(
-            filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        ),
-        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"video"),
-    ]
-    message.stickers = [
-        FakeAttachment(
-            filename="sticker.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
-    ]
-    img_embed = Embed()
-    img_embed.set_image(url="https://example.test/image.png")
-    message.embeds = [img_embed]
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.get_pil_image",
-        lambda image_file: Image.new(mode="RGB", size=(1, 1), color=(0, 0, 0)),
-    )
-    parts = await cog._get_attachment_parts(message=message)
-    assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
-
-
-async def test_gen_reply_processes_history_reference_and_current_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verifies message processing for history, references, and current prompts."""
+    """Verifies history, reference chain, and current-message orchestration on the cog."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.get_supported_modalities", lambda model_name: {"text", "image"}
+        "discordbot.utils.discord_ops.get_supported_modalities",
+        lambda model_name: {"text", "image"},
     )
     bot_msg = FakeMessage(content="bot answer", author=FakeAuthor(bot=True, user_id=999))
     user_msg = FakeMessage(content="hello", author=FakeAuthor(user_id=1))
-    with_attachment = FakeMessage(content="see file", author=FakeAuthor(user_id=2))
-    with_attachment.attachments = [FakeAttachment(filename="note.txt", content_type="text/plain")]
-
-    bot_processed = await cog._process_single_message(message=bot_msg)
-    user_processed = await cog._process_single_message(message=user_msg)
-    attachment_processed = await cog._process_single_message(message=with_attachment)
-    assert bot_processed["role"] == "assistant"
-    assert user_processed["role"] == "user"
-    assert attachment_processed["role"] == "user"
-    assert isinstance(attachment_processed["content"], list)
 
     async def fake_history(
         limit: int, before: FakeMessage, oldest_first: bool
@@ -582,7 +359,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         return "done"
 
     streamed: list[FakeMessage] = []
-    monkeypatch.setattr(cog, "_handle_streaming", fake_streaming)
+    monkeypatch.setattr(cog, "discord_stream", SimpleNamespace(handle_streaming=fake_streaming))
     await cog._handle_message_reply(message=message, system_prompt="system", history_limit=2)
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
@@ -608,9 +385,10 @@ async def test_gen_reply_on_message_dispatches_routes(
         """Returns the parametrized route."""
         return route
 
-    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> None:
-        """Records reaction state transitions."""
+    async def fake_reaction(message: FakeMessage, emoji: str, previous: str | None = None) -> str:
+        """Records reaction state transitions and returns the emoji for chaining."""
         calls.append(f"reaction:{emoji}")
+        return emoji
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records image handler dispatch."""
@@ -627,7 +405,14 @@ async def test_gen_reply_on_message_dispatches_routes(
         calls.append("_handle_message_reply")
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
-    monkeypatch.setattr(cog, "_handle_reaction", fake_reaction)
+    monkeypatch.setattr(
+        cog,
+        "discord_messages",
+        SimpleNamespace(
+            get_user_prompt=cog.discord_messages.get_user_prompt,
+            handle_reaction=fake_reaction,
+        ),
+    )
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)
     monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
