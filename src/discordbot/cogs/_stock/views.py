@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from typing import cast
+from collections.abc import Callable
 
 import nextcord
 from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
@@ -17,6 +18,7 @@ from discordbot.cogs._stock.database import (
     list_market_quotes,
     settle_stock_operation,
 )
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_public_message,
@@ -73,6 +75,29 @@ def build_market_message_payload(
         quotes=quotes, page_index=page_index, page_size=MARKET_PAGE_SIZE
     )
     return embed, File(fp=BytesIO(board), filename=filename)
+
+
+def _fresh_file_factory(file: File | None) -> Callable[[], File] | None:
+    """Returns a factory that creates fresh uploads for retry or fallback paths."""
+    if file is None:
+        return None
+    file.reset()
+    payload = file.fp.read()
+    file.reset()
+    filename = file.filename
+    description = file.description
+
+    def build_file() -> File:
+        return File(fp=BytesIO(payload), filename=filename, description=description)
+
+    return build_file
+
+
+def _fresh_extra_files(file_factory: Callable[[], File] | None) -> list[File] | None:
+    """Builds a fresh extra file list for one Discord request."""
+    if file_factory is None:
+        return None
+    return [file_factory()]
 
 
 class StockPublicView(View):
@@ -552,9 +577,17 @@ async def edit_stock_message(
     target_message = message or interaction.message
     if view is not None:
         view.bind_message(message=target_message)
-    kwargs: dict[str, object] = {"embed": embed, "view": view, "attachments": []}
-    if file is not None:
-        kwargs["file"] = file
+    file_factory = _fresh_file_factory(file=file)
+    kwargs: dict[str, object] = {
+        "embed": embed,
+        "view": view,
+        **embed_spacer_payload(
+            embeds=[embed],
+            is_edit=True,
+            target=target_message or interaction,
+            extra_files=_fresh_extra_files(file_factory=file_factory),
+        ),
+    }
     if not interaction.response.is_done():
         edited = await interaction.response.edit_message(**kwargs)
         if isinstance(edited, Message) and view is not None:
@@ -568,9 +601,17 @@ async def edit_stock_message(
             message_id = getattr(target_message, "id", None)
             if isinstance(message_id, int):
                 await forget_public_message(message_id=message_id)
-    followup_kwargs: dict[str, object] = {"embed": embed, "view": view, "wait": True}
-    if file is not None:
-        followup_kwargs["file"] = file
+    followup_kwargs: dict[str, object] = {
+        "embed": embed,
+        "view": view,
+        "wait": True,
+        **embed_spacer_payload(
+            embeds=[embed],
+            is_edit=False,
+            target=interaction,
+            extra_files=_fresh_extra_files(file_factory=file_factory),
+        ),
+    }
     sent_message = await interaction.followup.send(**followup_kwargs)
     if view is not None:
         view.bind_message(message=sent_message)

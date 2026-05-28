@@ -12,6 +12,8 @@ import nextcord
 from nextcord import Embed, Interaction, SelectOption
 from nextcord.ui import View, Select
 
+from discordbot.utils.discord_embeds import embed_spacer_payload
+
 from .embeds import (
     TranslateFn,
     create_map_embed,
@@ -149,7 +151,10 @@ class MapleDropSearchView(View):
 
         if embed:
             await interaction.followup.edit_message(
-                message_id=interaction.message.id, embed=embed, view=None
+                message_id=interaction.message.id,
+                embed=embed,
+                view=None,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
             )
 
     def set_options(self, options: list[SelectOption]) -> None:

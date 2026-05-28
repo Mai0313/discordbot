@@ -42,6 +42,7 @@ from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
@@ -668,8 +669,8 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
-    assert interaction.followup.sent[1]["file"].filename == "economy_leaderboard.png"
-    assert interaction.followup.sent[2]["file"].filename == "economy_loss_leaderboard.png"
+    assert interaction.followup.sent[1]["files"][0].filename == "economy_leaderboard.png"
+    assert interaction.followup.sent[2]["files"][0].filename == "economy_loss_leaderboard.png"
     assert "view" not in interaction.followup.sent[3]
     assert "view" not in interaction.followup.sent[4]
     assert interaction.followup.sent[5].get("ephemeral") is not True
@@ -1150,7 +1151,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
     embed = interaction.followup.sent[0]["embed"]
     assert "今日輸局累計" in embed.title
     assert "累計輸" in embed.description
-    assert interaction.followup.sent[0]["file"].filename == "economy_loss_leaderboard.png"
+    assert interaction.followup.sent[0]["files"][0].filename == "economy_loss_leaderboard.png"
     assert "贏回來不抵扣" in embed.footer.text
     assert len(scheduled) == 1
 
@@ -1516,6 +1517,11 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
+    assert (
+        blackjack_interaction.followup.sent[0]["files"][0].filename
+        == DEFAULT_EMBED_SPACER_FILENAME
+    )
+    assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
     monkeypatch.setattr(
         games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
@@ -1525,6 +1531,11 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
     assert dragon_gate_interaction.followup.sent[-1]["wait"] is True
     assert isinstance(dragon_gate_interaction.followup.sent[-1]["view"], DragonGateLobbyView)
+    assert (
+        dragon_gate_interaction.followup.sent[-1]["files"][0].filename
+        == DEFAULT_EMBED_SPACER_FILENAME
+    )
+    assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
 
 
 async def test_blackjack_lobby_start_is_owner_only(
@@ -1663,6 +1674,8 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
 
     assert owner_interaction.response.sent[0]["ephemeral"] is True
     assert owner_interaction.response.sent[0]["embed"].title == "下注格式錯誤"
+    assert owner_interaction.response.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.response.sent[0]["embed"].image.url == embed_spacer_url()
     assert owner_interaction.followup.sent == []
     assert owner_interaction.response.deferred is False
 
@@ -1708,6 +1721,29 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]
     assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
+
+
+async def test_dragon_gate_rejects_empty_balance_with_spacer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies the Dragon Gate insufficient-balance response keeps uniform width."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(games, "get_balance", _empty_game_balance)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.dragon_gate.callback(cog, owner_interaction)
+
+    assert owner_interaction.followup.sent[0]["wait"] is True
+    assert "view" not in owner_interaction.followup.sent[0]
+    assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
 
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,10 +7,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict
 
 import pytest
-from nextcord import Embed, Locale, SelectOption
+from nextcord import File, Embed, Locale, Attachment, SelectOption
 
 from discordbot.cogs import maplestory
 from discordbot.cogs.maplestory import MapleStoryCogs
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._maplestory.views import _RESOLVERS, MapleDropSearchView
 from discordbot.cogs._maplestory.embeds import (
     _truncate,
@@ -68,6 +69,8 @@ class InteractionPayload(TypedDict, total=False):
     view: MapleDropSearchView | None
     message_id: int
     ephemeral: bool
+    files: list[File]
+    attachments: list[Attachment]
 
 
 class _FakeResponse:
@@ -101,6 +104,7 @@ class _FakeFollowup:
         embed: Embed | None = None,
         view: MapleDropSearchView | None = None,
         ephemeral: bool | None = None,
+        files: list[File] | None = None,
     ) -> None:
         """Records a followup send payload."""
         payload = InteractionPayload()
@@ -112,6 +116,8 @@ class _FakeFollowup:
             payload["view"] = view
         if ephemeral is not None:
             payload["ephemeral"] = ephemeral
+        if files is not None:
+            payload["files"] = files
         self.sent.append(payload)
 
     async def edit_message(self, **kwargs: Unpack[InteractionPayload]) -> None:
@@ -598,6 +604,11 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
     assert valid_interaction.followup.edited[0]["message_id"] == 777
     assert isinstance(valid_interaction.followup.edited[0]["embed"], Embed)
     assert valid_interaction.followup.edited[0]["view"] is None
+    assert valid_interaction.followup.edited[0]["attachments"] == []
+    assert (
+        valid_interaction.followup.edited[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    )
+    assert valid_interaction.followup.edited[0]["embed"].image.url == embed_spacer_url()
 
 
 @pytest.fixture
@@ -663,6 +674,8 @@ async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryC
     assert isinstance(payload["embed"], Embed)
     assert "找到 2 個相關怪物" in payload["embed"].description
     assert isinstance(payload["view"], MapleDropSearchView)
+    assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert payload["embed"].image.url == embed_spacer_url()
 
 
 async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStoryCogs) -> None:

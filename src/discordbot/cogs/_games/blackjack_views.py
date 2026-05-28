@@ -24,7 +24,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
-from discordbot.utils.discord_embeds import build_embed_spacer_file, apply_embed_spacer_image
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
@@ -98,13 +98,14 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
 }
 
 
-def _blackjack_table_edit_kwargs(*, embeds: list[Embed], view: View | None) -> dict[str, Any]:
+def _blackjack_table_edit_kwargs(
+    *, embeds: list[Embed], view: View | None, target: object | None = None
+) -> dict[str, Any]:
     """Builds the shared edit payload for Blackjack table renders."""
     return {
-        "embeds": apply_embed_spacer_image(embeds=embeds),
+        "embeds": embeds,
         "view": view,
-        "file": build_embed_spacer_file(),
-        "attachments": [],
+        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
     }
 
 
@@ -668,9 +669,12 @@ class BlackjackLobbyView(BaseGameLobbyView):
             bot_user_id=self.bot_user_id,
             bot_reasons={},
         )
+        embeds = [talk_embed, *seat_embeds]
         await edit_message_with_retry(
             message=message,
-            **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=view),
+            kwargs_factory=lambda: _blackjack_table_edit_kwargs(
+                embeds=embeds, view=view, target=message
+            ),
         )
         await view.maybe_play_bot_turn(message=message)
         return True
@@ -1353,7 +1357,9 @@ class BlackjackView(View):
             bot_reasons=self._bot_reasons,
         )
         await message.edit(
-            **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=self)
+            **_blackjack_table_edit_kwargs(
+                embeds=[talk_embed, *seat_embeds], view=self, target=message
+            )
         )
 
     async def _reject_stale_action_locked(
@@ -1427,7 +1433,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=None)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[talk_embed, *seat_embeds], view=None, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1470,7 +1478,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[intro_talk, *body_hidden], view=self)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[intro_talk, *body_hidden], view=self, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1493,7 +1503,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[reveal_talk, *reveal_body], view=self)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[reveal_talk, *reveal_body], view=self, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1635,7 +1647,7 @@ class BlackjackView(View):
                 await asyncio.wait_for(
                     message.edit(
                         **_blackjack_table_edit_kwargs(
-                            embeds=[talk_embed, *seat_embeds], view=None
+                            embeds=[talk_embed, *seat_embeds], view=None, target=message
                         )
                     ),
                     timeout=FINAL_EDIT_TIMEOUT_SECONDS,

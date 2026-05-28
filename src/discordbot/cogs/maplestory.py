@@ -6,6 +6,8 @@ import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption, SelectOption
 from nextcord.ext import commands
 
+from discordbot.utils.discord_embeds import embed_spacer_payload
+
 from ._maplestory.views import MapleDropSearchView
 from ._maplestory.embeds import (
     create_map_embed,
@@ -22,6 +24,17 @@ from ._maplestory.service import DEFAULT_DATA_DIR, MapleStoryService
 _NOT_FOUND_COLOR = 0xFFAA00
 _MULTI_COLOR = 0x00AAFF
 _ERROR_COLOR = 0xFF0000
+
+
+async def _send_maple_followup(
+    interaction: Interaction, embed: Embed, view: nextcord.ui.View | None = None
+) -> None:
+    """Sends a MapleStory result embed at a uniform width."""
+    payload = embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
+    if view is not None:
+        await interaction.followup.send(embed=embed, view=view, **payload)
+    else:
+        await interaction.followup.send(embed=embed, **payload)
 
 
 class MapleStoryCogs(commands.Cog):
@@ -54,7 +67,7 @@ class MapleStoryCogs(commands.Cog):
         embed = Embed(
             title=":x: 錯誤", description="無法載入資料，請聯絡管理員", color=_ERROR_COLOR
         )
-        await interaction.followup.send(embed=embed)
+        await _send_maple_followup(interaction=interaction, embed=embed)
 
     async def _send_not_found(self, interaction: Interaction, kind: str, query: str) -> None:
         """Sends a 'not found' message to the user."""
@@ -63,7 +76,7 @@ class MapleStoryCogs(commands.Cog):
             description=f"找不到名稱包含「{query}」的{kind}",
             color=_NOT_FOUND_COLOR,
         )
-        await interaction.followup.send(embed=embed)
+        await _send_maple_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="maplestory",
@@ -118,7 +131,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_monster_embed(monster=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -130,7 +143,7 @@ class MapleStoryCogs(commands.Cog):
             SelectOption(label=m.display_name, description=f"Lv.{m.level}", value=m.name)
             for m in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory equip ───────────────────────────────────────────
@@ -174,7 +187,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_equipment_embed(equip=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -190,7 +203,7 @@ class MapleStoryCogs(commands.Cog):
             )
             for e in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory scroll ──────────────────────────────────────────
@@ -234,7 +247,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_scroll_embed(scroll=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -250,7 +263,7 @@ class MapleStoryCogs(commands.Cog):
             )
             for s in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory npc ─────────────────────────────────────────────
@@ -294,7 +307,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_npc_embed(npc=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -305,7 +318,7 @@ class MapleStoryCogs(commands.Cog):
         view.set_options([
             SelectOption(label=n.display_name, description=n.type, value=n.name) for n in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory quest ───────────────────────────────────────────
@@ -349,7 +362,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_quest_embed(quest=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -363,7 +376,7 @@ class MapleStoryCogs(commands.Cog):
             )
             for q in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory map ─────────────────────────────────────────────
@@ -407,7 +420,7 @@ class MapleStoryCogs(commands.Cog):
 
         if len(results) == 1:
             embed = create_map_embed(map_entry=results[0], translate=self._translate)
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -423,7 +436,7 @@ class MapleStoryCogs(commands.Cog):
             )
             for m in results
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory item ────────────────────────────────────────────
@@ -471,7 +484,7 @@ class MapleStoryCogs(commands.Cog):
             embed = create_item_source_embed(
                 item_name=item, monsters=monsters, translate=self._translate
             )
-            return await interaction.followup.send(embed=embed)
+            return await _send_maple_followup(interaction=interaction, embed=embed)
 
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -489,7 +502,7 @@ class MapleStoryCogs(commands.Cog):
             )
             for item in items_found
         ])
-        await interaction.followup.send(embed=embed, view=view)
+        await _send_maple_followup(interaction=interaction, embed=embed, view=view)
         return None
 
     # ── /maplestory stats ───────────────────────────────────────────
@@ -515,7 +528,7 @@ class MapleStoryCogs(commands.Cog):
 
         stats = self.service.get_stats()
         embed = build_stats_embed(stats)
-        await interaction.followup.send(embed=embed)
+        await _send_maple_followup(interaction=interaction, embed=embed)
         return None
 
 

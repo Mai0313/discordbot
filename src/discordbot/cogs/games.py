@@ -23,6 +23,7 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_tracked_public_messages,
@@ -335,8 +336,11 @@ class GamesCogs(commands.Cog):
             return
         wager = parse_wager_amount(raw_amount=bet)
         if wager is None:
+            embed = self._invalid_bet_embed()
             await interaction.response.send_message(
-                embed=self._invalid_bet_embed(), ephemeral=True
+                embed=embed,
+                ephemeral=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             return
 
@@ -353,9 +357,11 @@ class GamesCogs(commands.Cog):
             )
         owner = participant_result.participant
         if owner is None:
+            embed = self._insufficient_balance_embed(balance=participant_result.balance)
             message = await interaction.followup.send(
-                embed=self._insufficient_balance_embed(balance=participant_result.balance),
+                embed=embed,
                 wait=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
@@ -392,7 +398,12 @@ class GamesCogs(commands.Cog):
             requested_bet=table_bet,
             max_players=MAX_BLACKJACK_PLAYERS,
         )
-        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+        )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 
@@ -423,11 +434,13 @@ class GamesCogs(commands.Cog):
         )
         owner = participant_result.participant
         if owner is None:
+            embed = self._dragon_gate_insufficient_balance_embed(
+                balance=participant_result.balance
+            )
             message = await interaction.followup.send(
-                embed=self._dragon_gate_insufficient_balance_embed(
-                    balance=participant_result.balance
-                ),
+                embed=embed,
                 wait=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
@@ -453,7 +466,12 @@ class GamesCogs(commands.Cog):
         embed = build_dragon_gate_lobby_embed(
             owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
-        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+        )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 

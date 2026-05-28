@@ -19,6 +19,7 @@ from discordbot.cogs._stock.views import (
     build_market_message_payload,
 )
 from discordbot.cogs._stock.database import list_market_quotes, ensure_due_stock_news
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import track_public_message
 
 _stock_news_refresh_task: asyncio.Task[None] | None = None
@@ -65,7 +66,14 @@ class StockCogs(commands.Cog):
         quotes = await list_market_quotes(refresh_news=news_ai is None)
         view = StockMarketView(quotes=quotes, owner_id=user.id)
         embed, file = build_market_message_payload(quotes=quotes)
-        message = await interaction.followup.send(embed=embed, file=file, view=view, wait=True)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(
+                embeds=[embed], is_edit=False, target=interaction, extra_files=[file]
+            ),
+        )
         view.bind_message(message=message)
         await track_public_message(message=message, user_name=user.name)
 
