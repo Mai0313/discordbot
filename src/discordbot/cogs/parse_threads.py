@@ -9,6 +9,7 @@ from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
+from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
 URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
@@ -33,17 +34,6 @@ class ThreadsCogs(commands.Cog):
         self.output_folder = Path("./data/downloads")
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
-
-    async def _handle_reaction(
-        self, message: Message, emoji: str, previous_emoji: str | None = None
-    ) -> str:
-        """Handles adding and removing reactions on a message."""
-        if previous_emoji and self.bot.user:
-            with contextlib.suppress(Exception):
-                await message.remove_reaction(emoji=previous_emoji, member=self.bot.user)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(emoji=emoji)
-        return emoji
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -140,13 +130,13 @@ class ThreadsCogs(commands.Cog):
             return
 
         url = match.group(0)
-        current_emoji = await self._handle_reaction(message=message, emoji="🔗")
+        current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
             with self.downloader.parse(url) as results:
                 if not results:
-                    await self._handle_reaction(
-                        message=message, emoji="⚠️", previous_emoji=current_emoji
+                    await update_reaction(
+                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
                     )
                     return
 
@@ -164,8 +154,8 @@ class ThreadsCogs(commands.Cog):
                     or len(target.video_paths) + len(target.image_urls) > 10
                     or len(target.text) > 4096
                 ):
-                    await self._handle_reaction(
-                        message=message, emoji="⚠️", previous_emoji=current_emoji
+                    await update_reaction(
+                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
                     )
                     return
 
@@ -187,14 +177,14 @@ class ThreadsCogs(commands.Cog):
                         embeds=embeds, is_edit=False, target=message, extra_files=files
                     ),
                 )
-                await self._handle_reaction(
-                    message=message, emoji="🆗", previous_emoji=current_emoji
+                await update_reaction(
+                    message=message, bot_user=self.bot.user, emoji="🆗", previous=current_emoji
                 )
         except Exception:
             logfire.error("Failed to send Threads message", _exc_info=True)
             with contextlib.suppress(Exception):
-                await self._handle_reaction(
-                    message=message, emoji="❌", previous_emoji=current_emoji
+                await update_reaction(
+                    message=message, bot_user=self.bot.user, emoji="❌", previous=current_emoji
                 )
 
 
