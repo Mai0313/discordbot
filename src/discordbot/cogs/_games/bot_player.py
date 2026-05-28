@@ -715,7 +715,7 @@ class BotPlayerAI(BaseModel):
             ),
             reason="基本策略 fallback",
         )
-        dealer_label = str(dealer_up) if dealer_up else "未知"
+        dealer_label = str(dealer_up) if dealer_up else "unknown"
         allowed_text = ", ".join(allowed_actions)
         own_other = (
             "own_other_split_hands: " + " | ".join(own_other_hands)

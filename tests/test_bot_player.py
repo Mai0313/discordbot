@@ -211,3 +211,36 @@ async def test_legal_ai_action_is_not_overridden_by_basic_strategy_hint() -> Non
     sent_content = sent_input[0]["content"]
     assert "server_computed_context:" in sent_content
     assert "basic_strategy_hint.action: hit" in sent_content
+
+
+async def test_missing_dealer_up_uses_english_unknown_in_bot_action_prompt() -> None:
+    """Missing dealer up-card labels should match the English prompt contract."""
+    finance = BotFinancialContext(
+        balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
+    )
+    action_client = _FakeClient(
+        output_parsed=BotPlayerActionDecision(action="stand", reason="先停手")
+    )
+    action_ai = BotPlayerAI.model_construct(
+        client=action_client, model=ModelSettings(name="test-model", effort="none")
+    )
+
+    await action_ai.decide_bot_action(
+        hand_cards=[_card(rank="10"), _card(rank="7")],
+        hand_total=17,
+        hand_repr="10♠ 7♠",
+        dealer_up=None,
+        is_pair_hand=False,
+        allowed_actions=("hit", "stand"),
+        bet=100,
+        balance_remaining=900,
+        finance=finance,
+        other_players=[],
+        own_other_hands=[],
+    )
+
+    action_input = action_client.responses.calls[0]["input"]
+    assert isinstance(action_input, list)
+    action_content = action_input[0]["content"]
+    assert "dealer_up_card: unknown" in action_content
+    assert "未知" not in action_content
