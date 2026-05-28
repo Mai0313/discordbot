@@ -41,6 +41,7 @@ from discordbot.cogs._games.blackjack import (
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import get_account, get_casino_daily_stats
+from discordbot.cogs._games.bot_player import build_bot_action_context, build_bot_insurance_context
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -1190,12 +1191,19 @@ class BlackjackView(View):
         other_players = self._build_other_players_views(
             exclude_user_id=bot_player.participant.user_id
         )
+        insurance_context = build_bot_insurance_context(
+            dealer_cards=list(self.round_state.dealer),
+            dealer_up=dealer_up,
+            shoe=list(self.round_state.shoe),
+            insurance_cost=bot_player.participant.bet // 2,
+        )
         decision = await bot_ai.decide_bot_insurance(
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,
             finance=finance,
             other_players=other_players,
+            insurance_context=insurance_context,
         )
         self._bot_reasons[bot_player.participant.user_id] = (
             f"{'買保險' if decision.take_insurance else '不買保險'}: {decision.reason}"
@@ -1252,18 +1260,31 @@ class BlackjackView(View):
         finance = await self._build_bot_finance_context(user_id=active.participant.user_id)
         other_players = self._build_other_players_views(exclude_user_id=active.participant.user_id)
         own_other_hands = self._own_other_hand_reprs(bot_player=active)
+        is_pair_hand = len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed
+        action_context = build_bot_action_context(
+            hand_cards=list(hand.cards),
+            dealer_cards=list(self.round_state.dealer),
+            dealer_up=dealer_up,
+            shoe=list(self.round_state.shoe),
+            allowed_actions=tuple(allowed),
+            is_pair_hand=is_pair_hand,
+            bet=hand.bet,
+            balance_remaining=balance_remaining,
+            doubled=hand.doubled,
+        )
         decision = await bot_ai.decide_bot_action(
             hand_cards=hand.cards,
             hand_total=hand.total(),
             hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
-            is_pair_hand=len(hand.cards) == 2 and not hand.is_split_hand and "split" in allowed,
+            is_pair_hand=is_pair_hand,
             allowed_actions=tuple(allowed),
             bet=hand.bet,
             balance_remaining=balance_remaining,
             finance=finance,
             other_players=other_players,
             own_other_hands=own_other_hands,
+            action_context=action_context,
         )
         self._bot_reasons[active.participant.user_id] = f"{decision.action}: {decision.reason}"
         applied = self._apply_bot_action(

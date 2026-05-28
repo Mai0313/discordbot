@@ -10,15 +10,17 @@ player AI integration.
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from random import Random
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nextcord import Embed, Interaction
 
 from discordbot.cogs._games import blackjack_views
-from discordbot.typings.games import GameParticipant
+from discordbot.typings.games import GameParticipant, BotFinancialContext, BotPlayerActionDecision
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
+from discordbot.cogs._games.bot_player import BotPlayerAI, BotPlayerActionContext
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
 
 
@@ -533,6 +535,48 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
 
     assert dispatch_calls == 2
     assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
+
+
+async def test_bot_action_dispatch_passes_computed_ai_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot action decisions receive dealer-hole and shoe-count context."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="10", suit="♦")],
+    )
+    round_state.shoe = [Card(rank="3", suit="♠")]
+    view = _make_view(round_state=round_state)
+
+    class _BotAI:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        async def decide_bot_action(self, **kwargs: object) -> BotPlayerActionDecision:
+            self.kwargs = kwargs
+            return BotPlayerActionDecision(action="hit", reason="補牌安全")
+
+    bot_ai = _BotAI()
+
+    async def fake_finance(*, user_id: int) -> BotFinancialContext:
+        assert user_id == 1
+        return BotFinancialContext(
+            balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
+        )
+
+    monkeypatch.setattr(view, "_build_bot_finance_context", fake_finance)
+    monkeypatch.setattr(view, "_edit_in_progress_locked", AsyncMock())
+
+    await view._dispatch_bot_action_locked(
+        message=MagicMock(), active=round_state.players[0], bot_ai=cast("BotPlayerAI", bot_ai)
+    )
+
+    context = bot_ai.kwargs["action_context"]
+    assert isinstance(context, BotPlayerActionContext)
+    assert context.dealer.hole_card == "5♣"
+    assert context.shoe_summary.total_cards == 1
+    assert context.shoe_summary.rank_counts["3"] == 1
+    assert round_state.players[0].hands[0].cards[-1] == Card(rank="3", suit="♠")
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
