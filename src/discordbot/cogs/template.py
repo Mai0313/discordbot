@@ -4,6 +4,8 @@ import nextcord
 from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
+from discordbot.utils.discord_embeds import embed_spacer_payload
+
 
 class TemplateCogs(commands.Cog):
     """Provides simple message reactions and the ping slash command.
@@ -69,7 +71,9 @@ class TemplateCogs(commands.Cog):
             icon_url=interaction.user.display_avatar.url,
         )
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(
+            embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False)
+        )
 
 
 # 註冊 Cog

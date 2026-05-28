@@ -329,7 +329,7 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
     )
 
     assert payload["attachments"] == []
-    assert payload["file"].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     for embed in payload["embeds"]:
         assert embed.image.url == embed_spacer_url()
 

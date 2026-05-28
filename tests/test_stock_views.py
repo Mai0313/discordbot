@@ -285,7 +285,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     assert interaction.user is not None
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert isinstance(interaction.followup.sent[0]["view"], StockMarketView)
-    assert interaction.followup.sent[0]["file"].filename == "stock_market_1.png"
+    assert interaction.followup.sent[0]["files"][0].filename == "stock_market_1.png"
     assert interaction.followup.sent[0]["view"].message is scheduled[0]
     assert interaction.followup.sent[0]["view"].owner_id == interaction.user.id
     assert scheduled

@@ -19,6 +19,7 @@ from discordbot.cogs._games.lobby import (
 )
 from discordbot.utils.number_text import compact_amount
 from discordbot.cogs._games.wagers import parse_wager_amount
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     get_balance,
@@ -72,6 +73,11 @@ if TYPE_CHECKING:
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
 DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
+
+
+def _dragon_gate_table_edit_kwargs(*, embeds: list[Embed], view: View | None) -> dict[str, Any]:
+    """Builds the shared edit payload for 射龍門 table renders."""
+    return {"embeds": embeds, "view": view, **embed_spacer_payload(embeds=embeds, is_edit=True)}
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -416,7 +422,10 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
         view.message = message
         view.sync_controls()
-        await edit_message_with_retry(message=message, embeds=view.in_progress_embeds(), view=view)
+        await edit_message_with_retry(
+            message=message,
+            **_dragon_gate_table_edit_kwargs(embeds=view.in_progress_embeds(), view=view),
+        )
 
 
 class DragonGateView(View):
@@ -642,7 +651,9 @@ class DragonGateView(View):
                 await self._send_notice(interaction=interaction, content="這手不需要猜大小")
                 return
             self.sync_controls()
-            await interaction.message.edit(embeds=self.in_progress_embeds(), view=self)
+            await interaction.message.edit(
+                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+            )
 
     async def _place_select_bet(self, interaction: Interaction, amount: int) -> None:
         """Defers a select interaction and places the chosen fixed bet."""
@@ -708,7 +719,9 @@ class DragonGateView(View):
                     await self._finalize_locked(message=message, reason="所有玩家已離桌或餘額歸零")
                     return
             self.sync_controls()
-            await message.edit(embeds=self.in_progress_embeds(), view=self)
+            await message.edit(
+                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+            )
 
     async def _handle_leave(self, interaction: Interaction) -> None:
         """Withdraws a seated player and refunds positive table delta to the jackpot."""
@@ -745,7 +758,9 @@ class DragonGateView(View):
                 await self._finalize_locked(message=message, reason="所有玩家已離桌")
                 return
             self.sync_controls()
-            await message.edit(embeds=self.in_progress_embeds(), view=self)
+            await message.edit(
+                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+            )
 
     def in_progress_embeds(self) -> list[Embed]:
         """Builds the current narrator, table, and optional history embeds."""
@@ -830,7 +845,7 @@ class DragonGateView(View):
         self.stop()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(embeds=embeds, view=None),
+                message.edit(**_dragon_gate_table_edit_kwargs(embeds=embeds, view=None)),
                 timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         self._track_background_task(

@@ -9,6 +9,7 @@ from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
+from discordbot.utils.discord_embeds import embed_spacer_payload
 
 URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
 
@@ -179,7 +180,11 @@ class ThreadsCogs(commands.Cog):
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
-                await message.reply(embeds=embeds, files=files, mention_author=False)
+                await message.reply(
+                    embeds=embeds,
+                    mention_author=False,
+                    **embed_spacer_payload(embeds=embeds, is_edit=False, extra_files=files),
+                )
                 await self._handle_reaction(
                     message=message, emoji="🆗", previous_emoji=current_emoji
                 )

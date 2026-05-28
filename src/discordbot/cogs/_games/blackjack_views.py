@@ -24,7 +24,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
-from discordbot.utils.discord_embeds import build_embed_spacer_file, apply_embed_spacer_image
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
@@ -100,12 +100,7 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
 
 def _blackjack_table_edit_kwargs(*, embeds: list[Embed], view: View | None) -> dict[str, Any]:
     """Builds the shared edit payload for Blackjack table renders."""
-    return {
-        "embeds": apply_embed_spacer_image(embeds=embeds),
-        "view": view,
-        "file": build_embed_spacer_file(),
-        "attachments": [],
-    }
+    return {"embeds": embeds, "view": view, **embed_spacer_payload(embeds=embeds, is_edit=True)}
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:

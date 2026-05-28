@@ -25,6 +25,7 @@ from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_token_rates, get_supported_modalities
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
@@ -744,7 +745,11 @@ class ReplyGeneratorCogs(commands.Cog):
                     color=0xED4245,
                 )
                 error_embed.set_footer(text=type(e).__name__)
-                await message.reply(content=None, embed=error_embed)
+                await message.reply(
+                    content=None,
+                    embed=error_embed,
+                    **embed_spacer_payload(embeds=[error_embed], is_edit=False),
+                )
 
 
 def setup(bot: commands.Bot) -> None:

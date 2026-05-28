@@ -47,6 +47,7 @@ class FakeReply:
         """Initializes the fake reply with empty content and no follow-up chain."""
         self.content: str | None = ""
         self.file: File | None = None
+        self.files: list[File] | None = None
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
 
@@ -102,12 +103,17 @@ class FakeMessage:
             yield self
 
     async def reply(
-        self, content: str | None, file: File | None = None, embed: Embed | None = None
+        self,
+        content: str | None,
+        file: File | None = None,
+        embed: Embed | None = None,
+        files: list[File] | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content."""
         reply = FakeReply()
         reply.content = content
         reply.file = file
+        reply.files = files
         reply.embed = embed
         self.replies.append(reply)
         return reply

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict
 
 import pytest
-from nextcord import Embed, Locale, SelectOption
+from nextcord import File, Embed, Locale, SelectOption
 
 from discordbot.cogs import maplestory
 from discordbot.cogs.maplestory import MapleStoryCogs
@@ -68,6 +68,7 @@ class InteractionPayload(TypedDict, total=False):
     view: MapleDropSearchView | None
     message_id: int
     ephemeral: bool
+    files: list[File]
 
 
 class _FakeResponse:
@@ -101,6 +102,7 @@ class _FakeFollowup:
         embed: Embed | None = None,
         view: MapleDropSearchView | None = None,
         ephemeral: bool | None = None,
+        files: list[File] | None = None,
     ) -> None:
         """Records a followup send payload."""
         payload = InteractionPayload()
@@ -112,6 +114,8 @@ class _FakeFollowup:
             payload["view"] = view
         if ephemeral is not None:
             payload["ephemeral"] = ephemeral
+        if files is not None:
+            payload["files"] = files
         self.sent.append(payload)
 
     async def edit_message(self, **kwargs: Unpack[InteractionPayload]) -> None:

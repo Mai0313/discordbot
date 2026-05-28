@@ -668,8 +668,8 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
-    assert interaction.followup.sent[1]["file"].filename == "economy_leaderboard.png"
-    assert interaction.followup.sent[2]["file"].filename == "economy_loss_leaderboard.png"
+    assert interaction.followup.sent[1]["files"][0].filename == "economy_leaderboard.png"
+    assert interaction.followup.sent[2]["files"][0].filename == "economy_loss_leaderboard.png"
     assert "view" not in interaction.followup.sent[3]
     assert "view" not in interaction.followup.sent[4]
     assert interaction.followup.sent[5].get("ephemeral") is not True
@@ -1150,7 +1150,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
     embed = interaction.followup.sent[0]["embed"]
     assert "今日輸局累計" in embed.title
     assert "累計輸" in embed.description
-    assert interaction.followup.sent[0]["file"].filename == "economy_loss_leaderboard.png"
+    assert interaction.followup.sent[0]["files"][0].filename == "economy_loss_leaderboard.png"
     assert "贏回來不抵扣" in embed.footer.text
     assert len(scheduled) == 1
 

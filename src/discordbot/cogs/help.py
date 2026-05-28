@@ -6,6 +6,7 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 _EMBED_FIELD_VALUE_LIMIT = 1024
@@ -263,8 +264,9 @@ class HelpCogs(commands.Cog):
         )
 
         for index in range(0, len(embeds), _MESSAGE_EMBED_COUNT_LIMIT):
+            batch = embeds[index : index + _MESSAGE_EMBED_COUNT_LIMIT]
             await interaction.followup.send(
-                embeds=embeds[index : index + _MESSAGE_EMBED_COUNT_LIMIT], ephemeral=True
+                embeds=batch, ephemeral=True, **embed_spacer_payload(embeds=batch, is_edit=False)
             )
 
 

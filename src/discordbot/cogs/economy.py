@@ -28,6 +28,7 @@ from discordbot.cogs._economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.cogs._stock.database import get_stock_portfolio
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import (
     top_n,
@@ -188,11 +189,14 @@ async def _send_expiring_followup(
     file: nextcord.File | None = None,
 ) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
-    kwargs: dict[str, object] = {"embed": embed, "wait": True}
+    extra_files = [file] if file is not None else None
+    kwargs: dict[str, object] = {
+        "embed": embed,
+        "wait": True,
+        **embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=extra_files),
+    }
     if view is not None:
         kwargs["view"] = view
-    if file is not None:
-        kwargs["file"] = file
     message = await interaction.followup.send(**kwargs)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
@@ -200,13 +204,31 @@ async def _send_expiring_followup(
 
 async def _send_loan_request_followup(interaction: Interaction, embed: Embed, view: View) -> None:
     """Sends a loan request message that owns its cleanup after a terminal state."""
-    message = await interaction.followup.send(embed=embed, view=view, wait=True)
+    message = await interaction.followup.send(
+        embed=embed, view=view, wait=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+    )
     view.message = message
 
 
 async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a personal economy embed visible only to the caller."""
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(
+        embed=embed, ephemeral=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+    )
+
+
+async def _send_ephemeral_response(interaction: Interaction, embed: Embed) -> None:
+    """Sends an ephemeral economy embed as the initial interaction response."""
+    await interaction.response.send_message(
+        embed=embed, ephemeral=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+    )
+
+
+async def _edit_response_embed(interaction: Interaction, embed: Embed) -> None:
+    """Edits the interaction's public message embed and clears its controls."""
+    await interaction.response.edit_message(
+        embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+    )
 
 
 def _rate_text(monthly_rate_bps: int) -> str:
@@ -295,7 +317,9 @@ class CentralBankLoanDecisionView(View):
             color=_CENTRAL_BANK_COLOR,
         )
         with contextlib.suppress(Exception):
-            await self.message.edit(embed=embed, view=None)
+            await self.message.edit(
+                embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+            )
         self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction) -> None:
@@ -305,7 +329,7 @@ class CentralBankLoanDecisionView(View):
             description="### 只有央行成員可以處理央行借款申請",
             color=_ERROR_COLOR,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await _send_ephemeral_response(interaction=interaction, embed=embed)
 
     async def _is_central_banker(self, interaction: Interaction) -> bool:
         """Returns whether the clicking user can decide central-bank proposals."""
@@ -350,7 +374,7 @@ class CentralBankLoanDecisionView(View):
                 description="### 申請不存在、已處理、自我批准未開放，或央行額度不足",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -367,7 +391,7 @@ class CentralBankLoanDecisionView(View):
             inline=True,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
@@ -390,7 +414,7 @@ class CentralBankLoanDecisionView(View):
                 description="### 申請不存在、已處理，或你沒有權限拒絕",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -399,7 +423,7 @@ class CentralBankLoanDecisionView(View):
             color=_CENTRAL_BANK_COLOR,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
@@ -419,7 +443,7 @@ class CentralBankLoanDecisionView(View):
                 description="### 只有申請發起者可以取消央行借款申請",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         proposal = await cancel_loan_proposal(
@@ -431,7 +455,7 @@ class CentralBankLoanDecisionView(View):
                 description="### 申請不存在、已處理，或你不是發起者",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -440,7 +464,7 @@ class CentralBankLoanDecisionView(View):
             color=_CENTRAL_BANK_COLOR,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
 
@@ -475,13 +499,15 @@ class CreditLoanDecisionView(View):
             title="信貸申請已逾時", description="### 申請已逾時，自動拒絕", color=_REPAY_COLOR
         )
         with contextlib.suppress(Exception):
-            await self.message.edit(embed=embed, view=None)
+            await self.message.edit(
+                embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+            )
         self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction, description: str) -> None:
         """Replies privately when a user clicks a button they cannot use."""
         embed = Embed(title="權限不足", description=description, color=_ERROR_COLOR)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await _send_ephemeral_response(interaction=interaction, embed=embed)
 
     async def _require_lender(self, interaction: Interaction) -> bool:
         """Returns whether the clicking user is the requested lender."""
@@ -517,7 +543,7 @@ class CreditLoanDecisionView(View):
                 description="### 申請不存在、已處理、不是指定貸方，或貸方餘額不足",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -532,7 +558,7 @@ class CreditLoanDecisionView(View):
             inline=True,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
@@ -552,7 +578,7 @@ class CreditLoanDecisionView(View):
                 description="### 申請不存在、已處理，或你不是指定貸方",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -561,7 +587,7 @@ class CreditLoanDecisionView(View):
             color=_REPAY_COLOR,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
     @nextcord.ui.button(
@@ -586,7 +612,7 @@ class CreditLoanDecisionView(View):
                 description="### 申請不存在、已處理，或你不是發起者",
                 color=_ERROR_COLOR,
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await _send_ephemeral_response(interaction=interaction, embed=embed)
             return
 
         embed = Embed(
@@ -595,7 +621,7 @@ class CreditLoanDecisionView(View):
             color=_REPAY_COLOR,
         )
         self.stop()
-        await interaction.response.edit_message(embed=embed, view=None)
+        await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
 
 
@@ -664,8 +690,8 @@ class EconomyCogs(commands.Cog):
         """Credits points to a member through the manual-adjustment audit path."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
-            await interaction.response.send_message(
-                embed=self._invalid_admin_amount_embed(title="退稅失敗"), ephemeral=True
+            await _send_ephemeral_response(
+                interaction=interaction, embed=self._invalid_admin_amount_embed(title="退稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -713,8 +739,8 @@ class EconomyCogs(commands.Cog):
         """Debits points from a member through the manual-adjustment audit path."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
-            await interaction.response.send_message(
-                embed=self._invalid_admin_amount_embed(title="收稅失敗"), ephemeral=True
+            await _send_ephemeral_response(
+                interaction=interaction, embed=self._invalid_admin_amount_embed(title="收稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -1797,7 +1823,7 @@ class EconomyCogs(commands.Cog):
                 color=_ERROR_COLOR,
             )
             embed.set_author(name=user.display_name, icon_url=user_avatar_url)
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await _send_private_followup(interaction=interaction, embed=embed)
             return
 
         vip_badge = " · 👑 VIP 2x" if result.is_vip else ""
@@ -1825,7 +1851,7 @@ class EconomyCogs(commands.Cog):
                 inline=False,
             )
         embed.set_footer(text=f"連續 7 天為一個 cycle | 每天 0:00 (Asia/Taipei) 重置{vip_badge}")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await _send_private_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
         name="vip",

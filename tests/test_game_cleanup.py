@@ -172,6 +172,7 @@ class _FollowupStub:
         self.sent_ephemeral: bool | None = None
         self.sent_embed: nextcord.Embed | None = None
         self.sent_view: nextcord.ui.View | None = None
+        self.sent_files: list[nextcord.File] | None = None
 
     async def send(
         self,
@@ -179,12 +180,14 @@ class _FollowupStub:
         wait: bool = False,
         ephemeral: bool = False,
         view: nextcord.ui.View | None = None,
+        files: list[nextcord.File] | None = None,
     ) -> _SentFollowupMessageStub:
         """Records the embed send and returns the message object."""
         self.sent_embed = embed
         self.sent_wait = wait
         self.sent_ephemeral = ephemeral
         self.sent_view = view
+        self.sent_files = files
         return self.message
 
 

@@ -16,6 +16,7 @@ from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.database import credit_with_repayment
 
 
@@ -186,10 +187,10 @@ class DiscordBot(commands.Bot):
                 description=f"**Please slow down** - You can use this command again in {f'{round(hours)} hours' if round(hours) > 0 else ''} {f'{round(minutes)} minutes' if round(minutes) > 0 else ''} {f'{round(seconds)} seconds' if round(seconds) > 0 else ''}.",
                 color=0xE02B2B,
             )
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
         elif isinstance(error, commands.NotOwner):
             embed = Embed(description="You are not the owner of the bot!", color=0xE02B2B)
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
             if context.guild:
                 logfire.warn(
                     f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the guild {context.guild.name} (ID: {context.guild.id}), but the user is not an owner of the bot."
@@ -205,7 +206,7 @@ class DiscordBot(commands.Bot):
                 + "` to execute this command!",
                 color=0xE02B2B,
             )
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
         elif isinstance(error, commands.BotMissingPermissions):
             embed = Embed(
                 description="I am missing the permission(s) `"
@@ -213,7 +214,7 @@ class DiscordBot(commands.Bot):
                 + "` to fully perform this command!",
                 color=0xE02B2B,
             )
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
         elif isinstance(error, commands.MissingRequiredArgument):
             embed = Embed(
                 title="Error!",
@@ -221,14 +222,14 @@ class DiscordBot(commands.Bot):
                 description=str(error).capitalize(),
                 color=0xE02B2B,
             )
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
         elif isinstance(error, commands.CommandNotFound):
             embed = Embed(
                 title="Error!",
                 description=f"Command {error.command_name} not found",
                 color=0xE02B2B,
             )
-            await context.send(embed=embed)
+            await context.send(embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False))
         else:
             pass
 

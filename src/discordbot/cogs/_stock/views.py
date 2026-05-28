@@ -17,6 +17,7 @@ from discordbot.cogs._stock.database import (
     list_market_quotes,
     settle_stock_operation,
 )
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_public_message,
@@ -552,9 +553,12 @@ async def edit_stock_message(
     target_message = message or interaction.message
     if view is not None:
         view.bind_message(message=target_message)
-    kwargs: dict[str, object] = {"embed": embed, "view": view, "attachments": []}
-    if file is not None:
-        kwargs["file"] = file
+    extra_files = [file] if file is not None else None
+    kwargs: dict[str, object] = {
+        "embed": embed,
+        "view": view,
+        **embed_spacer_payload(embeds=[embed], is_edit=True, extra_files=extra_files),
+    }
     if not interaction.response.is_done():
         edited = await interaction.response.edit_message(**kwargs)
         if isinstance(edited, Message) and view is not None:
@@ -568,9 +572,12 @@ async def edit_stock_message(
             message_id = getattr(target_message, "id", None)
             if isinstance(message_id, int):
                 await forget_public_message(message_id=message_id)
-    followup_kwargs: dict[str, object] = {"embed": embed, "view": view, "wait": True}
-    if file is not None:
-        followup_kwargs["file"] = file
+    followup_kwargs: dict[str, object] = {
+        "embed": embed,
+        "view": view,
+        "wait": True,
+        **embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=extra_files),
+    }
     sent_message = await interaction.followup.send(**followup_kwargs)
     if view is not None:
         view.bind_message(message=sent_message)
