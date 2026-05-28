@@ -11,8 +11,8 @@ from nextcord import File, Embed, Locale, Attachment, SelectOption
 
 from discordbot.cogs import maplestory
 from discordbot.cogs.maplestory import MapleStoryCogs
-from discordbot.cogs._maplestory.views import _RESOLVERS, MapleDropSearchView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.cogs._maplestory.views import _RESOLVERS, MapleDropSearchView
 from discordbot.cogs._maplestory.embeds import (
     _truncate,
     create_map_embed,
@@ -606,8 +606,7 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
     assert valid_interaction.followup.edited[0]["view"] is None
     assert valid_interaction.followup.edited[0]["attachments"] == []
     assert (
-        valid_interaction.followup.edited[0]["files"][0].filename
-        == DEFAULT_EMBED_SPACER_FILENAME
+        valid_interaction.followup.edited[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     )
     assert valid_interaction.followup.edited[0]["embed"].image.url == embed_spacer_url()
 
