@@ -37,7 +37,9 @@ nav:
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
+                  - input: Reference/discordbot/cogs/_gen_reply/input.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
+                  - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
               - _maplestory:
                   - constants: Reference/discordbot/cogs/_maplestory/constants.md
                   - embeds: Reference/discordbot/cogs/_maplestory/embeds.md
@@ -72,11 +74,13 @@ nav:
               - stock: Reference/discordbot/typings/stock.md
           - utils:
               - avatars: Reference/discordbot/utils/avatars.md
+              - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
+              - reactions: Reference/discordbot/utils/reactions.md
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
           - cli: Reference/discordbot/cli.md
