@@ -56,7 +56,6 @@ def embed_spacer_payload(
     filename: str = DEFAULT_EMBED_SPACER_FILENAME,
 ) -> dict[str, Any]:
     """Returns the spacer files/attachments increment to merge into a send or edit."""
-    spacer_url = embed_spacer_url(filename=filename)
     needs_spacer = any(not _embed_has_image(embed=embed) for embed in embeds)
     files: list[File] = list(extra_files or [])
     if needs_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:

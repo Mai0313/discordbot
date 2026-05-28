@@ -20,10 +20,10 @@ from discordbot.typings.games import (
     ParticipantPreparationResult,
 )
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_tracked_public_messages,

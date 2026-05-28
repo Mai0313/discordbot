@@ -12,7 +12,6 @@ import pytest
 from nextcord import Embed
 from nextcord.ui import Button, StringSelect
 
-from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.typings.games import (
     Card,
     GameParticipant,
@@ -24,6 +23,7 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
 )
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
     GAME_ID,

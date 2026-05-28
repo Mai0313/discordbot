@@ -20,7 +20,6 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
-from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
     PortfolioView,
@@ -43,6 +42,7 @@ from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
@@ -1517,7 +1517,10 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
-    assert blackjack_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert (
+        blackjack_interaction.followup.sent[0]["files"][0].filename
+        == DEFAULT_EMBED_SPACER_FILENAME
+    )
     assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
     monkeypatch.setattr(
@@ -1528,7 +1531,10 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
     assert dragon_gate_interaction.followup.sent[-1]["wait"] is True
     assert isinstance(dragon_gate_interaction.followup.sent[-1]["view"], DragonGateLobbyView)
-    assert dragon_gate_interaction.followup.sent[-1]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert (
+        dragon_gate_interaction.followup.sent[-1]["files"][0].filename
+        == DEFAULT_EMBED_SPACER_FILENAME
+    )
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
 
 
