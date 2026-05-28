@@ -1,7 +1,7 @@
 """Local prompt development helpers for LiteLLM and provider-native SDKs."""
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
 from google import genai
@@ -22,6 +22,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
+    from openai.types.responses.response_input_param import ResponseInputParam
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
 console = Console()
@@ -45,6 +46,7 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
         user_prompt: User message to send as the single prompt input.
         file_path: Optional path to a file to include as an input_file part in the prompt.
     """
+    message_list = [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}]
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     if file_path:
         path = Path(file_path)
@@ -54,20 +56,16 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
             extra_headers={"x-litellm-end-user-id": "prompt_dev"},
             extra_body={"target_model_names": SLOW_MODEL.name},
         )
+        message_list.append({
+            "role": "user",
+            "content": [{"type": "input_file", "file_id": file.id}],
+        })
         console.print(file.model_dump())
     start = time.time()
     responses = client.responses.create(
         model=SLOW_MODEL.name,
         instructions=REPLY_PROMPT,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_file", "file_id": file.id},
-                    {"type": "input_text", "text": user_prompt},
-                ],
-            }
-        ],
+        input=cast("ResponseInputParam", message_list),
         reasoning=SLOW_MODEL.reasoning,
         tools=SLOW_MODEL.tools,
         stream=True,
@@ -76,7 +74,6 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
         extra_body={"mock_testing_fallbacks": False},
     )
     model_name = ""
-    console.print(dict(responses.response.headers))
     for response in responses:
         if response.type in {"response.created", "response.completed"}:
             model_name = response.response.model
@@ -88,6 +85,7 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
         elif response.type == "response.output_text.delta":
             console.print(response.delta, end="")
     end = time.time()
+    console.print(f"\n{responses.response.headers}")
     console.print(f"\n{model_name} on Litellm (Responses API) takes {end - start:.2f} seconds")
 
 
@@ -212,6 +210,6 @@ def gen_reply_anthropic(user_prompt: str) -> None:
 
 if __name__ == "__main__":
     # gen_reply_chat(user_prompt="為何 37 是質數?")
-    gen_reply(user_prompt="為何 37 是質數?")
+    gen_reply(user_prompt="你自我介紹一下")
     # gen_reply_gemini(user_prompt="為何 37 是質數?")
     # gen_reply_anthropic(user_prompt="為何 37 是質數?")
