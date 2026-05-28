@@ -1,5 +1,7 @@
 """Tests for shared Discord embed helpers."""
 
+from types import SimpleNamespace
+
 from nextcord import Embed
 
 from discordbot.utils.discord_embeds import (
@@ -9,6 +11,23 @@ from discordbot.utils.discord_embeds import (
     build_embed_spacer_file,
     apply_embed_spacer_image,
 )
+
+
+def _permission_target(*, attach_files: bool) -> SimpleNamespace:
+    """Builds a Discord target stub with channel permissions."""
+    member = object()
+    guild = SimpleNamespace(me=member)
+
+    class _Channel:
+        def __init__(self) -> None:
+            self.guild = guild
+
+        @staticmethod
+        def permissions_for(target_member: object) -> SimpleNamespace:
+            assert target_member is member
+            return SimpleNamespace(attach_files=attach_files)
+
+    return SimpleNamespace(guild=guild, channel=_Channel())
 
 
 def test_apply_embed_spacer_image_sets_attachment_url() -> None:
@@ -72,6 +91,31 @@ def test_embed_spacer_payload_send_omits_attachments() -> None:
 
     assert "attachments" not in payload
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+
+
+def test_embed_spacer_payload_skips_spacer_without_attach_files_permission() -> None:
+    """A text-only send stays usable when the bot cannot upload attachments."""
+    embed = Embed(description="text")
+
+    payload = embed_spacer_payload(
+        embeds=[embed], is_edit=False, target=_permission_target(attach_files=False)
+    )
+
+    assert payload == {}
+    assert not embed.image.url
+
+
+def test_embed_spacer_payload_removes_stale_spacer_without_attach_files_permission() -> None:
+    """An edit without upload permission drops stale spacer attachment references."""
+    embed = Embed(description="text")
+    embed.set_image(url=embed_spacer_url())
+
+    payload = embed_spacer_payload(
+        embeds=[embed], is_edit=True, target=_permission_target(attach_files=False)
+    )
+
+    assert payload == {"attachments": []}
+    assert not embed.image.url
 
 
 def test_embed_spacer_payload_reuploads_existing_spacer_image() -> None:

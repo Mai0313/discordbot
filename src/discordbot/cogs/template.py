@@ -72,7 +72,7 @@ class TemplateCogs(commands.Cog):
         )
 
         await interaction.followup.send(
-            embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False)
+            embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
         )
 
 

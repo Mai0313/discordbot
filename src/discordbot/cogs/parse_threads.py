@@ -183,7 +183,9 @@ class ThreadsCogs(commands.Cog):
                 await message.reply(
                     embeds=embeds,
                     mention_author=False,
-                    **embed_spacer_payload(embeds=embeds, is_edit=False, extra_files=files),
+                    **embed_spacer_payload(
+                        embeds=embeds, is_edit=False, target=message, extra_files=files
+                    ),
                 )
                 await self._handle_reaction(
                     message=message, emoji="🆗", previous_emoji=current_emoji

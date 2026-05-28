@@ -103,7 +103,9 @@ class BaseGameLobbyView(View):
         embed = self._build_lobby_embed(status="Lobby 已逾時")
         with contextlib.suppress(Exception):
             await self.message.edit(
-                embed=embed, view=self, **embed_spacer_payload(embeds=[embed], is_edit=True)
+                embed=embed,
+                view=self,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
             )
         schedule_public_message_delete(message=self.message, user_name=self.owner.account_name)
 
@@ -188,7 +190,9 @@ class BaseGameLobbyView(View):
         self.message = message
         embed = self._build_lobby_embed(status=status)
         await message.edit(
-            embed=embed, view=self, **embed_spacer_payload(embeds=[embed], is_edit=True)
+            embed=embed,
+            view=self,
+            **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
         )
 
     async def _send_notice(self, interaction: Interaction, content: str) -> None:

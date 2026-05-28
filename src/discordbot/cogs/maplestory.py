@@ -30,7 +30,7 @@ async def _send_maple_followup(
     interaction: Interaction, embed: Embed, view: nextcord.ui.View | None = None
 ) -> None:
     """Sends a MapleStory result embed at a uniform width."""
-    payload = embed_spacer_payload(embeds=[embed], is_edit=False)
+    payload = embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
     if view is not None:
         await interaction.followup.send(embed=embed, view=view, **payload)
     else:

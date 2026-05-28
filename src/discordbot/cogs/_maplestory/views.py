@@ -154,7 +154,7 @@ class MapleDropSearchView(View):
                 message_id=interaction.message.id,
                 embed=embed,
                 view=None,
-                **embed_spacer_payload(embeds=[embed], is_edit=True),
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
             )
 
     def set_options(self, options: list[SelectOption]) -> None:

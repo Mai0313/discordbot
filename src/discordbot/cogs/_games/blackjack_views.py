@@ -98,9 +98,15 @@ BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
 }
 
 
-def _blackjack_table_edit_kwargs(*, embeds: list[Embed], view: View | None) -> dict[str, Any]:
+def _blackjack_table_edit_kwargs(
+    *, embeds: list[Embed], view: View | None, target: object | None = None
+) -> dict[str, Any]:
     """Builds the shared edit payload for Blackjack table renders."""
-    return {"embeds": embeds, "view": view, **embed_spacer_payload(embeds=embeds, is_edit=True)}
+    return {
+        "embeds": embeds,
+        "view": view,
+        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
+    }
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -665,7 +671,9 @@ class BlackjackLobbyView(BaseGameLobbyView):
         )
         await edit_message_with_retry(
             message=message,
-            **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=view),
+            **_blackjack_table_edit_kwargs(
+                embeds=[talk_embed, *seat_embeds], view=view, target=message
+            ),
         )
         await view.maybe_play_bot_turn(message=message)
         return True
@@ -1348,7 +1356,9 @@ class BlackjackView(View):
             bot_reasons=self._bot_reasons,
         )
         await message.edit(
-            **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=self)
+            **_blackjack_table_edit_kwargs(
+                embeds=[talk_embed, *seat_embeds], view=self, target=message
+            )
         )
 
     async def _reject_stale_action_locked(
@@ -1422,7 +1432,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=None)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[talk_embed, *seat_embeds], view=None, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1465,7 +1477,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[intro_talk, *body_hidden], view=self)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[intro_talk, *body_hidden], view=self, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1488,7 +1502,9 @@ class BlackjackView(View):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=[reveal_talk, *reveal_body], view=self)
+                    **_blackjack_table_edit_kwargs(
+                        embeds=[reveal_talk, *reveal_body], view=self, target=message
+                    )
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
@@ -1630,7 +1646,7 @@ class BlackjackView(View):
                 await asyncio.wait_for(
                     message.edit(
                         **_blackjack_table_edit_kwargs(
-                            embeds=[talk_embed, *seat_embeds], view=None
+                            embeds=[talk_embed, *seat_embeds], view=None, target=message
                         )
                     ),
                     timeout=FINAL_EDIT_TIMEOUT_SECONDS,

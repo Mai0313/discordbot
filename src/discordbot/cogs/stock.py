@@ -70,7 +70,9 @@ class StockCogs(commands.Cog):
             embed=embed,
             view=view,
             wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=[file]),
+            **embed_spacer_payload(
+                embeds=[embed], is_edit=False, target=interaction, extra_files=[file]
+            ),
         )
         view.bind_message(message=message)
         await track_public_message(message=message, user_name=user.name)

@@ -557,7 +557,12 @@ async def edit_stock_message(
     kwargs: dict[str, object] = {
         "embed": embed,
         "view": view,
-        **embed_spacer_payload(embeds=[embed], is_edit=True, extra_files=extra_files),
+        **embed_spacer_payload(
+            embeds=[embed],
+            is_edit=True,
+            target=target_message or interaction,
+            extra_files=extra_files,
+        ),
     }
     if not interaction.response.is_done():
         edited = await interaction.response.edit_message(**kwargs)
@@ -576,7 +581,9 @@ async def edit_stock_message(
         "embed": embed,
         "view": view,
         "wait": True,
-        **embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=extra_files),
+        **embed_spacer_payload(
+            embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
+        ),
     }
     sent_message = await interaction.followup.send(**followup_kwargs)
     if view is not None:

@@ -75,9 +75,15 @@ DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
 DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 
-def _dragon_gate_table_edit_kwargs(*, embeds: list[Embed], view: View | None) -> dict[str, Any]:
+def _dragon_gate_table_edit_kwargs(
+    *, embeds: list[Embed], view: View | None, target: object | None = None
+) -> dict[str, Any]:
     """Builds the shared edit payload for 射龍門 table renders."""
-    return {"embeds": embeds, "view": view, **embed_spacer_payload(embeds=embeds, is_edit=True)}
+    return {
+        "embeds": embeds,
+        "view": view,
+        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
+    }
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -424,7 +430,9 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         view.sync_controls()
         await edit_message_with_retry(
             message=message,
-            **_dragon_gate_table_edit_kwargs(embeds=view.in_progress_embeds(), view=view),
+            **_dragon_gate_table_edit_kwargs(
+                embeds=view.in_progress_embeds(), view=view, target=message
+            ),
         )
 
 
@@ -652,7 +660,9 @@ class DragonGateView(View):
                 return
             self.sync_controls()
             await interaction.message.edit(
-                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+                **_dragon_gate_table_edit_kwargs(
+                    embeds=self.in_progress_embeds(), view=self, target=interaction.message
+                )
             )
 
     async def _place_select_bet(self, interaction: Interaction, amount: int) -> None:
@@ -720,7 +730,9 @@ class DragonGateView(View):
                     return
             self.sync_controls()
             await message.edit(
-                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+                **_dragon_gate_table_edit_kwargs(
+                    embeds=self.in_progress_embeds(), view=self, target=message
+                )
             )
 
     async def _handle_leave(self, interaction: Interaction) -> None:
@@ -759,7 +771,9 @@ class DragonGateView(View):
                 return
             self.sync_controls()
             await message.edit(
-                **_dragon_gate_table_edit_kwargs(embeds=self.in_progress_embeds(), view=self)
+                **_dragon_gate_table_edit_kwargs(
+                    embeds=self.in_progress_embeds(), view=self, target=message
+                )
             )
 
     def in_progress_embeds(self) -> list[Embed]:
@@ -845,7 +859,9 @@ class DragonGateView(View):
         self.stop()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(**_dragon_gate_table_edit_kwargs(embeds=embeds, view=None)),
+                message.edit(
+                    **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
+                ),
                 timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         self._track_background_task(
@@ -892,7 +908,9 @@ class DragonGateView(View):
                 embeds.append(history_embed)
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
-                    message.edit(**_dragon_gate_table_edit_kwargs(embeds=embeds, view=None)),
+                    message.edit(
+                        **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
+                    ),
                     timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
                 )
 

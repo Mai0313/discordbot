@@ -266,7 +266,9 @@ class HelpCogs(commands.Cog):
         for index in range(0, len(embeds), _MESSAGE_EMBED_COUNT_LIMIT):
             batch = embeds[index : index + _MESSAGE_EMBED_COUNT_LIMIT]
             await interaction.followup.send(
-                embeds=batch, ephemeral=True, **embed_spacer_payload(embeds=batch, is_edit=False)
+                embeds=batch,
+                ephemeral=True,
+                **embed_spacer_payload(embeds=batch, is_edit=False, target=interaction),
             )
 
 

@@ -193,7 +193,9 @@ async def _send_expiring_followup(
     kwargs: dict[str, object] = {
         "embed": embed,
         "wait": True,
-        **embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=extra_files),
+        **embed_spacer_payload(
+            embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
+        ),
     }
     if view is not None:
         kwargs["view"] = view
@@ -205,7 +207,10 @@ async def _send_expiring_followup(
 async def _send_loan_request_followup(interaction: Interaction, embed: Embed, view: View) -> None:
     """Sends a loan request message that owns its cleanup after a terminal state."""
     message = await interaction.followup.send(
-        embed=embed, view=view, wait=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+        embed=embed,
+        view=view,
+        wait=True,
+        **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
     )
     view.message = message
 
@@ -213,21 +218,27 @@ async def _send_loan_request_followup(interaction: Interaction, embed: Embed, vi
 async def _send_private_followup(interaction: Interaction, embed: Embed) -> None:
     """Sends a personal economy embed visible only to the caller."""
     await interaction.followup.send(
-        embed=embed, ephemeral=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+        embed=embed,
+        ephemeral=True,
+        **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
     )
 
 
 async def _send_ephemeral_response(interaction: Interaction, embed: Embed) -> None:
     """Sends an ephemeral economy embed as the initial interaction response."""
     await interaction.response.send_message(
-        embed=embed, ephemeral=True, **embed_spacer_payload(embeds=[embed], is_edit=False)
+        embed=embed,
+        ephemeral=True,
+        **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
     )
 
 
 async def _edit_response_embed(interaction: Interaction, embed: Embed) -> None:
     """Edits the interaction's public message embed and clears its controls."""
     await interaction.response.edit_message(
-        embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+        embed=embed,
+        view=None,
+        **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
     )
 
 
@@ -318,7 +329,9 @@ class CentralBankLoanDecisionView(View):
         )
         with contextlib.suppress(Exception):
             await self.message.edit(
-                embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+                embed=embed,
+                view=None,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
             )
         self._schedule_cleanup()
 
@@ -500,7 +513,9 @@ class CreditLoanDecisionView(View):
         )
         with contextlib.suppress(Exception):
             await self.message.edit(
-                embed=embed, view=None, **embed_spacer_payload(embeds=[embed], is_edit=True)
+                embed=embed,
+                view=None,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
             )
         self._schedule_cleanup()
 

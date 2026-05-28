@@ -397,7 +397,7 @@ class GamesCogs(commands.Cog):
             embed=embed,
             view=view,
             wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False),
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
         )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
@@ -463,7 +463,7 @@ class GamesCogs(commands.Cog):
             embed=embed,
             view=view,
             wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False),
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
         )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message

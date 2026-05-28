@@ -748,7 +748,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 await message.reply(
                     content=None,
                     embed=error_embed,
-                    **embed_spacer_payload(embeds=[error_embed], is_edit=False),
+                    **embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message),
                 )
 
 
