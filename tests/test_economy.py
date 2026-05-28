@@ -59,6 +59,7 @@ from discordbot.cogs._economy.database import (
     get_jackpot_snapshot,
     credit_with_repayment,
     apply_round_settlement,
+    get_casino_daily_stats,
     apply_jackpot_settlement,
     open_global_state_session,
     apply_jackpot_settlement_batch,
@@ -1460,6 +1461,10 @@ async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
     assert (loss, win, net) == (300, 500, 200)
     assert day_started_at is not None
     assert _as_taipei(dt=day_started_at) == _taipei_midnight(now=_database_now())
+    stats = await get_casino_daily_stats(user_id=1)
+    assert stats.daily_loss == 300
+    assert stats.daily_win == 500
+    assert stats.daily_net == 200
 
 
 async def test_daily_casino_counters_store_large_values_as_text() -> None:

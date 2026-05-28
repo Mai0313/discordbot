@@ -1090,7 +1090,7 @@ async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
     if row is None:
         return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
     daily_loss, daily_win, daily_net, day_started_at = row
-    if day_started_at != today_midnight:
+    if day_started_at is None or _as_taipei(dt=day_started_at) != today_midnight:
         return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
     return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)
 
