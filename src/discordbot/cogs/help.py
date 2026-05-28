@@ -1,227 +1,410 @@
-"""Localized help command content and embed builders."""
+"""Localized, category-driven help command.
 
-from datetime import datetime
+The command opens an ephemeral overview with a select menu. Picking a category
+edits that same message in place to show the category's full command list, so
+the landing view stays short instead of dumping every command at once.
+"""
+
+from typing import cast
+import contextlib
 
 import nextcord
-from nextcord import Embed, Locale, Interaction
+from nextcord import Embed, Locale, Interaction, SelectOption
+from pydantic import BaseModel
+from nextcord.ui import View, StringSelect
 from nextcord.ext import commands
 
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-_EMBED_FIELD_VALUE_LIMIT = 1024
-_EMBED_FIELD_COUNT_LIMIT = 25
-_EMBED_TOTAL_LENGTH_LIMIT = 6000
-_MESSAGE_EMBED_COUNT_LIMIT = 10
-_HELP_FIELD_NAME = "\u200b"
+_HELP_COLOR = 0x5865F2
+_HELP_TIMEOUT_SECONDS = 180
+_OVERVIEW_VALUE = "overview"
+_CATEGORY_ORDER = ("ai", "games", "economy", "stocks", "tools")
 
-_HELP_CONTENT = {
-    "default": {
-        "title": "Bot Guide",
-        "description": "A quick index of available commands.",
-        "ai_chat": (
-            "**AI Chat**\n"
-            "Mention me or DM me for chat, image/file analysis, summaries, and media generation."
-        ),
-        "threads": (
-            "**Threads Parser**\n"
-            "Paste a Threads.net or Threads.com URL to extract posts, replies, and media."
-        ),
-        "video": (
-            "**Video Download**\n"
-            "`/download_video` downloads videos from supported platforms with an optional quality setting."
-        ),
-        "maplestory": (
-            "**MapleStory Artale**\n"
-            "`/maplestory` searches monsters, equipment, scrolls, NPCs, quests, maps, items, and stats."
-        ),
-        "points": (
-            f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance [member]` balance, loans, stock holdings, net worth, and VIP · `/give` transfer to members or bots · `/checkin` daily reward\n"
-            "`/leaderboard` balance board · `/loss_leaderboard` loss board · `/casino` casino system ledger · `/pocat` bot player wallet\n"
-            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
-        ),
-        "checkin": ("**Daily Check-in**\n`/checkin` claims the daily reward and streak bonus."),
-        "stocks": (
-            "**Simulated Stock Market**\n"
-            "`/stock` opens the market board UI for prices, market-context news, compact top-holder and recent-trade summaries, positions, charts, supply-capped buy and short entries, 49%-capped long holdings, plus sell and cover exits. Share counts display in lots when possible."
-        ),
-        "vip": (
-            "**VIP**\n"
-            "`/vip` buys and checks VIP status for boosted check-in and Blackjack rewards."
-        ),
-        "games": (
-            "**Games**\n"
-            "`/games blackjack` starts a Blackjack table; five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. `bet` accepts comma-formatted numbers, and `0` means all in. `/games dragon_gate` starts a Dragon Gate jackpot table."
-        ),
-        "ping": "**Ping**\n`/ping` checks the bot's response latency.",
-    },
-    Locale.zh_TW: {
-        "title": "機器人使用指南",
-        "description": "這裡只列出主要指令和用途。",
-        "ai_chat": (
-            "**AI 對話**\n"
-            "tag 我或私訊我，可以聊天、分析圖片/檔案、摘要文章，也可以請我生成圖片或影片。"
-        ),
-        "threads": (
-            "**Threads 解析**\n貼上 Threads.net 或 Threads.com URL，我會擷取貼文、回覆和媒體。"
-        ),
-        "video": ("**影片下載**\n`/download_video` 從支援的平台下載影片，也可以選 quality。"),
-        "maplestory": (
-            "**MapleStory Artale**\n"
-            "`/maplestory` 查怪物、裝備、卷軸、NPC、任務、地圖、物品和 stats。"
-        ),
-        "points": (
-            f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance [member]` 餘額、借貸、stock holdings、淨資產和 VIP · `/give` 可轉給成員或 bot · `/checkin` 每日簽到\n"
-            "`/leaderboard` 排行榜 board · `/loss_leaderboard` 今日輸錢榜 board · `/casino` 賭場系統 ledger · `/pocat` 機器人玩家錢包\n"
-            "`/credit` 個人借貸 · `/central_bank` 央行借貸 · `/admin` admin 調整，amount 可輸入逗號格式"
-        ),
-        "checkin": ("**每日簽到**\n`/checkin` 領每日獎勵和 streak bonus。"),
-        "stocks": (
-            "**模擬股市**\n"
-            "`/stock` 開啟 market board UI，可以看價格、參考 market context 的 news、compact top-holder / recent-trade summary、position、chart，也能建立受 supply cap 與單人 49% long holding cap 限制的 buy/short，或執行 sell/cover 出場；股數顯示會在可用時改用張。"
-        ),
-        "vip": ("**VIP**\n`/vip` 購買或查看 VIP 狀態，VIP 會加成 check-in 和 Blackjack reward。"),
-        "games": (
-            "**小遊戲**\n`/games blackjack` 開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；`bet` 可以輸入含逗號的數字，`0` 就是 all in。`/games dragon_gate` 開射龍門 jackpot 桌。"
-        ),
-        "ping": "**延遲測試**\n`/ping` 檢查 bot response latency。",
-    },
-    Locale.ja: {
-        "title": "ボット利用ガイド",
-        "description": "利用できる主なコマンドの一覧です。",
-        "ai_chat": (
-            "**AI チャット**\n"
-            "メンションまたはDMで、会話、画像/ファイル分析、要約、メディア生成ができます。"
-        ),
-        "threads": (
-            "**Threads パーサー**\n"
-            "Threads.net または Threads.com の URL から投稿、返信、メディアを取得します。"
-        ),
-        "video": (
-            "**動画ダウンロード**\n"
-            "`/download_video` は対応サイトから動画をダウンロードし、quality も選べます。"
-        ),
-        "maplestory": (
-            "**MapleStory Artale**\n"
-            "`/maplestory` で monster、equip、scroll、NPC、quest、map、item、stats を検索できます。"
-        ),
-        "points": (
-            f"**{CURRENCY_NAME} / Economy**\n"
-            "`/balance [member]` balance、loan、stock holdings、net worth、VIP · `/give` transfer to members or bots · `/checkin` daily reward\n"
-            "`/leaderboard` ranking board · `/loss_leaderboard` loss board · `/casino` casino system ledger · `/pocat` bot player wallet\n"
-            "`/credit` personal loans · `/central_bank` central-bank loans · `/admin` admin adjustments with comma-formatted amounts"
-        ),
-        "checkin": (
-            "**デイリーチェックイン**\n`/checkin` で daily reward と streak bonus を受け取れます。"
-        ),
-        "stocks": (
-            "**シミュレーション株式市場**\n"
-            "`/stock` で market board UI を開き、price、market context 付き news、compact top-holder / recent-trade summary、position、chart、supply cap と単一 user 49% long holding cap 付きの buy/short entry、sell/cover exit を扱えます。Share counts は可能な場合 lots 表示になります。"
-        ),
-        "vip": (
-            "**VIP**\n"
-            "`/vip` で VIP の購入と状態確認ができます。check-in と Blackjack reward が強化されます。"
-        ),
-        "games": (
-            "**ゲーム**\n"
-            "`/games blackjack` は 5枚で bust していなければ勝ち、5枚以上 21 は system-funded bonus を維持します。`bet` にカンマ付き数字を入力でき、`0` は all in です。`/games dragon_gate` は Dragon Gate jackpot table を開きます。"
-        ),
-        "ping": "**Ping**\n`/ping` で bot の応答遅延を確認します。",
-    },
+
+class HelpSection(BaseModel):
+    """One help category shown as a select option and a detail embed.
+
+    Attributes:
+        emoji: Leading emoji for the select option and detail title.
+        label: Category name used as the select option label and embed title.
+        summary: One-line index/select-option description (kept under 100 chars).
+        detail: Full command list rendered in the category's detail embed.
+    """
+
+    emoji: str
+    label: str
+    summary: str
+    detail: str
+
+
+class HelpGuide(BaseModel):
+    """Localized help content for one locale.
+
+    Attributes:
+        title: Overview embed title.
+        intro: Leading line on the overview embed.
+        select_placeholder: Placeholder shown on the category select menu.
+        overview_label: Select option label that returns to the overview.
+        sections: Category key to its content, keyed by `_CATEGORY_ORDER`.
+    """
+
+    title: str
+    intro: str
+    select_placeholder: str
+    overview_label: str
+    sections: dict[str, HelpSection]
+
+
+_HELP_CONTENT: dict[Locale | str, HelpGuide] = {
+    "default": HelpGuide(
+        title="🤖 Bot Guide",
+        intro="Pick a category from the menu below to see its full commands.",
+        select_placeholder="Choose a category…",
+        overview_label="Overview",
+        sections={
+            "ai": HelpSection(
+                emoji="💬",
+                label="AI Chat",
+                summary="Mention or DM me to chat, analyze, and generate",
+                detail=(
+                    "Mention me or DM me to get started.\n"
+                    "• Chat, answer questions, and summarize articles\n"
+                    "• Analyze attached images and files\n"
+                    "• Generate images and short videos on request"
+                ),
+            ),
+            "games": HelpSection(
+                emoji="🎰",
+                label="Casino Games",
+                summary="Blackjack and Dragon Gate tables",
+                detail=(
+                    "**`/games blackjack`**\n"
+                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. `bet` accepts comma-formatted numbers, and `0` means all in.\n\n"
+                    "**`/games dragon_gate`**\n"
+                    "Start a Dragon Gate jackpot table."
+                ),
+            ),
+            "economy": HelpSection(
+                emoji="💰",
+                label=f"{CURRENCY_NAME} / Economy",
+                summary="Balance, transfers, check-in, loans, boards",
+                detail=(
+                    "**Daily & status**\n"
+                    "`/balance [member]` — balance, loans, holdings, net worth, VIP\n"
+                    "`/checkin` — daily reward and streak bonus\n"
+                    "`/vip` — buy or check VIP (boosts check-in and Blackjack rewards)\n\n"
+                    "**Transfers & boards**\n"
+                    "`/give` — transfer to members or bots\n"
+                    "`/leaderboard` — balance board\n"
+                    "`/loss_leaderboard` — today's loss board\n"
+                    "`/casino` — casino system ledger\n"
+                    "`/pocat` — bot player wallet\n\n"
+                    "**Loans**\n"
+                    "`/credit` — personal loans\n"
+                    "`/central_bank` — central-bank loans\n\n"
+                    "**Admin**\n"
+                    "`/admin` — admin balance adjustments (comma-formatted amounts)"
+                ),
+            ),
+            "stocks": HelpSection(
+                emoji="📈",
+                label="Simulated Stocks",
+                summary="Trade and track virtual companies",
+                detail=(
+                    "**`/stock`**\n"
+                    "Open the market board UI: prices, market-context news, top-holder and recent-trade summaries, positions, and 7D charts. Buy and short within supply caps (long capped at 49% of float), then sell or cover to exit. Share counts show in lots when possible."
+                ),
+            ),
+            "tools": HelpSection(
+                emoji="🧰",
+                label="Tools",
+                summary="Video, MapleStory, Threads, ping",
+                detail=(
+                    "`/download_video` — download videos from supported platforms (optional quality)\n"
+                    "`/maplestory` — search monsters, equipment, scrolls, NPCs, quests, maps, items, and stats\n"
+                    "`/ping` — check the bot's response latency\n\n"
+                    "**Threads parser**\n"
+                    "Paste a Threads.net or Threads.com URL and I'll extract posts, replies, and media."
+                ),
+            ),
+        },
+    ),
+    Locale.zh_TW: HelpGuide(
+        title="🤖 機器人使用指南",
+        intro="從下方選單挑一個分類，看完整指令。",
+        select_placeholder="選擇分類…",
+        overview_label="總覽",
+        sections={
+            "ai": HelpSection(
+                emoji="💬",
+                label="AI 對話",
+                summary="tag 或私訊我聊天、分析、生成",
+                detail=(
+                    "tag 我或私訊我就能開始。\n"
+                    "• 聊天、回答問題、摘要文章\n"
+                    "• 分析附上的圖片和檔案\n"
+                    "• 依需求生成圖片或短影片"
+                ),
+            ),
+            "games": HelpSection(
+                emoji="🎰",
+                label="賭場遊戲",
+                summary="Blackjack 與射龍門",
+                detail=(
+                    "**`/games blackjack`**\n"
+                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；`bet` 可輸入含逗號的數字，`0` 就是 all in。\n\n"
+                    "**`/games dragon_gate`**\n"
+                    "開射龍門 jackpot 桌。"
+                ),
+            ),
+            "economy": HelpSection(
+                emoji="💰",
+                label=f"{CURRENCY_NAME} / 經濟",
+                summary="餘額、轉帳、簽到、借貸、排行榜",
+                detail=(
+                    "**查詢與日常**\n"
+                    "`/balance [member]` — 餘額、借貸、持股、淨資產、VIP\n"
+                    "`/checkin` — 每日簽到與 streak bonus\n"
+                    "`/vip` — 購買或查看 VIP（加成 check-in 與 Blackjack reward）\n\n"
+                    "**轉帳與排行**\n"
+                    "`/give` — 轉帳給成員或 bot\n"
+                    "`/leaderboard` — 餘額排行榜\n"
+                    "`/loss_leaderboard` — 今日輸錢榜\n"
+                    "`/casino` — 賭場系統 ledger\n"
+                    "`/pocat` — 機器人玩家錢包\n\n"
+                    "**借貸**\n"
+                    "`/credit` — 個人借貸\n"
+                    "`/central_bank` — 央行借貸\n\n"
+                    "**管理**\n"
+                    "`/admin` — admin 餘額調整（amount 支援逗號格式）"
+                ),
+            ),
+            "stocks": HelpSection(
+                emoji="📈",
+                label="模擬股市",
+                summary="股票交易與行情",
+                detail=(
+                    "**`/stock`**\n"
+                    "開啟 market board UI：價格、market context news、top-holder 與 recent-trade summary、position、7D chart。可在 supply cap 內 buy / short（long 受單人 49% float 限制），或 sell / cover 出場；股數可用時以張顯示。"
+                ),
+            ),
+            "tools": HelpSection(
+                emoji="🧰",
+                label="實用工具",
+                summary="影片下載、楓之谷、Threads、ping",
+                detail=(
+                    "`/download_video` — 從支援的平台下載影片（可選 quality）\n"
+                    "`/maplestory` — 查怪物、裝備、卷軸、NPC、任務、地圖、物品和 stats\n"
+                    "`/ping` — 檢查 bot response latency\n\n"
+                    "**Threads 解析**\n"
+                    "貼上 Threads.net 或 Threads.com URL，我會擷取貼文、回覆和媒體。"
+                ),
+            ),
+        },
+    ),
+    Locale.ja: HelpGuide(
+        title="🤖 ボット利用ガイド",
+        intro="下のメニューからカテゴリを選ぶと、詳しいコマンドを表示します。",
+        select_placeholder="カテゴリを選択…",
+        overview_label="概要",
+        sections={
+            "ai": HelpSection(
+                emoji="💬",
+                label="AI チャット",
+                summary="メンションやDMで会話・分析・生成",
+                detail=(
+                    "メンションまたはDMで始められます。\n"
+                    "• 会話、質問への回答、記事の要約\n"
+                    "• 添付画像やファイルの分析\n"
+                    "• リクエストに応じた画像・短い動画の生成"
+                ),
+            ),
+            "games": HelpSection(
+                emoji="🎰",
+                label="ゲーム",
+                summary="Blackjack と Dragon Gate",
+                detail=(
+                    "**`/games blackjack`**\n"
+                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。`bet` はカンマ付き数字に対応し、`0` は all in です。\n\n"
+                    "**`/games dragon_gate`**\n"
+                    "Dragon Gate jackpot テーブルを開始します。"
+                ),
+            ),
+            "economy": HelpSection(
+                emoji="💰",
+                label=f"{CURRENCY_NAME} / Economy",
+                summary="残高・送金・チェックイン・ローン・ランキング",
+                detail=(
+                    "**日常・ステータス**\n"
+                    "`/balance [member]` — balance、loan、holdings、net worth、VIP\n"
+                    "`/checkin` — daily reward と streak bonus\n"
+                    "`/vip` — VIP の購入・確認（check-in と Blackjack reward を強化）\n\n"
+                    "**送金・ランキング**\n"
+                    "`/give` — メンバーや bot への送金\n"
+                    "`/leaderboard` — 残高ランキング\n"
+                    "`/loss_leaderboard` — 本日の loss ランキング\n"
+                    "`/casino` — casino system ledger\n"
+                    "`/pocat` — bot player wallet\n\n"
+                    "**ローン**\n"
+                    "`/credit` — 個人ローン\n"
+                    "`/central_bank` — 中央銀行ローン\n\n"
+                    "**管理**\n"
+                    "`/admin` — admin による残高調整（カンマ付き金額対応）"
+                ),
+            ),
+            "stocks": HelpSection(
+                emoji="📈",
+                label="シミュレーション株式",
+                summary="仮想銘柄の取引と相場",
+                detail=(
+                    "**`/stock`**\n"
+                    "market board UI を開きます：price、market context news、top-holder / recent-trade summary、position、7D chart。supply cap 内で buy / short（long は float の 49% 上限）、sell / cover で決済できます。Share counts は可能なら lots 表示になります。"
+                ),
+            ),
+            "tools": HelpSection(
+                emoji="🧰",
+                label="ツール",
+                summary="動画DL・MapleStory・Threads・ping",
+                detail=(
+                    "`/download_video` — 対応サイトから動画をダウンロード（quality 選択可）\n"
+                    "`/maplestory` — monster、equip、scroll、NPC、quest、map、item、stats を検索\n"
+                    "`/ping` — bot の応答遅延を確認\n\n"
+                    "**Threads パーサー**\n"
+                    "Threads.net または Threads.com の URL を貼ると、投稿・返信・メディアを取得します。"
+                ),
+            ),
+        },
+    ),
 }
 
-_SECTIONS = (
-    "ai_chat",
-    "threads",
-    "video",
-    "maplestory",
-    "points",
-    "checkin",
-    "stocks",
-    "vip",
-    "games",
-    "ping",
-)
+
+def _resolve_guide(locale: Locale | str) -> HelpGuide:
+    """Returns the help guide for a locale, falling back to the default copy."""
+    guide = _HELP_CONTENT.get(locale)
+    return guide if guide is not None else _HELP_CONTENT["default"]
 
 
-def _split_field_value(value: str, limit: int = _EMBED_FIELD_VALUE_LIMIT) -> list[str]:
-    """Splits an embed field value without dropping any content."""
-    if len(value) <= limit:
-        return [value]
-
-    chunks: list[str] = []
-    remaining = value
-    while len(remaining) > limit:
-        newline_index = remaining.rfind("\n", 1, limit)
-        space_index = remaining.rfind(" ", 1, limit)
-        split_at = max(newline_index, space_index)
-
-        if split_at == -1:
-            chunks.append(remaining[:limit])
-            remaining = remaining[limit:]
-            continue
-
-        chunk_end = split_at + 1
-        chunks.append(remaining[:chunk_end])
-        remaining = remaining[chunk_end:]
-
-    if remaining:
-        chunks.append(remaining)
-
-    return chunks
-
-
-def _new_help_embed(
-    content: dict[str, str],
-    requester_name: str,
-    requester_avatar_url: str,
-    timestamp: datetime,
-    include_header: bool,
-) -> Embed:
-    embed = Embed(color=0x5865F2, timestamp=timestamp)
-    if include_header:
-        embed.title = content["title"]
-        embed.description = content["description"]
-
+def _apply_footer(embed: Embed, requester_name: str, requester_avatar_url: str) -> None:
+    """Stamps the shared requester footer onto a help embed."""
     embed.set_footer(text=f"Requested by {requester_name}", icon_url=requester_avatar_url)
+
+
+def _build_overview_embed(
+    guide: HelpGuide, requester_name: str, requester_avatar_url: str
+) -> Embed:
+    """Builds the landing overview embed with a one-line index per category."""
+    lines = [guide.intro, ""]
+    for key in _CATEGORY_ORDER:
+        section = guide.sections[key]
+        lines.append(f"{section.emoji} **{section.label}** — {section.summary}")
+    embed = Embed(title=guide.title, description="\n".join(lines), color=_HELP_COLOR)
+    _apply_footer(
+        embed=embed, requester_name=requester_name, requester_avatar_url=requester_avatar_url
+    )
     return embed
 
 
-def _build_help_embeds(
-    locale: Locale | str, requester_name: str, requester_avatar_url: str
-) -> list[Embed]:
-    """Builds Discord-limit-safe help embeds for the requested locale."""
-    content = _HELP_CONTENT.get(locale, _HELP_CONTENT["default"])
-    timestamp = nextcord.utils.utcnow()
-    embeds: list[Embed] = []
-    embed = _new_help_embed(
-        content=content,
-        requester_name=requester_name,
-        requester_avatar_url=requester_avatar_url,
-        timestamp=timestamp,
-        include_header=True,
+def _build_section_embed(
+    guide: HelpGuide, key: str, requester_name: str, requester_avatar_url: str
+) -> Embed:
+    """Builds the detail embed for one category."""
+    section = guide.sections[key]
+    embed = Embed(
+        title=f"{section.emoji} {section.label}", description=section.detail, color=_HELP_COLOR
     )
+    _apply_footer(
+        embed=embed, requester_name=requester_name, requester_avatar_url=requester_avatar_url
+    )
+    return embed
 
-    for section in _SECTIONS:
-        for value in _split_field_value(value=content[section]):
-            if (
-                len(embed.fields) >= _EMBED_FIELD_COUNT_LIMIT
-                or len(embed) + len(_HELP_FIELD_NAME) + len(value) > _EMBED_TOTAL_LENGTH_LIMIT
-            ):
-                embeds.append(embed)
-                embed = _new_help_embed(
-                    content=content,
-                    requester_name=requester_name,
-                    requester_avatar_url=requester_avatar_url,
-                    timestamp=timestamp,
-                    include_header=False,
+
+class HelpView(View):
+    """Ephemeral help view that swaps a single embed between categories.
+
+    Attributes:
+        guide: Localized help content driving the embeds and select options.
+    """
+
+    def __init__(
+        self, locale: Locale | str, requester_name: str, requester_avatar_url: str
+    ) -> None:
+        """Initializes the view for one requester and locale."""
+        super().__init__(timeout=_HELP_TIMEOUT_SECONDS)
+        self.guide = _resolve_guide(locale=locale)
+        self._requester_name = requester_name
+        self._requester_avatar_url = requester_avatar_url
+        self._active = _OVERVIEW_VALUE
+        self._origin: Interaction | None = None
+        self._select = cast("StringSelect", self.category_select)
+        self._select.placeholder = self.guide.select_placeholder
+        self._sync_options()
+
+    def initial_embed(self) -> Embed:
+        """Returns the overview embed shown when the command is first run."""
+        return _build_overview_embed(
+            guide=self.guide,
+            requester_name=self._requester_name,
+            requester_avatar_url=self._requester_avatar_url,
+        )
+
+    def bind_origin(self, interaction: Interaction) -> None:
+        """Records the originating interaction so timeout can disable the menu."""
+        self._origin = interaction
+
+    def _sync_options(self) -> None:
+        """Rebuilds select options and marks the active category as default."""
+        options = [
+            SelectOption(
+                label=self.guide.overview_label,
+                value=_OVERVIEW_VALUE,
+                emoji="🏠",
+                default=self._active == _OVERVIEW_VALUE,
+            )
+        ]
+        for key in _CATEGORY_ORDER:
+            section = self.guide.sections[key]
+            options.append(
+                SelectOption(
+                    label=section.label,
+                    value=key,
+                    description=section.summary,
+                    emoji=section.emoji,
+                    default=self._active == key,
                 )
-            embed.add_field(name=_HELP_FIELD_NAME, value=value, inline=False)
+            )
+        self._select.options = options
 
-    embeds.append(embed)
-    return embeds
+    def _embed_for(self, key: str) -> Embed:
+        """Returns the overview or a category detail embed for the active key."""
+        if key == _OVERVIEW_VALUE:
+            return self.initial_embed()
+        return _build_section_embed(
+            guide=self.guide,
+            key=key,
+            requester_name=self._requester_name,
+            requester_avatar_url=self._requester_avatar_url,
+        )
+
+    @nextcord.ui.string_select(
+        placeholder="…",
+        min_values=1,
+        max_values=1,
+        options=[SelectOption(label="loading", value="loading")],
+    )
+    async def category_select(self, select: StringSelect, interaction: Interaction) -> None:
+        """Swaps the embed in place to the chosen category."""
+        self._active = select.values[0]
+        self._sync_options()
+        await interaction.response.edit_message(embed=self._embed_for(key=self._active), view=self)
+
+    async def on_timeout(self) -> None:
+        """Disables the menu once the view goes idle."""
+        if self._origin is None:
+            return
+        self._select.disabled = True
+        with contextlib.suppress(Exception):
+            await self._origin.edit_original_response(view=self)
 
 
 class HelpCogs(commands.Cog):
@@ -250,26 +433,20 @@ class HelpCogs(commands.Cog):
         nsfw=False,
     )
     async def help(self, interaction: Interaction) -> None:
-        """Shows a guide on how to use this bot.
+        """Shows a category-driven guide on how to use this bot.
 
         Args:
             interaction: The interaction that triggered the command.
         """
-        await interaction.response.defer(ephemeral=True)
-
-        embeds = _build_help_embeds(
+        view = HelpView(
             locale=interaction.locale,
             requester_name=interaction.user.display_name,
             requester_avatar_url=interaction.user.display_avatar.url,
         )
-
-        for index in range(0, len(embeds), _MESSAGE_EMBED_COUNT_LIMIT):
-            batch = embeds[index : index + _MESSAGE_EMBED_COUNT_LIMIT]
-            await interaction.followup.send(
-                embeds=batch,
-                ephemeral=True,
-                **embed_spacer_payload(embeds=batch, is_edit=False, target=interaction),
-            )
+        await interaction.response.send_message(
+            embed=view.initial_embed(), view=view, ephemeral=True
+        )
+        view.bind_origin(interaction=interaction)
 
 
 def setup(bot: commands.Bot) -> None:

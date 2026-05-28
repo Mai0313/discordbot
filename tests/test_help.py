@@ -5,22 +5,29 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
-from nextcord import Locale, Interaction
+from nextcord import Embed, Locale, Interaction
+from nextcord.ui import View
 
 from discordbot.cogs.help import (
-    _SECTIONS,
     _HELP_CONTENT,
-    _EMBED_FIELD_COUNT_LIMIT,
-    _EMBED_FIELD_VALUE_LIMIT,
-    _EMBED_TOTAL_LENGTH_LIMIT,
-    _MESSAGE_EMBED_COUNT_LIMIT,
+    _CATEGORY_ORDER,
+    _OVERVIEW_VALUE,
     HelpCogs,
-    _build_help_embeds,
-    _split_field_value,
+    HelpView,
 )
 
 if TYPE_CHECKING:
     from nextcord.ext import commands
+
+_LOCALES = ("default", Locale.zh_TW, Locale.ja)
+
+# Discord embed validation limits the help view must respect.
+_EMBED_TITLE_LIMIT = 256
+_EMBED_DESCRIPTION_LIMIT = 4096
+_EMBED_TOTAL_LENGTH_LIMIT = 6000
+# Select option label / description hard limits.
+_SELECT_LABEL_LIMIT = 100
+_SELECT_DESCRIPTION_LIMIT = 100
 
 
 def _slash_command_names() -> set[str]:
@@ -42,64 +49,84 @@ def _slash_command_names() -> set[str]:
     return names
 
 
+def _guide_text(locale: "Locale | str") -> str:
+    """Joins every user-visible string of a locale's help guide."""
+    guide = _HELP_CONTENT[locale]
+    parts = [guide.intro]
+    for section in guide.sections.values():
+        parts.extend([section.summary, section.detail])
+    return "\n".join(parts)
+
+
 def test_help_mentions_every_non_help_slash_command() -> None:
     """Every non-help slash command should be discoverable from every localized help body."""
     commands = _slash_command_names() - {"help"}
-    for locale in ("default", Locale.zh_TW, Locale.ja):
-        body = "\n".join(
-            value for value in _HELP_CONTENT[locale].values() if isinstance(value, str)
-        )
+    for locale in _LOCALES:
+        body = _guide_text(locale=locale)
         missing = sorted(f"/{command}" for command in commands if f"/{command}" not in body)
         assert not missing, f"{locale} help is missing slash commands: {missing}"
 
 
-def test_long_help_sections_are_split_without_hiding_content() -> None:
-    """Long help sections are split into Discord-safe fields without truncation."""
-    for locale in ("default", Locale.zh_TW, Locale.ja):
-        for section in _SECTIONS:
-            value = _HELP_CONTENT[locale][section]
-            chunks = _split_field_value(value=value)
-
-            assert "".join(chunks) == value
-            assert all(len(chunk) <= _EMBED_FIELD_VALUE_LIMIT for chunk in chunks)
+def test_help_sections_cover_the_category_order() -> None:
+    """Every locale defines exactly the categories declared in `_CATEGORY_ORDER`."""
+    for locale in _LOCALES:
+        assert set(_HELP_CONTENT[locale].sections) == set(_CATEGORY_ORDER)
 
 
-def test_help_embeds_fit_discord_limits() -> None:
-    """Generated help embeds stay within Discord's embed validation limits."""
-    for locale in ("default", Locale.zh_TW, Locale.ja):
-        embeds = _build_help_embeds(
+async def test_help_embeds_fit_discord_limits() -> None:
+    """Overview and category detail embeds stay within Discord's embed limits."""
+    for locale in _LOCALES:
+        view = HelpView(
             locale=locale,
             requester_name="tester",
             requester_avatar_url="https://example.com/avatar.png",
         )
-
-        assert len(embeds) <= _MESSAGE_EMBED_COUNT_LIMIT
+        embeds = [view.initial_embed()] + [view._embed_for(key=key) for key in _CATEGORY_ORDER]
         for embed in embeds:
-            assert len(embed.fields) <= _EMBED_FIELD_COUNT_LIMIT
+            assert len(embed.title or "") <= _EMBED_TITLE_LIMIT
+            assert len(embed.description or "") <= _EMBED_DESCRIPTION_LIMIT
             assert len(embed) <= _EMBED_TOTAL_LENGTH_LIMIT
-            assert all(len(field.value) <= _EMBED_FIELD_VALUE_LIMIT for field in embed.fields)
 
 
-async def test_help_followups_stay_ephemeral() -> None:
-    """The help command keeps every response private."""
+async def test_help_select_options_fit_discord_limits() -> None:
+    """Select options (overview + every category) stay within Discord's limits."""
+    for locale in _LOCALES:
+        view = HelpView(
+            locale=locale,
+            requester_name="tester",
+            requester_avatar_url="https://example.com/avatar.png",
+        )
+        values = {option.value for option in view._select.options}
+        assert values == {_OVERVIEW_VALUE, *_CATEGORY_ORDER}
+        for option in view._select.options:
+            assert len(option.label) <= _SELECT_LABEL_LIMIT
+            assert len(option.description or "") <= _SELECT_DESCRIPTION_LIMIT
+
+
+async def test_help_select_marks_active_category() -> None:
+    """Selecting a category rebuilds options with that category as the default."""
+    view = HelpView(
+        locale=Locale.zh_TW,
+        requester_name="tester",
+        requester_avatar_url="https://example.com/avatar.png",
+    )
+    view._active = "economy"
+    view._sync_options()
+    defaults = [option.value for option in view._select.options if option.default]
+    assert defaults == ["economy"]
+
+
+async def test_help_response_is_ephemeral_with_a_view() -> None:
+    """The help command replies privately and ships an interactive view."""
 
     class ResponseStub:
-        """Records the initial deferred response."""
+        """Records the initial response payload."""
 
         def __init__(self) -> None:
-            self.deferred_ephemeral = False
+            self.sent: dict[str, object] = {}
 
-        async def defer(self, ephemeral: bool = False) -> None:
-            self.deferred_ephemeral = ephemeral
-
-    class FollowupStub:
-        """Records followup payloads."""
-
-        def __init__(self) -> None:
-            self.sent: list[dict[str, object]] = []
-
-        async def send(self, **kwargs: object) -> None:
-            self.sent.append(kwargs)
+        async def send_message(self, **kwargs: object) -> None:
+            self.sent = kwargs
 
     interaction = SimpleNamespace(
         locale=Locale.zh_TW,
@@ -108,13 +135,12 @@ async def test_help_followups_stay_ephemeral() -> None:
             display_avatar=SimpleNamespace(url="https://example.com/avatar.png"),
         ),
         response=ResponseStub(),
-        followup=FollowupStub(),
     )
 
     await HelpCogs.help.callback(
         HelpCogs(bot=cast("commands.Bot", SimpleNamespace())), cast("Interaction", interaction)
     )
 
-    assert interaction.response.deferred_ephemeral is True
-    assert interaction.followup.sent
-    assert all(payload["ephemeral"] is True for payload in interaction.followup.sent)
+    assert interaction.response.sent["ephemeral"] is True
+    assert isinstance(interaction.response.sent["view"], View)
+    assert isinstance(interaction.response.sent["embed"], Embed)
