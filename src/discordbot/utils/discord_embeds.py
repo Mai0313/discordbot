@@ -10,6 +10,7 @@ from nextcord import File, Embed
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 DEFAULT_EMBED_SPACER_WIDTH: Final[int] = 640
 DEFAULT_EMBED_SPACER_HEIGHT: Final[int] = 1
+DISCORD_MAX_FILES_PER_MESSAGE: Final[int] = 10
 _TRANSPARENT_RGBA: Final[tuple[int, int, int, int]] = (0, 0, 0, 0)
 
 
@@ -55,11 +56,11 @@ def embed_spacer_payload(
     filename: str = DEFAULT_EMBED_SPACER_FILENAME,
 ) -> dict[str, Any]:
     """Returns the spacer files/attachments increment to merge into a send or edit."""
-    apply_embed_spacer_image(embeds=embeds, filename=filename)
     spacer_url = embed_spacer_url(filename=filename)
-    needs_spacer = any(embed.image.url == spacer_url for embed in embeds)
+    needs_spacer = any(not _embed_has_image(embed=embed) for embed in embeds)
     files: list[File] = list(extra_files or [])
-    if needs_spacer:
+    if needs_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:
+        apply_embed_spacer_image(embeds=embeds, filename=filename)
         files.append(build_embed_spacer_file(filename=filename))
     payload: dict[str, Any] = {}
     if files:

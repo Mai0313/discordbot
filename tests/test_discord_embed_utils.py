@@ -109,3 +109,14 @@ def test_embed_spacer_payload_merges_extra_files_with_spacer() -> None:
     assert payload["files"][1].filename == DEFAULT_EMBED_SPACER_FILENAME
     assert with_image.image.url == "https://cdn.test/photo.png"
     assert text_only.image.url == embed_spacer_url()
+
+
+def test_embed_spacer_payload_skips_spacer_when_extra_files_fill_discord_limit() -> None:
+    """A full file payload keeps the real files and leaves text embeds unmodified."""
+    files = [build_embed_spacer_file(filename=f"video-{index}.mp4") for index in range(10)]
+    embed = Embed(description="video-only post")
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=files)
+
+    assert payload["files"] == files
+    assert not embed.image.url
