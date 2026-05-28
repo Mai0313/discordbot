@@ -81,11 +81,11 @@ class GamesCogs(commands.Cog):
     def bot_player_ai(self) -> BotPlayerAI:
         """The cached bot-player decision AI shared across Blackjack tables.
 
-        Uses `slow_model` so the bot reasons about bet sizing, hit/stand,
-        double/split, and insurance with real strategic depth. Bot turns run
-        between human turns, so the extra latency is acceptable.
+        Uses `player_model` (pinned to `gemini-flash-latest`) so bot turns
+        between human players stay snappy and do not inherit any future
+        promotion of `slow_model` to a heavier Pro tier.
         """
-        return BotPlayerAI(client=self.client, model=self.runtime_models.slow_model)
+        return BotPlayerAI(client=self.client, model=self.runtime_models.player_model)
 
     async def _system_identity(self, guild: nextcord.Guild | None = None) -> SystemIdentity:
         """Returns the casino system identity used for narrator embeds.

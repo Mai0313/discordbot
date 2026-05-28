@@ -106,15 +106,30 @@ class RuntimeModelCatalog(BaseModel):
 
         Uses `gemini-flash-latest` during UTC weekday 08:00 to 17:00 peak hours and `gemini-3.5-flash` outside that peak window.
 
-        Callers: `_get_attachment_parts`, `_handle_message_reply`, `BotPlayerAI`.
+        Callers: `_get_attachment_parts`, `_handle_message_reply`.
 
         Returns:
-            Slow-path model settings for reply generation, summaries, and
-            bot-player Blackjack decisions.
+            Slow-path model settings for reply generation and summaries.
         """
         if self.is_peak:
             return ModelSettings(name="gemini-flash-latest", effort="high")
         return ModelSettings(name="gemini-3.5-flash", effort="high")
+
+    @property
+    def player_model(self) -> ModelSettings:
+        """The model settings for the casino bot-player AI.
+
+        Pinned to `gemini-flash-latest` regardless of peak hours so bot turns
+        between human players stay snappy even if `slow_model` later promotes
+        to a heavier Pro tier.
+
+        Callers: `BotPlayerAI`.
+
+        Returns:
+            Model settings used by the Blackjack bot player for bet sizing,
+            hit/stand, double/split, surrender, and insurance decisions.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="high")
 
 
 class RouteDecision(BaseModel):
