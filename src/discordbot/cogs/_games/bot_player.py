@@ -17,7 +17,7 @@ import asyncio
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.games import (
@@ -278,7 +278,7 @@ class BotPlayerAI(BaseModel):
                 timeout_seconds=BOT_BET_AI_TIMEOUT_SECONDS,
             )
             return fallback
-        except (ValidationError, Exception):
+        except Exception:
             logfire.warn("Bot bet decision failed; using deterministic fallback", _exc_info=True)
             return fallback
         if responses.output_parsed is None:
@@ -352,7 +352,7 @@ class BotPlayerAI(BaseModel):
                 timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
             )
             return fallback_decision
-        except (ValidationError, Exception):
+        except Exception:
             logfire.warn(
                 "Bot action decision failed; using basic-strategy fallback", _exc_info=True
             )
@@ -409,7 +409,7 @@ class BotPlayerAI(BaseModel):
                 timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
             )
             return fallback_decision
-        except (ValidationError, Exception):
+        except Exception:
             logfire.warn("Bot insurance decision failed; declining insurance", _exc_info=True)
             return fallback_decision
         if responses.output_parsed is None:
