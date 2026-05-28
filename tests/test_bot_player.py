@@ -149,7 +149,7 @@ def test_insurance_context_uses_dealer_hole_card_for_known_result() -> None:
     assert "next_card" not in rendered
 
 
-_ResponseDecision = BotPlayerActionDecision | BotPlayerInsuranceDecision
+type _ResponseDecision = BotPlayerActionDecision | BotPlayerInsuranceDecision
 
 
 class _FakeResponses:
@@ -263,11 +263,7 @@ async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() 
     )
 
     await insurance_ai.decide_bot_insurance(
-        dealer_up=None,
-        hand_repr="A♠ 10♠",
-        bet=100,
-        finance=finance,
-        other_players=[],
+        dealer_up=None, hand_repr="A♠ 10♠", bet=100, finance=finance, other_players=[]
     )
 
     insurance_input = insurance_client.responses.calls[0]["input"]
