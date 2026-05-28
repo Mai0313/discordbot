@@ -12,6 +12,7 @@ import pytest
 from nextcord import Embed
 from nextcord.ui import Button, StringSelect
 
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.typings.games import (
     Card,
     GameParticipant,
@@ -848,11 +849,14 @@ async def test_dragon_gate_final_settlement_does_not_wait_for_dealer_banter(
 
     assert len(dealer.table_settle_calls) == 1
     assert message.edits[-1]["view"] is None
+    assert message.edits[-1]["attachments"] == []
+    assert message.edits[-1]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
     refreshed_embeds = message.edits[-1]["embeds"]
     assert isinstance(refreshed_embeds, list)
     assert isinstance(refreshed_embeds[0], Embed)
     assert isinstance(refreshed_embeds[0].description, str)
     assert "background settled" in refreshed_embeds[0].description
+    assert refreshed_embeds[0].image.url == embed_spacer_url()
 
 
 async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(

@@ -892,7 +892,7 @@ class DragonGateView(View):
                 embeds.append(history_embed)
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(
-                    message.edit(embeds=embeds, view=None),
+                    message.edit(**_dragon_gate_table_edit_kwargs(embeds=embeds, view=None)),
                     timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
                 )
 
