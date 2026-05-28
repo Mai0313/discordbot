@@ -1,7 +1,7 @@
 """Helpers for Discord embed rendering quirks."""
 
 from io import BytesIO
-from typing import Final
+from typing import Any, Final
 from functools import cache
 
 from PIL import Image
@@ -31,14 +31,42 @@ def build_embed_spacer_file(
     )
 
 
+def _embed_has_image(embed: Embed) -> bool:
+    """Returns True when an embed already shows a real image via set_image."""
+    return bool(embed.image and embed.image.url)
+
+
 def apply_embed_spacer_image(
     *, embeds: list[Embed], filename: str = DEFAULT_EMBED_SPACER_FILENAME
 ) -> list[Embed]:
-    """Sets a transparent spacer image on embeds so Discord renders aligned widths."""
+    """Sets a transparent spacer only on embeds without an image of their own."""
     spacer_url = embed_spacer_url(filename=filename)
     for embed in embeds:
-        embed.set_image(url=spacer_url)
+        if not _embed_has_image(embed=embed):
+            embed.set_image(url=spacer_url)
     return embeds
+
+
+def embed_spacer_payload(
+    *,
+    embeds: list[Embed],
+    is_edit: bool,
+    extra_files: list[File] | None = None,
+    filename: str = DEFAULT_EMBED_SPACER_FILENAME,
+) -> dict[str, Any]:
+    """Returns the spacer files/attachments increment to merge into a send or edit."""
+    apply_embed_spacer_image(embeds=embeds, filename=filename)
+    spacer_url = embed_spacer_url(filename=filename)
+    needs_spacer = any(embed.image.url == spacer_url for embed in embeds)
+    files: list[File] = list(extra_files or [])
+    if needs_spacer:
+        files.append(build_embed_spacer_file(filename=filename))
+    payload: dict[str, Any] = {}
+    if files:
+        payload["files"] = files
+    if is_edit:
+        payload["attachments"] = []
+    return payload
 
 
 @cache
