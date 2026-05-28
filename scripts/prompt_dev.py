@@ -123,6 +123,7 @@ def gen_reply_chat(user_prompt: str) -> None:
         if response.choices and response.choices[0].delta.content:
             console.print(response.choices[0].delta.content, end="")
     end = time.time()
+    console.print(f"\n{responses.response.headers}")
     console.print(f"\n{model_name} on Litellm (Chat Completions) takes {end - start:.2f} seconds")
 
 
@@ -205,6 +206,7 @@ def gen_reply_anthropic(user_prompt: str) -> None:
             elif response.delta.type == "text_delta":
                 console.print(response.delta.text, end="")
     end = time.time()
+    console.print(f"\n{responses.response.headers}")
     console.print(f"\n{model_name} on Anthropic SDK takes {end - start:.2f} seconds")
 
 
