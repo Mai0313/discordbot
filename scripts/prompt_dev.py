@@ -211,7 +211,7 @@ def gen_reply_anthropic(user_prompt: str) -> None:
 
 
 if __name__ == "__main__":
-    # gen_reply_chat(user_prompt="為何 37 是質數?")
     gen_reply(user_prompt="你自我介紹一下")
+    # gen_reply_chat(user_prompt="為何 37 是質數?")
     # gen_reply_gemini(user_prompt="為何 37 是質數?")
     # gen_reply_anthropic(user_prompt="為何 37 是質數?")
