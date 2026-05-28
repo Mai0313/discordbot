@@ -71,7 +71,12 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
         stream=True,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "prompt_dev"},
-        extra_body={"mock_testing_fallbacks": False},
+        extra_body={
+            "mock_testing_fallbacks": False,
+            "cache": {
+                "no-cache": True  # Skip cache check, get fresh response
+            },
+        },
     )
     model_name = ""
     for response in responses:
@@ -115,7 +120,12 @@ def gen_reply_chat(user_prompt: str) -> None:
         tools=tools,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "prompt_dev"},
-        extra_body={"mock_testing_fallbacks": False},
+        extra_body={
+            "mock_testing_fallbacks": False,
+            "cache": {
+                "no-cache": True  # Skip cache check, get fresh response
+            },
+        },
     )
     model_name = ""
     for response in responses:
@@ -141,7 +151,13 @@ def gen_reply_gemini(user_prompt: str) -> None:
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
-            base_url=config.base_url, extra_body={"mock_testing_fallbacks": False}
+            base_url=config.base_url,
+            extra_body={
+                "mock_testing_fallbacks": False,
+                "cache": {
+                    "no-cache": True  # Skip cache check, get fresh response
+                },
+            },
         ),
     )
     start = time.time()
