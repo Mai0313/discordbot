@@ -12,6 +12,7 @@ import pytest
 from nextcord import Embed
 from nextcord.ui import Button, StringSelect
 
+from discordbot.cogs._games import interactions as game_interactions
 from discordbot.typings.games import (
     Card,
     GameParticipant,
@@ -32,6 +33,7 @@ from discordbot.cogs._games.dragon_gate import (
     card_value,
     has_open_gate,
 )
+from discordbot.cogs._games.interactions import edit_message_with_retry
 from discordbot.cogs._games.dragon_gate_views import (
     DragonGateView,
     DragonGateBetModal,
@@ -60,6 +62,28 @@ class MessageStub:
     async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records a message edit payload."""
         self.edits.append(kwargs)
+
+
+class RetryMessageStub:
+    """Message stub that fails once with a transient Discord error."""
+
+    def __init__(self) -> None:
+        """Initializes retry records."""
+        self.id = 123
+        self.edits: list[dict[str, Any]] = []
+
+    async def edit(self, **kwargs: Any) -> RetryMessageStub:  # noqa: ANN401 -- Discord kwargs
+        """Records an edit and fails the first attempt."""
+        self.edits.append(kwargs)
+        if len(self.edits) == 1:
+            raise _TransientEditError
+        return self
+
+
+class _TransientEditError(Exception):
+    """Fake Discord 5xx error for retry tests."""
+
+    status = 503
 
 
 class ResponseStub:
@@ -537,6 +561,35 @@ def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
     assert isinstance(final, Embed)
     assert isinstance(final.title, str)
     assert final.title
+
+
+async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retries rebuild file-backed edit kwargs instead of reusing consumed streams."""
+    sleep_delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        """Records backoff without slowing the test."""
+        sleep_delays.append(delay)
+
+    monkeypatch.setattr(game_interactions, "DiscordServerError", _TransientEditError)
+    monkeypatch.setattr(game_interactions.asyncio, "sleep", fake_sleep)
+    message = RetryMessageStub()
+    payloads: list[object] = []
+
+    def kwargs_factory() -> dict[str, Any]:
+        file_marker = object()
+        payloads.append(file_marker)
+        return {"files": [file_marker]}
+
+    result = await edit_message_with_retry(message=message, kwargs_factory=kwargs_factory)
+
+    assert result is message
+    assert sleep_delays == [0.5]
+    assert len(payloads) == 2
+    assert message.edits[0]["files"][0] is payloads[0]
+    assert message.edits[1]["files"][0] is payloads[1]
 
 
 async def test_dragon_gate_controls_hide_unavailable_actions() -> None:

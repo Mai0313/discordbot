@@ -428,10 +428,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
         view.message = message
         view.sync_controls()
+        embeds = view.in_progress_embeds()
         await edit_message_with_retry(
             message=message,
-            **_dragon_gate_table_edit_kwargs(
-                embeds=view.in_progress_embeds(), view=view, target=message
+            kwargs_factory=lambda: _dragon_gate_table_edit_kwargs(
+                embeds=embeds, view=view, target=message
             ),
         )
 

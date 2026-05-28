@@ -2,7 +2,7 @@
 
 from typing import Any
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import logfire
 from nextcord import Message, Interaction
@@ -41,6 +41,7 @@ def set_view_item_visible(view: View, item: Item, visible: bool) -> None:
 async def edit_message_with_retry(
     message: Message,
     attempts: int = 3,
+    kwargs_factory: Callable[[], dict[str, Any]] | None = None,
     **kwargs: Any,  # noqa: ANN401 -- transparent forwarder to Message.edit's heterogeneous kwargs
 ) -> Message:
     """Edits `message` retrying transient Discord 5xx errors with backoff.
@@ -50,9 +51,13 @@ async def edit_message_with_retry(
     stopped with antes already charged. Backoff grows 0.5s, 1.0s, ... so the
     final attempt covers ~1.5s of upstream flakiness before propagating.
     """
+
+    def edit_kwargs() -> dict[str, Any]:
+        return kwargs_factory() if kwargs_factory is not None else kwargs
+
     for attempt in range(attempts - 1):
         try:
-            return await message.edit(**kwargs)
+            return await message.edit(**edit_kwargs())
         except DiscordServerError as error:
             logfire.warn(
                 "Discord 5xx on message.edit, retrying",
@@ -61,4 +66,4 @@ async def edit_message_with_retry(
                 message_id=message.id,
             )
             await asyncio.sleep(0.5 * (attempt + 1))
-    return await message.edit(**kwargs)
+    return await message.edit(**edit_kwargs())

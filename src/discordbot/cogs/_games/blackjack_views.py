@@ -669,10 +669,11 @@ class BlackjackLobbyView(BaseGameLobbyView):
             bot_user_id=self.bot_user_id,
             bot_reasons={},
         )
+        embeds = [talk_embed, *seat_embeds]
         await edit_message_with_retry(
             message=message,
-            **_blackjack_table_edit_kwargs(
-                embeds=[talk_embed, *seat_embeds], view=view, target=message
+            kwargs_factory=lambda: _blackjack_table_edit_kwargs(
+                embeds=embeds, view=view, target=message
             ),
         )
         await view.maybe_play_bot_turn(message=message)
