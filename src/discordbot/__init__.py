@@ -3,6 +3,7 @@ import sys
 from typing import TextIO
 from pathlib import Path
 from datetime import datetime
+import warnings
 from importlib.metadata import version
 
 import dotenv
@@ -57,6 +58,12 @@ class _TeeStream:
 
 def setup_logging() -> None:
     """Configures logging with logfire, teeing output to a file."""
+    # LiteLLM forwards Responses API output as ResponseReasoningItem objects that
+    # pydantic's discriminated-union serializer does not recognise, producing a
+    # noisy multi-line UserWarning on every reply. The payload still streams fine.
+    warnings.filterwarnings(
+        action="ignore", message=r"Pydantic serializer warnings:", category=UserWarning
+    )
     started_at = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_path = Path(f"./data/logs/{started_at}.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)

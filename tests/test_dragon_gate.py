@@ -546,11 +546,11 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
     )
     normal_view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=normal_round,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -563,11 +563,11 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
     )
     pair_view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=pair_round,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -607,9 +607,9 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        dealer=DealerStub(),
-        dealer_name="Dealer",
-        dealer_avatar_url="",
+        narrator=DealerStub(),
+        system_name="Dealer",
+        system_avatar_url="",
         prepare_participant=prepare_participant,
         refresh_participants=refresh_participants,
         initial_jackpot=state.jackpot,
@@ -690,9 +690,9 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        dealer=DealerStub(),
-        dealer_name="Dealer",
-        dealer_avatar_url="",
+        narrator=DealerStub(),
+        system_name="Dealer",
+        system_avatar_url="",
         prepare_participant=prepare_participant,
         refresh_participants=refresh_participants,
         initial_jackpot=100_000,
@@ -727,11 +727,11 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     message = MessageStub()
     dealer = DealerStub()
     view = DragonGateView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
@@ -773,11 +773,11 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 500_000},
     )
@@ -816,11 +816,11 @@ async def test_dragon_gate_final_settlement_does_not_wait_for_dealer_banter(
     message = MessageStub()
     dealer = BlockingDealerStub()
     view = DragonGateView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 500_000},
     )
@@ -885,11 +885,11 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=10_000,
         jackpot_generation=2,
         final_balances={1: 500_000},
@@ -928,11 +928,11 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 8_000},
     )
@@ -979,11 +979,11 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 8_000, 2: 100_000},
     )
@@ -1021,11 +1021,11 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1065,11 +1065,11 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1101,11 +1101,11 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1129,11 +1129,11 @@ async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
     )
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=1_000_000,
         final_balances={1: 1_000_000},
     )
@@ -1157,11 +1157,11 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
 
     message = MessageStub()
     view = DragonGateView(
-        dealer=DealerStub(),
+        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
-        dealer_name="Dealer",
-        dealer_line="taunt",
+        system_name="Dealer",
+        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )

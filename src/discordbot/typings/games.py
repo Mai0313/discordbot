@@ -15,7 +15,8 @@ SettleOutcome = Literal[
 ]
 GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
-BlackjackDealerStepSource = Literal["ai", "auto", "fallback", "guard"]
+BlackjackDealerStepSource = Literal["auto", "guard"]
+BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
 class Card(BaseModel):
@@ -71,14 +72,14 @@ class GameParticipantIdentity(BaseModel):
     avatar_url: str = ""
 
 
-class DealerIdentity(BaseModel):
-    """Discord identity used for the AI dealer in game views."""
+class SystemIdentity(BaseModel):
+    """Discord identity used for the casino system narrator in game views."""
 
     model_config = ConfigDict(frozen=True)
 
-    dealer_id: int
-    dealer_name: str
-    dealer_avatar_url: str = ""
+    system_id: int
+    system_name: str
+    system_avatar_url: str = ""
 
 
 class ParticipantPreparationResult(BaseModel):
@@ -106,7 +107,7 @@ class WagerSettlement(BaseModel):
         delta: Net point change for the round.
         payout: Positive player credit from the round, excluding losses and pushes.
         new_balance: Player balance after applying the signed round delta.
-        house_balance: Dealer ledger balance after applying the dealer-side settlement.
+        casino_balance: Casino ledger balance after applying the casino-side settlement.
         base_delta: Net point change before any VIP payout bonus. `None` for
             legacy/manual test settlements that do not carry bonus details.
         vip_bonus: Extra points added by the VIP payout bonus.
@@ -118,7 +119,7 @@ class WagerSettlement(BaseModel):
     delta: int
     payout: int
     new_balance: int
-    house_balance: int
+    casino_balance: int
     base_delta: int | None = None
     vip_bonus: int = 0
     is_vip: bool = False
@@ -223,6 +224,57 @@ class BlackjackDealerDecision(BaseModel):
     reason: str
 
 
+class BotPlayerBetDecision(BaseModel):
+    """Structured bet decision returned by the bot player AI."""
+
+    bet_amount: int = Field(ge=1)
+    reason: str
+
+
+class BotPlayerActionDecision(BaseModel):
+    """Structured hit / stand / double / split / surrender decision."""
+
+    action: BotAction
+    reason: str
+
+
+class BotPlayerInsuranceDecision(BaseModel):
+    """Structured insurance-take / decline decision."""
+
+    take_insurance: bool
+    reason: str
+
+
+class BotFinancialContext(BaseModel):
+    """Bot's lifetime + daily financial snapshot for decision context.
+
+    `balance` is the spendable wallet today; `total_earned` / `total_spent` are
+    lifetime gross flows. The three `daily_*` fields are zero outside today's
+    Taipei calendar day so the model treats yesterday's loss as already
+    "forgotten" — same convention as the loss leaderboard.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    balance: int
+    total_earned: int
+    total_spent: int
+    daily_loss: int
+    daily_win: int
+    daily_net: int
+
+
+class OtherPlayerView(BaseModel):
+    """One non-bot player's table state visible to the bot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    display_name: str
+    bet: int
+    hands: list[str]
+    is_finished: bool
+
+
 class BlackjackDealerStep(BaseModel):
     """One dealer action recorded during the Blackjack dealer phase."""
 
@@ -231,7 +283,7 @@ class BlackjackDealerStep(BaseModel):
     total_before: int
     action: BlackjackDealerAction
     reason: str
-    source: BlackjackDealerStepSource = "ai"
+    source: BlackjackDealerStepSource = "auto"
     drawn_card: Card | None = None
     total_after: int | None = None
     fallback: bool = False
@@ -275,14 +327,20 @@ __all__ = [
     "BlackjackInsuranceSettlement",
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
+    "BotAction",
+    "BotFinancialContext",
+    "BotPlayerActionDecision",
+    "BotPlayerBetDecision",
+    "BotPlayerInsuranceDecision",
     "Card",
-    "DealerIdentity",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
     "GameParticipantIdentity",
+    "OtherPlayerView",
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",
+    "SystemIdentity",
     "WagerSettlement",
 ]

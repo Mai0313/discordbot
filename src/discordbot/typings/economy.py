@@ -230,6 +230,40 @@ class JackpotSettlementResult(BaseModel):
     rejected: bool = False
 
 
+class CasinoLedgerSnapshot(BaseModel):
+    """Read-only snapshot of the casino system ledger."""
+
+    model_config = ConfigDict(frozen=True)
+
+    balance: int
+    total_earned: int
+    total_spent: int
+    updated_at: datetime
+
+
+class CasinoDailyStats(BaseModel):
+    """Per-user current-day casino loss/win/net totals.
+
+    Returned by `get_casino_daily_stats`; all zero when no row exists or the
+    stored counters belong to a previous Taipei day.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    daily_loss: int
+    daily_win: int
+    daily_net: int
+
+
+class RoundSettlementResult(BaseModel):
+    """Outcome of an atomic player + casino ledger settlement."""
+
+    model_config = ConfigDict(frozen=True)
+
+    player_balance: int
+    casino_balance: int
+
+
 class TransferResult(BaseModel):
     """A successful point transfer.
 
@@ -378,6 +412,8 @@ __all__ = [
     "AccountSnapshot",
     "AdminAccount",
     "BalanceAdjustmentResult",
+    "CasinoDailyStats",
+    "CasinoLedgerSnapshot",
     "CentralBankStatus",
     "CentralBankerAccount",
     "CheckinResult",
@@ -398,6 +434,7 @@ __all__ = [
     "LossLeaderboardEntry",
     "OrderedWalletDeltaResult",
     "PortfolioView",
+    "RoundSettlementResult",
     "TransferResult",
     "VipPurchaseResult",
     "WalletDeltaLeg",

@@ -9,6 +9,7 @@ from discordbot.cogs._economy.database import (
     get_account,
     get_balance,
     adjust_balance,
+    get_casino_ledger,
     list_loan_contracts,
     accept_loan_proposal,
     credit_with_repayment,
@@ -126,25 +127,19 @@ async def test_transfer_updates_sender_and_receiver_totals() -> None:
     assert (receiver.balance, receiver.total_earned, receiver.total_spent) == (40, 40, 0)
 
 
-async def test_apply_round_settlement_updates_player_and_house_totals() -> None:
-    """Casino settlement stores actual applied deltas in account totals."""
+async def test_apply_round_settlement_updates_player_and_casino_totals() -> None:
+    """Casino settlement stores actual applied deltas in account / ledger totals."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=40,
+        player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
 
     player = await get_account(user_id=1)
-    house = await get_account(user_id=99)
+    ledger = await get_casino_ledger()
     assert player is not None
-    assert house is not None
     assert (player.balance, player.total_earned, player.total_spent) == (60, 100, 40)
-    assert (house.balance, house.total_earned, house.total_spent) == (40, 40, 0)
+    assert (ledger.balance, ledger.total_earned, ledger.total_spent) == (40, 40, 0)
 
 
 async def test_adjust_balance_counts_applied_delta_not_requested_delta() -> None:

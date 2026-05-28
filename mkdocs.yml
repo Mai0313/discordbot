@@ -19,12 +19,13 @@ nav:
               - _auto_unmute:
                   - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
               - _economy:
+                  - boards: Reference/discordbot/cogs/_economy/boards.md
                   - database: Reference/discordbot/cogs/_economy/database.md
                   - presentation: Reference/discordbot/cogs/_economy/presentation.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
                   - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
-                  - cleanup: Reference/discordbot/cogs/_games/cleanup.md
+                  - bot_player: Reference/discordbot/cogs/_games/bot_player.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
@@ -49,6 +50,7 @@ nav:
                   - market: Reference/discordbot/cogs/_stock/market.md
                   - news: Reference/discordbot/cogs/_stock/news.md
                   - presentation: Reference/discordbot/cogs/_stock/presentation.md
+                  - prompts: Reference/discordbot/cogs/_stock/prompts.md
                   - views: Reference/discordbot/cogs/_stock/views.md
               - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
               - economy: Reference/discordbot/cogs/economy.md
@@ -72,7 +74,10 @@ nav:
               - avatars: Reference/discordbot/utils/avatars.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
+              - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
+              - number_text: Reference/discordbot/utils/number_text.md
+              - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
           - cli: Reference/discordbot/cli.md
   - Scripts:

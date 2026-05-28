@@ -17,7 +17,7 @@ from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
 from discordbot.cogs.template import TemplateCogs
-from discordbot.typings.games import BlackjackDealerDecision
+from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
 from discordbot.typings.models import ModelSettings
@@ -34,11 +34,12 @@ from discordbot.typings.economy import (
     LoanPaymentResult,
     LoanContractStatus,
     LoanProposalStatus,
+    CasinoLedgerSnapshot,
     LossLeaderboardEntry,
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
-from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.database import (
@@ -223,20 +224,6 @@ class HangingClient:
     def __init__(self) -> None:
         """Initializes the hanging responses resource."""
         self.responses = HangingResponses()
-
-
-class ParsedDecisionResponses:
-    """Fake Responses API resource for Blackjack dealer decision parsing."""
-
-    def __init__(self, output_parsed: BlackjackDealerDecision | None) -> None:
-        """Stores the parsed output to return."""
-        self.output_parsed = output_parsed
-        self.calls: list[dict[str, Any]] = []
-
-    async def parse(self, **kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records parse arguments and returns the configured parsed output."""
-        self.calls.append(kwargs)
-        return SimpleNamespace(output_parsed=self.output_parsed)
 
 
 class DownloadResultStub:
@@ -615,6 +602,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "top_n", fake_top_n)
     monkeypatch.setattr(economy, "top_losers", fake_top_losers)
     monkeypatch.setattr(economy, "get_account", fake_get_account)
+    monkeypatch.setattr(economy, "get_casino_ledger", fake_get_casino_ledger)
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
@@ -641,7 +629,8 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.balance.callback(cog, interaction, member=None)
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
-    await EconomyCogs.house.callback(cog, interaction)
+    await EconomyCogs.casino.callback(cog, interaction)
+    await EconomyCogs.pocat.callback(cog, interaction)
     await EconomyCogs.admin_refund_tax.callback(
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="100"
     )
@@ -675,23 +664,24 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.central_bank_status.callback(cog, interaction)
     await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 17
-    assert len(scheduled) == 11
+    assert len(interaction.followup.sent) == 18
+    assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
     assert interaction.followup.sent[1]["file"].filename == "economy_leaderboard.png"
     assert interaction.followup.sent[2]["file"].filename == "economy_loss_leaderboard.png"
     assert "view" not in interaction.followup.sent[3]
-    assert interaction.followup.sent[4].get("ephemeral") is not True
+    assert "view" not in interaction.followup.sent[4]
     assert interaction.followup.sent[5].get("ephemeral") is not True
     assert interaction.followup.sent[6].get("ephemeral") is not True
     assert interaction.followup.sent[7].get("ephemeral") is not True
     assert interaction.followup.sent[8].get("ephemeral") is not True
     assert interaction.followup.sent[9].get("ephemeral") is not True
-    assert interaction.followup.sent[10].get("ephemeral") is True
-    assert interaction.followup.sent[12].get("ephemeral") is not True
+    assert interaction.followup.sent[10].get("ephemeral") is not True
+    assert interaction.followup.sent[11].get("ephemeral") is True
     assert interaction.followup.sent[13].get("ephemeral") is not True
     assert interaction.followup.sent[14].get("ephemeral") is not True
+    assert interaction.followup.sent[15].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     balance_embed = interaction.followup.sent[0]["embed"]
     assert balance_embed.title == "💰 財務總覽"
@@ -706,12 +696,12 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert any(
         field.name == "股票部位" and "BCAT" in field.value for field in balance_embed.fields
     )
-    borrow_embed = interaction.followup.sent[7]["embed"]
+    borrow_embed = interaction.followup.sent[8]["embed"]
     assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
-    borrow_view = interaction.followup.sent[7]["view"]
+    borrow_view = interaction.followup.sent[8]["view"]
     assert isinstance(borrow_view, economy.CreditLoanDecisionView)
     assert borrow_view.message is not None
-    central_bank_payload = interaction.followup.sent[11]
+    central_bank_payload = interaction.followup.sent[12]
     central_bank_view = central_bank_payload["view"]
     assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
     assert central_bank_view.message is not None
@@ -1269,8 +1259,15 @@ async def fake_top_losers(
 
 
 async def fake_get_account(user_id: int) -> AccountSnapshot:
-    """Returns a fake house ledger account."""
+    """Returns a fake bot wallet account."""
     return AccountSnapshot(name="Bot", balance=-50, total_earned=100, total_spent=150)
+
+
+async def fake_get_casino_ledger() -> CasinoLedgerSnapshot:
+    """Returns a fake casino ledger snapshot."""
+    return CasinoLedgerSnapshot(
+        balance=-50, total_earned=100, total_spent=150, updated_at=datetime.now(tz=UTC)
+    )
 
 
 async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
@@ -1436,7 +1433,9 @@ def ignore_scheduled_public_message(
 
 
 async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance."""
+    """Returns a small fake game balance (bot stays at 0 so it does not auto-join)."""
+    if user_id == 999:
+        return 0
     return 100
 
 
@@ -1446,7 +1445,9 @@ async def _empty_game_balance(user_id: int) -> int:
 
 
 async def _wealthy_game_balance(user_id: int) -> int:
-    """Returns a fake balance large enough for Dragon Gate ante."""
+    """Returns a fake balance large enough for Dragon Gate ante (bot still at 0)."""
+    if user_id == 999:
+        return 0
     return 1_000_000
 
 
@@ -1464,7 +1465,7 @@ class FakeDealer:
         """Returns deterministic opening banter."""
         return "taunt"
 
-    async def settle(  # noqa: PLR0913 -- mirrors DealerAI.settle signature
+    async def settle(  # noqa: PLR0913 -- mirrors SystemNarrator.settle signature
         self,
         author_name: str,
         player_name: str,
@@ -1499,7 +1500,9 @@ def test_parse_wager_amount_accepts_formatted_text() -> None:
     assert parse_wager_amount(raw_amount="-1") is None
 
 
-async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_games_commands_run_with_patched_settlement(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
     """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
@@ -1507,7 +1510,7 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
@@ -1524,14 +1527,16 @@ async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.Mo
     assert isinstance(dragon_gate_interaction.followup.sent[-1]["view"], DragonGateLobbyView)
 
 
-async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_blackjack_lobby_start_is_owner_only(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
     """Verifies only the Blackjack lobby owner can press Start."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="10")
@@ -1549,20 +1554,20 @@ async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPat
 
 
 async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
 ) -> None:
     """Verifies owner over-betting clamps the shared Blackjack lobby bet."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns distinct balances for owner and joining player."""
-        return {1: 300, 2: 50_000_000}[user_id]
+        """Returns distinct balances for owner, joining player, and the bot."""
+        return {1: 300, 2: 50_000_000, 999: 0}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="1,000,000")
@@ -1586,21 +1591,59 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     assert bob.is_allin is False
 
 
-async def test_blackjack_string_bet_accepts_large_formatted_amount(
+async def test_refresh_participants_preserves_existing_blackjack_wagers(
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies start-time balance refresh keeps per-seat Blackjack wagers."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+
+    async def balance_by_user(user_id: int) -> int:
+        """Returns enough balance for the owner and bot to keep their queued bets."""
+        return {1: 500, 999: 1_000}[user_id]
+
+    monkeypatch.setattr(games, "get_balance", balance_by_user)
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    owner = GameParticipant(
+        user_id=1,
+        account_name="alice",
+        display_name="Alice",
+        bet=300,
+        balance_at_start=300,
+        is_allin=True,
+    )
+    bot_player = GameParticipant(
+        user_id=999,
+        account_name="dealer",
+        display_name="Dealer",
+        bet=125,
+        balance_at_start=1_000,
+        is_allin=False,
+    )
+
+    refreshed = await cog._refresh_participants(participants=[owner, bot_player], mode="clamp")
+
+    assert [participant.bet for participant in refreshed.participants] == [300, 125]
+    assert [participant.balance_at_start for participant in refreshed.participants] == [500, 1_000]
+
+
+async def test_blackjack_string_bet_accepts_large_formatted_amount(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
 ) -> None:
     """Verifies Blackjack slash bet parsing accepts values above Discord integer limits."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns enough balance to cover a large formatted wager."""
+        """Returns enough balance to cover a large formatted wager (bot stays at 0)."""
+        if user_id == 999:
+            return 0
         return 10_000_000_000_000_000
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="9,007,199,254,740,993")
@@ -1625,7 +1668,7 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
 
 
 async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
 ) -> None:
     """Verifies bet zero avoids typing a very large numeric bet."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -1633,12 +1676,12 @@ async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
 
     async def balance_by_user(user_id: int) -> int:
         """Returns a large owner balance that is awkward to type in Discord."""
-        return {1: 300_000_000_000_000, 2: 500_000_000_000_000}[user_id]
+        return {1: 300_000_000_000_000, 2: 500_000_000_000_000, 999: 0}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1657,7 +1700,7 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1677,7 +1720,7 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     )
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["dealer"] = FakeDealer()
+    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, owner_interaction)
@@ -1694,73 +1737,19 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     assert isinstance(other_interaction.response.sent[0]["content"], str)
 
 
-async def test_dealer_ai_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies DealerAI returns fallback banter when the LLM call times out."""
-    monkeypatch.setattr("discordbot.cogs._games.dealer.DEALER_AI_TIMEOUT_SECONDS", 0.01)
-    dealer = DealerAI(
+async def test_system_narrator_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies SystemNarrator returns fallback narration when the LLM call times out."""
+    monkeypatch.setattr("discordbot.cogs._games.dealer.NARRATOR_AI_TIMEOUT_SECONDS", 0.01)
+    narrator = SystemNarrator(
         client=cast("AsyncOpenAI", HangingClient()),
         model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
     )
 
-    line = await dealer.taunt_bet(
-        author_name="alice", player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
+    line = await narrator.taunt_bet(
+        player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
     )
 
-    assert line == "下好離手, 不要等下哭"
-
-
-async def test_dealer_ai_parses_blackjack_decision() -> None:
-    """Verifies Blackjack dealer decisions use Responses API structured parsing."""
-    responses = ParsedDecisionResponses(
-        output_parsed=BlackjackDealerDecision(action="hit", reason="追過最高玩家")
-    )
-    client = SimpleNamespace(responses=responses)
-    dealer = DealerAI(
-        client=cast("AsyncOpenAI", client),
-        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
-    )
-
-    decision = await dealer.decide_blackjack_action(
-        author_name="alice", table_state="莊家總點數: 13\n玩家: Alice = 18", dealer_total=13
-    )
-
-    assert decision.action == "hit"
-    assert responses.calls[0]["text_format"] is BlackjackDealerDecision
-
-
-async def test_dealer_ai_empty_blackjack_decision_uses_basic_rule() -> None:
-    """Verifies an empty parsed decision falls back to deterministic dealer rules."""
-    responses = ParsedDecisionResponses(output_parsed=None)
-    client = SimpleNamespace(responses=responses)
-    dealer = DealerAI(
-        client=cast("AsyncOpenAI", client),
-        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
-    )
-
-    decision = await dealer.decide_blackjack_action(
-        author_name="alice", table_state="莊家總點數: 18\n玩家: Alice = 17", dealer_total=18
-    )
-
-    assert decision == BlackjackDealerDecision(action="stand", reason="basic rule: 已達 17 點")
-
-
-async def test_dealer_ai_blackjack_decision_times_out_to_basic_rule(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Verifies slow Blackjack decisions use the dedicated decision timeout."""
-    monkeypatch.setattr(
-        "discordbot.cogs._games.dealer.DEALER_BLACKJACK_DECISION_TIMEOUT_SECONDS", 0.01
-    )
-    dealer = DealerAI(
-        client=cast("AsyncOpenAI", HangingClient()),
-        model=ModelSettings(name=TEST_DEALER_MODEL, effort="medium"),
-    )
-
-    decision = await dealer.decide_blackjack_action(
-        author_name="alice", table_state="莊家總點數: 16\n玩家: Alice = 18", dealer_total=16
-    )
-
-    assert decision == BlackjackDealerDecision(action="hit", reason="basic rule: 未滿 17 點")
+    assert line == "賭場已收到下注, 牌桌即將發牌"
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:

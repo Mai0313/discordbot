@@ -54,10 +54,12 @@ from discordbot.cogs._economy.database import (
     checkin_reward,
     _taipei_midnight,
     get_jackpot_pool,
+    get_casino_ledger,
     _stored_int_to_int,
     get_jackpot_snapshot,
     credit_with_repayment,
     apply_round_settlement,
+    get_casino_daily_stats,
     apply_jackpot_settlement,
     open_global_state_session,
     apply_jackpot_settlement_batch,
@@ -66,7 +68,7 @@ from discordbot.cogs._economy.database import (
     invalidate_economy_leaderboard_cache,
 )
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embed
+from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embeds
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
@@ -124,10 +126,10 @@ class _SlowSettleDealerStub(_DealerStub):
 def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     """Default Blackjack hand settlement lists are isolated per model instance."""
     first = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, house_balance=0, outcome="push", detail="first"
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push", detail="first"
     )
     second = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, house_balance=0, outcome="push", detail="second"
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push", detail="second"
     )
 
     first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
@@ -538,7 +540,7 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_contract",
         "casino_account",
     }
-    assert global_state_tables == {"jackpot_pool"}
+    assert global_state_tables == {"jackpot_pool", "casino_ledger"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"
@@ -795,54 +797,40 @@ async def test_top_n_write_path_invalidates_cache() -> None:
     assert [row.user_id for row in await top_n(limit=1)] == [2]
 
 
-async def test_apply_round_settlement_allows_negative_house_balance() -> None:
-    """House ledger keeps a true running net even when the dealer is down."""
+async def test_apply_round_settlement_allows_negative_casino_balance() -> None:
+    """Casino ledger keeps a true running net even when the casino is down."""
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-500,
+        player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
-    assert await get_balance(user_id=99) == -500
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -500
 
 
-async def test_apply_round_settlement_house_accumulates_gross_flows() -> None:
+async def test_apply_round_settlement_casino_accumulates_gross_flows() -> None:
     """Wins and losses both accumulate gross totals, not just the net balance."""
     await _add_balance(user_id=1, name="alice", amount=200)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-200,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=200,
+        player_id=1, player_account_name="alice", player_delta=-200, casino_delta=200
     )
     await apply_round_settlement(
-        player_id=2,
-        player_account_name="bob",
-        player_delta=300,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-300,
+        player_id=2, player_account_name="bob", player_delta=300, casino_delta=-300
     )
-    account = await get_account(user_id=99)
-    assert account == AccountSnapshot(
-        name="house", balance=-100, total_earned=200, total_spent=300
-    )
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -100
+    assert ledger.total_earned == 200
+    assert ledger.total_spent == 300
 
 
-async def test_settle_wager_updates_player_and_house() -> None:
-    """Shared wager settlement applies net delta and mirrors house P&L."""
+async def test_settle_wager_updates_player_and_casino() -> None:
+    """Shared wager settlement applies net delta and mirrors casino P&L."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    settlement = await settle_wager(
-        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=40
-    )
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=40)
     assert settlement.payout == 40
     assert settlement.new_balance == 140
-    assert settlement.house_balance == -40
+    assert settlement.casino_balance == -40
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -40
 
 
 async def test_get_account_returns_none_for_unseen_user() -> None:
@@ -850,8 +838,8 @@ async def test_get_account_returns_none_for_unseen_user() -> None:
     assert await get_account(user_id=12345) is None
 
 
-async def test_settle_blackjack_player_updates_player_and_house() -> None:
-    """Shared Blackjack settlement applies net delta and mirrors house P&L."""
+async def test_settle_blackjack_player_updates_player_and_casino() -> None:
+    """Shared Blackjack settlement applies net delta and mirrors casino P&L."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
     participant = _participant()
@@ -867,14 +855,13 @@ async def test_settle_blackjack_player_updates_player_and_house() -> None:
         player=round_state.players[0],
         player_id=1,
         player_account_name="alice",
-        dealer_id=99,
-        dealer_name="house",
     )
     assert settlement.delta == 50
     assert settlement.payout == 50
     assert settlement.new_balance == 150
-    assert settlement.house_balance == -50
-    assert await get_balance(user_id=99) == -50
+    assert settlement.casino_balance == -50
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -50
 
 
 async def test_blackjack_view_finalizes_once_when_called_concurrently(
@@ -899,7 +886,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=_round_from_cards(
             player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
             dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
@@ -908,14 +895,13 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
         ),
         starter_id=1,
         author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
     )
 
     await asyncio.gather(view.finalize(message=message), view.finalize(message=message))
 
     assert await get_balance(user_id=1) == 150
-    assert await get_balance(user_id=99) == -50
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == -50
     assert "embeds" not in message.edits[0]
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
@@ -946,7 +932,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=_round_from_cards(
             player_cards=[Card(rank="10", suit="♠"), Card(rank="8", suit="♥")],
             dealer_cards=[Card(rank="10", suit="♣"), Card(rank="Q", suit="♦")],
@@ -955,8 +941,6 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
         ),
         starter_id=1,
         author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
     )
     view.message = message
 
@@ -964,7 +948,8 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
 
     assert view.round_state.finished is True
     assert await get_balance(user_id=1) == 50
-    assert await get_balance(user_id=99) == 50
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == 50
     assert "embeds" not in message.edits[0]
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
@@ -995,7 +980,7 @@ async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
     message = _MessageStub()
     participant = _participant()
     view = BlackjackView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=_round_from_cards(
             player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
             dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
@@ -1004,8 +989,6 @@ async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
         ),
         starter_id=1,
         author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
     )
 
     await view.finalize(message=message)
@@ -1023,10 +1006,8 @@ async def test_blackjack_view_final_edit_does_not_wait_for_settlement_banter(
     assert cleanup_messages == [message]
 
 
-async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Dealer hits below 17, then lets DealerAI decide once total reaches 17+."""
+async def test_blackjack_view_dealer_plays_h17_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dealer plays deterministically under H17 (hits below 17, stands on hard 17+)."""
     cleanup_messages: list[_MessageStub] = []
 
     def fake_schedule_public_message_delete(
@@ -1053,32 +1034,25 @@ async def test_blackjack_view_asks_ai_dealer_at_seventeen_plus(
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="3", suit="♦")]
     round_state.phase = "player_actions"
+    round_state.shoe = []
 
     dealer = _DealerStub()
-    dealer.decisions = [BlackjackDealerDecision(action="stand", reason="18 點收手")]
     message = _MessageStub()
     view = BlackjackView(
-        dealer=dealer,
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=dealer, round_state=round_state, starter_id=1, author_name="alice"
     )
 
     await view.finalize(message=message)
 
     assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
     assert view.round_state.dealer_played is True
-    assert dealer.decision_calls == 1
     assert await get_balance(user_id=1) == 50
-    assert await get_balance(user_id=99) == 50
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == 50
     assert "embeds" not in message.edits[0]
     final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "莊家動作:" not in description
-    assert "自動抽牌: 13 hit 抽 5♣ → 18" in description
-    assert "AI: 18 stand" in description
+    assert "規則: 13 hit 抽 5♣ → 18" in description
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert cleanup_messages == [message]
@@ -1094,12 +1068,7 @@ async def test_blackjack_view_insurance_buttons_only_during_insurance_phase() ->
     round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="A", suit="♦")]
     round_state.phase = "player_actions"
     view = BlackjackView(
-        dealer=_DealerStub(),
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=_DealerStub(), round_state=round_state, starter_id=1, author_name="alice"
     )
 
     view.sync_buttons()
@@ -1120,8 +1089,8 @@ async def test_blackjack_view_insurance_buttons_only_during_insurance_phase() ->
     assert "bj:insure_no" not in custom_ids
 
 
-async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Soft 17 is handed to DealerAI like every other 17+ total."""
+async def test_blackjack_view_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Soft 17 forces a hit under the H17 rule."""
     cleanup_messages: list[_MessageStub] = []
 
     def fake_schedule_public_message_delete(
@@ -1130,10 +1099,15 @@ async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.Monk
         """Records the final message scheduled for cleanup."""
         cleanup_messages.append(message)
 
+    def draw_fixed_card(rng: Random) -> Card:
+        """Returns a deterministic dealer draw of K (10 value) to land on 17."""
+        return Card(rank="K", suit="♠")
+
     monkeypatch.setattr(
         "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
+    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", draw_fixed_card)
     await _add_balance(user_id=1, name="alice", amount=100)
 
     participant = _participant()
@@ -1143,28 +1117,23 @@ async def test_blackjack_view_asks_ai_dealer_on_soft_17(monkeypatch: pytest.Monk
     round_state.players[0].hands[0].cards = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
     round_state.dealer = [Card(rank="A", suit="♣"), Card(rank="6", suit="♦")]
     round_state.phase = "player_actions"
+    round_state.shoe = []
 
     dealer = _DealerStub()
-    dealer.decisions = [BlackjackDealerDecision(action="stand", reason="soft 17 收手")]
     message = _MessageStub()
     view = BlackjackView(
-        dealer=dealer,
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=dealer, round_state=round_state, starter_id=1, author_name="alice"
     )
 
     await view.finalize(message=message)
 
-    assert dealer.decision_calls == 1
-    assert view.round_state.dealer_total() == 17
-    assert len(view.round_state.dealer) == 2
+    # Soft 17 must trigger at least one draw, landing the dealer above 17.
+    assert len(view.round_state.dealer) >= 3
+    assert view.round_state.dealer_played is True
     assert "embeds" not in message.edits[0]
     final_embeds = cast("list[Any]", message.edits[1]["embeds"])
     description = cast("str", final_embeds[1].description)
-    assert "AI: 17 stand" in description
+    assert "規則: 17 hit" in description
     await view.wait_for_background_tasks()
     assert dealer.settle_calls == 1
     assert cleanup_messages == [message]
@@ -1193,7 +1162,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
             delta=50,
             payout=50,
             new_balance=150,
-            house_balance=-50,
+            casino_balance=-50,
             detail="win",
             hands=[
                 BlackjackHandSettlement(
@@ -1218,7 +1187,7 @@ async def test_blackjack_view_locks_actions_while_finalizing(
     message = _MessageStub()
     participant = _participant(balance_at_start=50)
     view = BlackjackView(
-        dealer=dealer,
+        narrator=dealer,
         round_state=_round_from_cards(
             player_cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],
             dealer_cards=[Card(rank="10", suit="♣"), Card(rank="8", suit="♦")],
@@ -1227,8 +1196,6 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         ),
         starter_id=1,
         author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
     )
 
     hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
@@ -1278,12 +1245,7 @@ async def test_blackjack_view_rejects_stale_double_without_mutating_next_player(
     dealer = _DealerStub()
     message = _MessageStub()
     view = BlackjackView(
-        dealer=dealer,
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=dealer, round_state=round_state, starter_id=1, author_name="alice"
     )
 
     double_button = next(child for child in view.children if child.custom_id == "bj:double")
@@ -1323,15 +1285,11 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
     bob.cards = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     round_state.dealer = [Card(rank="9", suit="♣"), Card(rank="7", suit="♦")]
     round_state.current_player_index = 1
+    round_state.shoe = []
 
     message = _MessageStub()
     view = BlackjackView(
-        dealer=_DealerStub(),
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=_DealerStub(), round_state=round_state, starter_id=1, author_name="alice"
     )
 
     hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
@@ -1375,16 +1333,12 @@ async def test_blackjack_view_hit_hint_uses_active_split_hand_total(
     ]
     round_state.dealer = [Card(rank="9", suit="♥"), Card(rank="7", suit="♦")]
     round_state.current_hand_index = 1
+    round_state.shoe = []
 
     dealer = _DealerStub()
     message = _MessageStub()
     view = BlackjackView(
-        dealer=dealer,
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        dealer_id=99,
-        dealer_name="house",
+        narrator=dealer, round_state=round_state, starter_id=1, author_name="alice"
     )
 
     hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
@@ -1422,20 +1376,15 @@ async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
     await _add_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[
         apply_round_settlement(
-            player_id=42,
-            player_account_name="alice",
-            player_delta=10,
-            dealer_id=99,
-            dealer_name="house",
-            dealer_delta=-10,
+            player_id=42, player_account_name="alice", player_delta=10, casino_delta=-10
         )
         for _ in range(10)
     ])
     assert await get_balance(user_id=42) == 200
 
 
-async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> None:
-    """Verifies that concurrent dealer ledger settlements accumulate."""
+async def test_apply_round_settlement_concurrent_casino_updates_accumulate() -> None:
+    """Verifies that concurrent casino ledger settlements accumulate."""
     for user_id in range(10):
         await _add_balance(user_id=user_id, name=f"player{user_id}", amount=10)
     await asyncio.gather(*[
@@ -1443,72 +1392,55 @@ async def test_apply_round_settlement_concurrent_house_updates_accumulate() -> N
             player_id=user_id,
             player_account_name=f"player{user_id}",
             player_delta=-10,
-            dealer_id=99,
-            dealer_name="house",
-            dealer_delta=10,
+            casino_delta=10,
         )
         for user_id in range(10)
     ])
-    account = await get_account(user_id=99)
-    assert account is not None
-    assert account.balance == 100
-    assert account.total_earned == 100
-    assert account.total_spent == 0
+    ledger = await get_casino_ledger()
+    assert ledger.balance == 100
+    assert ledger.total_earned == 100
+    assert ledger.total_spent == 0
 
 
 async def test_apply_round_settlement_is_atomic() -> None:
-    """Player delta and house mirror share one transaction and one return."""
+    """Player delta and casino mirror share one transaction and one return."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    player_balance, house_balance = await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-40,
+    result = await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=40, casino_delta=-40
     )
-    assert player_balance == 140
-    assert house_balance == -40
+    assert result.player_balance == 140
+    assert result.casino_balance == -40
     assert await get_balance(user_id=1) == 140
-    assert await get_balance(user_id=99) == -40
+    ledger = await get_casino_ledger()
+    assert ledger.balance == -40
 
 
-async def test_apply_round_settlement_loss_debits_player_and_house() -> None:
-    """A loss debits the player and credits the house."""
+async def test_apply_round_settlement_loss_debits_player_and_casino() -> None:
+    """A loss debits the player and credits the casino."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
-    player_balance, house_balance = await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=40,
+    result = await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
-    assert player_balance == 60
-    assert house_balance == 40
+    assert result.player_balance == 60
+    assert result.casino_balance == 40
     account = await get_account(user_id=1)
     assert account is not None
     assert account.total_earned == 100
     assert account.total_spent == 40
 
 
-async def test_apply_round_settlement_loss_clamps_player_and_house_to_available_balance() -> None:
-    """Deferred settlement stops at zero and only credits the house with actual debit."""
+async def test_apply_round_settlement_loss_clamps_player_and_casino_to_available_balance() -> None:
+    """Deferred settlement stops at zero and only credits the casino with actual debit."""
     await _add_balance(user_id=1, name="alice", amount=25)
 
-    player_balance, house_balance = await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=40,
+    result = await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
 
-    assert player_balance == 0
-    assert house_balance == 25
+    assert result.player_balance == 0
+    assert result.casino_balance == 25
     account = await get_account(user_id=1)
     assert account is not None
     assert account.total_spent == 25
@@ -1519,26 +1451,20 @@ async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
     await _add_balance(user_id=1, name="alice", amount=1_000)
 
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-300,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=300,
+        player_id=1, player_account_name="alice", player_delta=-300, casino_delta=300
     )
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-500,
+        player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
 
     loss, win, net, day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (300, 500, 200)
     assert day_started_at is not None
     assert _as_taipei(dt=day_started_at) == _taipei_midnight(now=_database_now())
+    stats = await get_casino_daily_stats(user_id=1)
+    assert stats.daily_loss == 300
+    assert stats.daily_win == 500
+    assert stats.daily_net == 200
 
 
 async def test_daily_casino_counters_store_large_values_as_text() -> None:
@@ -1626,22 +1552,12 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
     await _add_balance(user_id=1, name="alice", amount=100)
 
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=0,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=0,
+        player_id=1, player_account_name="alice", player_delta=0, casino_delta=0
     )
     assert await _daily_casino_stats(user_id=1) == (0, 0, 0, None)
 
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-40,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=40,
+        player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
     assert await _daily_casino_stats(user_id=99) == (0, 0, 0, None)
 
@@ -1819,36 +1735,16 @@ async def test_top_losers_uses_gross_loss_not_net() -> None:
     await _add_balance(user_id=2, name="bob", amount=1_000)
     await _add_balance(user_id=3, name="carol", amount=1_000)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-300,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=300,
+        player_id=1, player_account_name="alice", player_delta=-300, casino_delta=300
     )
     await apply_round_settlement(
-        player_id=2,
-        player_account_name="bob",
-        player_delta=200,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-200,
+        player_id=2, player_account_name="bob", player_delta=200, casino_delta=-200
     )
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=-500,
+        player_id=1, player_account_name="alice", player_delta=500, casino_delta=-500
     )
     await apply_round_settlement(
-        player_id=3,
-        player_account_name="carol",
-        player_delta=-200,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=200,
+        player_id=3, player_account_name="carol", player_delta=-200, casino_delta=200
     )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
     assert rows == [
@@ -1862,12 +1758,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
     for user_id, name, loss in [(1, "alice", 100), (2, "bob", 500), (3, "carol", 250)]:
         await _add_balance(user_id=user_id, name=name, amount=loss)
         await apply_round_settlement(
-            player_id=user_id,
-            player_account_name=name,
-            player_delta=-loss,
-            dealer_id=99,
-            dealer_name="house",
-            dealer_delta=loss,
+            player_id=user_id, player_account_name=name, player_delta=-loss, casino_delta=loss
         )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
     assert [(row.user_id, row.loss_amount) for row in rows] == [(2, 500), (3, 250), (1, 100)]
@@ -1877,12 +1768,7 @@ async def test_top_losers_excludes_specified_users() -> None:
     """`exclude_user_ids` filters the house ledger out of the report."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=500,
+        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
     assert all(row.user_id != 99 for row in rows)
@@ -1893,20 +1779,10 @@ async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> N
     await _add_balance(user_id=1, name="alice", amount=500)
     await _add_balance(user_id=2, name="bob", amount=400)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=500,
+        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     await apply_round_settlement(
-        player_id=2,
-        player_account_name="bob",
-        player_delta=-400,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=400,
+        player_id=2, player_account_name="bob", player_delta=-400, casino_delta=400
     )
     async with open_session() as session:
         await session.execute(
@@ -1924,12 +1800,7 @@ async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
     """Maintenance callers can include hidden accounts in daily loss queries."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=500,
+        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     async with open_session() as session:
         await session.execute(
@@ -1947,12 +1818,7 @@ async def test_top_losers_ignores_counters_before_today() -> None:
     """Stale account counters from an older Taipei day do not count."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
-        player_id=1,
-        player_account_name="alice",
-        player_delta=-500,
-        dealer_id=99,
-        dealer_name="house",
-        dealer_delta=500,
+        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
     past = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=2)
     async with open_session() as session:
@@ -1985,14 +1851,12 @@ async def test_settle_wager_applies_vip_bonus_on_win() -> None:
     await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
     purchase = await buy_vip(user_id=1, name="alice")
     assert purchase is not None
-    settlement = await settle_wager(
-        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=100
-    )
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=100)
     assert settlement.delta == 150
     assert settlement.base_delta == 100
     assert settlement.vip_bonus == 50
     assert settlement.is_vip is True
-    assert settlement.house_balance == -150
+    assert settlement.casino_balance == -150
 
 
 async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
@@ -2000,14 +1864,12 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
     await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 1_000)
     purchase = await buy_vip(user_id=1, name="alice")
     assert purchase is not None
-    settlement = await settle_wager(
-        player_id=1, player_account_name="alice", dealer_id=99, dealer_name="house", delta=-100
-    )
+    settlement = await settle_wager(player_id=1, player_account_name="alice", delta=-100)
     assert settlement.delta == -100
     assert settlement.base_delta == -100
     assert settlement.vip_bonus == 0
     assert settlement.is_vip is True
-    assert settlement.house_balance == 100
+    assert settlement.casino_balance == 100
 
 
 # Multi-hand Blackjack settlement -----------------------------------------
@@ -2021,8 +1883,6 @@ async def _settle_player(round_state: BlackjackRound) -> BlackjackPlayerSettleme
         player=player,
         player_id=player.participant.user_id,
         player_account_name=player.participant.account_name,
-        dealer_id=99,
-        dealer_name="house",
     )
 
 
@@ -2045,7 +1905,7 @@ async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
     assert settlement.outcome == "surrender"
     assert settlement.delta == -25
     assert settlement.new_balance == 75
-    assert settlement.house_balance == 25
+    assert settlement.casino_balance == 25
 
 
 async def test_settle_blackjack_player_double_doubles_loss_when_dealer_higher() -> None:
@@ -2175,8 +2035,9 @@ async def test_settle_blackjack_player_five_card_non_21_wins_without_system_bonu
     assert settlement.five_card_bonus == 0
     assert settlement.delta == 10_000
     assert settlement.new_balance == 110_000
-    assert settlement.house_balance == -10_000
-    assert await get_balance(user_id=99) == -10_000
+    assert settlement.casino_balance == -10_000
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == -10_000
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 10_000, 10_000)
 
@@ -2210,8 +2071,9 @@ async def test_settle_blackjack_player_five_card_bonus_excludes_house_ledger() -
     assert settlement.five_card_bonus == 10_000
     assert settlement.delta == 20_000
     assert settlement.new_balance == 120_000
-    assert settlement.house_balance == -10_000
-    assert await get_balance(user_id=99) == -10_000
+    assert settlement.casino_balance == -10_000
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == -10_000
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 20_000, 20_000)
     account = await get_account(user_id=1)
@@ -2248,8 +2110,9 @@ async def test_settle_blackjack_player_five_card_vip_keeps_system_bonus_out_of_h
     assert settlement.five_card_bonus == 10_000
     assert settlement.delta == 25_000
     assert settlement.new_balance == 125_000
-    assert settlement.house_balance == -15_000
-    assert await get_balance(user_id=99) == -15_000
+    assert settlement.casino_balance == -15_000
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == -15_000
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 25_000, 25_000)
 
@@ -2283,8 +2146,9 @@ async def test_settle_blackjack_player_five_card_push_still_pays_bonus() -> None
     assert settlement.five_card_bonus == 10_000
     assert settlement.delta == 10_000
     assert settlement.new_balance == 110_000
-    assert settlement.house_balance == 0
-    assert await get_balance(user_id=99) == 0
+    assert settlement.casino_balance == 0
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == 0
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 10_000, 10_000)
 
@@ -2321,8 +2185,9 @@ async def test_settle_blackjack_player_five_card_push_pays_vip_bonus_without_hou
     assert settlement.five_card_bonus == 10_000
     assert settlement.delta == 15_000
     assert settlement.new_balance == 115_000
-    assert settlement.house_balance == 0
-    assert await get_balance(user_id=99) == 0
+    assert settlement.casino_balance == 0
+    _ledger = await get_casino_ledger()
+    assert _ledger.balance == 0
     loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
     assert (loss, win, net) == (0, 15_000, 15_000)
 
@@ -2348,14 +2213,13 @@ async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:
     round_state.phase = "settled"
     settlement = await _settle_player(round_state=round_state)
 
-    embed = build_final_embed(
-        dealer_name="house",
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · ✨ 過五關 · 21"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## ✨ 過五關 · 21" in description
     assert "過五關 bonus `+1萬`" in description
 
@@ -2385,14 +2249,13 @@ async def test_blackjack_final_embed_shows_five_card_win_without_bonus_metadata(
     round_state.phase = "settled"
     settlement = await _settle_player(round_state=round_state)
 
-    embed = build_final_embed(
-        dealer_name="house",
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · 🎉 過五關 · 20"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## 🎉 過五關 · 20" in description
     assert "過五關 bonus" not in description
 
@@ -2442,17 +2305,15 @@ async def test_blackjack_final_embed_uses_aggregate_insurance_push_title() -> No
     round_state.phase = "settled"
 
     settlement = await _settle_player(round_state=round_state)
-    embed = build_final_embed(
-        dealer_name="house",
+    embeds = build_final_embeds(
         round_state=round_state,
         results=[BlackjackPlayerResult(participant=player.participant, settlement=settlement)],
     )
+    player_embed = embeds[1]
 
-    assert embed.title == "♠️ 二十一點 · 1 平"
-    description = cast("str", embed.description)
+    description = cast("str", player_embed.description)
     assert "## 😢 你輸了 · 17 < 21" in description
     assert "保險 `50` → 中獎 `+100`" in description
-    assert "17 = 21" not in embed.title
 
 
 async def test_settle_blackjack_player_insurance_lost_when_no_dealer_blackjack() -> None:

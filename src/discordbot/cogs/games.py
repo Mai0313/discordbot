@@ -5,30 +5,33 @@ from functools import partial, cached_property
 from collections.abc import Callable
 
 from openai import AsyncOpenAI
+import logfire
 import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.games import (
-    DealerIdentity,
+    SystemIdentity,
     GameParticipant,
+    BotFinancialContext,
     GameParticipantIdentity,
     RefreshParticipantsResult,
     ParticipantPreparationResult,
 )
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs._games.dealer import DealerAI
+from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
 from discordbot.utils.message_cleanup import (
     track_public_message,
     delete_tracked_public_messages,
     schedule_public_message_delete,
 )
-from discordbot.cogs._economy.database import get_balance
+from discordbot.cogs._economy.database import get_account, get_balance, get_casino_daily_stats
+from discordbot.cogs._games.bot_player import BotPlayerAI, fallback_bet
 from discordbot.cogs._games.dragon_gate import ANTE
-from discordbot.cogs._games.presentation import ERROR_COLOR
+from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
@@ -43,11 +46,11 @@ from discordbot.cogs._games.dragon_gate_views import (
 
 
 class GamesCogs(commands.Cog):
-    """Slash commands for multiplayer casino games against an AI dealer.
+    """Slash commands for multiplayer casino games against the casino system.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration loaded for dealer banter.
+        config: The LLM client configuration loaded for the system narrator.
         rng: System randomness used for card draws.
     """
 
@@ -65,39 +68,88 @@ class GamesCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached OpenAI-compatible client used for dealer banter.
-
-        Returns:
-            A configured client reused by the AI dealer.
-        """
+        """The cached OpenAI-compatible client used for the system narrator and bot AI."""
         client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         return client
 
     @cached_property
-    def dealer(self) -> DealerAI:
-        """The cached AI dealer reused across game commands.
+    def narrator(self) -> SystemNarrator:
+        """The cached casino system narrator reused across game commands."""
+        return SystemNarrator(client=self.client, model=self.runtime_models.fast_model)
 
-        Returns:
-            A DealerAI built from the cached client and dealer model settings.
+    @cached_property
+    def bot_player_ai(self) -> BotPlayerAI:
+        """The cached bot-player decision AI shared across Blackjack tables.
+
+        Uses `player_model` (pinned to `gemini-flash-latest`) so bot turns
+        between human players stay snappy and do not inherit any future
+        promotion of `slow_model` to a heavier Pro tier.
         """
-        return DealerAI(client=self.client, model=self.runtime_models.fast_model)
+        return BotPlayerAI(client=self.client, model=self.runtime_models.player_model)
 
-    async def _dealer_identity(self, guild: nextcord.Guild | None = None) -> DealerIdentity:
-        """Returns the dealer identity from the bot user.
+    async def _system_identity(self, guild: nextcord.Guild | None = None) -> SystemIdentity:
+        """Returns the casino system identity used for narrator embeds.
 
         Slash commands only fire after the gateway has connected, so
-        `self.bot.user` is guaranteed non-None at call time. We still fall
-        back to a synthetic id / "莊家" name to keep type-narrowing clean and
-        to avoid blowing up the round if Discord briefly returns no client
+        `self.bot.user` is guaranteed non-None at call time. We still fall back
+        to a synthetic id / SYSTEM_NARRATOR_NAME to keep type narrowing clean
+        and to avoid blowing up the round if Discord briefly returns no client
         user (e.g. mid-reconnect).
         """
         if self.bot.user is None:
-            return DealerIdentity(dealer_id=0, dealer_name="莊家", dealer_avatar_url="")
+            return SystemIdentity(
+                system_id=0, system_name=SYSTEM_NARRATOR_NAME, system_avatar_url=""
+            )
         avatar_url = await guild_avatar_url(user=self.bot.user, guild=guild)
-        return DealerIdentity(
-            dealer_id=self.bot.user.id,
-            dealer_name=self.bot.user.display_name,
-            dealer_avatar_url=avatar_url,
+        return SystemIdentity(
+            system_id=self.bot.user.id,
+            system_name=SYSTEM_NARRATOR_NAME,
+            system_avatar_url=avatar_url,
+        )
+
+    async def _bot_blackjack_participant(
+        self,
+        *,
+        guild: nextcord.Guild | None,
+        table_bet: int,
+        other_player_bets: list[tuple[str, int]],
+    ) -> GameParticipant | None:
+        """Returns a Blackjack participant for the bot player, or None if it cannot join."""
+        bot_user = self.bot.user
+        if bot_user is None:
+            return None
+        account = await get_account(user_id=bot_user.id)
+        balance = account.balance if account is not None else 0
+        if balance <= 0:
+            logfire.info(
+                "Bot player skipped Blackjack lobby; wallet is empty", user_id=bot_user.id
+            )
+            return None
+        daily_stats = await get_casino_daily_stats(user_id=bot_user.id)
+        finance = BotFinancialContext(
+            balance=balance,
+            total_earned=account.total_earned if account is not None else 0,
+            total_spent=account.total_spent if account is not None else 0,
+            daily_loss=daily_stats.daily_loss,
+            daily_win=daily_stats.daily_win,
+            daily_net=daily_stats.daily_net,
+        )
+        try:
+            decided_bet = await self.bot_player_ai.decide_bot_bet(
+                finance=finance, table_bet=table_bet, other_player_bets=other_player_bets
+            )
+        except Exception:
+            logfire.warn("Bot bet decision raised; using deterministic fallback", _exc_info=True)
+            decided_bet = fallback_bet(balance=balance, table_bet=table_bet)
+        avatar_url = await guild_avatar_url(user=bot_user, guild=guild)
+        identity = GameParticipantIdentity(
+            user_id=bot_user.id,
+            account_name=bot_user.name,
+            display_name=bot_user.display_name,
+            avatar_url=avatar_url,
+        )
+        return build_wager_participant(
+            identity=identity, balance=balance, wager=decided_bet, mode="clamp"
         )
 
     @commands.Cog.listener()
@@ -182,9 +234,9 @@ class GamesCogs(commands.Cog):
         return result.participant
 
     async def _refresh_participants(
-        self, participants: list[GameParticipant], wager: int, mode: WagerMode
+        self, participants: list[GameParticipant], mode: WagerMode
     ) -> RefreshParticipantsResult:
-        """Re-checks balances when the lobby owner starts the table."""
+        """Re-checks balances against each queued participant wager."""
         refreshed: list[GameParticipant] = []
         dropped: list[str] = []
         for participant in participants:
@@ -197,7 +249,7 @@ class GamesCogs(commands.Cog):
                     avatar_url=participant.avatar_url,
                 ),
                 balance=balance,
-                wager=wager,
+                wager=participant.bet,
                 mode=mode,
             )
             if refreshed_participant is None:
@@ -251,7 +303,7 @@ class GamesCogs(commands.Cog):
 
     @games.subcommand(
         name="blackjack",
-        description="Open a 21 lobby against the dealer.",
+        description="Open a 21 lobby; the casino is the dealer and the bot joins as a player.",
         name_localizations={Locale.zh_TW: "二十一點", Locale.ja: "ブラックジャック"},
         description_localizations={
             Locale.zh_TW: "開一桌 21 點 lobby",
@@ -309,24 +361,30 @@ class GamesCogs(commands.Cog):
             return
 
         table_bet = owner.bet
-        dealer_identity = await self._dealer_identity(guild=getattr(interaction, "guild", None))
+        system_identity = await self._system_identity(guild=guild)
+        bot_participant = await self._bot_blackjack_participant(
+            guild=guild, table_bet=table_bet, other_player_bets=[(owner.display_name, owner.bet)]
+        )
+        extra_initial_participants: list[GameParticipant] = (
+            [bot_participant] if bot_participant is not None else []
+        )
         view = BlackjackLobbyView(
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
-            dealer=self.dealer,
-            dealer_id=dealer_identity.dealer_id,
-            dealer_name=dealer_identity.dealer_name,
-            dealer_avatar_url=dealer_identity.dealer_avatar_url,
+            narrator=self.narrator,
+            system_name=system_identity.system_name,
+            system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=table_bet,
                 mode="clamp",
                 insufficient_embed_builder=self._insufficient_balance_embed,
             ),
-            refresh_participants=partial(
-                self._refresh_participants, wager=table_bet, mode="clamp"
-            ),
+            refresh_participants=partial(self._refresh_participants, mode="clamp"),
+            bot_player_ai=self.bot_player_ai,
+            bot_user_id=bot_participant.user_id if bot_participant is not None else None,
+            extra_initial_participants=extra_initial_participants,
         )
         embed = build_blackjack_lobby_embed(
             owner=owner,
@@ -374,21 +432,21 @@ class GamesCogs(commands.Cog):
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
 
-        dealer_identity = await self._dealer_identity(guild=getattr(interaction, "guild", None))
+        system_identity = await self._system_identity(guild=getattr(interaction, "guild", None))
         initial_jackpot = await fetch_dragon_gate_jackpot_snapshot()
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
-            dealer=self.dealer,
-            dealer_name=dealer_identity.dealer_name,
-            dealer_avatar_url=dealer_identity.dealer_avatar_url,
+            narrator=self.narrator,
+            system_name=system_identity.system_name,
+            system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(
                 self._prepare_participant,
                 wager=ANTE,
                 mode="exact",
                 insufficient_embed_builder=self._dragon_gate_insufficient_balance_embed,
             ),
-            refresh_participants=partial(self._refresh_participants, wager=ANTE, mode="exact"),
+            refresh_participants=partial(self._refresh_participants, mode="exact"),
             initial_jackpot=initial_jackpot.balance,
             initial_jackpot_generation=initial_jackpot.generation,
         )

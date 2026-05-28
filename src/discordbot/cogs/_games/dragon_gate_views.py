@@ -58,7 +58,7 @@ from discordbot.cogs._games.presentation import (
     LOBBY_PLAYERS_FIELD_EMOJI,
     metadata_line,
     lobby_participant_line,
-    build_dealer_talk_embed,
+    build_system_talk_embed,
 )
 from discordbot.cogs._economy.presentation import amount_code, currency_text
 
@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from discordbot.typings.economy import JackpotSnapshot
-    from discordbot.cogs._games.dealer import DealerAI
+    from discordbot.cogs._games.dealer import SystemNarrator
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
@@ -170,7 +170,7 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
 
 
 def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
-    """Formats compact table settlement details for dealer banter."""
+    """Formats compact table settlement details for system narrator broadcast."""
     lines: list[str] = []
     for result in results:
         delta = currency_text(amount=result.delta, signed=True, compact=True)
@@ -358,9 +358,9 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        dealer: DealerAI,
-        dealer_name: str,
-        dealer_avatar_url: str,
+        narrator: SystemNarrator,
+        system_name: str,
+        system_avatar_url: str,
         prepare_participant: PrepareParticipant,
         refresh_participants: RefreshParticipants,
         initial_jackpot: int,
@@ -370,9 +370,9 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            dealer=dealer,
-            dealer_name=dealer_name,
-            dealer_avatar_url=dealer_avatar_url,
+            narrator=narrator,
+            system_name=system_name,
+            system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
             refresh_participants=refresh_participants,
             initial_jackpot=initial_jackpot,
@@ -397,20 +397,19 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             rng=self.rng, participants=self.participants
         )
         table_balance = sum(participant.balance_at_start for participant in self.participants)
-        dealer_line = await self.dealer.taunt_bet(
-            author_name=self.owner.account_name,
+        system_line = await self.narrator.taunt_bet(
             player_name=f"{len(self.participants)} 位玩家",
             balance_at_start=table_balance,
             bet=ANTE * len(self.participants),
             game="dragon_gate",
         )
         view = DragonGateView(
-            dealer=self.dealer,
+            narrator=self.narrator,
             round_state=round_state,
             owner=self.owner,
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
-            dealer_line=dealer_line,
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
+            system_line=system_line,
             jackpot_snapshot=self._jackpot_snapshot,
             jackpot_generation=self._jackpot_generation,
             final_balances=final_balances,
@@ -423,29 +422,29 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
 class DragonGateView(View):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
 
-    def __init__(  # noqa: PLR0913 -- view needs round, dealer, jackpot, and initial balances
+    def __init__(  # noqa: PLR0913 -- view needs round, narrator, jackpot, and initial balances
         self,
-        dealer: DealerAI,
+        narrator: SystemNarrator,
         round_state: DragonGateRound,
         owner: GameParticipant,
-        dealer_name: str,
-        dealer_line: str,
+        system_name: str,
+        system_line: str,
         jackpot_snapshot: int,
         final_balances: dict[int, int],
-        dealer_avatar_url: str = "",
+        system_avatar_url: str = "",
         jackpot_generation: int | None = None,
     ) -> None:
         """Initializes the active 射龍門 table view."""
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
-        self.dealer = dealer
+        self.narrator = narrator
         self.round_state = round_state
         self.owner = owner
-        self.dealer_name = dealer_name
-        self.dealer_avatar_url = dealer_avatar_url
+        self.system_name = system_name
+        self.system_avatar_url = system_avatar_url
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self._dealer_line = dealer_line
+        self._system_line = system_line
         self._history: list[DragonGateTurnResult] = []
         self._jackpot_snapshot = jackpot_snapshot
         self._jackpot_generation = jackpot_generation
@@ -749,12 +748,12 @@ class DragonGateView(View):
             await message.edit(embeds=self.in_progress_embeds(), view=self)
 
     def in_progress_embeds(self) -> list[Embed]:
-        """Builds the current dealer, table, and optional history embeds."""
+        """Builds the current narrator, table, and optional history embeds."""
         embeds: list[Embed] = [
-            build_dealer_talk_embed(
-                dealer_line=self._dealer_line,
-                dealer_name=self.dealer_name,
-                dealer_avatar_url=self.dealer_avatar_url,
+            build_system_talk_embed(
+                system_line=self._system_line,
+                system_name=self.system_name,
+                system_avatar_url=self.system_avatar_url,
             ),
             build_dragon_gate_in_progress_embed(
                 round_state=self.round_state, jackpot=self._jackpot_snapshot
@@ -810,10 +809,10 @@ class DragonGateView(View):
                 )
             )
 
-        talk_embed = build_dealer_talk_embed(
-            dealer_line=_fallback_table_settlement_line(results=results),
-            dealer_name=self.dealer_name,
-            dealer_avatar_url=self.dealer_avatar_url,
+        talk_embed = build_system_talk_embed(
+            system_line=_fallback_table_settlement_line(results=results),
+            system_name=self.system_name,
+            system_avatar_url=self.system_avatar_url,
         )
         final_embed = build_dragon_gate_final_embed(
             round_state=self.round_state,
@@ -851,10 +850,9 @@ class DragonGateView(View):
         final_embed: Embed,
         history_embed: Embed | None,
     ) -> None:
-        """Refreshes the final dealer line after the table result is already visible."""
+        """Refreshes the final narrator line after the table result is already visible."""
         try:
-            dealer_line = await self.dealer.table_settle(
-                author_name=self.owner.account_name,
+            system_line = await self.narrator.table_settle(
                 table_name="射龍門",
                 player_count=len(results),
                 net_delta=sum(result.delta for result in results),
@@ -868,10 +866,10 @@ class DragonGateView(View):
             if not self._settled:
                 return
             embeds: list[Embed] = [
-                build_dealer_talk_embed(
-                    dealer_line=dealer_line,
-                    dealer_name=self.dealer_name,
-                    dealer_avatar_url=self.dealer_avatar_url,
+                build_system_talk_embed(
+                    system_line=system_line,
+                    system_name=self.system_name,
+                    system_avatar_url=self.system_avatar_url,
                 ),
                 final_embed,
             ]

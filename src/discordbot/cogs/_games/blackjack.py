@@ -14,12 +14,19 @@ from discordbot.typings.games import Card, SettleOutcome, GameParticipant
 RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
 
 
-def draw_card(rng: Random) -> Card:
-    """Draws a single card from a notional infinite shoe.
+SHOE_DECK_COUNT = 4
+_CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
+_CARD_SUITS = ("♠", "♥", "♦", "♣")
 
-    Using an infinite shoe (independent draws) intentionally, we avoid having
-    to track a deck across hands, and the mathematical edge difference is
-    negligible at this stake level.
+
+def draw_card(rng: Random) -> Card:
+    """Draws one card from a notional infinite shoe (independent rank + suit).
+
+    Production paths build a shuffled 4-deck shoe inside `BlackjackRound` and
+    draw from there, so rank/suit frequency is finite even though duplicate
+    rank/suit labels can appear from different decks. This helper stays as the
+    round-bootstrap fallback (and the test-monkeypatch seam) for when the shoe
+    is empty.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -27,9 +34,24 @@ def draw_card(rng: Random) -> Card:
     Returns:
         The drawn card.
     """
-    rank = rng.choice(seq=("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"))
-    suit = rng.choice(seq=("♠", "♥", "♦", "♣"))
-    return Card(rank=rank, suit=suit)
+    return Card(rank=rng.choice(seq=_CARD_RANKS), suit=rng.choice(seq=_CARD_SUITS))
+
+
+def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
+    """Returns a shuffled multi-deck shoe (default 4 decks = 208 cards).
+
+    Cards are popped from index 0 (FIFO); the head of the list is the next
+    card. The shoe is sized to comfortably cover the worst-case 6-player table
+    with splits and double-downs without ever needing to reshuffle mid-round.
+    """
+    shoe: list[Card] = [
+        Card(rank=rank, suit=suit)
+        for _ in range(deck_count)
+        for suit in _CARD_SUITS
+        for rank in _CARD_RANKS
+    ]
+    rng.shuffle(shoe)
+    return shoe
 
 
 def hand_value(cards: list[Card]) -> int:
@@ -470,6 +492,7 @@ class BlackjackRound(BaseModel):
     rng: Random
     players: list[BlackjackPlayerHand]
     dealer: list[Card] = Field(default_factory=list)
+    shoe: list[Card] = Field(default_factory=list)
     current_player_index: int = 0
     current_hand_index: int = 0
     dealer_played: bool = False
@@ -491,7 +514,22 @@ class BlackjackRound(BaseModel):
             )
             for participant in participants
         ]
-        return cls(rng=rng, players=players, auto_play_dealer=auto_play_dealer)
+        return cls(
+            rng=rng, players=players, auto_play_dealer=auto_play_dealer, shoe=build_shoe(rng=rng)
+        )
+
+    def _draw_one_card(self) -> Card:
+        """Pops the next card from the round's shoe, falling back when empty.
+
+        Cards come from the FIFO shoe, so draws are capped by the finite
+        multi-deck shoe instead of independent replacement. The 4-deck shoe
+        holds 208 cards which is more than enough for a 6-seat table; tests
+        that want deterministic draws clear `self.shoe` to force the
+        `draw_card` fallback they monkeypatch.
+        """
+        if self.shoe:
+            return self.shoe.pop(0)
+        return draw_card(rng=self.rng)
 
     def deal_initial(self) -> None:
         """Deals two cards to every player and two cards to the dealer.
@@ -506,8 +544,8 @@ class BlackjackRound(BaseModel):
         """
         for player in self.players:
             for hand in player.hands:
-                hand.cards = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
-        self.dealer = [draw_card(rng=self.rng), draw_card(rng=self.rng)]
+                hand.cards = [self._draw_one_card(), self._draw_one_card()]
+        self.dealer = [self._draw_one_card(), self._draw_one_card()]
         up = dealer_up_card(dealer=self.dealer)
         if up is not None and up.rank == "A":
             self.phase = "insurance"
@@ -623,7 +661,7 @@ class BlackjackRound(BaseModel):
         _, hand = self._require_active(user_id=user_id)
         if hand.is_split_aces:
             raise ValueError("Cannot hit after splitting Aces")
-        card = draw_card(rng=self.rng)
+        card = self._draw_one_card()
         hand.cards.append(card)
         hand.actions_taken += 1
         if hand.is_bust() or is_five_card_win(cards=hand.cards):
@@ -652,7 +690,7 @@ class BlackjackRound(BaseModel):
             raise ValueError("Cannot double this hand")
         hand.bet *= 2
         hand.doubled = True
-        card = draw_card(rng=self.rng)
+        card = self._draw_one_card()
         hand.cards.append(card)
         hand.actions_taken += 1
         hand.finished = True
@@ -676,14 +714,14 @@ class BlackjackRound(BaseModel):
         split_aces = hand.cards[0].rank == "A"
         first_card, second_card = hand.cards[0], hand.cards[1]
         new_hand = BlackjackHandState(
-            cards=[second_card, draw_card(rng=self.rng)],
+            cards=[second_card, self._draw_one_card()],
             bet=hand.base_bet,
             base_bet=hand.base_bet,
             is_split_hand=True,
             is_split_aces=split_aces,
             finished=split_aces,
         )
-        hand.cards = [first_card, draw_card(rng=self.rng)]
+        hand.cards = [first_card, self._draw_one_card()]
         hand.is_split_hand = True
         hand.is_split_aces = split_aces
         hand.finished = split_aces
@@ -733,7 +771,7 @@ class BlackjackRound(BaseModel):
 
     def draw_dealer_card(self) -> Card:
         """Draws one card into the dealer hand and returns it."""
-        card = draw_card(rng=self.rng)
+        card = self._draw_one_card()
         self.dealer.append(card)
         return card
 
@@ -832,9 +870,16 @@ class BlackjackRound(BaseModel):
         return False
 
     def _play_dealer(self) -> None:
-        """Draws dealer cards until the standing threshold is reached."""
-        while hand_value(cards=self.dealer) < 17:
-            self.draw_dealer_card()
+        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+)."""
+        while True:
+            total = hand_value(cards=self.dealer)
+            if total < 17:
+                self.draw_dealer_card()
+                continue
+            if total == 17 and is_soft_17(cards=self.dealer):
+                self.draw_dealer_card()
+                continue
+            break
         self.mark_dealer_played()
 
 

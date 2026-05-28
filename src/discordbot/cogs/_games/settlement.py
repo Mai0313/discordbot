@@ -174,35 +174,23 @@ def _dealer_peek_note(dealer: list[Card]) -> str:
     return f"莊家明牌 {up}, peek 暗牌確認 Blackjack"
 
 
-async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dealer ledger keys
-    player_id: int,
-    player_account_name: str,
-    dealer_id: int,
-    dealer_name: str,
-    delta: int,
-    player_avatar_url: str = "",
-    dealer_avatar_url: str = "",
+async def settle_wager(
+    player_id: int, player_account_name: str, delta: int, player_avatar_url: str = ""
 ) -> WagerSettlement:
-    """Applies player net delta and mirrors the result into the house ledger.
+    """Applies player net delta and mirrors the result into the casino ledger.
 
-    The two ledger writes share a single SQLite transaction via
-    `apply_round_settlement`, so a crash between them cannot leave the dealer
-    ledger drifting from the player result. Bets are not deducted when a round
-    starts; unfinished in-memory rounds vanish on bot restart without touching
-    balances.
+    Bets are not deducted when a round starts; unfinished in-memory rounds
+    vanish on bot restart without touching balances.
 
-    VIP players receive a 1.5x payout on winning rounds; pushes and losses
-    are passed through unchanged. The VIP flag is permanent, so reading it
-    outside the settlement transaction is safe — a freshly-bought VIP that
-    races a settlement only misses the bonus on a single in-flight round.
+    VIP players receive a 1.5x payout on winning rounds; pushes and losses are
+    passed through unchanged. The VIP flag is permanent, so reading it outside
+    the settlement transaction is safe — a freshly-bought VIP that races a
+    settlement only misses the bonus on a single in-flight round.
 
     Args:
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
         player_avatar_url: Last-seen Discord avatar URL for the player.
-        dealer_id: Discord user ID for the dealer ledger row.
-        dealer_name: Account name to store for the dealer ledger row.
-        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
         delta: Player net point change for the round.
 
     Returns:
@@ -211,21 +199,18 @@ async def settle_wager(  # noqa: PLR0913 -- settlement needs both player and dea
     is_vip = await get_vip(user_id=player_id)
     effective_delta = apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip)
     vip_bonus = effective_delta - delta
-    new_balance, house_balance = await apply_round_settlement(
+    result = await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
         player_delta=effective_delta,
-        dealer_id=dealer_id,
-        dealer_name=dealer_name,
-        dealer_avatar_url=dealer_avatar_url,
-        dealer_delta=-effective_delta,
+        casino_delta=-effective_delta,
     )
     return WagerSettlement(
         delta=effective_delta,
         payout=max(effective_delta, 0),
-        new_balance=new_balance,
-        house_balance=house_balance,
+        new_balance=result.player_balance,
+        casino_balance=result.casino_balance,
         base_delta=delta,
         vip_bonus=vip_bonus,
         is_vip=is_vip,
@@ -278,24 +263,20 @@ def _insurance_settlement(
     return BlackjackInsuranceSettlement(bet=bet, won=False, delta=-bet)
 
 
-async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every ledger key
+async def settle_blackjack_player(
     *,
     round_state: BlackjackRound,
     player: BlackjackPlayerHand,
     player_id: int,
     player_account_name: str,
-    dealer_id: int,
-    dealer_name: str,
     player_avatar_url: str = "",
-    dealer_avatar_url: str = "",
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 
-    The aggregate dealer-paid delta (sum of per-hand deltas plus insurance)
-    is passed through the existing VIP bonus rule once at the player level.
+    The aggregate casino-paid delta (sum of per-hand deltas plus insurance) is
+    passed through the existing VIP bonus rule once at the player level.
     Five-card 21 adds a system-funded bonus to the player-side delta without
-    moving the house ledger. Both player and dealer rows are still written
-    through one DB transaction.
+    moving the casino ledger.
 
     Args:
         round_state: Round providing the dealer cards, RNG, and peek state.
@@ -303,9 +284,6 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.
         player_avatar_url: Last-seen Discord avatar URL for the player.
-        dealer_id: Discord user ID for the dealer ledger row.
-        dealer_name: Account name to store for the dealer ledger row.
-        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
 
     Returns:
         Aggregated settlement covering every sub-hand and any insurance bet.
@@ -320,20 +298,17 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
     five_card_bonus = sum(settlement.five_card_bonus for settlement in hand_settlements)
 
     is_vip = await get_vip(user_id=player_id)
-    dealer_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
-    dealer_paid_vip_bonus = dealer_paid_delta - base_delta
+    casino_paid_delta = apply_vip_blackjack_bonus(delta=base_delta, is_vip=is_vip)
+    casino_paid_vip_bonus = casino_paid_delta - base_delta
     five_card_vip_delta = apply_vip_blackjack_bonus(delta=five_card_bonus, is_vip=is_vip)
-    vip_bonus = max(dealer_paid_vip_bonus, five_card_vip_delta - five_card_bonus)
+    vip_bonus = max(casino_paid_vip_bonus, five_card_vip_delta - five_card_bonus)
     effective_delta = base_delta + vip_bonus + five_card_bonus
-    new_balance, house_balance = await apply_blackjack_settlement(
+    result = await apply_blackjack_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
         player_delta=effective_delta,
-        dealer_id=dealer_id,
-        dealer_name=dealer_name,
-        dealer_avatar_url=dealer_avatar_url,
-        dealer_delta=-dealer_paid_delta,
+        casino_delta=-casino_paid_delta,
     )
     return BlackjackPlayerSettlement(
         outcome=_aggregate_outcome(
@@ -347,8 +322,8 @@ async def settle_blackjack_player(  # noqa: PLR0913 -- settlement needs every le
         ),
         delta=effective_delta,
         payout=max(effective_delta, 0),
-        new_balance=new_balance,
-        house_balance=house_balance,
+        new_balance=result.player_balance,
+        casino_balance=result.casino_balance,
         base_delta=base_delta,
         vip_bonus=vip_bonus,
         is_vip=is_vip,

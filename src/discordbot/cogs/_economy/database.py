@@ -50,6 +50,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from collections.abc import Sequence
 
+import logfire
 from sqlalchemy import (
     Index,
     String,
@@ -87,6 +88,7 @@ from discordbot.typings.economy import (
     WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
+    CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
     LoanProposalKind,
@@ -96,8 +98,10 @@ from discordbot.typings.economy import (
     VipPurchaseResult,
     LoanContractStatus,
     LoanProposalStatus,
+    CasinoLedgerSnapshot,
     CentralBankerAccount,
     LossLeaderboardEntry,
+    RoundSettlementResult,
     BalanceAdjustmentResult,
     JackpotSettlementResult,
     JackpotSettlementRequest,
@@ -418,9 +422,41 @@ class JackpotPool(GlobalStateBase):
     )
 
 
+class CasinoLedger(GlobalStateBase):
+    """Cumulative profit and loss for the casino system (cross-server).
+
+    The casino is the dealer in Blackjack. Player wins flow out of this row,
+    player losses flow in. There is no bot-account coupling: the bot is now a
+    regular player at the table, and its `user_wallet` no longer doubles as
+    the house ledger. `balance` may go negative when payouts exceed take-in;
+    `total_earned` and `total_spent` accumulate gross flows so `/casino` can
+    show direction of volume, not just net.
+
+    Attributes:
+        ledger_id: Stable identifier (e.g. `"casino"`); primary key.
+        balance: Signed cumulative P&L.
+        total_earned: Lifetime gross inflows (from player losses).
+        total_spent: Lifetime gross outflows (to player wins).
+        updated_at: Taiwan-local timestamp of the last write.
+    """
+
+    __tablename__ = "casino_ledger"
+
+    ledger_id: Mapped[str] = mapped_column(String(length=32), primary_key=True)
+    balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_earned: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_spent: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
+CASINO_LEDGER_ID: Final[str] = "casino"
+
+
 # On-the-house seed amount for each registered jackpot pool. The seed is
 # bookkeeping only — the bot's user_account row is never decremented to fund
-# it, so /house P&L stays unaffected by the donation. Seeded pools are also
+# it, so /casino P&L stays unaffected by the donation. Seeded pools are also
 # topped back up to this amount whenever they are drained.
 _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
 
@@ -555,6 +591,17 @@ async def _ensure_global_state_schema() -> None:
                     )
                     .on_conflict_do_nothing(index_elements=["game_id"])
                 )
+            await conn.execute(
+                statement=insert(CasinoLedger)
+                .values(
+                    ledger_id=CASINO_LEDGER_ID,
+                    balance="0",
+                    total_earned="0",
+                    total_spent="0",
+                    updated_at=_database_now(),
+                )
+                .on_conflict_do_nothing(index_elements=["ledger_id"])
+            )
         _global_state_schema_ready_for = _global_state_engine
 
 
@@ -926,7 +973,7 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 ) -> int:
     """Applies a signed delta without clamping.
 
-    Used for dealer-side mirrors (`HOUSE_SETTLE`), which may run cumulative
+    Used for casino-mirror or other ledger rows that may run cumulative
     negative P&L. Player-side losses use the clamped path instead.
     """
     await _upsert_user_metadata_in_session(
@@ -938,6 +985,114 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
     if delta != 0:
         invalidate_economy_leaderboard_cache()
     return new_balance
+
+
+async def _apply_casino_ledger_delta_in_session(
+    session: AsyncSession, delta: int, now: datetime
+) -> int:
+    """Applies a signed delta to the global casino ledger row (no clamp).
+
+    The casino is allowed to run cumulative negative P&L when payouts exceed
+    take-in. `total_earned` / `total_spent` accumulate gross flows.
+
+    Args:
+        session: Active SQLAlchemy session bound to `_global_state_engine`.
+        delta: Signed change to apply to the casino balance.
+        now: `_database_now()` value pinned for this transaction.
+
+    Returns:
+        Casino ledger balance after the write.
+    """
+    initial_earned = max(delta, 0)
+    initial_spent = max(-delta, 0)
+    stmt = (
+        insert(CasinoLedger)
+        .values(
+            ledger_id=CASINO_LEDGER_ID,
+            balance=delta,
+            total_earned=initial_earned,
+            total_spent=initial_spent,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["ledger_id"],
+            set_={
+                "balance": CasinoLedger.balance + delta,
+                "total_earned": CasinoLedger.total_earned + initial_earned,
+                "total_spent": CasinoLedger.total_spent + initial_spent,
+                "updated_at": now,
+            },
+        )
+        .returning(CasinoLedger.balance)
+    )
+    result = await session.execute(statement=stmt)
+    return result.scalar_one()
+
+
+async def _read_casino_ledger_balance_in_session(session: AsyncSession) -> int:
+    """Reads the current casino ledger balance, returning 0 when missing."""
+    result = await session.execute(
+        statement=select(CasinoLedger.balance).where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
+    )
+    return result.scalar_one_or_none() or 0
+
+
+async def _rollback_sessions(*sessions: AsyncSession) -> None:
+    """Rolls back sessions without masking the original settlement exception."""
+    for session in sessions:
+        try:
+            await session.rollback()
+        except Exception:
+            logfire.warn("Failed to roll back settlement session", _exc_info=True)
+
+
+async def get_casino_ledger() -> CasinoLedgerSnapshot:
+    """Returns the cumulative casino system ledger snapshot."""
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=select(
+                CasinoLedger.balance,
+                CasinoLedger.total_earned,
+                CasinoLedger.total_spent,
+                CasinoLedger.updated_at,
+            ).where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
+        )
+        row = result.one_or_none()
+    if row is None:
+        return CasinoLedgerSnapshot(
+            balance=0, total_earned=0, total_spent=0, updated_at=_database_now()
+        )
+    balance, total_earned, total_spent, updated_at = row
+    return CasinoLedgerSnapshot(
+        balance=balance, total_earned=total_earned, total_spent=total_spent, updated_at=updated_at
+    )
+
+
+async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
+    """Returns the current-day casino loss/win/net for one user.
+
+    Returns all-zero when no row exists or when the stored counters are from a
+    previous Taipei day (the next casino settlement will reset them anyway).
+    """
+    await _ensure_schema()
+    today_midnight = _taipei_midnight(now=_database_now())
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(
+                CasinoAccount.daily_loss,
+                CasinoAccount.daily_win,
+                CasinoAccount.daily_net,
+                CasinoAccount.day_started_at,
+            ).where(CasinoAccount.user_id == user_id)
+        )
+        row = result.one_or_none()
+    if row is None:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    daily_loss, daily_win, daily_net, day_started_at = row
+    if day_started_at is None or _as_taipei(dt=day_started_at) != today_midnight:
+        return CasinoDailyStats(daily_loss=0, daily_win=0, daily_net=0)
+    return CasinoDailyStats(daily_loss=daily_loss, daily_win=daily_win, daily_net=daily_net)
 
 
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
@@ -1201,24 +1356,23 @@ async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session h
     return balance
 
 
-async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
+async def apply_round_settlement(
     player_id: int,
     player_account_name: str,
     player_delta: int,
-    dealer_id: int,
-    dealer_name: str,
-    dealer_delta: int,
+    casino_delta: int,
     player_avatar_url: str = "",
-    dealer_avatar_url: str = "",
-) -> tuple[int, int]:
-    """Applies a finished round's net delta and mirrors house P&L atomically.
+) -> RoundSettlementResult:
+    """Applies a finished round's net delta and mirrors casino P&L.
 
-    Sharing a session (and therefore a single SQLite transaction) means a
-    crash between the player and dealer writes cannot leave the dealer
-    ledger drifting from the player result. Positive player deltas go through
-    the shared income path. Negative player deltas clamp at zero; when a loss
-    cannot be fully collected, the dealer ledger only records the actual
-    collected debit.
+    Positive player deltas go through the shared income path. Negative player
+    deltas clamp at zero; when a loss cannot be fully collected, the casino
+    ledger only records the actual collected debit. The player write lives in
+    `data/economy.db` and the casino mirror lives in `data/global_state.db`;
+    ordinary exceptions before the final commits roll both sessions back. The
+    player wallet commits before the casino mirror so player-facing balance is
+    preferred if only one final commit succeeds. As with jackpot settlement, a
+    hard crash between the two database-file commits is not cross-file atomic.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1226,75 +1380,66 @@ async def apply_round_settlement(  # noqa: PLR0913 -- atomic settlement needs bo
         player_avatar_url: Last-seen Discord avatar URL for the player.
         player_delta: Signed net change for the player. Losses are clamped at
             zero and may apply less than the requested debit.
-        dealer_id: Discord user ID for the dealer ledger row.
-        dealer_name: Account name to store for the dealer ledger row.
-        dealer_avatar_url: Last-seen Discord avatar URL for the dealer.
-        dealer_delta: Signed change to apply to the dealer ledger balance.
+        casino_delta: Signed change to apply to the casino ledger balance.
 
     Returns:
-        A `(player_balance_after, dealer_balance_after)` tuple.
+        A `RoundSettlementResult` with the post-write player and casino balances.
     """
     await _ensure_schema()
+    await _ensure_global_state_schema()
     now = _database_now()
-    async with open_session() as session:
-        player_balance, applied_player_delta = await _apply_player_delta_in_session(
-            session=session,
-            user_id=player_id,
-            name=player_account_name,
-            avatar_url=player_avatar_url,
-            delta=player_delta,
-            now=now,
-        )
-
-        dealer_delta_to_apply = dealer_delta
-        if player_delta < 0 and dealer_delta > 0:
-            dealer_delta_to_apply = min(dealer_delta, max(-applied_player_delta, 0))
-
-        if dealer_delta_to_apply == 0:
-            dealer_result = await session.execute(
-                statement=select(UserWallet.balance).where(UserWallet.user_id == dealer_id)
-            )
-            dealer_balance = dealer_result.scalar_one_or_none() or 0
-        else:
-            dealer_balance = await _apply_signed_delta_in_session(
-                session=session,
-                user_id=dealer_id,
-                name=dealer_name,
-                avatar_url=dealer_avatar_url,
-                delta=dealer_delta_to_apply,
+    async with open_session() as economy_session, open_global_state_session() as global_session:
+        try:
+            player_balance, applied_player_delta = await _apply_player_delta_in_session(
+                session=economy_session,
+                user_id=player_id,
+                name=player_account_name,
+                avatar_url=player_avatar_url,
+                delta=player_delta,
                 now=now,
             )
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return player_balance, dealer_balance
+
+            casino_delta_to_apply = casino_delta
+            if player_delta < 0 and casino_delta > 0:
+                casino_delta_to_apply = min(casino_delta, max(-applied_player_delta, 0))
+
+            if casino_delta_to_apply == 0:
+                casino_balance = await _read_casino_ledger_balance_in_session(
+                    session=global_session
+                )
+            else:
+                casino_balance = await _apply_casino_ledger_delta_in_session(
+                    session=global_session, delta=casino_delta_to_apply, now=now
+                )
+            await economy_session.commit()
+            await global_session.commit()
+        except Exception:
+            await _rollback_sessions(economy_session, global_session)
+            raise
+    invalidate_economy_leaderboard_cache()
+    return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
 
 
-async def apply_blackjack_settlement(  # noqa: PLR0913 -- atomic settlement needs both ledger keys
+async def apply_blackjack_settlement(
     player_id: int,
     player_account_name: str,
     player_delta: int,
-    dealer_id: int,
-    dealer_name: str,
-    dealer_delta: int,
+    casino_delta: int,
     player_avatar_url: str = "",
-    dealer_avatar_url: str = "",
-) -> tuple[int, int]:
-    """Applies Blackjack player payout and dealer ledger deltas atomically.
+) -> RoundSettlementResult:
+    """Applies Blackjack player payout and casino ledger deltas.
 
-    Blackjack can include system-funded bonuses that should credit the
-    player and count as casino payout, but must not move the `/house`
-    ledger. This wrapper keeps the one-transaction write path while making
-    the independent dealer-side delta explicit at the call site.
+    Blackjack can include system-funded bonuses (e.g. five-card 21) that credit
+    the player and count as casino payout but must not move the `/casino`
+    ledger. The caller passes `casino_delta` explicitly so the bonus stays
+    excluded.
     """
     return await apply_round_settlement(
         player_id=player_id,
         player_account_name=player_account_name,
         player_avatar_url=player_avatar_url,
         player_delta=player_delta,
-        dealer_id=dealer_id,
-        dealer_name=dealer_name,
-        dealer_avatar_url=dealer_avatar_url,
-        dealer_delta=dealer_delta,
+        casino_delta=casino_delta,
     )
 
 
