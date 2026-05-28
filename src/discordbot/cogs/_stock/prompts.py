@@ -16,7 +16,7 @@ Style:
 - Do not repeat the latest previous headline.
 - Do not mention real people, real brands, real disasters, injuries, sexual content, hate, or politics.
 - The headline should fit naturally in a Discord embed and should not include markdown.
-""".strip()
+"""
 
 STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES: Final[tuple[tuple[str, int], ...]] = (
     ("{symbol} 公司吉祥物在電梯裡按錯樓層, 市場解讀為拓展新事業版圖", 95),
