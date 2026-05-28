@@ -213,12 +213,10 @@ def _format_other_players_block(other_players: list[OtherPlayerView]) -> str:
     if not other_players:
         return "桌上其他玩家: 無 (只有你和賭場)"
     lines: list[str] = ["桌上其他玩家:"]
-    for other in other_players:
+    for index, other in enumerate(other_players, start=1):
         status = "已完成" if other.is_finished else "進行中"
         hands_repr = " | ".join(other.hands) if other.hands else "尚未發牌"
-        lines.append(
-            f"- {other.display_name} (下注 {other.bet} {CURRENCY_NAME}, {status}): {hands_repr}"
-        )
+        lines.append(f"- 玩家{index} (下注 {other.bet} {CURRENCY_NAME}, {status}): {hands_repr}")
     return "\n".join(lines)
 
 
@@ -227,8 +225,8 @@ def _format_other_player_bets_block(other_player_bets: list[tuple[str, int]]) ->
     if not other_player_bets:
         return "桌上其他玩家的下注: 無"
     lines: list[str] = ["桌上其他玩家的下注:"]
-    for display_name, bet in other_player_bets:
-        lines.append(f"- {display_name}: {bet} {CURRENCY_NAME}")
+    for index, (_display_name, bet) in enumerate(other_player_bets, start=1):
+        lines.append(f"- 玩家{index}: {bet} {CURRENCY_NAME}")
     return "\n".join(lines)
 
 
