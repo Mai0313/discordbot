@@ -229,8 +229,11 @@ class GamesCogs(commands.Cog):
             guild=getattr(interaction, "guild", None),
         )
         if result.participant is None:
+            embed = insufficient_embed_builder(result.balance)
             await interaction.followup.send(
-                embed=insufficient_embed_builder(result.balance), ephemeral=True
+                embed=embed,
+                ephemeral=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
         return result.participant
 
