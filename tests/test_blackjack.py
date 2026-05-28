@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import pytest
 
-from discordbot.typings.games import GameParticipant
+from discordbot.typings.games import (
+    GameParticipant,
+    BlackjackHandSettlement,
+    BlackjackPlayerSettlement,
+)
 from discordbot.cogs._games.blackjack import (
     Card,
     BlackjackRound,
@@ -30,7 +34,10 @@ from discordbot.cogs._games.blackjack import (
 )
 from discordbot.cogs._games.settlement import blackjack_player_early_finish_note
 from discordbot.cogs._games.presentation import settlement_metadata
-from discordbot.cogs._games.blackjack_views import build_in_progress_embeds
+from discordbot.cogs._games.blackjack_views import (
+    build_player_seat_embed,
+    build_in_progress_embeds,
+)
 
 
 def test_hand_value_no_aces() -> None:
@@ -180,6 +187,49 @@ def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
     )
 
     assert metadata == "-# 本局 `+150` · VIP加成 `+50` · 餘額 `1,150`"
+
+
+def test_settled_bot_reason_appears_before_settlement_metadata() -> None:
+    """Final bot reasoning appears above the round delta metadata."""
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0), participants=[_participant(user_id=999, display_name="Dealer Bot")]
+    )
+    player = round_state.players[0]
+    player.hands[0].cards = [Card(rank="6", suit="♠"), Card(rank="5", suit="♥")]
+    round_state.dealer = [Card(rank="6", suit="♦"), Card(rank="10", suit="♣")]
+    settlement = BlackjackPlayerSettlement(
+        delta=80_000_000,
+        payout=80_000_000,
+        new_balance=815_000_000,
+        casino_balance=0,
+        base_delta=60_000_000,
+        vip_bonus=20_000_000,
+        is_vip=True,
+        outcome="win",
+        detail="win",
+        hands=[
+            BlackjackHandSettlement(
+                cards=player.hands[0].cards,
+                bet=30_000_000,
+                outcome="win",
+                delta=60_000_000,
+                doubled=True,
+            )
+        ],
+    )
+
+    embed = build_player_seat_embed(
+        player=player,
+        round_state=round_state,
+        active_hand_index=None,
+        insurance_status=None,
+        settlement=settlement,
+        dealer_total=20,
+        bot_reason="double: 手牌十一點對上莊家六點，期望值極高，加倍投注拼一張大牌。",
+    )
+
+    assert embed.description is not None
+    assert embed.description.index("💭 double:") < embed.description.index("-# 本局")
 
 
 def test_settle_double_blackjack_is_push() -> None:

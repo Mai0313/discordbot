@@ -391,6 +391,7 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
         player=player, settlement=settlement, is_active=is_active, insurance_phase=insurance_phase
     )
     description_parts: list[str] = []
+    bot_reason_line = metadata_line(text=f"💭 {bot_reason}") if bot_reason else ""
     hand_count = len(player.hands)
     # In-progress vs settled hand rendering: settled uses settlement.hands so
     # the result label + outcome surface lines up with the actually-applied
@@ -422,6 +423,7 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
         ins_line = _format_settlement_insurance_line(settlement=settlement)
         if ins_line:
             description_parts.append(metadata_line(text=ins_line))
+        description_parts.append(bot_reason_line)
         description_parts.append(
             settlement_metadata(
                 delta=settlement.delta,
@@ -437,8 +439,8 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
         )
         if note:
             description_parts.append(metadata_line(text=note))
-    if bot_reason:
-        description_parts.append(metadata_line(text=f"💭 {bot_reason}"))
+    if settlement is None:
+        description_parts.append(bot_reason_line)
     embed = Embed(description="\n".join(part for part in description_parts if part), color=color)
     embed.set_author(name=player.participant.display_name)
     if player.participant.avatar_url:
