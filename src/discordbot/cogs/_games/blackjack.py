@@ -23,9 +23,10 @@ def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe (independent rank + suit).
 
     Production paths build a shuffled 4-deck shoe inside `BlackjackRound` and
-    draw from there, so a single hand never sees the same card twice. This
-    helper stays as the round-bootstrap fallback (and the test-monkeypatch
-    seam) for when the shoe is empty.
+    draw from there, so rank/suit frequency is finite even though duplicate
+    rank/suit labels can appear from different decks. This helper stays as the
+    round-bootstrap fallback (and the test-monkeypatch seam) for when the shoe
+    is empty.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -520,10 +521,11 @@ class BlackjackRound(BaseModel):
     def _draw_one_card(self) -> Card:
         """Pops the next card from the round's shoe, falling back when empty.
 
-        Cards come from the FIFO shoe so no two seats in the same round can
-        receive duplicate cards. The 4-deck shoe holds 208 cards which is more
-        than enough for a 6-seat table; tests that want deterministic draws
-        clear `self.shoe` to force the `draw_card` fallback they monkeypatch.
+        Cards come from the FIFO shoe, so draws are capped by the finite
+        multi-deck shoe instead of independent replacement. The 4-deck shoe
+        holds 208 cards which is more than enough for a 6-seat table; tests
+        that want deterministic draws clear `self.shoe` to force the
+        `draw_card` fallback they monkeypatch.
         """
         if self.shoe:
             return self.shoe.pop(0)
