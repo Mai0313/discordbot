@@ -782,7 +782,7 @@ class BotPlayerAI(BaseModel):
         fallback_decision = BotPlayerInsuranceDecision(
             take_insurance=fallback_insurance(), reason="保險長期 EV 為負, 直接拒絕"
         )
-        dealer_label = str(dealer_up) if dealer_up else "未知"
+        dealer_label = str(dealer_up) if dealer_up else "unknown"
         insurance_cost = bet // 2
         user_text = (
             f"{_format_finance_block(finance=finance)}\n\n"

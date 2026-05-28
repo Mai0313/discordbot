@@ -7,6 +7,7 @@ from discordbot.typings.games import (
     OtherPlayerView,
     BotFinancialContext,
     BotPlayerActionDecision,
+    BotPlayerInsuranceDecision,
 )
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import BOT_PLAYER_BET_PROMPT, BOT_PLAYER_ACTION_PROMPT
@@ -148,10 +149,13 @@ def test_insurance_context_uses_dealer_hole_card_for_known_result() -> None:
     assert "next_card" not in rendered
 
 
+_ResponseDecision = BotPlayerActionDecision | BotPlayerInsuranceDecision
+
+
 class _FakeResponses:
     """Captures Responses API parse payloads for bot-player tests."""
 
-    def __init__(self, output_parsed: BotPlayerActionDecision) -> None:
+    def __init__(self, output_parsed: _ResponseDecision) -> None:
         self.output_parsed = output_parsed
         self.calls: list[dict[str, object]] = []
 
@@ -164,7 +168,7 @@ class _FakeResponses:
 class _FakeClient:
     """Minimal client double exposing `responses.parse`."""
 
-    def __init__(self, output_parsed: BotPlayerActionDecision) -> None:
+    def __init__(self, output_parsed: _ResponseDecision) -> None:
         self.responses = _FakeResponses(output_parsed=output_parsed)
 
 
@@ -244,3 +248,30 @@ async def test_missing_dealer_up_uses_english_unknown_in_bot_action_prompt() -> 
     action_content = action_input[0]["content"]
     assert "dealer_up_card: unknown" in action_content
     assert "未知" not in action_content
+
+
+async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() -> None:
+    """Missing dealer up-card labels should match the English insurance prompt contract."""
+    finance = BotFinancialContext(
+        balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
+    )
+    insurance_client = _FakeClient(
+        output_parsed=BotPlayerInsuranceDecision(take_insurance=False, reason="不買保險")
+    )
+    insurance_ai = BotPlayerAI.model_construct(
+        client=insurance_client, model=ModelSettings(name="test-model", effort="none")
+    )
+
+    await insurance_ai.decide_bot_insurance(
+        dealer_up=None,
+        hand_repr="A♠ 10♠",
+        bet=100,
+        finance=finance,
+        other_players=[],
+    )
+
+    insurance_input = insurance_client.responses.calls[0]["input"]
+    assert isinstance(insurance_input, list)
+    insurance_content = insurance_input[0]["content"]
+    assert "dealer_up_card: unknown" in insurance_content
+    assert "未知" not in insurance_content
