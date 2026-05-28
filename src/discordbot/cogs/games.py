@@ -20,6 +20,7 @@ from discordbot.typings.games import (
     ParticipantPreparationResult,
 )
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
@@ -392,7 +393,12 @@ class GamesCogs(commands.Cog):
             requested_bet=table_bet,
             max_players=MAX_BLACKJACK_PLAYERS,
         )
-        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False),
+        )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 
@@ -453,7 +459,12 @@ class GamesCogs(commands.Cog):
         embed = build_dragon_gate_lobby_embed(
             owner=owner, participants=view.participants, jackpot=initial_jackpot.balance
         )
-        message = await interaction.followup.send(embed=embed, view=view, wait=True)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False),
+        )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
 

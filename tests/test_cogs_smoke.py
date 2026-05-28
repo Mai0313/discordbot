@@ -20,6 +20,7 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
     PortfolioView,
@@ -1516,6 +1517,8 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
     assert blackjack_interaction.followup.sent[0]["wait"] is True
     assert isinstance(blackjack_interaction.followup.sent[0]["view"], BlackjackLobbyView)
+    assert blackjack_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert blackjack_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
     monkeypatch.setattr(
         games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
@@ -1525,6 +1528,8 @@ async def test_games_commands_run_with_patched_settlement(
     await GamesCogs.dragon_gate.callback(cog, dragon_gate_interaction)
     assert dragon_gate_interaction.followup.sent[-1]["wait"] is True
     assert isinstance(dragon_gate_interaction.followup.sent[-1]["view"], DragonGateLobbyView)
+    assert dragon_gate_interaction.followup.sent[-1]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
 
 
 async def test_blackjack_lobby_start_is_owner_only(
