@@ -46,6 +46,27 @@ BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 _BET_END_USER_ID: Final[str] = "bot_player_bet"
 _ACTION_END_USER_ID: Final[str] = "bot_player_action"
 _INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
+_RANK_ORDER: Final[tuple[str, ...]] = (
+    "A",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "J",
+    "Q",
+    "K",
+)
+_TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
+_LOW_RANKS: Final[frozenset[str]] = frozenset({"2", "3", "4", "5", "6"})
+_NEUTRAL_RANKS: Final[frozenset[str]] = frozenset({"7", "8", "9"})
+_INFO_BOUNDARY: Final[str] = (
+    "server_true_counts_plus_dealer_hole; no next-card field and no ordered future shoe"
+)
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
     8: frozenset(range(2, 12)),
@@ -56,6 +77,89 @@ _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     3: frozenset(range(2, 8)),
     2: frozenset(range(2, 8)),
 }
+
+
+class ShoeSummary(BaseModel):
+    """Rank-level summary of the true remaining Blackjack shoe."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_cards: int
+    rank_counts: dict[str, int]
+    ace_count: int
+    ten_value_count: int
+    low_card_count: int
+    neutral_card_count: int
+    high_card_count: int
+
+
+class DealerKnowledge(BaseModel):
+    """Server-visible dealer state exposed to the bot player AI."""
+
+    model_config = ConfigDict(frozen=True)
+
+    up_card: str
+    hole_card: str
+    cards: str
+    total: int
+    natural_blackjack: bool
+    h17_status: str
+
+
+class DrawOdds(BaseModel):
+    """One-card draw probabilities derived from current hand plus rank counts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_draws: int
+    bust_probability: float
+    twenty_one_probability: float
+    seventeen_to_twenty_one_probability: float
+    five_card_non_bust_probability: float
+    five_card_twenty_one_probability: float
+
+
+class ActionAnalysis(BaseModel):
+    """Computed reference data for the bot player's action decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    allowed_actions: tuple[BotAction, ...]
+    basic_strategy_action: BotAction
+    basic_strategy_reason: str
+    hit_odds: DrawOdds | None = None
+    double_odds: DrawOdds | None = None
+    stand_summary: str | None = None
+    split_summary: str | None = None
+    surrender_summary: str | None = None
+
+
+class BotPlayerActionContext(BaseModel):
+    """Complete computed context for one bot-player action decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    information_boundary: str
+    shoe_summary: ShoeSummary
+    dealer: DealerKnowledge
+    action_analysis: ActionAnalysis
+
+
+class BotPlayerInsuranceContext(BaseModel):
+    """Complete computed context for one bot-player insurance decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    information_boundary: str
+    shoe_summary: ShoeSummary
+    dealer: DealerKnowledge
+    insurance_cost: int
+    insurance_payout: int
+    dealer_blackjack: bool
+    side_bet_delta_if_taken: int
+    summary: str
+
+
 _HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
     9: frozenset({3, 4, 5, 6}),
     10: frozenset(range(2, 10)),
@@ -145,6 +249,121 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
     )
 
 
+def _is_blackjack_cards(*, cards: list[Card]) -> bool:
+    """Returns whether cards form a natural Blackjack."""
+    return len(cards) == 2 and _hand_total_and_soft(cards=cards)[0] == 21
+
+
+def _card_list_text(*, cards: list[Card]) -> str:
+    """Returns a compact card list for prompt context."""
+    return " ".join(str(card) for card in cards) if cards else "none"
+
+
+def _rank_counts(*, cards: list[Card]) -> dict[str, int]:
+    """Counts card ranks in stable Blackjack rank order."""
+    counts = dict.fromkeys(_RANK_ORDER, 0)
+    for card in cards:
+        counts[card.rank] = counts.get(card.rank, 0) + 1
+    return counts
+
+
+def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
+    """Builds rank-count context from the true remaining shoe."""
+    counts = _rank_counts(cards=shoe)
+    ace_count = counts["A"]
+    ten_value_count = sum(counts[rank] for rank in _TEN_VALUE_RANKS)
+    low_card_count = sum(counts[rank] for rank in _LOW_RANKS)
+    neutral_card_count = sum(counts[rank] for rank in _NEUTRAL_RANKS)
+    return ShoeSummary(
+        total_cards=len(shoe),
+        rank_counts=counts,
+        ace_count=ace_count,
+        ten_value_count=ten_value_count,
+        low_card_count=low_card_count,
+        neutral_card_count=neutral_card_count,
+        high_card_count=ace_count + ten_value_count,
+    )
+
+
+def _dealer_h17_status(*, dealer_cards: list[Card]) -> str:
+    """Returns the dealer's forced H17 status from server-visible cards."""
+    if not dealer_cards:
+        return "unknown"
+    total, is_soft = _hand_total_and_soft(cards=dealer_cards)
+    if _is_blackjack_cards(cards=dealer_cards):
+        return "natural_blackjack"
+    if total > 21:
+        return "bust"
+    if total < 17:
+        return "must_hit_below_17"
+    if total == 17 and is_soft:
+        return "must_hit_soft_17"
+    return "stand_hard_17_or_more"
+
+
+def build_dealer_knowledge(*, dealer_cards: list[Card], dealer_up: Card | None) -> DealerKnowledge:
+    """Builds the dealer state intentionally exposed to the bot player AI."""
+    hole_card = dealer_cards[0] if dealer_cards else None
+    total = _hand_total_and_soft(cards=dealer_cards)[0] if dealer_cards else 0
+    return DealerKnowledge(
+        up_card=str(dealer_up) if dealer_up is not None else "unknown",
+        hole_card=str(hole_card) if hole_card is not None else "unknown",
+        cards=_card_list_text(cards=dealer_cards),
+        total=total,
+        natural_blackjack=_is_blackjack_cards(cards=dealer_cards),
+        h17_status=_dealer_h17_status(dealer_cards=dealer_cards),
+    )
+
+
+def _probability(*, count: int, total: int) -> float:
+    """Returns a zero-safe probability in the range [0.0, 1.0]."""
+    if total <= 0:
+        return 0.0
+    return count / total
+
+
+def _draw_odds(*, hand_cards: list[Card], shoe: list[Card], doubled: bool) -> DrawOdds:
+    """Computes one-card draw odds from rank counts, not shoe order."""
+    counts = _rank_counts(cards=shoe)
+    total_draws = len(shoe)
+    busts = 0
+    twenty_ones = 0
+    strong_totals = 0
+    five_card_non_busts = 0
+    five_card_twenty_ones = 0
+    for rank, count in counts.items():
+        if count <= 0:
+            continue
+        drawn = Card(rank=rank, suit="♠")
+        next_cards = [*hand_cards, drawn]
+        next_total = _hand_total_and_soft(cards=next_cards)[0]
+        if next_total > 21:
+            busts += count
+        if next_total == 21:
+            twenty_ones += count
+        if 17 <= next_total <= 21:
+            strong_totals += count
+        if not doubled and len(next_cards) >= 5 and next_total <= 21:
+            five_card_non_busts += count
+        if not doubled and len(next_cards) >= 5 and next_total == 21:
+            five_card_twenty_ones += count
+    return DrawOdds(
+        total_draws=total_draws,
+        bust_probability=_probability(count=busts, total=total_draws),
+        twenty_one_probability=_probability(count=twenty_ones, total=total_draws),
+        seventeen_to_twenty_one_probability=_probability(count=strong_totals, total=total_draws),
+        five_card_non_bust_probability=_probability(count=five_card_non_busts, total=total_draws),
+        five_card_twenty_one_probability=_probability(
+            count=five_card_twenty_ones, total=total_draws
+        ),
+    )
+
+
+def _basic_strategy_reason(*, action: BotAction) -> str:
+    """Returns a compact English reason for the fallback action hint."""
+    return f"Deterministic fallback table would choose {action}; use as a hint, not a hard rule."
+
+
 def fallback_bet(*, balance: int, table_bet: int) -> int:
     """Deterministic bet fallback when the LLM is slow or fails.
 
@@ -190,43 +409,226 @@ def fallback_action(
     return allowed_actions[0]
 
 
+def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the full decision surface.
+    *,
+    hand_cards: list[Card],
+    dealer_cards: list[Card],
+    dealer_up: Card | None,
+    shoe: list[Card],
+    allowed_actions: tuple[BotAction, ...],
+    is_pair_hand: bool,
+    bet: int,
+    balance_remaining: int,
+    doubled: bool = False,
+) -> BotPlayerActionContext:
+    """Builds computed AI context without exposing the future shoe order."""
+    hand_total, _is_soft = _hand_total_and_soft(cards=hand_cards)
+    basic_strategy_action = fallback_action(
+        hand_cards=hand_cards,
+        hand_total=hand_total,
+        dealer_up=dealer_up,
+        is_pair_hand=is_pair_hand,
+        allowed_actions=allowed_actions,
+    )
+    dealer = build_dealer_knowledge(dealer_cards=dealer_cards, dealer_up=dealer_up)
+    hit_odds = (
+        _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=doubled)
+        if "hit" in allowed_actions
+        else None
+    )
+    double_odds = (
+        _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=True)
+        if "double" in allowed_actions
+        else None
+    )
+    pair_value = _pair_value(cards=hand_cards)
+    split_summary = None
+    if "split" in allowed_actions:
+        split_summary = (
+            f"Pair value {pair_value}; split costs an extra {bet} {CURRENCY_NAME}; "
+            "double after split is not allowed; split Aces receive one card and stand."
+        )
+    surrender_summary = None
+    if "surrender" in allowed_actions:
+        surrender_summary = (
+            f"Surrender locks in a half-bet loss of {(bet + 1) // 2} {CURRENCY_NAME}."
+        )
+    return BotPlayerActionContext(
+        information_boundary=_INFO_BOUNDARY,
+        shoe_summary=build_shoe_summary(shoe=shoe),
+        dealer=dealer,
+        action_analysis=ActionAnalysis(
+            allowed_actions=allowed_actions,
+            basic_strategy_action=basic_strategy_action,
+            basic_strategy_reason=_basic_strategy_reason(action=basic_strategy_action),
+            hit_odds=hit_odds,
+            double_odds=double_odds,
+            stand_summary=(
+                f"Standing leaves active hand total {hand_total} against known dealer total "
+                f"{dealer.total}; dealer status: {dealer.h17_status}; "
+                f"uncommitted balance after current wagers: {balance_remaining} {CURRENCY_NAME}."
+            ),
+            split_summary=split_summary,
+            surrender_summary=surrender_summary,
+        ),
+    )
+
+
+def build_bot_insurance_context(
+    *, dealer_cards: list[Card], dealer_up: Card | None, shoe: list[Card], insurance_cost: int
+) -> BotPlayerInsuranceContext:
+    """Builds computed AI context for the insurance side bet."""
+    dealer = build_dealer_knowledge(dealer_cards=dealer_cards, dealer_up=dealer_up)
+    dealer_blackjack = dealer.natural_blackjack
+    insurance_payout = insurance_cost * 2
+    delta_if_taken = insurance_payout if dealer_blackjack else -insurance_cost
+    return BotPlayerInsuranceContext(
+        information_boundary=_INFO_BOUNDARY,
+        shoe_summary=build_shoe_summary(shoe=shoe),
+        dealer=dealer,
+        insurance_cost=insurance_cost,
+        insurance_payout=insurance_payout,
+        dealer_blackjack=dealer_blackjack,
+        side_bet_delta_if_taken=delta_if_taken,
+        summary=(
+            "Dealer has natural Blackjack; insurance side bet wins."
+            if dealer_blackjack
+            else "Dealer does not have natural Blackjack; insurance side bet loses."
+        ),
+    )
+
+
 def fallback_insurance() -> bool:
     """Deterministic insurance fallback: never take (negative EV)."""
     return False
 
 
+def _format_percent(value: float) -> str:
+    """Formats a probability as one decimal-place percentage."""
+    return f"{value * 100:.1f}%"
+
+
+def _format_rank_counts(rank_counts: dict[str, int]) -> str:
+    """Formats stable rank counts for prompt context."""
+    return ", ".join(f"{rank}:{rank_counts.get(rank, 0)}" for rank in _RANK_ORDER)
+
+
+def _format_draw_odds(*, label: str, odds: DrawOdds | None) -> list[str]:
+    """Formats one-card draw odds as prompt lines."""
+    if odds is None:
+        return [f"- {label}: not_allowed"]
+    return [
+        f"- {label}.total_draws: {odds.total_draws}",
+        f"- {label}.bust_probability: {_format_percent(odds.bust_probability)}",
+        f"- {label}.twenty_one_probability: {_format_percent(odds.twenty_one_probability)}",
+        (
+            f"- {label}.seventeen_to_twenty_one_probability: "
+            f"{_format_percent(odds.seventeen_to_twenty_one_probability)}"
+        ),
+        (
+            f"- {label}.five_card_non_bust_probability: "
+            f"{_format_percent(odds.five_card_non_bust_probability)}"
+        ),
+        (
+            f"- {label}.five_card_twenty_one_probability: "
+            f"{_format_percent(odds.five_card_twenty_one_probability)}"
+        ),
+    ]
+
+
+def format_action_context(*, context: BotPlayerActionContext | None) -> str:
+    """Renders computed action context for the LLM prompt."""
+    if context is None:
+        return "server_computed_context: unavailable"
+    shoe = context.shoe_summary
+    dealer = context.dealer
+    analysis = context.action_analysis
+    lines = [
+        "server_computed_context:",
+        f"- information_boundary: {context.information_boundary}",
+        f"- remaining_shoe.total_cards: {shoe.total_cards}",
+        f"- remaining_shoe.rank_counts: {_format_rank_counts(shoe.rank_counts)}",
+        f"- remaining_shoe.ace_count: {shoe.ace_count}",
+        f"- remaining_shoe.ten_value_count: {shoe.ten_value_count}",
+        f"- remaining_shoe.low_card_count_2_to_6: {shoe.low_card_count}",
+        f"- remaining_shoe.neutral_card_count_7_to_9: {shoe.neutral_card_count}",
+        f"- remaining_shoe.high_card_count_A_or_10_value: {shoe.high_card_count}",
+        f"- dealer.up_card: {dealer.up_card}",
+        f"- dealer.hole_card: {dealer.hole_card}",
+        f"- dealer.cards: {dealer.cards}",
+        f"- dealer.known_total: {dealer.total}",
+        f"- dealer.natural_blackjack: {dealer.natural_blackjack}",
+        f"- dealer.h17_status: {dealer.h17_status}",
+        f"- allowed_actions: {', '.join(analysis.allowed_actions)}",
+        f"- basic_strategy_hint.action: {analysis.basic_strategy_action}",
+        f"- basic_strategy_hint.reason: {analysis.basic_strategy_reason}",
+        f"- stand_summary: {analysis.stand_summary or 'not_applicable'}",
+        f"- split_summary: {analysis.split_summary or 'not_allowed'}",
+        f"- surrender_summary: {analysis.surrender_summary or 'not_allowed'}",
+    ]
+    lines.extend(_format_draw_odds(label="hit_odds", odds=analysis.hit_odds))
+    lines.extend(_format_draw_odds(label="double_odds", odds=analysis.double_odds))
+    return "\n".join(lines)
+
+
+def format_insurance_context(*, context: BotPlayerInsuranceContext | None) -> str:
+    """Renders computed insurance context for the LLM prompt."""
+    if context is None:
+        return "server_computed_context: unavailable"
+    shoe = context.shoe_summary
+    dealer = context.dealer
+    return "\n".join([
+        "server_computed_context:",
+        f"- information_boundary: {context.information_boundary}",
+        f"- remaining_shoe.total_cards: {shoe.total_cards}",
+        f"- remaining_shoe.rank_counts: {_format_rank_counts(shoe.rank_counts)}",
+        f"- remaining_shoe.ace_count: {shoe.ace_count}",
+        f"- remaining_shoe.ten_value_count: {shoe.ten_value_count}",
+        f"- dealer.up_card: {dealer.up_card}",
+        f"- dealer.hole_card: {dealer.hole_card}",
+        f"- dealer.cards: {dealer.cards}",
+        f"- dealer.known_total: {dealer.total}",
+        f"- dealer.natural_blackjack: {dealer.natural_blackjack}",
+        f"- insurance_cost: {context.insurance_cost}",
+        f"- insurance_payout: {context.insurance_payout}",
+        f"- dealer_blackjack: {context.dealer_blackjack}",
+        f"- side_bet_delta_if_taken: {context.side_bet_delta_if_taken}",
+        f"- insurance_analysis: {context.summary}",
+    ])
+
+
 def _format_finance_block(finance: BotFinancialContext) -> str:
     """Renders the bot's lifetime + daily financial state as a prompt block."""
     return (
-        f"自身財務狀態:\n"
-        f"- 目前餘額 ({CURRENCY_NAME}): {finance.balance}\n"
-        f"- 終身贏得 ({CURRENCY_NAME}): {finance.total_earned}\n"
-        f"- 終身輸掉 ({CURRENCY_NAME}): {finance.total_spent}\n"
-        f"- 今日累計贏 ({CURRENCY_NAME}): {finance.daily_win}\n"
-        f"- 今日累計輸 ({CURRENCY_NAME}): {finance.daily_loss}\n"
-        f"- 今日淨值 ({CURRENCY_NAME}): {finance.daily_net:+d}"
+        f"bankroll_context:\n"
+        f"- current_balance_{CURRENCY_NAME}: {finance.balance}\n"
+        f"- lifetime_earned_{CURRENCY_NAME}: {finance.total_earned}\n"
+        f"- lifetime_spent_{CURRENCY_NAME}: {finance.total_spent}\n"
+        f"- today_win_{CURRENCY_NAME}: {finance.daily_win}\n"
+        f"- today_loss_{CURRENCY_NAME}: {finance.daily_loss}\n"
+        f"- today_net_{CURRENCY_NAME}: {finance.daily_net:+d}"
     )
 
 
 def _format_other_players_block(other_players: list[OtherPlayerView]) -> str:
     """Renders other players' visible table state, or a placeholder when empty."""
     if not other_players:
-        return "桌上其他玩家: 無 (只有你和賭場)"
-    lines: list[str] = ["桌上其他玩家:"]
+        return "other_players: none (only bot player and casino)"
+    lines: list[str] = ["other_players:"]
     for index, other in enumerate(other_players, start=1):
-        status = "已完成" if other.is_finished else "進行中"
-        hands_repr = " | ".join(other.hands) if other.hands else "尚未發牌"
-        lines.append(f"- 玩家{index} (下注 {other.bet} {CURRENCY_NAME}, {status}): {hands_repr}")
+        status = "finished" if other.is_finished else "active"
+        hands_repr = " | ".join(other.hands) if other.hands else "not_dealt"
+        lines.append(f"- Player{index} (bet {other.bet} {CURRENCY_NAME}, {status}): {hands_repr}")
     return "\n".join(lines)
 
 
 def _format_other_player_bets_block(other_player_bets: list[tuple[str, int]]) -> str:
     """Renders the per-player bet list visible during the bet phase."""
     if not other_player_bets:
-        return "桌上其他玩家的下注: 無"
-    lines: list[str] = ["桌上其他玩家的下注:"]
+        return "other_player_bets: none"
+    lines: list[str] = ["other_player_bets:"]
     for index, (_display_name, bet) in enumerate(other_player_bets, start=1):
-        lines.append(f"- 玩家{index}: {bet} {CURRENCY_NAME}")
+        lines.append(f"- Player{index}: {bet} {CURRENCY_NAME}")
     return "\n".join(lines)
 
 
@@ -254,7 +656,7 @@ class BotPlayerAI(BaseModel):
         fallback = fallback_bet(balance=finance.balance, table_bet=table_bet)
         user_text = (
             f"{_format_finance_block(finance=finance)}\n\n"
-            f"開桌者的下注 ({CURRENCY_NAME}): {table_bet}\n"
+            f"table_bet_{CURRENCY_NAME}: {table_bet}\n"
             f"{_format_other_player_bets_block(other_player_bets=other_player_bets)}"
         )
         try:
@@ -300,6 +702,7 @@ class BotPlayerAI(BaseModel):
         finance: BotFinancialContext,
         other_players: list[OtherPlayerView],
         own_other_hands: list[str],
+        action_context: BotPlayerActionContext | None = None,
     ) -> BotPlayerActionDecision:
         """Returns the bot's next action with reasoning, falling back to basic strategy."""
         fallback_decision = BotPlayerActionDecision(
@@ -312,24 +715,25 @@ class BotPlayerAI(BaseModel):
             ),
             reason="基本策略 fallback",
         )
-        dealer_label = str(dealer_up) if dealer_up else "未知"
+        dealer_label = str(dealer_up) if dealer_up else "unknown"
         allowed_text = ", ".join(allowed_actions)
         own_other = (
-            "你自己其他分牌手: " + " | ".join(own_other_hands)
+            "own_other_split_hands: " + " | ".join(own_other_hands)
             if own_other_hands
-            else "你自己其他分牌手: 無"
+            else "own_other_split_hands: none"
         )
         user_text = (
             f"{_format_finance_block(finance=finance)}\n\n"
-            f"本手下注 ({CURRENCY_NAME}): {bet}\n"
-            f"本局尚未投入的剩餘籌碼 ({CURRENCY_NAME}): {balance_remaining}\n\n"
-            f"你的當前手牌: {hand_repr}\n"
-            f"你的當前手牌總點數: {hand_total}\n"
-            f"是否為對子 (可 split): {'是' if is_pair_hand else '否'}\n"
+            f"active_hand_bet_{CURRENCY_NAME}: {bet}\n"
+            f"uncommitted_balance_{CURRENCY_NAME}: {balance_remaining}\n\n"
+            f"active_hand: {hand_repr}\n"
+            f"active_hand_total: {hand_total}\n"
+            f"is_pair_hand_for_split: {is_pair_hand}\n"
             f"{own_other}\n\n"
-            f"莊家明牌: {dealer_label}\n"
+            f"dealer_up_card: {dealer_label}\n"
             f"{_format_other_players_block(other_players=other_players)}\n\n"
-            f"allowed_actions (你只能選其中之一): [{allowed_text}]"
+            f"allowed_actions: [{allowed_text}]\n\n"
+            f"{format_action_context(context=action_context)}"
         )
         try:
             async with asyncio.timeout(delay=BOT_ACTION_AI_TIMEOUT_SECONDS):
@@ -364,7 +768,7 @@ class BotPlayerAI(BaseModel):
             return candidate
         return fallback_decision
 
-    async def decide_bot_insurance(
+    async def decide_bot_insurance(  # noqa: PLR0913 -- insurance prompt needs full table context.
         self,
         *,
         dealer_up: Card | None,
@@ -372,21 +776,23 @@ class BotPlayerAI(BaseModel):
         bet: int,
         finance: BotFinancialContext,
         other_players: list[OtherPlayerView],
+        insurance_context: BotPlayerInsuranceContext | None = None,
     ) -> BotPlayerInsuranceDecision:
         """Returns whether the bot takes insurance with reasoning, falling back to False."""
         fallback_decision = BotPlayerInsuranceDecision(
             take_insurance=fallback_insurance(), reason="保險長期 EV 為負, 直接拒絕"
         )
-        dealer_label = str(dealer_up) if dealer_up else "未知"
+        dealer_label = str(dealer_up) if dealer_up else "unknown"
         insurance_cost = bet // 2
         user_text = (
             f"{_format_finance_block(finance=finance)}\n\n"
-            f"本手下注 ({CURRENCY_NAME}): {bet}\n"
-            f"買保險要再下 ({CURRENCY_NAME}): {insurance_cost} "
-            f"(賠率 2:1, 莊家若湊出 Blackjack 賠 {insurance_cost * 2})\n\n"
-            f"你的起手牌: {hand_repr}\n"
-            f"莊家明牌: {dealer_label}\n"
-            f"{_format_other_players_block(other_players=other_players)}"
+            f"main_bet_{CURRENCY_NAME}: {bet}\n"
+            f"insurance_cost_{CURRENCY_NAME}: {insurance_cost}\n"
+            f"insurance_payout_if_won_{CURRENCY_NAME}: {insurance_cost * 2}\n\n"
+            f"opening_hand: {hand_repr}\n"
+            f"dealer_up_card: {dealer_label}\n"
+            f"{_format_other_players_block(other_players=other_players)}\n\n"
+            f"{format_insurance_context(context=insurance_context)}"
         )
         try:
             async with asyncio.timeout(delay=BOT_INSURANCE_AI_TIMEOUT_SECONDS):
