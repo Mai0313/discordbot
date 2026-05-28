@@ -336,8 +336,11 @@ class GamesCogs(commands.Cog):
             return
         wager = parse_wager_amount(raw_amount=bet)
         if wager is None:
+            embed = self._invalid_bet_embed()
             await interaction.response.send_message(
-                embed=self._invalid_bet_embed(), ephemeral=True
+                embed=embed,
+                ephemeral=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             return
 
@@ -354,9 +357,11 @@ class GamesCogs(commands.Cog):
             )
         owner = participant_result.participant
         if owner is None:
+            embed = self._insufficient_balance_embed(balance=participant_result.balance)
             message = await interaction.followup.send(
-                embed=self._insufficient_balance_embed(balance=participant_result.balance),
+                embed=embed,
                 wait=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return

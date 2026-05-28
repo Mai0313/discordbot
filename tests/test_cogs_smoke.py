@@ -1674,6 +1674,8 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
 
     assert owner_interaction.response.sent[0]["ephemeral"] is True
     assert owner_interaction.response.sent[0]["embed"].title == "下注格式錯誤"
+    assert owner_interaction.response.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.response.sent[0]["embed"].image.url == embed_spacer_url()
     assert owner_interaction.followup.sent == []
     assert owner_interaction.response.deferred is False
 
@@ -1719,6 +1721,8 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     assert owner_interaction.followup.sent[0]["wait"] is True
     assert "view" not in owner_interaction.followup.sent[0]
     assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
 
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
