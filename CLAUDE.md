@@ -29,6 +29,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Cogs should not import peer cogs directly. Use the bot instance, shared typings, or cog-private helper packages.
 - Slash commands need localized names and descriptions for English, Traditional Chinese, and Japanese where the command is user-facing.
 - Any user-visible command or behavior change must update `src/discordbot/cogs/help.py` in the same change and keep `tests/test_help.py` passing.
+- When one Discord message sends multiple embeds that need aligned widths, use `discordbot.utils.discord_embeds.apply_embed_spacer_image(...)` plus a fresh `build_embed_spacer_file(...)` in the same send/edit payload; on edits include `attachments=[]` so stale spacer attachments are replaced.
 
 ## AI Pipeline
 

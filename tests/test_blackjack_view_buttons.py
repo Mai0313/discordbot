@@ -13,10 +13,11 @@ from random import Random
 from unittest.mock import MagicMock
 
 import pytest
-from nextcord import Interaction
+from nextcord import Embed, Interaction
 
 from discordbot.cogs._games import blackjack_views
 from discordbot.typings.games import GameParticipant
+from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
 
@@ -310,6 +311,27 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
     assert "A♣" in dealer_embed.description
     assert "K♦" in dealer_embed.description
     assert "🂠" not in dealer_embed.description
+
+
+def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
+    """Blackjack table edits attach one transparent spacer and reference it from every embed."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
+    )
+    talk_embed = Embed(description="短句")
+    seat_embeds = build_in_progress_embeds(
+        round_state=round_state, system_name="賭場系統", system_avatar_url=""
+    )
+
+    payload = blackjack_views._blackjack_table_edit_kwargs(
+        embeds=[talk_embed, *seat_embeds], view=None
+    )
+
+    assert payload["attachments"] == []
+    assert payload["file"].filename == DEFAULT_EMBED_SPACER_FILENAME
+    for embed in payload["embeds"]:
+        assert embed.image.url == embed_spacer_url()
 
 
 async def test_interaction_check_sends_ephemeral_notice_when_settled(
