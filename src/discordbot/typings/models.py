@@ -91,11 +91,12 @@ class RuntimeModelCatalog(BaseModel):
         """The model settings for lightweight reply-generation tasks.
 
         Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`,
-        `SystemNarrator`.
+        `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
 
         Returns:
             Fast model settings used for routing, image captions, short
-            Discord replies, and casino system narrator lines.
+            Discord replies, casino system narrator lines, auto-unmute
+            replies, and stock news generation.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
