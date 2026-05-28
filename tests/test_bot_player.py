@@ -71,10 +71,7 @@ def test_other_player_prompt_blocks_use_neutral_labels() -> None:
     table_block = _format_other_players_block(
         other_players=[
             OtherPlayerView(
-                display_name=injection_name,
-                bet=500,
-                hands=["A♠ 9♥ = 20"],
-                is_finished=False,
+                display_name=injection_name, bet=500, hands=["A♠ 9♥ = 20"], is_finished=False
             )
         ]
     )
