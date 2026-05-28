@@ -1725,6 +1725,27 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
 
 
+async def test_dragon_gate_rejects_empty_balance_with_spacer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies the Dragon Gate insufficient-balance response keeps uniform width."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(games, "get_balance", _empty_game_balance)
+
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+
+    owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
+    await GamesCogs.dragon_gate.callback(cog, owner_interaction)
+
+    assert owner_interaction.followup.sent[0]["wait"] is True
+    assert "view" not in owner_interaction.followup.sent[0]
+    assert owner_interaction.followup.sent[0]["embed"].title == "餘額不足"
+    assert owner_interaction.followup.sent[0]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert owner_interaction.followup.sent[0]["embed"].image.url == embed_spacer_url()
+
+
 async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies only the Dragon Gate lobby owner can press Start."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")

@@ -434,11 +434,13 @@ class GamesCogs(commands.Cog):
         )
         owner = participant_result.participant
         if owner is None:
+            embed = self._dragon_gate_insufficient_balance_embed(
+                balance=participant_result.balance
+            )
             message = await interaction.followup.send(
-                embed=self._dragon_gate_insufficient_balance_embed(
-                    balance=participant_result.balance
-                ),
+                embed=embed,
                 wait=True,
+                **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
             )
             schedule_public_message_delete(message=message, user_name=interaction.user.name)
             return
