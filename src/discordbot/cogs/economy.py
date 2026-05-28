@@ -568,10 +568,16 @@ class CreditLoanDecisionView(View):
         )
         embed.add_field(name="批准者", value=interaction.user.mention, inline=True)
         embed.add_field(
-            name="借方餘額",
-            value=amount_code(amount=result.borrower_balance, compact=True),
+            name="利率",
+            value=f"`{_rate_text(monthly_rate_bps=result.contract.monthly_rate_bps)}`",
             inline=True,
         )
+        embed.add_field(
+            name="貸方餘額",
+            value=amount_code(amount=result.lender_balance or 0, compact=True),
+            inline=True,
+        )
+        _set_optional_thumbnail(embed=embed, avatar_url=lender_avatar_url)
         self.stop()
         await _edit_response_embed(interaction=interaction, embed=embed)
         self._schedule_cleanup(interaction=interaction)
