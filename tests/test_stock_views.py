@@ -10,7 +10,7 @@ from datetime import datetime
 
 from PIL import Image
 import pytest
-from nextcord import Embed, Locale
+from nextcord import File, Embed, Locale
 
 from discordbot.cogs import stock
 from discordbot.cogs.stock import StockCogs
@@ -790,16 +790,21 @@ async def test_edit_stock_message_publicly_recovers_when_target_was_deleted(
     interaction.response.deferred = True
     interaction.message = DeletedMessageStub()
     view = StockPostTradeView(symbol=BCAT_SYMBOL, owner_id=1)
+    chart_file = File(fp=BytesIO(b"chart-bytes"), filename="chart.png")
 
     await stock_views.edit_stock_message(
         interaction=interaction,
         embed=Embed(title="股票交易完成"),
         view=view,
+        file=chart_file,
         message=interaction.message,
     )
 
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert interaction.followup.sent[0]["view"] is view
+    assert interaction.followup.sent[0]["files"][0] is not chart_file
+    assert interaction.followup.sent[0]["files"][0].filename == "chart.png"
+    assert interaction.followup.sent[0]["files"][0].fp.read() == b"chart-bytes"
     assert view.message is not interaction.message
     assert forgotten == [interaction.message.id]
     assert tracked == [view.message]

@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from typing import cast
+from collections.abc import Callable
 
 import nextcord
 from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
@@ -74,6 +75,29 @@ def build_market_message_payload(
         quotes=quotes, page_index=page_index, page_size=MARKET_PAGE_SIZE
     )
     return embed, File(fp=BytesIO(board), filename=filename)
+
+
+def _fresh_file_factory(file: File | None) -> Callable[[], File] | None:
+    """Returns a factory that creates fresh uploads for retry or fallback paths."""
+    if file is None:
+        return None
+    file.reset()
+    payload = file.fp.read()
+    file.reset()
+    filename = file.filename
+    description = file.description
+
+    def build_file() -> File:
+        return File(fp=BytesIO(payload), filename=filename, description=description)
+
+    return build_file
+
+
+def _fresh_extra_files(file_factory: Callable[[], File] | None) -> list[File] | None:
+    """Builds a fresh extra file list for one Discord request."""
+    if file_factory is None:
+        return None
+    return [file_factory()]
 
 
 class StockPublicView(View):
@@ -553,7 +577,7 @@ async def edit_stock_message(
     target_message = message or interaction.message
     if view is not None:
         view.bind_message(message=target_message)
-    extra_files = [file] if file is not None else None
+    file_factory = _fresh_file_factory(file=file)
     kwargs: dict[str, object] = {
         "embed": embed,
         "view": view,
@@ -561,7 +585,7 @@ async def edit_stock_message(
             embeds=[embed],
             is_edit=True,
             target=target_message or interaction,
-            extra_files=extra_files,
+            extra_files=_fresh_extra_files(file_factory=file_factory),
         ),
     }
     if not interaction.response.is_done():
@@ -582,7 +606,10 @@ async def edit_stock_message(
         "view": view,
         "wait": True,
         **embed_spacer_payload(
-            embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
+            embeds=[embed],
+            is_edit=False,
+            target=interaction,
+            extra_files=_fresh_extra_files(file_factory=file_factory),
         ),
     }
     sent_message = await interaction.followup.send(**followup_kwargs)
