@@ -74,6 +74,18 @@ def test_embed_spacer_payload_send_omits_attachments() -> None:
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
 
 
+def test_embed_spacer_payload_reuploads_existing_spacer_image() -> None:
+    """A reused spacer embed still gets a fresh upload for the new message."""
+    embed = Embed(description="text")
+    embed_spacer_payload(embeds=[embed], is_edit=True)
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=False)
+
+    assert "attachments" not in payload
+    assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert embed.image.url == embed_spacer_url()
+
+
 def test_embed_spacer_payload_real_image_keeps_only_extra_files() -> None:
     """A real-image embed adds no spacer upload but preserves the caller's file."""
     embed = Embed(description="board")
@@ -115,6 +127,18 @@ def test_embed_spacer_payload_skips_spacer_when_extra_files_fill_discord_limit()
     """A full file payload keeps the real files and leaves text embeds unmodified."""
     files = [build_embed_spacer_file(filename=f"video-{index}.mp4") for index in range(10)]
     embed = Embed(description="video-only post")
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=files)
+
+    assert payload["files"] == files
+    assert not embed.image.url
+
+
+def test_embed_spacer_payload_removes_stale_spacer_when_file_limit_is_full() -> None:
+    """A reused spacer embed drops the missing attachment reference when upload is full."""
+    files = [build_embed_spacer_file(filename=f"video-{index}.mp4") for index in range(10)]
+    embed = Embed(description="video-only post")
+    embed.set_image(url=embed_spacer_url())
 
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, extra_files=files)
 

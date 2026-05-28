@@ -32,9 +32,10 @@ def build_embed_spacer_file(
     )
 
 
-def _embed_has_image(embed: Embed) -> bool:
+def _embed_has_real_image(*, embed: Embed, spacer_url: str) -> bool:
     """Returns True when an embed already shows a real image via set_image."""
-    return bool(embed.image and embed.image.url)
+    image_url = embed.image.url if embed.image else None
+    return bool(image_url and image_url != spacer_url)
 
 
 def apply_embed_spacer_image(
@@ -43,7 +44,7 @@ def apply_embed_spacer_image(
     """Sets a transparent spacer only on embeds without an image of their own."""
     spacer_url = embed_spacer_url(filename=filename)
     for embed in embeds:
-        if not _embed_has_image(embed=embed):
+        if not _embed_has_real_image(embed=embed, spacer_url=spacer_url):
             embed.set_image(url=spacer_url)
     return embeds
 
@@ -56,11 +57,18 @@ def embed_spacer_payload(
     filename: str = DEFAULT_EMBED_SPACER_FILENAME,
 ) -> dict[str, Any]:
     """Returns the spacer files/attachments increment to merge into a send or edit."""
-    needs_spacer = any(not _embed_has_image(embed=embed) for embed in embeds)
+    spacer_url = embed_spacer_url(filename=filename)
+    needs_spacer = any(
+        not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds
+    )
     files: list[File] = list(extra_files or [])
     if needs_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:
         apply_embed_spacer_image(embeds=embeds, filename=filename)
         files.append(build_embed_spacer_file(filename=filename))
+    elif needs_spacer:
+        for embed in embeds:
+            if embed.image and embed.image.url == spacer_url:
+                embed.set_image(url=None)
     payload: dict[str, Any] = {}
     if files:
         payload["files"] = files
