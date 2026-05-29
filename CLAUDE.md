@@ -18,7 +18,7 @@ make gen-docs                    # regenerate docs/ from sources
 
 - `src/discordbot/cli.py` defines `DiscordBot(commands.Bot)`.
 - Intents start from `Intents.all()`, then disable `members` and `presences`.
-- Cog loading is synchronous inside `DiscordBot.__init__` before gateway connection. First `on_ready` syncs global application commands, warms the model-pricing cache off the event loop, and starts the status task.
+- Cog loading is synchronous inside `DiscordBot.__init__` before gateway connection. First `on_ready` syncs global application commands, starts the status task, and warms the model-pricing cache off the event loop.
 - The status task rotates presence lines from the `bot_status` table in `data/global_state.db` (managed offline via `scripts/manage_bot_status.py`); an empty table falls back to a built-in default.
 - Every cog module must expose sync `def setup(bot): ...` and add cogs with `override=True`. Do not use `async def setup`; nextcord schedules it without awaiting, so the first command sync can see no commands.
 - Helper packages live in sibling `_<cog>/` directories so they are not auto-loaded as cogs.
