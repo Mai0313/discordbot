@@ -50,13 +50,17 @@ from discordbot.cogs._economy.database import (
     open_session,
     _database_now,
     _ensure_schema,
+    add_bot_status,
     adjust_balance,
     checkin_reward,
     _taipei_midnight,
+    get_bot_statuses,
     get_jackpot_pool,
     get_casino_ledger,
+    remove_bot_status,
     _stored_int_to_int,
     get_jackpot_snapshot,
+    list_bot_status_rows,
     credit_with_repayment,
     apply_round_settlement,
     get_casino_daily_stats,
@@ -540,7 +544,7 @@ async def test_ensure_schema_bootstraps_current_databases(
         "loan_contract",
         "casino_account",
     }
-    assert global_state_tables == {"jackpot_pool", "casino_ledger"}
+    assert global_state_tables == {"jackpot_pool", "casino_ledger", "bot_status"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"
@@ -2636,3 +2640,28 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 
     await engine.dispose()
     await global_state_engine.dispose()
+
+
+async def test_get_bot_statuses_empty_returns_empty_list() -> None:
+    """A fresh database has no presence lines, so callers fall back to a default."""
+    assert await get_bot_statuses() == []
+
+
+async def test_bot_status_rotation_orders_enabled_lines() -> None:
+    """Enabled lines are returned ordered by order_index then id; disabled excluded."""
+    second_id = await add_bot_status(status_text="second", order_index=2)
+    await add_bot_status(status_text="first", order_index=1)
+    await add_bot_status(status_text="hidden", order_index=0, enabled=False)
+
+    assert await get_bot_statuses() == ["first", "second"]
+
+    rows = await list_bot_status_rows()
+    assert [(row.status_text, row.enabled) for row in rows] == [
+        ("hidden", False),
+        ("first", True),
+        ("second", True),
+    ]
+
+    assert await remove_bot_status(status_id=second_id) is True
+    assert await get_bot_statuses() == ["first"]
+    assert await remove_bot_status(status_id=second_id) is False

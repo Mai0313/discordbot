@@ -62,6 +62,7 @@ from sqlalchemy import (
     func,
     text,
     event,
+    delete,
     select,
     update,
 )
@@ -83,6 +84,7 @@ from discordbot.typings.economy import (
     CreditResult,
     CheckinResult,
     PortfolioView,
+    BotStatusEntry,
     LoanLenderType,
     TransferResult,
     WalletDeltaLeg,
@@ -446,6 +448,35 @@ class CasinoLedger(GlobalStateBase):
     balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     total_earned: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     total_spent: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
+class BotStatus(GlobalStateBase):
+    """Operator-tunable presence lines rotated by the status task.
+
+    Rows are managed out-of-band via offline DB maintenance; an empty table lets
+    the status task fall back to its built-in default, so a fresh database still
+    shows a presence. Read once per status tick and never written at runtime, so
+    there is no write amplification.
+
+    Attributes:
+        status_id: Autoincrement primary key.
+        status_text: Presence text shown via `change_presence`.
+        enabled: Whether this line is eligible for rotation.
+        order_index: Ascending rotation/display order hint.
+        updated_at: Taiwan-local timestamp of the last write.
+    """
+
+    __tablename__ = "bot_status"
+
+    status_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    status_text: Mapped[str] = mapped_column(String(length=128), nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
+    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -3399,3 +3430,54 @@ async def get_portfolio(user_id: int) -> PortfolioView:
         portfolio = await _portfolio_in_session(session=session, user_id=user_id, now=now)
         await session.commit()
         return portfolio
+
+
+async def get_bot_statuses() -> list[str]:
+    """Returns enabled presence lines ordered for rotation; empty when unset."""
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=select(BotStatus.status_text)
+            .where(BotStatus.enabled.is_(True))
+            .order_by(BotStatus.order_index, BotStatus.status_id)
+        )
+        return list(result.scalars().all())
+
+
+async def list_bot_status_rows() -> list[BotStatusEntry]:
+    """Returns every presence rotation row for maintenance display."""
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=select(BotStatus).order_by(BotStatus.order_index, BotStatus.status_id)
+        )
+        return [
+            BotStatusEntry(
+                status_id=row.status_id,
+                status_text=row.status_text,
+                enabled=row.enabled,
+                order_index=row.order_index,
+            )
+            for row in result.scalars().all()
+        ]
+
+
+async def add_bot_status(status_text: str, order_index: int = 0, enabled: bool = True) -> int:
+    """Adds a presence rotation line and returns its new id."""
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
+        row = BotStatus(status_text=status_text, order_index=order_index, enabled=enabled)
+        session.add(row)
+        await session.commit()
+        return row.status_id
+
+
+async def remove_bot_status(status_id: int) -> bool:
+    """Removes a presence rotation line; returns True when a row was deleted."""
+    await _ensure_global_state_schema()
+    async with open_global_state_session() as session:
+        result = await session.execute(
+            statement=delete(BotStatus).where(BotStatus.status_id == status_id)
+        )
+        await session.commit()
+        return bool(result.rowcount)
