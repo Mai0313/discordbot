@@ -18,7 +18,8 @@ make gen-docs                    # regenerate docs/ from sources
 
 - `src/discordbot/cli.py` defines `DiscordBot(commands.Bot)`.
 - Intents start from `Intents.all()`, then disable `members` and `presences`.
-- Cog loading is synchronous inside `DiscordBot.__init__` before gateway connection. First `on_ready` syncs global application commands and starts the status task.
+- Cog loading is synchronous inside `DiscordBot.__init__` before gateway connection. First `on_ready` syncs global application commands, starts the status task, and warms the model-pricing cache off the event loop.
+- The status task rotates presence lines from the `bot_status` table in `data/global_state.db` (managed offline via `scripts/manage_bot_status.py`); an empty table falls back to a built-in default.
 - Every cog module must expose sync `def setup(bot): ...` and add cogs with `override=True`. Do not use `async def setup`; nextcord schedules it without awaiting, so the first command sync can see no commands.
 - Helper packages live in sibling `_<cog>/` directories so they are not auto-loaded as cogs.
 - Add common command errors in `DiscordBot.on_command_error` instead of catching them in each cog.
@@ -60,7 +61,7 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Economy
 
-- SQLite files are separate: `data/messages.db` for message logs, `data/economy.db` for per-user 虛擬歡樂豆, `data/global_state.db` for bot-wide shared state such as jackpot pools, and `data/game_cleanup.db` for public message cleanup targets.
+- SQLite files are separate: `data/messages.db` for message logs, `data/economy.db` for per-user 虛擬歡樂豆, `data/global_state.db` for bot-wide shared state such as jackpot pools and bot presence rotation, and `data/game_cleanup.db` for public message cleanup targets.
 - `cogs/_economy/database.py` owns the module-level async engines `_engine` and `_global_state_engine`. Do not move them to `cached_property`; tests monkeypatch those engines and expect helpers to bind sessions directly from the current object.
 - `UserAccount` has no `guild_id`. Identity, VIP, check-ins, admin flags, central banker flags, and leaderboard visibility are cross-server by design. Spendable balances and gross totals live in `user_wallet`, which also denormalizes `name` for direct DB inspection; long-term loans live in `loan_proposal` and `loan_contract`; daily casino counters live in `casino_account`. Economy money columns are stored as decimal strings and parsed to Python `int` for arithmetic so they do not inherit SQLite's 64-bit integer ceiling.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths use `utils.avatars.guild_avatar_url(...)` with guild context so guild avatars are stored when available, falling back to global `display_avatar`. Do not backfill existing avatar URLs; they refresh naturally on later writes.
@@ -86,7 +87,7 @@ make gen-docs                    # regenerate docs/ from sources
 - `stock_news` refreshes at most once per `news_cadence_hours` per symbol. `StockNewsAI` may use the existing `AsyncOpenAI` Responses API stack when LLM config is available, but database helpers must always have deterministic fallback news and must not block settlement on LLM failure.
 - Stock news sentiment is impulse: each news contributes its `clamp(sentiment_bps, ±NEWS_SENTIMENT_LIMIT_BPS)` exactly once at its firing tick boundary inside `advance_market_in_session`, not as a decayed drift over every following tick. `_news_impulse_by_boundary` routes news that landed in skipped backlog ticks to the next surviving boundary. The decay-aware `_decayed_news_sentiment_for_context` is only fed to the AI news generation prompt as ambient sentiment.
 - Stock news generation receives `StockNewsGenerationContext` with daily price change, recent decayed order-flow pressure, and existing news sentiment. Prompts and fallback copy templates live in `src/discordbot/cogs/_stock/prompts.py`; keep generated news fictional, absurd, harmless, and broadly aligned with that market context.
-- For Discord UI that needs precise layout beyond embed and Markdown limits, render a PNG with Pillow, attach it with `File`, then reference it from the embed via `attachment://...`. Use a CJK-capable font such as Noto Sans CJK for Traditional Chinese, and keep source data typed so the image renderer stays presentation-only.
+- For Discord UI that needs precise layout beyond embed and Markdown limits, render a PNG with Pillow, attach it with `File`, then reference it from the embed via `attachment://...`. Use a CJK-capable font such as Noto Sans CJK for Traditional Chinese, and keep source data typed so the image renderer stays presentation-only. Shared font loading and text-anchoring helpers live in `utils/pil_text.py`; reuse them instead of re-implementing per renderer.
 - Market pressure uses decayed order flow and per-stock liquidity. Do not reintroduce a multi-day aggregate pressure term that applies the same directional drift on every tick.
 - Execution price uses order-size slippage from `liquidity_shares`, capped by `max_tick_change_bps`. Store and display the per-leg execution `price_cents`; do not settle large orders at the quote price.
 - Stock tables that persist `user_id` also persist `user_name`. Public stock UI should display stored names instead of Discord IDs.

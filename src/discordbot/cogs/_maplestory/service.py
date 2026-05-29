@@ -7,17 +7,14 @@ caching, and searching MapleStory data from JSON files.
 from __future__ import annotations
 
 import json
-from typing import TypeVar
 from pathlib import Path
 
 import logfire
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from .models import NPC, Quest, Scroll, Monster, Useable, MapEntry, MiscItem, Equipment, MapleStats
 
 DEFAULT_DATA_DIR = Path("./data/maplestory")
-
-T = TypeVar("T", bound=BaseModel)
 
 
 def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
@@ -43,29 +40,29 @@ def _load_translations(data_dir: Path) -> dict[str, dict[str, str]]:
         return {}
 
 
-class MapleStoryService:
+class MapleStoryService(BaseModel):
     """Encapsulates all Artale data lookups with caching."""
 
-    def __init__(self) -> None:
-        """Initializes the MapleStoryService with empty data and caches."""
-        self._monsters: list[Monster] = []
-        self._equipment: list[Equipment] = []
-        self._scrolls: list[Scroll] = []
-        self._useable: list[Useable] = []
-        self._npcs: list[NPC] = []
-        self._quests: list[Quest] = []
-        self._maps: list[MapEntry] = []
-        self._misc: list[MiscItem] = []
-        self._translations: dict[str, dict[str, str]] = {}
-        # Caches — typed per-category to avoid mypy issues with generic dict
-        self._monster_cache: dict[str, list[Monster]] = {}
-        self._equip_cache: dict[str, list[Equipment]] = {}
-        self._scroll_cache: dict[str, list[Scroll]] = {}
-        self._npc_cache: dict[str, list[NPC]] = {}
-        self._quest_cache: dict[str, list[Quest]] = {}
-        self._map_cache: dict[str, list[MapEntry]] = {}
-        self._item_cache: dict[str, list[str]] = {}
-        self._stats: MapleStats | None = None
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    _monsters: list[Monster] = PrivateAttr(default_factory=list)
+    _equipment: list[Equipment] = PrivateAttr(default_factory=list)
+    _scrolls: list[Scroll] = PrivateAttr(default_factory=list)
+    _useable: list[Useable] = PrivateAttr(default_factory=list)
+    _npcs: list[NPC] = PrivateAttr(default_factory=list)
+    _quests: list[Quest] = PrivateAttr(default_factory=list)
+    _maps: list[MapEntry] = PrivateAttr(default_factory=list)
+    _misc: list[MiscItem] = PrivateAttr(default_factory=list)
+    _translations: dict[str, dict[str, str]] = PrivateAttr(default_factory=dict)
+    # Caches — typed per-category to avoid mypy issues with generic dict
+    _monster_cache: dict[str, list[Monster]] = PrivateAttr(default_factory=dict)
+    _equip_cache: dict[str, list[Equipment]] = PrivateAttr(default_factory=dict)
+    _scroll_cache: dict[str, list[Scroll]] = PrivateAttr(default_factory=dict)
+    _npc_cache: dict[str, list[NPC]] = PrivateAttr(default_factory=dict)
+    _quest_cache: dict[str, list[Quest]] = PrivateAttr(default_factory=dict)
+    _map_cache: dict[str, list[MapEntry]] = PrivateAttr(default_factory=dict)
+    _item_cache: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    _stats: MapleStats | None = PrivateAttr(default=None)
 
     @classmethod
     def from_directory(cls, data_dir: Path = DEFAULT_DATA_DIR) -> MapleStoryService:
@@ -80,19 +77,6 @@ class MapleStoryService:
         svc = cls()
         svc._load_all(data_dir)
         return svc
-
-    # Keep backwards compat for existing callers
-    @classmethod
-    def from_file(cls, file_path: Path = DEFAULT_DATA_DIR / "monsters.json") -> MapleStoryService:
-        """Creates a service instance, inferring the directory from a file path.
-
-        Args:
-            file_path: Path to a data file (e.g., monsters.json).
-
-        Returns:
-            An initialized MapleStoryService instance.
-        """
-        return cls.from_directory(file_path.parent)
 
     def _load_all(self, data_dir: Path) -> None:
         """Loads all MapleStory JSON data and resets derived caches."""

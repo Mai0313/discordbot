@@ -84,6 +84,17 @@ class CentralBankerAccount(BaseModel):
     name: str
 
 
+class BotStatusEntry(BaseModel):
+    """One bot presence rotation row for maintenance display."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status_id: int
+    status_text: str
+    enabled: bool
+    order_index: int
+
+
 class LeaderboardEntry(BaseModel):
     """One account row in the balance leaderboard."""
 

@@ -1,5 +1,6 @@
 """Slash command cog for downloading videos through yt-dlp."""
 
+import asyncio
 from pathlib import Path
 import contextlib
 
@@ -70,7 +71,8 @@ class VideoCogs(commands.Cog):
 
         try:
             downloader = VideoDownloader(output_folder="./data/downloads")
-            with downloader.download(url=url, quality=quality) as result:
+            result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
+            with result:
                 file_size_mb = result.filename.stat().st_size / 1024 / 1024
                 if result.filename.stat().st_size <= _DISCORD_FILE_LIMIT_BYTES:
                     await self._deliver(
@@ -90,7 +92,8 @@ class VideoCogs(commands.Cog):
                 await interaction.edit_original_message(
                     content=f"-# 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
                 )
-                with downloader.download(url=url, quality="low") as low_result:
+                low_result = await asyncio.to_thread(downloader.download, url=url, quality="low")
+                with low_result:
                     file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
                     if low_result.filename.stat().st_size > _DISCORD_FILE_LIMIT_BYTES:
                         await interaction.edit_original_message(

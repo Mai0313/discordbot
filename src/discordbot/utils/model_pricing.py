@@ -71,6 +71,16 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
     return info.input_cost_per_token, info.output_cost_per_token
 
 
+def warm_pricing_cache() -> None:
+    """Populates the price-table cache eagerly.
+
+    Calling this once at startup (off the event loop) keeps the first runtime
+    `get_token_rates` / `get_supported_modalities` lookup from blocking on the
+    upstream HTTP fetch during a live interaction.
+    """
+    _load_model_prices()
+
+
 def get_supported_modalities(model_name: str) -> set[str]:
     """Returns the input modalities accepted by `model_name`.
 
