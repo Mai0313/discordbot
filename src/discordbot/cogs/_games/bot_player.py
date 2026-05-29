@@ -902,7 +902,12 @@ class BotPlayerAI(BaseModel):
         other_players: list[OtherPlayerView],
         insurance_context: BotPlayerInsuranceContext | None = None,
     ) -> BotPlayerInsuranceDecision:
-        """Returns whether the bot takes insurance with reasoning, falling back to False."""
+        """Returns whether the bot takes insurance with reasoning.
+
+        On LLM failure the fallback is hole-card-aware: it takes insurance when
+        the known dealer hole card already makes a Blackjack, and declines
+        otherwise.
+        """
         if insurance_context is not None and insurance_context.dealer_blackjack:
             fallback_decision = BotPlayerInsuranceDecision(
                 take_insurance=True, reason="暗牌成 BJ, 買保險打平"
