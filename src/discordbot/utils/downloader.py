@@ -1,13 +1,12 @@
 """yt-dlp wrapper utilities used by the video download command."""
 
 import types
-from typing import Any
+from typing import Any, ClassVar
 from pathlib import Path
-from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
-from pydantic import Field, BaseModel, computed_field
+from pydantic import Field, BaseModel
 from requests import Session
 from requests.exceptions import RequestException
 
@@ -66,22 +65,14 @@ class VideoDownloader(BaseModel):
         default=10, description="Timeout (seconds) for resolving Facebook share URLs"
     )
 
-    @computed_field
-    @cached_property
-    def quality_formats(self) -> dict[str, str]:
-        """The map of quality presets to yt-dlp format strings.
-
-        Returns:
-            Preset names mapped to yt-dlp format selectors.
-        """
-        quality_formats = {
-            # Prefer separate video+audio with safe fallbacks to muxed or video-only streams
-            "best": "bestvideo*+bestaudio/best/bestvideo*",
-            "high": "bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080][fps<=60]/best[height<=1080]",
-            "medium": "bestvideo[height<=720][fps<=60]+bestaudio/best[height<=720][fps<=60]/best[height<=720]",
-            "low": "bestvideo[height<=480]+bestaudio/best[height<=480]/best[height<=480]",
-        }
-        return quality_formats
+    # Static map of quality presets to yt-dlp format strings; prefers separate
+    # video+audio with safe fallbacks to muxed or video-only streams.
+    quality_formats: ClassVar[dict[str, str]] = {
+        "best": "bestvideo*+bestaudio/best/bestvideo*",
+        "high": "bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080][fps<=60]/best[height<=1080]",
+        "medium": "bestvideo[height<=720][fps<=60]+bestaudio/best[height<=720][fps<=60]/best[height<=720]",
+        "low": "bestvideo[height<=480]+bestaudio/best[height<=480]/best[height<=480]",
+    }
 
     def _default_http_headers(self) -> dict[str, str]:
         """Returns default HTTP headers for requests."""
