@@ -11,7 +11,7 @@ from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.cogs._stock.chart import build_price_chart, invalidate_stock_chart_cache
+from discordbot.cogs._stock.chart import build_price_chart
 from discordbot.cogs._stock.database import (
     get_stock_news,
     get_stock_detail,
@@ -35,17 +35,10 @@ from discordbot.cogs._stock.presentation import (
     build_market_board_image,
     build_stock_detail_embed,
     build_action_prompt_embed,
-    invalidate_stock_market_board_cache,
 )
 
 MARKET_PAGE_SIZE = 25
 SELECT_OPTION_LABEL_LIMIT = 100
-
-
-def invalidate_stock_view_cache(symbol: str | None = None) -> None:
-    """Clears process-local stock view image caches."""
-    invalidate_stock_market_board_cache(symbol=symbol)
-    invalidate_stock_chart_cache(symbol=symbol)
 
 
 def require_stock_user(interaction: Interaction) -> User | Member:

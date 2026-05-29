@@ -386,6 +386,8 @@ class DragonGatePlayerResult(BaseModel):
 
 
 __all__ = [
+    "ActionEv",
+    "ActionEvAnalysis",
     "BlackjackDealerAction",
     "BlackjackDealerDecision",
     "BlackjackDealerStep",
@@ -399,6 +401,7 @@ __all__ = [
     "BotPlayerBetDecision",
     "BotPlayerInsuranceDecision",
     "Card",
+    "DealerOutcome",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",

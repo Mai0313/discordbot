@@ -23,9 +23,8 @@ def build_price_chart(ticks: tuple[StockPriceTickView, ...]) -> bytes:
     return _render_price_chart(ticks=ticks)
 
 
-def invalidate_stock_chart_cache(symbol: str | None = None) -> None:
+def invalidate_stock_chart_cache() -> None:
     """Clears process-local stock chart images."""
-    del symbol
     _render_price_chart.cache_clear()
 
 

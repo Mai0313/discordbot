@@ -6,13 +6,10 @@ from pathlib import Path
 from functools import cached_property
 from urllib.parse import parse_qs, urlparse
 
-from rich import get_console
 from yt_dlp import YoutubeDL
 from pydantic import Field, BaseModel, computed_field
 from requests import Session
 from requests.exceptions import RequestException
-
-console = get_console()
 
 
 class DownloadResult(BaseModel):
@@ -214,17 +211,3 @@ class VideoDownloader(BaseModel):
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
-
-
-if __name__ == "__main__":
-    downloader = VideoDownloader()
-    # url = "https://x.com/reissuerecords/status/1917171960255058421"
-    # url = "https://www.facebook.com/watch?v=828357636228730"  # Will be converted to reel format
-    url = "https://www.facebook.com/share/r/17h4SsC2p1/"
-    # url = "https://www.instagram.com/reels/DFUuxmMPz4n/"
-    # url = "https://www.tiktok.com/@zachking/video/6768504823336815877"
-    # url = "https://v.douyin.com/LuXDmRrZvWs"
-    # url = "https://www.bilibili.com/video/BVs1BHtozkEvc"
-    url = "https://www.facebook.com/share/r/1BcvhJkeMg/?mibextid=wwXIfr"
-    with downloader.download(url, "best", False) as result:
-        console.print(f"Downloaded: {result.title} to {result.filename}")

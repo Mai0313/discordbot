@@ -145,9 +145,8 @@ def build_market_board_image(
     )
 
 
-def invalidate_stock_market_board_cache(symbol: str | None = None) -> None:
+def invalidate_stock_market_board_cache() -> None:
     """Clears process-local market board images."""
-    del symbol
     _build_market_board_image_cached.cache_clear()
 
 

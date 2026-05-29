@@ -10,7 +10,7 @@ import platform
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
-from nextcord import Game, Embed, Guild, Intents, Message
+from nextcord import Game, Embed, Intents, Message
 from nextcord.ext import tasks, commands
 
 from discordbot import setup_logging
@@ -98,14 +98,6 @@ class DiscordBot(commands.Bot):
         )
         logfire.info("Bot Started", bot_name=self.user.name, bot_id=self.user.id)
         logfire.info("Invite Link", invite_url=invite_url)
-
-    async def on_guild_available(self, guild: Guild) -> None:
-        """Called when a guild becomes available.
-
-        Args:
-            guild: The Guild instance that became available.
-        """
-        return await super().on_guild_available(guild)
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
