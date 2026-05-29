@@ -629,11 +629,11 @@ def _format_ev_block(*, ev_analysis: ActionEvAnalysis | None) -> list[str]:
     outcome = ev_analysis.dealer_outcome
     lines = [
         f"- dealer_outcome.bust_probability: {_format_percent(outcome.bust_probability)}",
-        f"- dealer_outcome.final_17: {_format_percent(outcome.total_17_probability)}",
-        f"- dealer_outcome.final_18: {_format_percent(outcome.total_18_probability)}",
-        f"- dealer_outcome.final_19: {_format_percent(outcome.total_19_probability)}",
-        f"- dealer_outcome.final_20: {_format_percent(outcome.total_20_probability)}",
-        f"- dealer_outcome.final_21: {_format_percent(outcome.total_21_probability)}",
+        f"- dealer_outcome.total_17_probability: {_format_percent(outcome.total_17_probability)}",
+        f"- dealer_outcome.total_18_probability: {_format_percent(outcome.total_18_probability)}",
+        f"- dealer_outcome.total_19_probability: {_format_percent(outcome.total_19_probability)}",
+        f"- dealer_outcome.total_20_probability: {_format_percent(outcome.total_20_probability)}",
+        f"- dealer_outcome.total_21_probability: {_format_percent(outcome.total_21_probability)}",
     ]
     for action_ev in ev_analysis.action_evs:
         suffix = " (estimate)" if action_ev.is_estimate else ""
