@@ -21,9 +21,13 @@ nav:
               - _economy:
                   - boards: Reference/discordbot/cogs/_economy/boards.md
                   - database: Reference/discordbot/cogs/_economy/database.md
+                  - embeds: Reference/discordbot/cogs/_economy/embeds.md
+                  - interactions: Reference/discordbot/cogs/_economy/interactions.md
                   - presentation: Reference/discordbot/cogs/_economy/presentation.md
+                  - views: Reference/discordbot/cogs/_economy/views.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
+                  - blackjack_ev: Reference/discordbot/cogs/_games/blackjack_ev.md
                   - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
                   - bot_player: Reference/discordbot/cogs/_games/bot_player.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
@@ -40,6 +44,10 @@ nav:
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
+              - _help:
+                  - content: Reference/discordbot/cogs/_help/content.md
+                  - presentation: Reference/discordbot/cogs/_help/presentation.md
+                  - views: Reference/discordbot/cogs/_help/views.md
               - _maplestory:
                   - constants: Reference/discordbot/cogs/_maplestory/constants.md
                   - embeds: Reference/discordbot/cogs/_maplestory/embeds.md
@@ -66,6 +74,7 @@ nav:
               - template: Reference/discordbot/cogs/template.md
               - video: Reference/discordbot/cogs/video.md
           - typings:
+              - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
               - economy: Reference/discordbot/typings/economy.md
               - games: Reference/discordbot/typings/games.md
@@ -74,15 +83,19 @@ nav:
               - stock: Reference/discordbot/typings/stock.md
           - utils:
               - avatars: Reference/discordbot/utils/avatars.md
+              - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
+              - pil_text: Reference/discordbot/utils/pil_text.md
               - reactions: Reference/discordbot/utils/reactions.md
+              - sqlite_config: Reference/discordbot/utils/sqlite_config.md
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
+              - timezone: Reference/discordbot/utils/timezone.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - agents_dev: Scripts/agents_dev.md
@@ -90,6 +103,7 @@ nav:
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
+      - manage_bot_status: Scripts/manage_bot_status.md
       - manage_central_banker: Scripts/manage_central_banker.md
       - manage_stock_company: Scripts/manage_stock_company.md
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
