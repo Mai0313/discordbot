@@ -86,9 +86,10 @@ def test_fallback_action_splits_eights_against_ten() -> None:
 
 
 def _full_shoe() -> list[Card]:
-    """Builds a fresh four-deck shoe as a flat card list for EV-engine tests."""
+    """Builds a fresh four-deck shoe (208 cards) as a flat card list for EV-engine tests."""
     ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-    return [_card(rank=rank) for rank in ranks] * 4
+    # Four decks of four suits each: every rank appears 16 times.
+    return [_card(rank=rank) for rank in ranks] * 16
 
 
 def test_fallback_action_uses_hole_card_when_dealer_cards_provided() -> None:
