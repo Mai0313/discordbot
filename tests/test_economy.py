@@ -17,9 +17,9 @@ from discordbot.typings.games import (
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
+from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._economy.database import (
-    TAIWAN_TIMEZONE,
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
     BASE_CHECKIN_REWARD_AMOUNT,

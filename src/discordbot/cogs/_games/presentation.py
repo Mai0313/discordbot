@@ -5,9 +5,9 @@ from typing import Final, Literal
 from nextcord import Embed
 
 from discordbot.typings.games import SettleOutcome
+from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs._economy.presentation import amount_code
 
-IN_PROGRESS_COLOR = 0x5865F2
 WIN_COLOR = 0x57F287
 LOSE_COLOR = 0xED4245
 PUSH_COLOR = 0xFEE75C

@@ -214,20 +214,6 @@ class MessageLogger(BaseModel):
             return f"{self.message.author.id}"
         return f"{self.message.channel.id}"
 
-    async def _save_attachments(self) -> list[str]:
-        """Extracts attachment URLs from the message."""
-        attachment_urls = []
-        for attachment in self.message.attachments:
-            attachment_urls.append(attachment.url)
-        return attachment_urls
-
-    async def _save_stickers(self) -> list[str]:
-        """Extracts sticker URLs from the message."""
-        sticker_urls = []
-        for sticker in self.message.stickers:
-            sticker_urls.append(sticker.url)
-        return sticker_urls
-
     async def _save_messages(self) -> None:
         """Persists the message row off the event loop.
 
@@ -238,8 +224,8 @@ class MessageLogger(BaseModel):
         SQLite serializes the threads via its file-level write lock plus
         the connection's `busy_timeout`.
         """
-        attachment_paths = await self._save_attachments()
-        sticker_paths = await self._save_stickers()
+        attachment_paths = [attachment.url for attachment in self.message.attachments]
+        sticker_paths = [sticker.url for sticker in self.message.stickers]
         row: dict[str, str] = {
             "discord_message_id": str(self.message.id),
             "source_type": self.source_type,

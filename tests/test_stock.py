@@ -27,13 +27,12 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockNewsGenerationContext,
 )
+from discordbot.utils.currency import cash_ceil, cash_floor
 from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
 from discordbot.cogs._stock.chart import build_price_chart
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
     NEWS_SENTIMENT_LIMIT_BPS,
-    cash_ceil,
-    cash_floor,
     format_price,
     tick_boundary,
     order_impact_bps,

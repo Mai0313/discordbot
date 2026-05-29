@@ -68,8 +68,12 @@ def draw_text_right(
 ) -> None:
     """Draws `text` with its right edge anchored at x."""
     right, y = xy
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    draw.text(xy=(right - (bbox[2] - bbox[0]), y), text=text, font=font, fill=fill)
+    draw.text(
+        xy=(right - text_width(draw=draw, text=text, font=font), y),
+        text=text,
+        font=font,
+        fill=fill,
+    )
 
 
 def draw_text_center(
@@ -81,6 +85,5 @@ def draw_text_center(
 ) -> None:
     """Draws `text` centered horizontally around a point."""
     x, y = center
-    bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    width = bbox[2] - bbox[0]
+    width = text_width(draw=draw, text=text, font=font)
     draw.text(xy=(x - width // 2, y), text=text, font=font, fill=fill)

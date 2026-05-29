@@ -47,7 +47,7 @@ database-file commits fully atomic.
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from collections.abc import Sequence
 
 import logfire
@@ -71,6 +71,8 @@ from sqlalchemy.sql.dml import ReturningInsert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
+from discordbot.utils.timezone import as_taipei as _as_taipei
+from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import (
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
@@ -111,11 +113,9 @@ from discordbot.typings.economy import (
     OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
+from discordbot.utils.sqlite_config import configure_sqlite_connection
 from discordbot.cogs._economy.boards import invalidate_economy_board_cache
-from discordbot.utils.stored_integer import (
-    StoredInteger,
-    configure_sqlite_stored_integer_functions,
-)
+from discordbot.utils.stored_integer import StoredInteger
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
@@ -133,24 +133,11 @@ _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 # Blackjack VIP perk: 1.5x payout on winning rounds, applied as floor(delta * 3 / 2).
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
-TAIWAN_TIMEZONE: Final[timezone] = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
 _global_state_engine: AsyncEngine = create_async_engine(
     url="sqlite+aiosqlite:///data/global_state.db"
 )
-
-
-def _database_now() -> datetime:
-    """Returns the wall-clock timestamp used for persisted economy rows."""
-    return datetime.now(tz=TAIWAN_TIMEZONE)
-
-
-def _as_taipei(dt: datetime) -> datetime:
-    """Returns `dt` re-interpreted in Asia/Taipei (treating naive as Taipei)."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=TAIWAN_TIMEZONE)
-    return dt.astimezone(tz=TAIWAN_TIMEZONE)
 
 
 def _taipei_midnight(now: datetime) -> datetime:
@@ -160,21 +147,11 @@ def _taipei_midnight(now: datetime) -> datetime:
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Sets WAL mode + a tolerant busy_timeout on every new connection.
+    """Configures a newly opened economy/global-state SQLite connection.
 
-    WAL flips the read/write lock so readers never block on writes;
-    `synchronous=NORMAL` is the right durability trade-off in WAL (every
-    commit fsyncs the WAL frame, the main file is fsynced on checkpoint);
-    `busy_timeout` gives the writer 5 s to wait under contention; foreign
-    keys are enabled defensively for any future FK constraint.
+    Foreign keys are enabled defensively for any future FK constraint.
     """
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
-    cursor.close()
+    configure_sqlite_connection(dbapi_connection=dbapi_connection, enable_foreign_keys=True)
 
 
 @event.listens_for(_engine.sync_engine, "connect")

@@ -2,7 +2,8 @@
 
 from nextcord import Embed
 
-from discordbot.cogs._help.content import HELP_COLOR, CATEGORY_ORDER, HelpGuide
+from discordbot.typings.colors import HELP_COLOR
+from discordbot.cogs._help.content import CATEGORY_ORDER, HelpGuide
 
 
 def _apply_footer(embed: Embed, requester_name: str, requester_avatar_url: str) -> None:

@@ -19,9 +19,10 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
+from discordbot.utils.currency import cash_floor
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.utils.number_text import compact_amount, share_quantity_text
-from discordbot.cogs._stock.market import cash_floor, format_price
+from discordbot.cogs._stock.market import format_price
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
 MARKET_COLOR = 0x2ECC71

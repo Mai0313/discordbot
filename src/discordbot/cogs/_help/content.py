@@ -5,7 +5,6 @@ from pydantic import BaseModel
 
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-HELP_COLOR = 0x5865F2
 OVERVIEW_VALUE = "overview"
 CATEGORY_ORDER = ("ai", "games", "economy", "stocks", "tools")
 
