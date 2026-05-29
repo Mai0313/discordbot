@@ -16,6 +16,7 @@ from discordbot.cogs import games, video, economy, template, auto_unmute, parse_
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
+from discordbot.cogs._economy import views, interactions
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
@@ -42,6 +43,7 @@ from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
+from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
@@ -596,7 +598,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         """Records public cleanup scheduling from economy commands."""
         scheduled.append(message)
 
-    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
+    monkeypatch.setattr(interactions, "schedule_public_message_delete", record_scheduled)
     monkeypatch.setattr(economy, "get_balance", fake_get_balance)
     monkeypatch.setattr(economy, "get_vip", fake_get_vip)
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
@@ -615,9 +617,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         economy, "create_central_bank_loan_request", fake_create_central_bank_request
     )
     monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
-    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_loan_proposal)
-    monkeypatch.setattr(economy, "reject_loan_proposal", fake_reject_loan_proposal)
-    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_loan_proposal)
     monkeypatch.setattr(economy, "list_loan_contracts", fake_list_loan_contracts)
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
@@ -700,11 +699,11 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     borrow_embed = interaction.followup.sent[8]["embed"]
     assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
     borrow_view = interaction.followup.sent[8]["view"]
-    assert isinstance(borrow_view, economy.CreditLoanDecisionView)
+    assert isinstance(borrow_view, CreditLoanDecisionView)
     assert borrow_view.message is not None
     central_bank_payload = interaction.followup.sent[12]
     central_bank_view = central_bank_payload["view"]
-    assert isinstance(central_bank_view, economy.CentralBankLoanDecisionView)
+    assert isinstance(central_bank_view, CentralBankLoanDecisionView)
     assert central_bank_view.message is not None
 
     inspected_member = FakeInteraction(user=FakeUser(user_id=1))
@@ -741,10 +740,10 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
         captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
-    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker_for_button)
-    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_for_button)
-    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_for_button)
-    view = economy.CentralBankLoanDecisionView(
+    monkeypatch.setattr(views, "get_central_banker", fake_get_central_banker_for_button)
+    monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
+    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
+    view = CentralBankLoanDecisionView(
         bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
         proposal_id=42,
         creator_id=1,
@@ -768,7 +767,7 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.response.edited[0]["view"] is None
 
-    cancel_view = economy.CentralBankLoanDecisionView(
+    cancel_view = CentralBankLoanDecisionView(
         bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
         proposal_id=43,
         creator_id=1,
@@ -812,10 +811,10 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
         captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
-    monkeypatch.setattr(economy, "accept_loan_proposal", fake_accept_for_button)
-    monkeypatch.setattr(economy, "reject_loan_proposal", fake_reject_for_button)
-    monkeypatch.setattr(economy, "cancel_loan_proposal", fake_cancel_for_button)
-    view = economy.CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
+    monkeypatch.setattr(views, "reject_loan_proposal", fake_reject_for_button)
+    monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
+    view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
     approve_button = next(
         child for child in view.children if getattr(child, "custom_id", "") == "credit:approve"
     )
@@ -831,7 +830,7 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     assert captured_accept_kwargs["actor_id"] == 2
     assert allowed_approve.response.edited[0]["view"] is None
 
-    reject_view = economy.CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
+    reject_view = CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
     reject_button = next(
         child
         for child in reject_view.children
@@ -847,7 +846,7 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     assert captured_reject_kwargs == {"proposal_id": 43, "actor_id": 2}
     assert allowed_reject.response.edited[0]["view"] is None
 
-    cancel_view = economy.CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
+    cancel_view = CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
     cancel_button = next(
         child
         for child in cancel_view.children
@@ -885,16 +884,16 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
         del delay, user_name
         scheduled.append(message)
 
-    monkeypatch.setattr(economy, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
+    monkeypatch.setattr(views, "reject_expired_loan_proposal", fake_reject_expired_loan_proposal)
+    monkeypatch.setattr(views, "schedule_public_message_delete", record_scheduled)
 
     credit_message = FakeDiscordMessage()
-    credit_view = economy.CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
+    credit_view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
     credit_view.message = credit_message
     await credit_view.on_timeout()
 
     central_message = FakeDiscordMessage()
-    central_view = economy.CentralBankLoanDecisionView(
+    central_view = CentralBankLoanDecisionView(
         bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
         proposal_id=43,
         creator_id=1,
@@ -963,7 +962,9 @@ async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -991,7 +992,9 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin)
     monkeypatch.setattr(economy, "adjust_balance", record_adjust_balance)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     bot_member = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
@@ -1070,7 +1073,9 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     interaction = FakeInteraction(user=sender)
     interaction.guild = guild
     monkeypatch.setattr(economy, "transfer", record_transfer)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
 
     await EconomyCogs.give.callback(cog, interaction, member=receiver, amount=100)
@@ -1107,7 +1112,9 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
     interaction = FakeInteraction(user=sender)
     monkeypatch.setattr(economy, "transfer", record_transfer)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", ignore_scheduled_public_message)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
     cog = EconomyCogs(bot=SimpleNamespace(user=bot_receiver))
 
     await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount=100)
@@ -1142,7 +1149,7 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "top_losers", daily_losses)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
+    monkeypatch.setattr(interactions, "schedule_public_message_delete", record_scheduled)
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
@@ -1173,7 +1180,7 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
         scheduled.append(message)
 
     monkeypatch.setattr(economy, "top_losers", no_daily_losses)
-    monkeypatch.setattr(economy, "schedule_public_message_delete", record_scheduled)
+    monkeypatch.setattr(interactions, "schedule_public_message_delete", record_scheduled)
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 

@@ -9,7 +9,7 @@ import pytest
 import nextcord
 from nextcord import Message, Interaction
 
-from discordbot.cogs import economy
+from discordbot.cogs._economy import interactions
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,
@@ -342,14 +342,14 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
         scheduled_user_names.append(user_name)
 
     monkeypatch.setattr(
-        target=economy,
+        target=interactions,
         name="schedule_public_message_delete",
         value=fake_schedule_public_message_delete,
     )
     interaction = _InteractionStub()
     embed = nextcord.Embed(title="balance")
 
-    await economy._send_expiring_followup(
+    await interactions.send_expiring_followup(
         interaction=cast("Interaction", interaction), embed=embed
     )
 
@@ -373,14 +373,16 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
         scheduled_messages.append(message)
 
     monkeypatch.setattr(
-        target=economy,
+        target=interactions,
         name="schedule_public_message_delete",
         value=fake_schedule_public_message_delete,
     )
     interaction = _InteractionStub()
     embed = nextcord.Embed(title="balance")
 
-    await economy._send_private_followup(interaction=cast("Interaction", interaction), embed=embed)
+    await interactions.send_private_followup(
+        interaction=cast("Interaction", interaction), embed=embed
+    )
 
     assert interaction.followup.sent_ephemeral is True
     assert interaction.followup.sent_embed is embed
