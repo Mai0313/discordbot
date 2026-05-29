@@ -2,6 +2,7 @@
 
 from discordbot.typings.games import Card
 from discordbot.cogs._games.blackjack_ev import (
+    _add_value,
     compute_action_evs,
     build_shoe_value_counts,
     dealer_outcome_distribution,
@@ -252,6 +253,26 @@ def test_empty_shoe_does_not_crash() -> None:
     )
 
     assert analysis.recommended_action in {"hit", "stand"}
+
+
+def test_add_value_demotes_existing_ace_when_drawing_another_ace() -> None:
+    """Soft 21 drawing an ace becomes hard 12, mirroring hand_value, not a 22 bust."""
+    total, soft = _add_value(total=21, soft=True, bucket=9)
+
+    assert (total, soft) == (12, False)
+
+
+def test_hitting_soft_twenty_one_never_busts_into_a_five_card_win() -> None:
+    """A four-card soft 21 always reaches a non-bust five-card hand, so hit EV is at least +1."""
+    analysis = compute_action_evs(
+        hand_cards=[_card(rank="A"), _card(rank="2"), _card(rank="3"), _card(rank="5")],
+        dealer_cards=[_card(rank="10"), _card(rank="9")],
+        shoe=_full_shoe(),
+        allowed_actions=("hit", "stand"),
+        doubled=False,
+    )
+
+    assert _ev_for(analysis=analysis, action="hit") >= 1.0
 
 
 def test_shoe_value_counts_collapse_ten_values() -> None:

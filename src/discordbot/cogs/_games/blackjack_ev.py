@@ -81,7 +81,9 @@ def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
     """Adds one drawn card to a running `(total, soft)` Blackjack hand state.
 
     Mirrors `hand_value`/`is_soft_total`: at most one ace is ever counted high,
-    and a non-ace draw that busts a soft hand demotes that ace to 1.
+    and any draw that would bust a soft hand demotes that high ace to 1. This
+    includes drawing a second ace into a soft hand (e.g. soft 21 + ace becomes
+    hard 12, not a bust).
 
     Args:
         total: Best current total with any high ace already counted as 11.
@@ -91,11 +93,10 @@ def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
     Returns:
         The updated `(total, soft)` state.
     """
-    if bucket == _ACE_BUCKET:
-        if total + 11 <= 21:
-            return total + 11, True
-        return total + 1, soft
-    new_total = total + _BUCKET_VALUES[bucket]
+    if bucket == _ACE_BUCKET and total + 11 <= 21:
+        return total + 11, True
+    increment = 1 if bucket == _ACE_BUCKET else _BUCKET_VALUES[bucket]
+    new_total = total + increment
     if new_total > 21 and soft:
         return new_total - 10, False
     return new_total, soft
