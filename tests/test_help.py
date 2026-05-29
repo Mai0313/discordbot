@@ -8,13 +8,9 @@ from pathlib import Path
 from nextcord import Embed, Locale, Interaction
 from nextcord.ui import View
 
-from discordbot.cogs.help import (
-    _HELP_CONTENT,
-    _CATEGORY_ORDER,
-    _OVERVIEW_VALUE,
-    HelpCogs,
-    HelpView,
-)
+from discordbot.cogs.help import HelpCogs
+from discordbot.cogs._help.views import HelpView
+from discordbot.cogs._help.content import HELP_CONTENT, CATEGORY_ORDER, OVERVIEW_VALUE
 
 if TYPE_CHECKING:
     from nextcord.ext import commands
@@ -51,7 +47,7 @@ def _slash_command_names() -> set[str]:
 
 def _guide_text(locale: "Locale | str") -> str:
     """Joins every user-visible string of a locale's help guide."""
-    guide = _HELP_CONTENT[locale]
+    guide = HELP_CONTENT[locale]
     parts = [guide.intro]
     for section in guide.sections.values():
         parts.extend([section.summary, section.detail])
@@ -68,9 +64,9 @@ def test_help_mentions_every_non_help_slash_command() -> None:
 
 
 def test_help_sections_cover_the_category_order() -> None:
-    """Every locale defines exactly the categories declared in `_CATEGORY_ORDER`."""
+    """Every locale defines exactly the categories declared in `CATEGORY_ORDER`."""
     for locale in _LOCALES:
-        assert set(_HELP_CONTENT[locale].sections) == set(_CATEGORY_ORDER)
+        assert set(HELP_CONTENT[locale].sections) == set(CATEGORY_ORDER)
 
 
 async def test_help_embeds_fit_discord_limits() -> None:
@@ -81,7 +77,7 @@ async def test_help_embeds_fit_discord_limits() -> None:
             requester_name="tester",
             requester_avatar_url="https://example.com/avatar.png",
         )
-        embeds = [view.initial_embed()] + [view._embed_for(key=key) for key in _CATEGORY_ORDER]
+        embeds = [view.initial_embed()] + [view._embed_for(key=key) for key in CATEGORY_ORDER]
         for embed in embeds:
             assert len(embed.title or "") <= _EMBED_TITLE_LIMIT
             assert len(embed.description or "") <= _EMBED_DESCRIPTION_LIMIT
@@ -97,7 +93,7 @@ async def test_help_select_options_fit_discord_limits() -> None:
             requester_avatar_url="https://example.com/avatar.png",
         )
         values = {option.value for option in view._select.options}
-        assert values == {_OVERVIEW_VALUE, *_CATEGORY_ORDER}
+        assert values == {OVERVIEW_VALUE, *CATEGORY_ORDER}
         for option in view._select.options:
             assert len(option.label) <= _SELECT_LABEL_LIMIT
             assert len(option.description or "") <= _SELECT_DESCRIPTION_LIMIT
