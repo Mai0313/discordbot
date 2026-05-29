@@ -275,6 +275,72 @@ class OtherPlayerView(BaseModel):
     is_finished: bool
 
 
+class DealerOutcome(BaseModel):
+    """Exact dealer final-total distribution under H17 over a no-replacement shoe.
+
+    The six probabilities are mutually exclusive and sum to ~1.0. They are
+    computed from the dealer's known two cards (hole + up) and the true
+    remaining shoe, so the bot player can reason about stand-versus-hit from
+    the actual dealer outcome instead of guessing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bust_probability: float = Field(
+        description="Probability the dealer busts (final total over 21)."
+    )
+    total_17_probability: float = Field(
+        description="Probability the dealer's final total is exactly 17."
+    )
+    total_18_probability: float = Field(
+        description="Probability the dealer's final total is exactly 18."
+    )
+    total_19_probability: float = Field(
+        description="Probability the dealer's final total is exactly 19."
+    )
+    total_20_probability: float = Field(
+        description="Probability the dealer's final total is exactly 20."
+    )
+    total_21_probability: float = Field(
+        description="Probability the dealer's final total is exactly 21."
+    )
+
+
+class ActionEv(BaseModel):
+    """Expected value of one Blackjack action, in units of the base hand bet."""
+
+    model_config = ConfigDict(frozen=True)
+
+    action: BotAction = Field(description="The action this expected value is computed for.")
+    expected_value: float = Field(
+        description="Expected net return in multiples of the base hand bet; higher is better."
+    )
+    is_estimate: bool = Field(
+        default=False,
+        description="True when the value is an approximation rather than exact (split).",
+    )
+    note: str | None = Field(
+        default=None, description="Optional caveat describing why a value is an estimate."
+    )
+
+
+class ActionEvAnalysis(BaseModel):
+    """Hole-card-aware exact EV analysis for one bot-player action decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dealer_outcome: DealerOutcome = Field(description="Exact dealer final-total distribution.")
+    action_evs: tuple[ActionEv, ...] = Field(
+        description="Per-allowed-action expected values, ordered from highest to lowest EV."
+    )
+    recommended_action: BotAction = Field(
+        description="EV-maximizing legal action (split is only recommended past a safety margin)."
+    )
+    recommended_expected_value: float = Field(
+        description="Expected value of the recommended action, in base-bet units."
+    )
+
+
 class BlackjackDealerStep(BaseModel):
     """One dealer action recorded during the Blackjack dealer phase."""
 
