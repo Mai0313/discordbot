@@ -3172,7 +3172,8 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
                 )
             )
             lender_balance = credit_result.scalar_one()
-            invalidate_economy_leaderboard_cache()
+            # The borrower debit above already cleared the leaderboard cache for
+            # this transaction, so the lender credit needs no extra invalidation.
 
         total_paid += paid
         total_interest_paid += interest_paid
