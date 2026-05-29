@@ -7,6 +7,7 @@ engines additionally register the integer-aware UDFs.
 """
 
 from typing import Any
+import contextlib
 
 from discordbot.utils.stored_integer import configure_sqlite_stored_integer_functions
 
@@ -27,12 +28,11 @@ def configure_sqlite_connection(
         enable_foreign_keys: Whether to turn on `PRAGMA foreign_keys` for the connection.
         register_stored_integer: Whether to register the integer-aware UDFs used by `StoredInteger`.
     """
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    if enable_foreign_keys:
-        cursor.execute("PRAGMA foreign_keys=ON")
+    with contextlib.closing(dbapi_connection.cursor()) as cursor:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        if enable_foreign_keys:
+            cursor.execute("PRAGMA foreign_keys=ON")
     if register_stored_integer:
         configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
-    cursor.close()
