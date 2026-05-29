@@ -738,7 +738,7 @@ class MiscItem(_Base):
 # ── Stats (for /maplestory stats command) ───────────────────────────
 
 
-class MapleStats(BaseModel):
+class MapleStats(_Base):
     """Represents database statistics.
 
     Attributes:

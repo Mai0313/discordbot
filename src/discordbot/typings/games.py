@@ -227,22 +227,28 @@ class BlackjackDealerDecision(BaseModel):
 class BotPlayerBetDecision(BaseModel):
     """Structured bet decision returned by the bot player AI."""
 
-    bet_amount: int = Field(ge=1)
-    reason: str
+    model_config = ConfigDict(frozen=True)
+
+    bet_amount: int = Field(ge=1, description="Chosen wager; at least 1.")
+    reason: str = Field(description="Short Traditional Chinese rationale shown on the bot's seat.")
 
 
 class BotPlayerActionDecision(BaseModel):
     """Structured hit / stand / double / split / surrender decision."""
 
-    action: BotAction
-    reason: str
+    model_config = ConfigDict(frozen=True)
+
+    action: BotAction = Field(description="Chosen Blackjack action for the current hand.")
+    reason: str = Field(description="Short Traditional Chinese rationale shown on the bot's seat.")
 
 
 class BotPlayerInsuranceDecision(BaseModel):
     """Structured insurance-take / decline decision."""
 
-    take_insurance: bool
-    reason: str
+    model_config = ConfigDict(frozen=True)
+
+    take_insurance: bool = Field(description="Whether the bot takes the insurance side bet.")
+    reason: str = Field(description="Short Traditional Chinese rationale shown on the bot's seat.")
 
 
 class BotFinancialContext(BaseModel):

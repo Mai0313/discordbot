@@ -1,7 +1,7 @@
 """Localized help content and the data models that drive the help view."""
 
 from nextcord import Locale
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
@@ -41,6 +41,19 @@ class HelpGuide(BaseModel):
     select_placeholder: str
     overview_label: str
     sections: dict[str, HelpSection]
+
+    @field_validator("sections")
+    @classmethod
+    def _sections_match_category_order(
+        cls, value: dict[str, HelpSection]
+    ) -> dict[str, HelpSection]:
+        """Ensures a locale defines exactly the categories declared in CATEGORY_ORDER."""
+        if set(value) != set(CATEGORY_ORDER):
+            msg = (
+                f"help sections {sorted(value)} must match CATEGORY_ORDER {sorted(CATEGORY_ORDER)}"
+            )
+            raise ValueError(msg)
+        return value
 
 
 HELP_CONTENT: dict[Locale | str, HelpGuide] = {

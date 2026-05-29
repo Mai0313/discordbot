@@ -140,7 +140,9 @@ class RouteDecision(BaseModel):
         decision: The reply mode selected for the incoming Discord message.
     """
 
-    decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"]
+    decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
+        description="Reply mode selected for the incoming Discord message."
+    )
 
 
 __all__ = ["ModelSettings", "RouteDecision", "RuntimeModelCatalog"]
