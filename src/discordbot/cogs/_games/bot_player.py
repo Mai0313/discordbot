@@ -381,13 +381,14 @@ def fallback_bet(*, balance: int, table_bet: int) -> int:
     return max(1, min(balance, table_bet))
 
 
-def _safe_compute_action_evs(
+def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring its signature.
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
+    bet: int | None = None,
 ) -> ActionEvAnalysis | None:
     """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
     try:
@@ -397,6 +398,7 @@ def _safe_compute_action_evs(
             shoe=shoe,
             allowed_actions=allowed_actions,
             doubled=doubled,
+            bet=bet,
         )
     except Exception:
         logfire.warn("Bot EV engine failed; falling back to basic strategy", _exc_info=True)
@@ -492,6 +494,7 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
         shoe=shoe,
         allowed_actions=allowed_actions,
         doubled=doubled,
+        bet=bet,
     )
     if ev_analysis is not None:
         basic_strategy_action = ev_analysis.recommended_action

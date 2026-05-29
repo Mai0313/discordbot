@@ -186,6 +186,29 @@ def test_surrender_ev_is_minus_half_and_only_when_allowed() -> None:
     assert all(item.action != "surrender" for item in without_surrender.action_evs)
 
 
+def test_surrender_ev_uses_rounded_loss_for_odd_bets() -> None:
+    """Surrender EV matches settle_hand's rounded half-bet loss for odd and tiny bets."""
+    one_point = compute_action_evs(
+        hand_cards=[_card(rank="10"), _card(rank="6")],
+        dealer_cards=[_card(rank="10"), _card(rank="10")],
+        shoe=_full_shoe(),
+        allowed_actions=("hit", "stand", "surrender"),
+        doubled=False,
+        bet=1,
+    )
+    three_point = compute_action_evs(
+        hand_cards=[_card(rank="10"), _card(rank="6")],
+        dealer_cards=[_card(rank="10"), _card(rank="10")],
+        shoe=_full_shoe(),
+        allowed_actions=("hit", "stand", "surrender"),
+        doubled=False,
+        bet=3,
+    )
+
+    assert abs(_ev_for(analysis=one_point, action="surrender") - (-1.0)) < 1e-9
+    assert abs(_ev_for(analysis=three_point, action="surrender") - (-2 / 3)) < 1e-9
+
+
 def test_split_is_flagged_as_estimate_and_can_be_recommended() -> None:
     """Splitting eights is flagged as an estimate and wins out against a weak dealer."""
     analysis = compute_action_evs(

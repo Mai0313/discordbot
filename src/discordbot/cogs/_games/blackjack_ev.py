@@ -328,13 +328,14 @@ def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
     return top_non_split
 
 
-def compute_action_evs(
+def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring the full decision surface.
     *,
     hand_cards: list[Card],
     dealer_cards: list[Card],
     shoe: list[Card],
     allowed_actions: tuple[BotAction, ...],
     doubled: bool,
+    bet: int | None = None,
 ) -> ActionEvAnalysis:
     """Computes the exact per-action EV analysis for one bot-player decision.
 
@@ -348,6 +349,9 @@ def compute_action_evs(
         shoe: The true remaining undealt shoe.
         allowed_actions: Legal actions for the active hand.
         doubled: Whether the active hand has already doubled.
+        bet: The base hand bet, used to price surrender from its actual rounded
+            half-bet loss (`settle_hand` charges `-((bet + 1) // 2)`). When None
+            the theoretical -0.5 is used.
 
     Returns:
         The dealer distribution, per-allowed-action EVs, and the EV-max action.
@@ -397,7 +401,8 @@ def compute_action_evs(
             )
         )
     if "surrender" in allowed_actions:
-        evs.append(ActionEv(action="surrender", expected_value=-0.5))
+        surrender_ev = -0.5 if bet is None else -((bet + 1) // 2) / bet
+        evs.append(ActionEv(action="surrender", expected_value=surrender_ev))
     if "split" in allowed_actions:
         evs.append(
             ActionEv(
