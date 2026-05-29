@@ -5,7 +5,7 @@ fixed `rng`. The cog wires this up with `random.SystemRandom()` for production.
 """
 
 from random import Random
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
@@ -15,6 +15,9 @@ RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
 
 
 SHOE_DECK_COUNT = 4
+# Natural Blackjack pays 3:2.
+_BLACKJACK_PAYOUT_NUM: Final[int] = 3
+_BLACKJACK_PAYOUT_DEN: Final[int] = 2
 _CARD_RANKS = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K")
 _CARD_SUITS = ("♠", "♥", "♦", "♣")
 
@@ -414,7 +417,7 @@ def _settle_regular_hand(
         outcome: SettleOutcome = "push"
         delta = 0
     elif player_bj:
-        outcome, delta = "blackjack", int(bet * 3 // 2)
+        outcome, delta = "blackjack", int(bet * _BLACKJACK_PAYOUT_NUM // _BLACKJACK_PAYOUT_DEN)
     elif dealer_bj:
         outcome, delta = "lose", -bet
     elif hand.is_bust():

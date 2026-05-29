@@ -3343,7 +3343,12 @@ async def call_central_bank_loans(
 async def list_loan_contracts(
     user_id: int, include_closed: bool = False
 ) -> list[LoanContractView]:
-    """Lists loan contracts where the user is borrower or personal lender."""
+    """Lists loan contracts where the user is borrower or personal lender.
+
+    Accrues and persists interest-due on active contracts first (a write),
+    matching `get_portfolio`'s lazy-accrual behavior, so the returned views
+    reflect interest owed up to now.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
