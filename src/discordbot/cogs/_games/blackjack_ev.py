@@ -120,7 +120,9 @@ def _dealer_distribution(
         return cached
     shoe_total = sum(shoe)
     if shoe_total == 0:
-        # Unreachable with a real 208-card shoe; never divide by zero.
+        # Defensive guard for a degraded/empty shoe (callers may pass one): the
+        # dealer cannot draw, so treat the sub-17 total as terminal and never
+        # divide by zero.
         return (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     accumulator = [0.0] * 6
     for bucket, count in enumerate(shoe):
