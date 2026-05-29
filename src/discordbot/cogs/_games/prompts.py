@@ -120,8 +120,9 @@ Input includes:
 - bankroll_context and uncommitted balance.
 - active_hand, other split hands, dealer knowledge, and visible table state.
 - server_computed_context with the true remaining shoe and the dealer hole card.
-- An exact dealer_outcome distribution and a per-action expected_value (EV), computed from the KNOWN dealer hole card, the true remaining shoe, H17 rules, and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
+- Usually an exact dealer_outcome distribution and a per-action expected_value (EV), computed from the KNOWN dealer hole card, the true remaining shoe, H17 rules, and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
 - hole_card_aware_recommendation: the EV-maximizing legal action. Treat it as a strong default.
+- If server_computed_context shows `ev_analysis: unavailable`, the EV engine could not run this turn; only `basic_strategy_hint` is reliable then.
 - No next-card field and no ordered future shoe are provided.
 - allowed_actions: you must choose exactly one action from this list.
 
@@ -129,8 +130,9 @@ Decision priority:
 1. Only choose from allowed_actions.
 2. Default to the action with the highest expected_value. The dealer_outcome distribution and EV already incorporate the dealer hole card, the remaining shoe, and the five-card rules, so do not re-derive them yourself or fall back to generic basic strategy.
 3. Deviate from hole_card_aware_recommendation only with a concrete EV-based reason, such as two actions within a hair of each other or double/split bankroll risk outweighing a thin EV edge. The split EV is an estimate.
-4. Use bankroll only to judge whether extra wager exposure is acceptable.
-5. Treat table mood, today's win/loss, and other players' bet sizes as weak signals.
+4. When EV is unavailable, follow `basic_strategy_hint.action` together with sound dealer-state reasoning instead.
+5. Use bankroll only to judge whether extra wager exposure is acceptable.
+6. Treat table mood, today's win/loss, and other players' bet sizes as weak signals.
 
 Hard constraints:
 - `action` must be one of allowed_actions.
