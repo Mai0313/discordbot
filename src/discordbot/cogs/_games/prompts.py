@@ -119,15 +119,16 @@ Task: choose the next legal Blackjack action for the active hand.
 Input includes:
 - bankroll_context and uncommitted balance.
 - active_hand, other split hands, dealer knowledge, and visible table state.
-- server_computed_context with true remaining shoe rank counts and dealer hole card.
+- server_computed_context with the true remaining shoe and the dealer hole card.
+- An exact dealer_outcome distribution and a per-action expected_value (EV), computed from the KNOWN dealer hole card, the true remaining shoe, H17 rules, and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
+- hole_card_aware_recommendation: the EV-maximizing legal action. Treat it as a strong default.
 - No next-card field and no ordered future shoe are provided.
-- action_analysis with risk metrics and a basic-strategy hint.
 - allowed_actions: you must choose exactly one action from this list.
 
 Decision priority:
 1. Only choose from allowed_actions.
-2. Prefer expected value, bust risk, dealer state, and five-card rule value.
-3. Use true shoe rank counts and dealer hole card when they materially change the decision.
+2. Default to the action with the highest expected_value. The dealer_outcome distribution and EV already incorporate the dealer hole card, the remaining shoe, and the five-card rules, so do not re-derive them yourself or fall back to generic basic strategy.
+3. Deviate from hole_card_aware_recommendation only with a concrete EV-based reason, such as two actions within a hair of each other or double/split bankroll risk outweighing a thin EV edge. The split EV is an estimate.
 4. Use bankroll only to judge whether extra wager exposure is acceptable.
 5. Treat table mood, today's win/loss, and other players' bet sizes as weak signals.
 
@@ -147,12 +148,12 @@ Task: decide whether to take insurance.
 
 Input includes:
 - bankroll_context and insurance cost.
-- dealer knowledge, including server-provided dealer hole card.
+- dealer knowledge, including the server-provided dealer hole card.
 - true remaining shoe rank counts.
-- insurance_analysis with payout and known dealer Blackjack status.
+- insurance_expected_value and insurance_recommendation, computed exactly from the known dealer hole card (not a guess), plus insurance_analysis.
 
 Decision guidance:
-- Insurance is a side bet. Use the dealer hole card and computed analysis directly.
+- The server knows the dealer hole card, so insurance EV is exact. Take insurance only when insurance_recommendation is "take" (the dealer actually has Blackjack); otherwise decline.
 - Do not take insurance because of fear, table mood, or today's loss.
 - Use bankroll only to judge whether the extra side-bet exposure is acceptable.
 

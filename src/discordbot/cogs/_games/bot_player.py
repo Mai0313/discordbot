@@ -24,6 +24,7 @@ from discordbot.typings.games import (
     Card,
     BotAction,
     OtherPlayerView,
+    ActionEvAnalysis,
     BotFinancialContext,
     BotPlayerBetDecision,
     BotPlayerActionDecision,
@@ -35,6 +36,8 @@ from discordbot.cogs._games.prompts import (
     BOT_PLAYER_ACTION_PROMPT,
     BOT_PLAYER_INSURANCE_PROMPT,
 )
+from discordbot.cogs._games.blackjack import is_blackjack
+from discordbot.cogs._games.blackjack_ev import compute_action_evs
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 BOT_BET_AI_TIMEOUT_SECONDS = 30.0
@@ -127,6 +130,7 @@ class ActionAnalysis(BaseModel):
     allowed_actions: tuple[BotAction, ...]
     basic_strategy_action: BotAction
     basic_strategy_reason: str
+    ev_analysis: ActionEvAnalysis | None = None
     hit_odds: DrawOdds | None = None
     double_odds: DrawOdds | None = None
     stand_summary: str | None = None
@@ -157,6 +161,8 @@ class BotPlayerInsuranceContext(BaseModel):
     insurance_payout: int
     dealer_blackjack: bool
     side_bet_delta_if_taken: int
+    insurance_expected_value: float
+    insurance_recommendation: str
     summary: str
 
 
@@ -375,7 +381,29 @@ def fallback_bet(*, balance: int, table_bet: int) -> int:
     return max(1, min(balance, table_bet))
 
 
-def fallback_action(
+def _safe_compute_action_evs(
+    *,
+    hand_cards: list[Card],
+    dealer_cards: list[Card],
+    shoe: list[Card],
+    allowed_actions: tuple[BotAction, ...],
+    doubled: bool,
+) -> ActionEvAnalysis | None:
+    """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
+    try:
+        return compute_action_evs(
+            hand_cards=hand_cards,
+            dealer_cards=dealer_cards,
+            shoe=shoe,
+            allowed_actions=allowed_actions,
+            doubled=doubled,
+        )
+    except Exception:
+        logfire.warn("Bot EV engine failed; falling back to basic strategy", _exc_info=True)
+        return None
+
+
+def _basic_strategy_table_action(
     *,
     hand_cards: list[Card],
     hand_total: int,
@@ -383,7 +411,7 @@ def fallback_action(
     is_pair_hand: bool,
     allowed_actions: tuple[BotAction, ...],
 ) -> BotAction:
-    """Deterministic basic-strategy fallback that only emits allowed actions."""
+    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable."""
     dealer_value = _dealer_up_value(up_card=dealer_up)
     pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
     if (
@@ -409,6 +437,41 @@ def fallback_action(
     return allowed_actions[0]
 
 
+def fallback_action(  # noqa: PLR0913 -- hole-card-aware fallback also accepts dealer cards and shoe.
+    *,
+    hand_cards: list[Card],
+    hand_total: int,
+    dealer_up: Card | None,
+    is_pair_hand: bool,
+    allowed_actions: tuple[BotAction, ...],
+    dealer_cards: list[Card] | None = None,
+    shoe: list[Card] | None = None,
+) -> BotAction:
+    """Deterministic fallback that only emits allowed actions.
+
+    When the full dealer cards and remaining shoe are supplied, the exact EV
+    engine drives the choice (hole-card-aware). Otherwise it degrades to the
+    classic up-card-only basic-strategy table.
+    """
+    if dealer_cards is not None and shoe is not None:
+        analysis = _safe_compute_action_evs(
+            hand_cards=hand_cards,
+            dealer_cards=dealer_cards,
+            shoe=shoe,
+            allowed_actions=allowed_actions,
+            doubled=False,
+        )
+        if analysis is not None and analysis.recommended_action in allowed_actions:
+            return analysis.recommended_action
+    return _basic_strategy_table_action(
+        hand_cards=hand_cards,
+        hand_total=hand_total,
+        dealer_up=dealer_up,
+        is_pair_hand=is_pair_hand,
+        allowed_actions=allowed_actions,
+    )
+
+
 def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the full decision surface.
     *,
     hand_cards: list[Card],
@@ -423,13 +486,28 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
 ) -> BotPlayerActionContext:
     """Builds computed AI context without exposing the future shoe order."""
     hand_total, _is_soft = _hand_total_and_soft(cards=hand_cards)
-    basic_strategy_action = fallback_action(
+    ev_analysis = _safe_compute_action_evs(
         hand_cards=hand_cards,
-        hand_total=hand_total,
-        dealer_up=dealer_up,
-        is_pair_hand=is_pair_hand,
+        dealer_cards=dealer_cards,
+        shoe=shoe,
         allowed_actions=allowed_actions,
+        doubled=doubled,
     )
+    if ev_analysis is not None:
+        basic_strategy_action = ev_analysis.recommended_action
+        basic_strategy_reason = (
+            "EV-max legal action given the dealer hole card and remaining shoe; "
+            f"expected_value={ev_analysis.recommended_expected_value:+.2f} base bets."
+        )
+    else:
+        basic_strategy_action = fallback_action(
+            hand_cards=hand_cards,
+            hand_total=hand_total,
+            dealer_up=dealer_up,
+            is_pair_hand=is_pair_hand,
+            allowed_actions=allowed_actions,
+        )
+        basic_strategy_reason = _basic_strategy_reason(action=basic_strategy_action)
     dealer = build_dealer_knowledge(dealer_cards=dealer_cards, dealer_up=dealer_up)
     hit_odds = (
         _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=doubled)
@@ -460,7 +538,8 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
         action_analysis=ActionAnalysis(
             allowed_actions=allowed_actions,
             basic_strategy_action=basic_strategy_action,
-            basic_strategy_reason=_basic_strategy_reason(action=basic_strategy_action),
+            basic_strategy_reason=basic_strategy_reason,
+            ev_analysis=ev_analysis,
             hit_odds=hit_odds,
             double_odds=double_odds,
             stand_summary=(
@@ -490,6 +569,8 @@ def build_bot_insurance_context(
         insurance_payout=insurance_payout,
         dealer_blackjack=dealer_blackjack,
         side_bet_delta_if_taken=delta_if_taken,
+        insurance_expected_value=float(delta_if_taken),
+        insurance_recommendation="take" if dealer_blackjack else "decline",
         summary=(
             "Dealer has natural Blackjack; insurance side bet wins."
             if dealer_blackjack
@@ -498,9 +579,11 @@ def build_bot_insurance_context(
     )
 
 
-def fallback_insurance() -> bool:
-    """Deterministic insurance fallback: never take (negative EV)."""
-    return False
+def fallback_insurance(*, dealer_cards: list[Card] | None = None) -> bool:
+    """Hole-card-aware insurance fallback: take only when the dealer truly has Blackjack."""
+    if dealer_cards is None:
+        return False
+    return is_blackjack(cards=dealer_cards)
 
 
 def _format_percent(value: float) -> str:
@@ -536,6 +619,36 @@ def _format_draw_odds(*, label: str, odds: DrawOdds | None) -> list[str]:
     ]
 
 
+def _format_ev_block(*, ev_analysis: ActionEvAnalysis | None) -> list[str]:
+    """Renders the exact dealer outcome distribution and per-action EV as prompt lines."""
+    if ev_analysis is None:
+        return ["- ev_analysis: unavailable"]
+    outcome = ev_analysis.dealer_outcome
+    lines = [
+        f"- dealer_outcome.bust_probability: {_format_percent(outcome.bust_probability)}",
+        f"- dealer_outcome.final_17: {_format_percent(outcome.total_17_probability)}",
+        f"- dealer_outcome.final_18: {_format_percent(outcome.total_18_probability)}",
+        f"- dealer_outcome.final_19: {_format_percent(outcome.total_19_probability)}",
+        f"- dealer_outcome.final_20: {_format_percent(outcome.total_20_probability)}",
+        f"- dealer_outcome.final_21: {_format_percent(outcome.total_21_probability)}",
+    ]
+    for action_ev in ev_analysis.action_evs:
+        suffix = " (estimate)" if action_ev.is_estimate else ""
+        lines.append(
+            f"- expected_value.{action_ev.action}: {action_ev.expected_value:+.2f}{suffix}"
+        )
+    lines.append(f"- hole_card_aware_recommendation.action: {ev_analysis.recommended_action}")
+    lines.append(
+        "- hole_card_aware_recommendation.expected_value: "
+        f"{ev_analysis.recommended_expected_value:+.2f}"
+    )
+    lines.append(
+        "- ev_units_note: EV is in multiples of the base hand bet; higher is better; values "
+        "already account for the dealer hole card, the five-card-21 bonus, and this table's payouts."
+    )
+    return lines
+
+
 def format_action_context(*, context: BotPlayerActionContext | None) -> str:
     """Renders computed action context for the LLM prompt."""
     if context is None:
@@ -559,6 +672,7 @@ def format_action_context(*, context: BotPlayerActionContext | None) -> str:
         f"- dealer.known_total: {dealer.total}",
         f"- dealer.natural_blackjack: {dealer.natural_blackjack}",
         f"- dealer.h17_status: {dealer.h17_status}",
+        *_format_ev_block(ev_analysis=analysis.ev_analysis),
         f"- allowed_actions: {', '.join(analysis.allowed_actions)}",
         f"- basic_strategy_hint.action: {analysis.basic_strategy_action}",
         f"- basic_strategy_hint.reason: {analysis.basic_strategy_reason}",
@@ -593,6 +707,8 @@ def format_insurance_context(*, context: BotPlayerInsuranceContext | None) -> st
         f"- insurance_payout: {context.insurance_payout}",
         f"- dealer_blackjack: {context.dealer_blackjack}",
         f"- side_bet_delta_if_taken: {context.side_bet_delta_if_taken}",
+        f"- insurance_expected_value: {context.insurance_expected_value:+.0f} {CURRENCY_NAME}",
+        f"- insurance_recommendation: {context.insurance_recommendation}",
         f"- insurance_analysis: {context.summary}",
     ])
 
@@ -705,16 +821,21 @@ class BotPlayerAI(BaseModel):
         action_context: BotPlayerActionContext | None = None,
     ) -> BotPlayerActionDecision:
         """Returns the bot's next action with reasoning, falling back to basic strategy."""
-        fallback_decision = BotPlayerActionDecision(
-            action=fallback_action(
-                hand_cards=hand_cards,
-                hand_total=hand_total,
-                dealer_up=dealer_up,
-                is_pair_hand=is_pair_hand,
-                allowed_actions=allowed_actions,
-            ),
-            reason="基本策略 fallback",
-        )
+        if action_context is not None and action_context.action_analysis.ev_analysis is not None:
+            fallback_decision = BotPlayerActionDecision(
+                action=action_context.action_analysis.basic_strategy_action, reason="EV 最佳保底"
+            )
+        else:
+            fallback_decision = BotPlayerActionDecision(
+                action=fallback_action(
+                    hand_cards=hand_cards,
+                    hand_total=hand_total,
+                    dealer_up=dealer_up,
+                    is_pair_hand=is_pair_hand,
+                    allowed_actions=allowed_actions,
+                ),
+                reason="基本策略 fallback",
+            )
         dealer_label = str(dealer_up) if dealer_up else "unknown"
         allowed_text = ", ".join(allowed_actions)
         own_other = (
@@ -779,9 +900,14 @@ class BotPlayerAI(BaseModel):
         insurance_context: BotPlayerInsuranceContext | None = None,
     ) -> BotPlayerInsuranceDecision:
         """Returns whether the bot takes insurance with reasoning, falling back to False."""
-        fallback_decision = BotPlayerInsuranceDecision(
-            take_insurance=fallback_insurance(), reason="保險長期 EV 為負, 直接拒絕"
-        )
+        if insurance_context is not None and insurance_context.dealer_blackjack:
+            fallback_decision = BotPlayerInsuranceDecision(
+                take_insurance=True, reason="暗牌成 BJ, 買保險打平"
+            )
+        else:
+            fallback_decision = BotPlayerInsuranceDecision(
+                take_insurance=False, reason="保險長期 EV 為負, 直接拒絕"
+            )
         dealer_label = str(dealer_up) if dealer_up else "unknown"
         insurance_cost = bet // 2
         user_text = (
