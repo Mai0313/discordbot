@@ -3,6 +3,7 @@
 import re
 import base64
 from typing import Literal
+import asyncio
 from mimetypes import guess_type
 
 import logfire
@@ -83,7 +84,9 @@ class MessageInputBuilder(BaseModel):
         """Converts an image source to a content part for the API."""
         try:
             if isinstance(source, str):
-                b64_data = get_image_data(image_file=source)
+                # A URL source fetches over the network inside get_image_data, so
+                # keep that blocking work off the event loop.
+                b64_data = await asyncio.to_thread(get_image_data, image_file=source)
                 data_uri = convert_base64_to_data_uri(base64_image=b64_data)
                 return ResponseInputImageParam(
                     image_url=data_uri, detail="low", type="input_image"

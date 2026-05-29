@@ -1,6 +1,7 @@
 """Cog that expands Threads post URLs into Discord embeds and media files."""
 
 import re
+import asyncio
 from pathlib import Path
 import contextlib
 
@@ -133,7 +134,12 @@ class ThreadsCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
-            with self.downloader.parse(url) as results:
+            # parse() blocks on HTTP fetch + media downloads, so run its enter
+            # off the event loop; the reply runs while the temp files still exist
+            # and the matching exit cleans them up afterwards.
+            parse_cm = self.downloader.parse(url)
+            results = await asyncio.to_thread(parse_cm.__enter__)
+            try:
                 if not results:
                     await update_reaction(
                         message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
@@ -180,6 +186,8 @@ class ThreadsCogs(commands.Cog):
                 await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="🆗", previous=current_emoji
                 )
+            finally:
+                await asyncio.to_thread(parse_cm.__exit__, None, None, None)
         except Exception:
             logfire.error("Failed to send Threads message", _exc_info=True)
             with contextlib.suppress(Exception):

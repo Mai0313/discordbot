@@ -1,6 +1,7 @@
 """Discord bot entry point and runtime event handlers."""
 
 import os
+import asyncio
 import logging
 from pathlib import Path
 import secrets
@@ -16,6 +17,7 @@ from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
+from discordbot.utils.model_pricing import warm_pricing_cache
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.database import credit_with_repayment
 
@@ -86,6 +88,9 @@ class DiscordBot(commands.Bot):
 
         await self.sync_all_application_commands()
         self.status_task.start()
+        # Fetch the LiteLLM price table now, off the event loop, so the first
+        # AI reply does not stall on a synchronous network call.
+        await asyncio.to_thread(warm_pricing_cache)
 
         app_info = await self.application_info()
         invite_url = (
