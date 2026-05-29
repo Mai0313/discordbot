@@ -2619,36 +2619,37 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
     await _ensure_schema()
     async with open_stock_session() as session:
         result = await session.execute(
-            statement=select(StockOperation)
+            statement=select(StockOperation, StockTradeLeg)
+            .outerjoin(StockTradeLeg, StockTradeLeg.operation_id == StockOperation.operation_id)
             .where(StockOperation.status.notin_(_FINAL_OPERATION_STATUSES))
-            .order_by(StockOperation.created_at.asc())
+            .order_by(StockOperation.created_at.asc(), StockTradeLeg.leg_order.asc())
         )
-        operations = list(result.scalars())
-        output: list[StockReconciliationOperation] = []
-        for operation in operations:
-            leg_result = await session.execute(
-                statement=select(StockTradeLeg)
-                .where(StockTradeLeg.operation_id == operation.operation_id)
-                .order_by(StockTradeLeg.leg_order.asc())
+        operations: list[StockOperation] = []
+        legs_by_operation: dict[str, list[StockTradeLeg]] = {}
+        for operation, leg in result.all():
+            if operation.operation_id not in legs_by_operation:
+                operations.append(operation)
+                legs_by_operation[operation.operation_id] = []
+            if leg is not None:
+                legs_by_operation[operation.operation_id].append(leg)
+        return tuple(
+            StockReconciliationOperation(
+                operation_id=operation.operation_id,
+                status=StockOperationStatus(operation.status),
+                user_id=operation.user_id,
+                user_name=operation.user_name or str(operation.user_id),
+                symbol=operation.symbol,
+                requested_action=StockAction(operation.requested_action),
+                failure_reason=operation.failure_reason,
+                created_at=operation.created_at,
+                updated_at=operation.updated_at,
+                legs=tuple(
+                    _trade_leg_view(leg=leg, user_name=operation.user_name)
+                    for leg in legs_by_operation[operation.operation_id]
+                ),
             )
-            output.append(
-                StockReconciliationOperation(
-                    operation_id=operation.operation_id,
-                    status=StockOperationStatus(operation.status),
-                    user_id=operation.user_id,
-                    user_name=operation.user_name or str(operation.user_id),
-                    symbol=operation.symbol,
-                    requested_action=StockAction(operation.requested_action),
-                    failure_reason=operation.failure_reason,
-                    created_at=operation.created_at,
-                    updated_at=operation.updated_at,
-                    legs=tuple(
-                        _trade_leg_view(leg=leg, user_name=operation.user_name)
-                        for leg in leg_result.scalars()
-                    ),
-                )
-            )
-        return tuple(output)
+            for operation in operations
+        )
 
 
 __all__ = [
