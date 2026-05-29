@@ -710,7 +710,11 @@ def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None
         "discordbot.cogs.maplestory.MapleStoryService.from_directory",
         lambda data_dir: MapleStoryService(),
     )
-    bot = SimpleNamespace(add_cog=added.append)
+
+    def record_cog(cog: MapleStoryCogs, override: bool | None = None) -> None:
+        added.append(cog)
+
+    bot = SimpleNamespace(add_cog=record_cog)
 
     maplestory.setup(bot=bot)
 

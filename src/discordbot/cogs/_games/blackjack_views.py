@@ -133,7 +133,7 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats compact dealer actions for the final embed."""
     if not steps:
         return ""
-    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "guard"}
+    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "防呆"}
     parts: list[str] = []
     for step in steps:
         part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
@@ -561,6 +561,11 @@ def build_final_embeds(  # noqa: PLR0913 -- final render mirrors in-progress sig
     }
     for player in round_state.players:
         result = results_by_user.get(player.participant.user_id)
+        if result is None:
+            logfire.error(
+                "Blackjack player has no settlement result at final embed build",
+                user_id=player.participant.user_id,
+            )
         settlement = result.settlement if result is not None else None
         reason = (
             bot_reasons.get(player.participant.user_id)

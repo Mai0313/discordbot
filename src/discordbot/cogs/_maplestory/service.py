@@ -62,6 +62,7 @@ class MapleStoryService(BaseModel):
     _quest_cache: dict[str, list[Quest]] = PrivateAttr(default_factory=dict)
     _map_cache: dict[str, list[MapEntry]] = PrivateAttr(default_factory=dict)
     _item_cache: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    _item_type_cache: dict[str, str] = PrivateAttr(default_factory=dict)
     _stats: MapleStats | None = PrivateAttr(default=None)
 
     @classmethod
@@ -96,6 +97,7 @@ class MapleStoryService(BaseModel):
         self._quest_cache.clear()
         self._map_cache.clear()
         self._item_cache.clear()
+        self._item_type_cache.clear()
         self._stats = None
 
     def reload(self, data_dir: Path = DEFAULT_DATA_DIR) -> None:
@@ -386,20 +388,25 @@ class MapleStoryService(BaseModel):
         Returns:
             A string representing the category ('裝備', '捲軸', '消耗品', '其它', or '未知').
         """
+        cached = self._item_type_cache.get(item_name)
+        if cached is not None:
+            return cached
+        item_type = "未知"
         for monster in self._monsters:
-            for drop in monster.drops.equipment_items:
-                if drop.name == item_name:
-                    return "裝備"
-            for drop in monster.drops.scrolls:
-                if drop.name == item_name:
-                    return "捲軸"
-            for drop in monster.drops.useable_items:
-                if drop.name == item_name:
-                    return "消耗品"
-            for drop in monster.drops.misc_items:
-                if drop.name == item_name:
-                    return "其它"
-        return "未知"
+            if any(drop.name == item_name for drop in monster.drops.equipment_items):
+                item_type = "裝備"
+                break
+            if any(drop.name == item_name for drop in monster.drops.scrolls):
+                item_type = "捲軸"
+                break
+            if any(drop.name == item_name for drop in monster.drops.useable_items):
+                item_type = "消耗品"
+                break
+            if any(drop.name == item_name for drop in monster.drops.misc_items):
+                item_type = "其它"
+                break
+        self._item_type_cache[item_name] = item_type
+        return item_type
 
     # ── Stats ───────────────────────────────────────────────────────
 

@@ -325,4 +325,4 @@ def setup(bot: commands.Bot) -> None:
     Args:
         bot: The Discord bot instance.
     """
-    bot.add_cog(LogMessageCog(bot))
+    bot.add_cog(LogMessageCog(bot), override=True)
