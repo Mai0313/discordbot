@@ -364,14 +364,14 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message, bot_user=self.bot.user, emoji="📖", previous=current_emoji
                 )
                 await self._handle_message_reply(
-                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=200
+                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=100
                 )
             else:
                 current_emoji = await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="❓", previous=current_emoji
                 )
                 await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=100
+                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
                 )
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="🆗", previous=current_emoji
