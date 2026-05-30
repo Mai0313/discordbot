@@ -26,8 +26,8 @@ class RegionMaps(_Base):
         maps: Map names in the region.
     """
 
-    region: str
-    maps: list[str] = Field(default_factory=list)
+    region: str = Field(description="Region name.")
+    maps: list[str] = Field(default_factory=list, description="Map names in the region.")
 
 
 class AcquisitionMonster(_Base):
@@ -38,8 +38,8 @@ class AcquisitionMonster(_Base):
         level: Monster level.
     """
 
-    name: str
-    level: int = 0
+    name: str = Field(description="Monster name.")
+    level: int = Field(default=0, description="Monster level.")
 
 
 class AcquisitionNPC(_Base):
@@ -50,8 +50,8 @@ class AcquisitionNPC(_Base):
         price: Item price from the NPC.
     """
 
-    name: str
-    price: int = 0
+    name: str = Field(description="NPC name.")
+    price: int = Field(default=0, description="Item price from the NPC.")
 
 
 class AcquisitionQuest(_Base):
@@ -62,8 +62,8 @@ class AcquisitionQuest(_Base):
         level: Quest level.
     """
 
-    name: str
-    level: int = 0
+    name: str = Field(description="Quest name.")
+    level: int = Field(default=0, description="Quest level.")
 
 
 class CraftingMaterial(_Base):
@@ -74,8 +74,8 @@ class CraftingMaterial(_Base):
         quantity: Required quantity.
     """
 
-    item: str = ""
-    quantity: int = 0
+    item: str = Field(default="", description="Material item name.")
+    quantity: int = Field(default=0, description="Required quantity.")
 
 
 class CraftingRecipe(_Base):
@@ -87,9 +87,11 @@ class CraftingRecipe(_Base):
         materials: Materials required by the recipe.
     """
 
-    npc: str = ""
-    output: str = ""
-    materials: list[CraftingMaterial] = Field(default_factory=list)
+    npc: str = Field(default="", description="NPC name associated with the recipe.")
+    output: str = Field(default="", description="Crafted output name.")
+    materials: list[CraftingMaterial] = Field(
+        default_factory=list, description="Materials required by the recipe."
+    )
 
 
 class Acquisition(_Base):
@@ -102,10 +104,18 @@ class Acquisition(_Base):
         craftings: Crafting recipe entries.
     """
 
-    monsters: list[AcquisitionMonster] = Field(default_factory=list)
-    npcs: list[AcquisitionNPC] = Field(default_factory=list)
-    quests: list[AcquisitionQuest] = Field(default_factory=list)
-    craftings: list[CraftingRecipe] = Field(default_factory=list)
+    monsters: list[AcquisitionMonster] = Field(
+        default_factory=list, description="Monster acquisition entries."
+    )
+    npcs: list[AcquisitionNPC] = Field(
+        default_factory=list, description="NPC acquisition entries."
+    )
+    quests: list[AcquisitionQuest] = Field(
+        default_factory=list, description="Quest acquisition entries."
+    )
+    craftings: list[CraftingRecipe] = Field(
+        default_factory=list, description="Crafting recipe entries."
+    )
 
 
 # ── Monster ─────────────────────────────────────────────────────────
@@ -120,9 +130,9 @@ class DefenseStats(_Base):
         avoidability: Avoidability value.
     """
 
-    weapon: int = 0
-    magic: int = 0
-    avoidability: int = 0
+    weapon: int = Field(default=0, description="Weapon defense value.")
+    magic: int = Field(default=0, description="Magic defense value.")
+    avoidability: int = Field(default=0, description="Avoidability value.")
 
 
 class AccuracyStats(_Base):
@@ -133,8 +143,8 @@ class AccuracyStats(_Base):
         decrease: Accuracy decrease value.
     """
 
-    required: int = 0
-    decrease: float = 0
+    required: int = Field(default=0, description="Required accuracy value.")
+    decrease: float = Field(default=0, description="Accuracy decrease value.")
 
 
 class DropItem(_Base):
@@ -147,10 +157,12 @@ class DropItem(_Base):
         jobs: Jobs associated with the dropped item.
     """
 
-    name: str
-    level: int = 0
-    type: str = ""
-    jobs: list[str] = Field(default_factory=list)
+    name: str = Field(description="Dropped item name.")
+    level: int = Field(default=0, description="Dropped item level.")
+    type: str = Field(default="", description="Dropped item type.")
+    jobs: list[str] = Field(
+        default_factory=list, description="Jobs associated with the dropped item."
+    )
 
 
 class MonsterDrops(_Base):
@@ -164,11 +176,27 @@ class MonsterDrops(_Base):
         meso_range: Meso range dropped by the monster.
     """
 
-    equipment_items: list[DropItem] = Field(default_factory=list, alias="equipmentItems")
-    useable_items: list[DropItem] = Field(default_factory=list, alias="useableItems")
-    scrolls: list[DropItem] = Field(default_factory=list, alias="scrolls")
-    misc_items: list[DropItem] = Field(default_factory=list, alias="miscItems")
-    meso_range: list[int] = Field(default_factory=list, alias="mesoRange")
+    equipment_items: list[DropItem] = Field(
+        default_factory=list,
+        alias="equipmentItems",
+        description="Equipment items dropped by the monster.",
+    )
+    useable_items: list[DropItem] = Field(
+        default_factory=list,
+        alias="useableItems",
+        description="Useable items dropped by the monster.",
+    )
+    scrolls: list[DropItem] = Field(
+        default_factory=list, alias="scrolls", description="Scrolls dropped by the monster."
+    )
+    misc_items: list[DropItem] = Field(
+        default_factory=list,
+        alias="miscItems",
+        description="Miscellaneous items dropped by the monster.",
+    )
+    meso_range: list[int] = Field(
+        default_factory=list, alias="mesoRange", description="Meso range dropped by the monster."
+    )
 
     @property
     def all_items(self) -> list[DropItem]:
@@ -188,8 +216,8 @@ class MonsterQuest(_Base):
         level: Quest level.
     """
 
-    name: str
-    level: int = 0
+    name: str = Field(description="Quest name.")
+    level: int = Field(default=0, description="Quest level.")
 
 
 class Monster(_Base):
@@ -210,18 +238,28 @@ class Monster(_Base):
         quests: Quests associated with the monster.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    level: int = 0
-    hp: int = 0
-    mp: int = 0
-    exp: int = 0
-    def_stats: DefenseStats = Field(default_factory=DefenseStats, alias="def")
-    accuracy: AccuracyStats = Field(default_factory=AccuracyStats)
-    modifiers: list[str] = Field(default_factory=list)
-    region_to_maps_list: list[RegionMaps] = Field(default_factory=list, alias="regionToMapsList")
-    drops: MonsterDrops = Field(default_factory=MonsterDrops)
-    quests: list[MonsterQuest] = Field(default_factory=list)
+    name: str = Field(description="Monster name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese monster name.")
+    level: int = Field(default=0, description="Monster level.")
+    hp: int = Field(default=0, description="Monster HP.")
+    mp: int = Field(default=0, description="Monster MP.")
+    exp: int = Field(default=0, description="Monster EXP.")
+    def_stats: DefenseStats = Field(
+        default_factory=DefenseStats, alias="def", description="Monster defense statistics."
+    )
+    accuracy: AccuracyStats = Field(
+        default_factory=AccuracyStats, description="Monster accuracy statistics."
+    )
+    modifiers: list[str] = Field(default_factory=list, description="Monster modifier names.")
+    region_to_maps_list: list[RegionMaps] = Field(
+        default_factory=list,
+        alias="regionToMapsList",
+        description="Regions and maps where the monster appears.",
+    )
+    drops: MonsterDrops = Field(default_factory=MonsterDrops, description="Monster drop data.")
+    quests: list[MonsterQuest] = Field(
+        default_factory=list, description="Quests associated with the monster."
+    )
 
     @property
     def display_name(self) -> str:
@@ -253,8 +291,8 @@ class StatValue(_Base):
         range: Stat value range.
     """
 
-    middle: int = 0
-    range: list[int] = Field(default_factory=list)
+    middle: int = Field(default=0, description="Middle stat value.")
+    range: list[int] = Field(default_factory=list, description="Stat value range.")
 
 
 class EquipmentStats(_Base):
@@ -281,22 +319,28 @@ class EquipmentStats(_Base):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    str_stat: StatValue | None = Field(default=None, alias="str")
-    dex: StatValue | None = None
-    int_stat: StatValue | None = Field(default=None, alias="int")
-    luk: StatValue | None = None
-    hp: StatValue | None = None
-    mp: StatValue | None = None
-    atk: StatValue | None = None
-    matk: StatValue | None = None
-    def_stat: StatValue | None = Field(default=None, alias="def")
-    mdef: StatValue | None = None
-    accuracy: StatValue | None = None
-    avoidability: StatValue | None = None
-    speed: StatValue | None = None
-    jump: StatValue | None = None
-    attack_speed: int | None = Field(default=None, alias="attackSpeed")
-    upgrade_slots: int | None = Field(default=None, alias="upgradeSlots")
+    str_stat: StatValue | None = Field(default=None, alias="str", description="STR stat value.")
+    dex: StatValue | None = Field(default=None, description="DEX stat value.")
+    int_stat: StatValue | None = Field(default=None, alias="int", description="INT stat value.")
+    luk: StatValue | None = Field(default=None, description="LUK stat value.")
+    hp: StatValue | None = Field(default=None, description="HP stat value.")
+    mp: StatValue | None = Field(default=None, description="MP stat value.")
+    atk: StatValue | None = Field(default=None, description="Attack stat value.")
+    matk: StatValue | None = Field(default=None, description="Magic attack stat value.")
+    def_stat: StatValue | None = Field(
+        default=None, alias="def", description="Defense stat value."
+    )
+    mdef: StatValue | None = Field(default=None, description="Magic defense stat value.")
+    accuracy: StatValue | None = Field(default=None, description="Accuracy stat value.")
+    avoidability: StatValue | None = Field(default=None, description="Avoidability stat value.")
+    speed: StatValue | None = Field(default=None, description="Speed stat value.")
+    jump: StatValue | None = Field(default=None, description="Jump stat value.")
+    attack_speed: int | None = Field(
+        default=None, alias="attackSpeed", description="Attack speed value."
+    )
+    upgrade_slots: int | None = Field(
+        default=None, alias="upgradeSlots", description="Upgrade slot count."
+    )
 
     def non_zero_stats(self) -> list[tuple[str, StatValue]]:
         """Returns (label, value) pairs for stats with non-zero middle.
@@ -333,10 +377,10 @@ class EquipmentRestriction(_Base):
         luk: LUK requirement.
     """
 
-    str_req: int = Field(default=0, alias="str")
-    dex: int = 0
-    int_req: int = Field(default=0, alias="int")
-    luk: int = 0
+    str_req: int = Field(default=0, alias="str", description="STR requirement.")
+    dex: int = Field(default=0, description="DEX requirement.")
+    int_req: int = Field(default=0, alias="int", description="INT requirement.")
+    luk: int = Field(default=0, description="LUK requirement.")
 
     def has_requirements(self) -> bool:
         """Checks if there are any stat requirements.
@@ -366,21 +410,37 @@ class Equipment(_Base):
         unavailable: Whether the equipment is marked as unavailable.
     """
 
-    type: str = ""
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    level: int = 0
+    type: str = Field(default="", description="Equipment type.")
+    name: str = Field(description="Equipment name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese equipment name.")
+    level: int = Field(default=0, description="Equipment level.")
     equipment_restriction: EquipmentRestriction = Field(
-        default_factory=EquipmentRestriction, alias="equipmentRestriction"
+        default_factory=EquipmentRestriction,
+        alias="equipmentRestriction",
+        description="Equipment stat requirements.",
     )
-    stats: EquipmentStats = Field(default_factory=EquipmentStats)
-    jobs: list[str] = Field(default_factory=list)
-    attack_speed: str = Field(default="", alias="attackSpeed")
-    acquisition: Acquisition = Field(default_factory=Acquisition)
-    tradeable: str = ""
-    event: bool = False
-    limited_time: bool = Field(default=False, alias="limitedTime")
-    unavailable: bool = False
+    stats: EquipmentStats = Field(
+        default_factory=EquipmentStats, description="Equipment stat values."
+    )
+    jobs: list[str] = Field(
+        default_factory=list, description="Jobs associated with the equipment."
+    )
+    attack_speed: str = Field(default="", alias="attackSpeed", description="Attack speed label.")
+    acquisition: Acquisition = Field(
+        default_factory=Acquisition, description="Acquisition data for the equipment."
+    )
+    tradeable: str = Field(default="", description="Tradeability label.")
+    event: bool = Field(
+        default=False, description="Whether the equipment is marked as an event item."
+    )
+    limited_time: bool = Field(
+        default=False,
+        alias="limitedTime",
+        description="Whether the equipment is marked as limited time.",
+    )
+    unavailable: bool = Field(
+        default=False, description="Whether the equipment is marked as unavailable."
+    )
 
     @property
     def display_name(self) -> str:
@@ -406,11 +466,15 @@ class Scroll(_Base):
         acquisition: Acquisition data for the scroll.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    stats: dict[str, int] = Field(default_factory=dict)
-    type: str = ""
-    acquisition: Acquisition = Field(default_factory=Acquisition)
+    name: str = Field(description="Scroll name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese scroll name.")
+    stats: dict[str, int] = Field(
+        default_factory=dict, description="Stat bonuses keyed by stat name."
+    )
+    type: str = Field(default="", description="Scroll type.")
+    acquisition: Acquisition = Field(
+        default_factory=Acquisition, description="Acquisition data for the scroll."
+    )
 
     @property
     def display_name(self) -> str:
@@ -432,7 +496,7 @@ class UseableStat(_Base):
         amount: Amount applied by the useable item stat.
     """
 
-    amount: int = 0
+    amount: int = Field(default=0, description="Amount applied by the useable item stat.")
 
 
 class Useable(_Base):
@@ -456,21 +520,27 @@ class Useable(_Base):
         jump: Jump stat data.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    type: str = ""
-    description: str | dict[str, str] = ""
-    acquisition: Acquisition = Field(default_factory=Acquisition)
-    hp: UseableStat | None = None
-    mp: UseableStat | None = None
-    atk: UseableStat | None = None
-    matk: UseableStat | None = None
-    def_stat: UseableStat | None = Field(default=None, alias="def")
-    mdef: UseableStat | None = None
-    accuracy: UseableStat | None = None
-    avoidability: UseableStat | None = None
-    speed: UseableStat | None = None
-    jump: UseableStat | None = None
+    name: str = Field(description="Useable item name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese useable item name.")
+    type: str = Field(default="", description="Useable item type.")
+    description: str | dict[str, str] = Field(
+        default="", description="Description data for the useable item."
+    )
+    acquisition: Acquisition = Field(
+        default_factory=Acquisition, description="Acquisition data for the useable item."
+    )
+    hp: UseableStat | None = Field(default=None, description="HP stat data.")
+    mp: UseableStat | None = Field(default=None, description="MP stat data.")
+    atk: UseableStat | None = Field(default=None, description="Attack stat data.")
+    matk: UseableStat | None = Field(default=None, description="Magic attack stat data.")
+    def_stat: UseableStat | None = Field(
+        default=None, alias="def", description="Defense stat data."
+    )
+    mdef: UseableStat | None = Field(default=None, description="Magic defense stat data.")
+    accuracy: UseableStat | None = Field(default=None, description="Accuracy stat data.")
+    avoidability: UseableStat | None = Field(default=None, description="Avoidability stat data.")
+    speed: UseableStat | None = Field(default=None, description="Speed stat data.")
+    jump: UseableStat | None = Field(default=None, description="Jump stat data.")
 
     @property
     def display_name(self) -> str:
@@ -493,8 +563,8 @@ class NPCItem(_Base):
         price: Sold item price.
     """
 
-    name: str
-    price: int = 0
+    name: str = Field(description="Sold item name.")
+    price: int = Field(default=0, description="Sold item price.")
 
 
 class NPC(_Base):
@@ -513,16 +583,34 @@ class NPC(_Base):
         recipes: Crafting recipes associated with the NPC.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    type: str = ""
-    region_to_maps_list: list[RegionMaps] = Field(default_factory=list, alias="regionToMapsList")
-    equipment_items: list[NPCItem] = Field(default_factory=list, alias="equipmentItems")
-    useable_items: list[NPCItem] = Field(default_factory=list, alias="useableItems")
-    scrolls: list[NPCItem] = Field(default_factory=list, alias="scrolls")
-    misc_items: list[NPCItem] = Field(default_factory=list, alias="miscItems")
-    quests: list[AcquisitionQuest] = Field(default_factory=list)
-    recipes: list[CraftingRecipe] = Field(default_factory=list)
+    name: str = Field(description="NPC name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese NPC name.")
+    type: str = Field(default="", description="NPC type.")
+    region_to_maps_list: list[RegionMaps] = Field(
+        default_factory=list,
+        alias="regionToMapsList",
+        description="Regions and maps where the NPC appears.",
+    )
+    equipment_items: list[NPCItem] = Field(
+        default_factory=list,
+        alias="equipmentItems",
+        description="Equipment items sold by the NPC.",
+    )
+    useable_items: list[NPCItem] = Field(
+        default_factory=list, alias="useableItems", description="Useable items sold by the NPC."
+    )
+    scrolls: list[NPCItem] = Field(
+        default_factory=list, alias="scrolls", description="Scrolls sold by the NPC."
+    )
+    misc_items: list[NPCItem] = Field(
+        default_factory=list, alias="miscItems", description="Miscellaneous items sold by the NPC."
+    )
+    quests: list[AcquisitionQuest] = Field(
+        default_factory=list, description="Quests associated with the NPC."
+    )
+    recipes: list[CraftingRecipe] = Field(
+        default_factory=list, description="Crafting recipes associated with the NPC."
+    )
 
     @property
     def display_name(self) -> str:
@@ -554,8 +642,8 @@ class HuntTarget(_Base):
         quantity: Required hunt quantity.
     """
 
-    name: str
-    quantity: int = 0
+    name: str = Field(description="Hunt target name.")
+    quantity: int = Field(default=0, description="Required hunt quantity.")
 
 
 class CollectItem(_Base):
@@ -566,8 +654,8 @@ class CollectItem(_Base):
         quantity: Required collection quantity.
     """
 
-    name: str = ""
-    quantity: int = 0
+    name: str = Field(default="", description="Collected item name.")
+    quantity: int = Field(default=0, description="Required collection quantity.")
 
 
 class QuestReward(_Base):
@@ -580,11 +668,11 @@ class QuestReward(_Base):
         items: Reward item data.
     """
 
-    exp: int = 0
-    fame: int = 0
-    mesos: int = 0
+    exp: int = Field(default=0, description="Reward EXP.")
+    fame: int = Field(default=0, description="Reward fame.")
+    mesos: int = Field(default=0, description="Reward mesos.")
     items: dict[str, list[CollectItem]] | list[dict[str, list[CollectItem]]] = Field(
-        default_factory=dict
+        default_factory=dict, description="Reward item data."
     )
 
 
@@ -598,12 +686,22 @@ class QuestStep(_Base):
         reward: Reward data for the quest step.
     """
 
-    start_npc: str = Field(default="", alias="startNPC")
-    monsters_to_hunt: list[HuntTarget] = Field(default_factory=list, alias="monstersToHunt")
-    items_to_collect: dict[str, list[CollectItem]] = Field(
-        default_factory=dict, alias="itemsToCollect"
+    start_npc: str = Field(
+        default="", alias="startNPC", description="NPC that starts the quest step."
     )
-    reward: QuestReward = Field(default_factory=QuestReward)
+    monsters_to_hunt: list[HuntTarget] = Field(
+        default_factory=list,
+        alias="monstersToHunt",
+        description="Monsters required by the quest step.",
+    )
+    items_to_collect: dict[str, list[CollectItem]] = Field(
+        default_factory=dict,
+        alias="itemsToCollect",
+        description="Items required by the quest step.",
+    )
+    reward: QuestReward = Field(
+        default_factory=QuestReward, description="Reward data for the quest step."
+    )
 
 
 class Quest(_Base):
@@ -620,14 +718,14 @@ class Quest(_Base):
         prerequisites: Prerequisite quest names.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    frequency: str = ""
-    lv_lower: int = Field(default=0, alias="lvLower")
-    lv_upper: int | None = Field(default=None, alias="lvUpper")
-    steps: list[QuestStep] = Field(default_factory=list)
-    boss: bool = False
-    prerequisites: list[str] = Field(default_factory=list)
+    name: str = Field(description="Quest name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese quest name.")
+    frequency: str = Field(default="", description="Quest frequency label.")
+    lv_lower: int = Field(default=0, alias="lvLower", description="Lower level bound.")
+    lv_upper: int | None = Field(default=None, alias="lvUpper", description="Upper level bound.")
+    steps: list[QuestStep] = Field(default_factory=list, description="Quest steps.")
+    boss: bool = Field(default=False, description="Whether the quest is marked as a boss quest.")
+    prerequisites: list[str] = Field(default_factory=list, description="Prerequisite quest names.")
 
     @property
     def display_name(self) -> str:
@@ -651,9 +749,9 @@ class MapNPC(_Base):
         sub_map: Sub-map name.
     """
 
-    name: str
-    type: str = ""
-    sub_map: str = Field(default="", alias="subMap")
+    name: str = Field(description="NPC name.")
+    type: str = Field(default="", description="NPC type.")
+    sub_map: str = Field(default="", alias="subMap", description="Sub-map name.")
 
 
 class MapMonster(_Base):
@@ -664,8 +762,8 @@ class MapMonster(_Base):
         level: Monster level.
     """
 
-    name: str
-    level: int = 0
+    name: str = Field(description="Monster name.")
+    level: int = Field(default=0, description="Monster level.")
 
 
 class MapEntry(_Base):
@@ -685,17 +783,17 @@ class MapEntry(_Base):
         to_region: Destination region name.
     """
 
-    region: str = ""
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    x: int = 0
-    y: int = 0
-    npcs: list[MapNPC] = Field(default_factory=list)
-    monsters: list[MapMonster] = Field(default_factory=list)
-    hidden: bool = False
-    from_map: str = Field(default="", alias="fromMap")
-    to_map: str = Field(default="", alias="toMap")
-    to_region: str = Field(default="", alias="toRegion")
+    region: str = Field(default="", description="Map region name.")
+    name: str = Field(description="Map name.")
+    name_zh: str = Field(default="", alias="nameZh", description="Chinese map name.")
+    x: int = Field(default=0, description="Map x-coordinate.")
+    y: int = Field(default=0, description="Map y-coordinate.")
+    npcs: list[MapNPC] = Field(default_factory=list, description="NPCs on the map.")
+    monsters: list[MapMonster] = Field(default_factory=list, description="Monsters on the map.")
+    hidden: bool = Field(default=False, description="Whether the map is hidden.")
+    from_map: str = Field(default="", alias="fromMap", description="Source map name.")
+    to_map: str = Field(default="", alias="toMap", description="Destination map name.")
+    to_region: str = Field(default="", alias="toRegion", description="Destination region name.")
 
     @property
     def display_name(self) -> str:
@@ -720,10 +818,14 @@ class MiscItem(_Base):
         acquisition: Acquisition data for the miscellaneous item.
     """
 
-    name: str
-    name_zh: str = Field(default="", alias="nameZh")
-    type: str = ""
-    acquisition: Acquisition = Field(default_factory=Acquisition)
+    name: str = Field(description="Miscellaneous item name.")
+    name_zh: str = Field(
+        default="", alias="nameZh", description="Chinese miscellaneous item name."
+    )
+    type: str = Field(default="", description="Miscellaneous item type.")
+    acquisition: Acquisition = Field(
+        default_factory=Acquisition, description="Acquisition data for the miscellaneous item."
+    )
 
     @property
     def display_name(self) -> str:
@@ -754,13 +856,13 @@ class MapleStats(_Base):
         popular_items: Popular item names.
     """
 
-    total_monsters: int
-    total_equipment: int
-    total_scrolls: int
-    total_useable: int
-    total_npcs: int
-    total_quests: int
-    total_maps: int
-    total_misc: int
-    level_distribution: dict[str, int]
-    popular_items: list[str]
+    total_monsters: int = Field(description="Total monster count.")
+    total_equipment: int = Field(description="Total equipment count.")
+    total_scrolls: int = Field(description="Total scroll count.")
+    total_useable: int = Field(description="Total useable item count.")
+    total_npcs: int = Field(description="Total NPC count.")
+    total_quests: int = Field(description="Total quest count.")
+    total_maps: int = Field(description="Total map count.")
+    total_misc: int = Field(description="Total miscellaneous item count.")
+    level_distribution: dict[str, int] = Field(description="Monster counts keyed by level range.")
+    popular_items: list[str] = Field(description="Popular item names.")

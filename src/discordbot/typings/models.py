@@ -8,10 +8,20 @@ from openai.types.shared_params.reasoning import Reasoning
 
 
 class ModelSettings(BaseModel):
-    """Model name and reasoning effort that should be used together."""
+    """Model name and reasoning effort that should be used together.
 
-    name: str
-    effort: ReasoningEffort = Field(default="none")
+    Attributes:
+        name: LiteLLM model string dispatched on the Responses API.
+        effort: Reasoning effort passed to the Responses API for this model.
+    """
+
+    name: str = Field(
+        description="LiteLLM model string dispatched on the Responses API.",
+        examples=["gemini-flash-latest", "gemini-3-pro-image-preview"],
+    )
+    effort: ReasoningEffort = Field(
+        default="none", description="Reasoning effort passed to the Responses API for this model."
+    )
 
     @property
     def reasoning(self) -> Reasoning:

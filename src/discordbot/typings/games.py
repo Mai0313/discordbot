@@ -29,8 +29,8 @@ class Card(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    rank: str
-    suit: str
+    rank: str = Field(description="Card rank: one of A, 2-10, J, Q, K.")
+    suit: str = Field(description="One of the four unicode suit glyphs.")
 
     def __str__(self) -> str:
         """Human-readable label like `A♠`."""
@@ -52,13 +52,19 @@ class GameParticipant(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int
-    account_name: str
-    display_name: str
-    avatar_url: str = ""
-    bet: int
-    balance_at_start: int
-    is_allin: bool
+    user_id: int = Field(description="Discord user ID for the account row and interaction checks.")
+    account_name: str = Field(
+        description="Stable Discord username stored in the economy account row."
+    )
+    display_name: str = Field(description="Guild-aware display name shown in game embeds.")
+    avatar_url: str = Field(
+        default="", description="Last-seen Discord avatar URL for the economy account row."
+    )
+    bet: int = Field(description="Effective wager for this player.")
+    balance_at_start: int = Field(description="Balance observed when the game session starts.")
+    is_allin: bool = Field(
+        description="True when the effective wager consumes the full observed balance."
+    )
 
 
 class GameParticipantIdentity(BaseModel):
@@ -66,10 +72,14 @@ class GameParticipantIdentity(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int
-    account_name: str
-    display_name: str
-    avatar_url: str = ""
+    user_id: int = Field(description="Discord user ID for the account row and interaction checks.")
+    account_name: str = Field(
+        description="Stable Discord username stored in the economy account row."
+    )
+    display_name: str = Field(description="Guild-aware display name shown in game embeds.")
+    avatar_url: str = Field(
+        default="", description="Last-seen Discord avatar URL for the economy account row."
+    )
 
 
 class SystemIdentity(BaseModel):
@@ -77,9 +87,11 @@ class SystemIdentity(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    system_id: int
-    system_name: str
-    system_avatar_url: str = ""
+    system_id: int = Field(description="Discord user ID used for the casino system narrator.")
+    system_name: str = Field(description="Display name used for the casino system narrator.")
+    system_avatar_url: str = Field(
+        default="", description="Avatar URL used for the casino system narrator."
+    )
 
 
 class ParticipantPreparationResult(BaseModel):
@@ -87,8 +99,10 @@ class ParticipantPreparationResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    participant: GameParticipant | None
-    balance: int
+    participant: GameParticipant | None = Field(
+        description="Prepared game participant, or None when preparation failed."
+    )
+    balance: int = Field(description="Player balance observed during preparation.")
 
 
 class RefreshParticipantsResult(BaseModel):
@@ -96,8 +110,12 @@ class RefreshParticipantsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    participants: list[GameParticipant] = Field(default_factory=list)
-    dropped_names: list[str] = Field(default_factory=list)
+    participants: list[GameParticipant] = Field(
+        default_factory=list, description="Players still eligible to start the round."
+    )
+    dropped_names: list[str] = Field(
+        default_factory=list, description="Display names of players dropped during the re-check."
+    )
 
 
 class WagerSettlement(BaseModel):
@@ -116,13 +134,25 @@ class WagerSettlement(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    delta: int
-    payout: int
-    new_balance: int
-    casino_balance: int
-    base_delta: int | None = None
-    vip_bonus: int = 0
-    is_vip: bool = False
+    delta: int = Field(description="Net point change for the round.")
+    payout: int = Field(
+        description="Positive player credit from the round, excluding losses and pushes."
+    )
+    new_balance: int = Field(description="Player balance after applying the signed round delta.")
+    casino_balance: int = Field(
+        description="Casino ledger balance after applying the casino-side settlement."
+    )
+    base_delta: int | None = Field(
+        default=None,
+        description=(
+            "Net point change before any VIP payout bonus; None for legacy/manual test "
+            "settlements that do not carry bonus details."
+        ),
+    )
+    vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
+    is_vip: bool = Field(
+        default=False, description="Whether the VIP perk was active for this settlement."
+    )
 
 
 class BlackjackHandSettlement(BaseModel):
@@ -148,15 +178,24 @@ class BlackjackHandSettlement(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    cards: list[Card]
-    bet: int
-    outcome: SettleOutcome
-    delta: int
-    five_card_bonus: int = 0
-    five_card_twenty_one: bool = False
-    doubled: bool = False
-    surrendered: bool = False
-    is_split_hand: bool = False
+    cards: list[Card] = Field(description="Cards held by this sub-hand at settlement time.")
+    bet: int = Field(description="Effective wager for this hand (doubled bets land here as 2x).")
+    outcome: SettleOutcome = Field(description="Player-facing outcome label for this sub-hand.")
+    delta: int = Field(
+        description=(
+            "Dealer-paid signed point change for this single hand before VIP and "
+            "five-card bonuses."
+        )
+    )
+    five_card_bonus: int = Field(default=0, description="System-funded bonus for a five-card 21.")
+    five_card_twenty_one: bool = Field(
+        default=False, description="True when this hand made five or more cards totaling 21."
+    )
+    doubled: bool = Field(default=False, description="True if this hand was doubled.")
+    surrendered: bool = Field(default=False, description="True if this hand was surrendered.")
+    is_split_hand: bool = Field(
+        default=False, description="True if this hand came out of a Split."
+    )
 
 
 class BlackjackInsuranceSettlement(BaseModel):
@@ -171,9 +210,11 @@ class BlackjackInsuranceSettlement(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    bet: int
-    won: bool
-    delta: int
+    bet: int = Field(description="Insurance bet amount (half the original wager).")
+    won: bool = Field(description="True only when the dealer's hole-card peek was a Blackjack.")
+    delta: int = Field(
+        description="Signed point change for this side bet (+bet*2 on win, -bet on loss)."
+    )
 
 
 class BlackjackPlayerSettlement(WagerSettlement):
@@ -194,11 +235,24 @@ class BlackjackPlayerSettlement(WagerSettlement):
         five_card_bonus: Aggregate system-funded five-card 21 bonus.
     """
 
-    outcome: SettleOutcome
-    detail: str
-    hands: list[BlackjackHandSettlement] = Field(default_factory=list)
-    insurance: BlackjackInsuranceSettlement | None = None
-    five_card_bonus: int = 0
+    outcome: SettleOutcome = Field(
+        description=(
+            "Aggregate player-facing outcome. Single-hand results without insurance preserve "
+            "the hand outcome; insurance and multi-hand results collapse to win / lose / push "
+            "by net base delta."
+        )
+    )
+    detail: str = Field(description="Short game-state summary for the dealer AI prompt.")
+    hands: list[BlackjackHandSettlement] = Field(
+        default_factory=list, description="Per-hand settlements in display order."
+    )
+    insurance: BlackjackInsuranceSettlement | None = Field(
+        default=None,
+        description="Insurance side-bet result, or None when the player never took insurance.",
+    )
+    five_card_bonus: int = Field(
+        default=0, description="Aggregate system-funded five-card 21 bonus."
+    )
 
 
 class BlackjackPlayerResult(BaseModel):
@@ -211,8 +265,10 @@ class BlackjackPlayerResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    participant: GameParticipant
-    settlement: BlackjackPlayerSettlement
+    participant: GameParticipant = Field(description="Player identity and wager metadata.")
+    settlement: BlackjackPlayerSettlement = Field(
+        description="Database-backed result for that player's hand."
+    )
 
 
 class BlackjackDealerDecision(BaseModel):
@@ -220,8 +276,8 @@ class BlackjackDealerDecision(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    action: BlackjackDealerAction
-    reason: str
+    action: BlackjackDealerAction = Field(description="Dealer hit or stand decision.")
+    reason: str = Field(description="Rationale for the dealer's decision.")
 
 
 class BotPlayerBetDecision(BaseModel):
@@ -262,12 +318,12 @@ class BotFinancialContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    balance: int
-    total_earned: int
-    total_spent: int
-    daily_loss: int
-    daily_win: int
-    daily_net: int
+    balance: int = Field(description="Spendable wallet balance today.")
+    total_earned: int = Field(description="Lifetime gross points earned.")
+    total_spent: int = Field(description="Lifetime gross points spent.")
+    daily_loss: int = Field(description="Casino loss accrued during today's Taipei calendar day.")
+    daily_win: int = Field(description="Casino win accrued during today's Taipei calendar day.")
+    daily_net: int = Field(description="Net casino result during today's Taipei calendar day.")
 
 
 class OtherPlayerView(BaseModel):
@@ -275,10 +331,10 @@ class OtherPlayerView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    display_name: str
-    bet: int
-    hands: list[str]
-    is_finished: bool
+    display_name: str = Field(description="Guild-aware display name of the other player.")
+    bet: int = Field(description="That player's effective wager.")
+    hands: list[str] = Field(description="Human-readable summaries of that player's hands.")
+    is_finished: bool = Field(description="True when that player has finished their turn.")
 
 
 class DealerOutcome(BaseModel):
@@ -352,14 +408,22 @@ class BlackjackDealerStep(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    total_before: int
-    action: BlackjackDealerAction
-    reason: str
-    source: BlackjackDealerStepSource = "auto"
-    drawn_card: Card | None = None
-    total_after: int | None = None
-    fallback: bool = False
-    forced: bool = False
+    total_before: int = Field(description="Dealer hand total before this action.")
+    action: BlackjackDealerAction = Field(description="Dealer hit or stand action taken.")
+    reason: str = Field(description="Rationale recorded for this dealer action.")
+    source: BlackjackDealerStepSource = Field(
+        default="auto", description="Whether the action came from the auto engine or a guard."
+    )
+    drawn_card: Card | None = Field(
+        default=None, description="Card drawn on a hit, or None for a stand."
+    )
+    total_after: int | None = Field(
+        default=None, description="Dealer hand total after this action, when applicable."
+    )
+    fallback: bool = Field(
+        default=False, description="True when this step came from a fallback path."
+    )
+    forced: bool = Field(default=False, description="True when this step was forced by a guard.")
 
 
 class DragonGatePlayerResult(BaseModel):
@@ -384,11 +448,23 @@ class DragonGatePlayerResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    participant: GameParticipant
-    delta: int
-    final_balance: int
-    withdrawn: bool
-    refunded_to_pool: int = 0
+    participant: GameParticipant = Field(description="Player identity and ante metadata.")
+    delta: int = Field(
+        description=(
+            "Running win/loss for the table (ante excluded; ante was already pushed into "
+            "the jackpot when the round started)."
+        )
+    )
+    final_balance: int = Field(
+        description="Player balance after the last settlement event touching this account."
+    )
+    withdrawn: bool = Field(
+        description="True when the player left voluntarily before timeout or pool exhaustion."
+    )
+    refunded_to_pool: int = Field(
+        default=0,
+        description='Amount refunded into the jackpot under "逆贏不拿" when the player left while ahead.',
+    )
 
 
 __all__ = [

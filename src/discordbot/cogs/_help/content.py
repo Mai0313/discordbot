@@ -1,7 +1,7 @@
 """Localized help content and the data models that drive the help view."""
 
 from nextcord import Locale
-from pydantic import BaseModel, field_validator
+from pydantic import Field, BaseModel, field_validator
 
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
@@ -19,10 +19,14 @@ class HelpSection(BaseModel):
         detail: Full command list rendered in the category's detail embed.
     """
 
-    emoji: str
-    label: str
-    summary: str
-    detail: str
+    emoji: str = Field(description="Leading emoji for the select option and detail title.")
+    label: str = Field(
+        description="Category name used as the select option label and embed title."
+    )
+    summary: str = Field(
+        description="One-line index/select-option description (kept under 100 chars)."
+    )
+    detail: str = Field(description="Full command list rendered in the category's detail embed.")
 
 
 class HelpGuide(BaseModel):
@@ -36,11 +40,13 @@ class HelpGuide(BaseModel):
         sections: Category key to its content, keyed by `CATEGORY_ORDER`.
     """
 
-    title: str
-    intro: str
-    select_placeholder: str
-    overview_label: str
-    sections: dict[str, HelpSection]
+    title: str = Field(description="Overview embed title.")
+    intro: str = Field(description="Leading line on the overview embed.")
+    select_placeholder: str = Field(description="Placeholder shown on the category select menu.")
+    overview_label: str = Field(description="Select option label that returns to the overview.")
+    sections: dict[str, HelpSection] = Field(
+        description="Category key to its content, keyed by `CATEGORY_ORDER`."
+    )
 
     @field_validator("sections")
     @classmethod
