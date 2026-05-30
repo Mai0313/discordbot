@@ -361,7 +361,12 @@ async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() 
     )
 
     await insurance_ai.decide_bot_insurance(
-        dealer_up=None, hand_repr="A♠ 10♠", bet=100, finance=finance, other_players=[]
+        dealer_cards=[],
+        dealer_up=None,
+        hand_repr="A♠ 10♠",
+        bet=100,
+        finance=finance,
+        other_players=[],
     )
 
     insurance_input = insurance_client.responses.calls[0]["input"]
@@ -384,6 +389,7 @@ async def test_decide_bot_insurance_fallback_takes_on_known_dealer_blackjack() -
     )
 
     decision = await ai.decide_bot_insurance(
+        dealer_cards=[_card(rank="K"), _card(rank="A")],
         dealer_up=_card(rank="A"),
         hand_repr="A♠ 9♠",
         bet=100,

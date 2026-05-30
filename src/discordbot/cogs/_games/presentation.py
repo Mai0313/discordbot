@@ -39,6 +39,18 @@ NATURAL_RESULT_EMOJI = "✨"
 
 PlayerStatusKind = Literal["blackjack", "bust", "active", "stand", "waiting"]
 
+SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
+    "win": "本局玩家獲勝, 賭場已支付賠付",
+    "lose": "本局玩家未過關, 籌碼歸入賭場",
+    "push": "本局雙方點數一致, 押注全額退回",
+    "blackjack": "Blackjack 達成, 賭場依規則支付 1.5 倍賠付",
+    "five_card_win": "過五關未爆, 玩家獲得本局勝利",
+    "five_card_twenty_one": "過五關 21 點, 額外加碼支付",
+    "player_bust": "玩家點數超過 21, 本局結算為輸",
+    "dealer_bust": "莊家點數超過 21, 本局玩家獲勝",
+    "surrender": "玩家投降, 退回一半本金",
+}
+
 
 def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
     """Returns presentation values for a Blackjack outcome.

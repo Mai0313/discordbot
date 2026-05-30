@@ -8,10 +8,20 @@ from openai.types.shared_params.reasoning import Reasoning
 
 
 class ModelSettings(BaseModel):
-    """Model name and reasoning effort that should be used together."""
+    """Model name and reasoning effort that should be used together.
 
-    name: str
-    effort: ReasoningEffort = Field(default="none")
+    Attributes:
+        name: LiteLLM model string dispatched on the Responses API.
+        effort: Reasoning effort passed to the Responses API for this model.
+    """
+
+    name: str = Field(
+        description="LiteLLM model string dispatched on the Responses API.",
+        examples=["gemini-flash-latest", "gemini-3-pro-image-preview"],
+    )
+    effort: ReasoningEffort = Field(
+        default="none", description="Reasoning effort passed to the Responses API for this model."
+    )
 
     @property
     def reasoning(self) -> Reasoning:
@@ -57,7 +67,7 @@ class RuntimeModelCatalog(BaseModel):
         """Whether runtime model selection is in the peak-hour window.
 
         Returns:
-            True during UTC weekdays from 08:00 to 17:00, otherwise False.
+            True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
         """
         now = datetime.now(UTC)
         return now.weekday() < 5 and 8 <= now.hour < 17

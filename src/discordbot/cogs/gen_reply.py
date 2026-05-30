@@ -16,6 +16,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
@@ -67,8 +68,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Returns:
             A configured AsyncOpenAI client reused across reply requests.
         """
-        client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
-        return client
+        return create_litellm_client(config=self.config)
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
@@ -159,7 +159,7 @@ class ReplyGeneratorCogs(commands.Cog):
         video_model = self.runtime_models.video_model
         video = await self.client.videos.create(
             model=video_model.name,
-            prompt=user_prompt,
+            prompt=user_prompt or "請依照訊息內容生成一段影片。",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
         while video.status not in ("completed", "failed"):
@@ -193,13 +193,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 data_uris.append(image_url)
 
         if data_uris:
-            image_bytes_list: list[bytes] = []
+            tasks = []
             for uri in data_uris:
-                image_data = get_image_data(image_file=uri, use_b64=False)
-                image_bytes_list.append(image_data)
+                tasks.append(asyncio.to_thread(get_image_data, image_file=uri, use_b64=False))
+            image_bytes_list: list[bytes] = list(await asyncio.gather(*tasks))
             result = await self.client.images.edit(
                 image=image_bytes_list,
-                prompt=user_prompt,
+                prompt=user_prompt or "請依照附件內容進行編輯或優化。",
                 model=image_model.name,
                 n=1,
                 response_format="b64_json",
@@ -209,7 +209,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         else:
             result = await self.client.images.generate(
-                prompt=user_prompt,
+                prompt=user_prompt or "請生成一張圖片。",
                 model=image_model.name,
                 n=1,
                 response_format="b64_json",

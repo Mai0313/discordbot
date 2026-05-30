@@ -31,13 +31,13 @@ if TYPE_CHECKING:
 
 def _resolve_monster(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves a monster name to an Embed."""
-    monster = service.get_monster(name)
+    monster = service.get_monster(name=name)
     return create_monster_embed(monster=monster, translate=tr) if monster else None
 
 
 def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves an item name to an Embed showing its sources."""
-    monsters = service.get_monsters_by_drop(name)
+    monsters = service.get_monsters_by_drop(item_name=name)
     return (
         create_item_source_embed(item_name=name, monsters=monsters, translate=tr)
         if monsters
@@ -47,31 +47,31 @@ def _resolve_item(service: MapleStoryService, name: str, tr: TranslateFn) -> Emb
 
 def _resolve_equipment(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves an equipment name to an Embed."""
-    equip = service.get_equipment(name)
+    equip = service.get_equipment(name=name)
     return create_equipment_embed(equip=equip, translate=tr) if equip else None
 
 
 def _resolve_scroll(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves a scroll name to an Embed."""
-    match = next((s for s in service.search_scrolls_by_name(name) if s.name == name), None)
+    match = service.get_scroll(name=name)
     return create_scroll_embed(scroll=match, translate=tr) if match else None
 
 
 def _resolve_npc(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves an NPC name to an Embed."""
-    match = next((n for n in service.search_npcs_by_name(name) if n.name == name), None)
+    match = service.get_npc(name=name)
     return create_npc_embed(npc=match, translate=tr) if match else None
 
 
 def _resolve_quest(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves a quest name to an Embed."""
-    match = next((q for q in service.search_quests_by_name(name) if q.name == name), None)
+    match = service.get_quest(name=name)
     return create_quest_embed(quest=match, translate=tr) if match else None
 
 
 def _resolve_map(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves a map name to an Embed."""
-    match = next((m for m in service.search_maps_by_name(name) if m.name == name), None)
+    match = service.get_map(name=name)
     return create_map_embed(map_entry=match, translate=tr) if match else None
 
 

@@ -507,7 +507,7 @@ class ThreadsDownloader(BaseModel):
         """Fetches the HTML content of the given URL."""
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
         try:
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url=url, headers=headers, timeout=15)
             response.raise_for_status()
             return response.text
         except requests.RequestException as e:
@@ -661,12 +661,12 @@ class ThreadsDownloader(BaseModel):
         """
         try:
             headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"}
-            response = requests.get(url, headers=headers, stream=True, timeout=15)
+            response = requests.get(url=url, headers=headers, stream=True, timeout=15)
             response.raise_for_status()
 
             filepath = Path(self.output_folder) / filename
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            with Path.open(filepath, "wb") as f:
+            with filepath.open("wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)

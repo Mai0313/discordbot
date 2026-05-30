@@ -14,7 +14,6 @@ from nextcord.ui import View, Button
 from discordbot.typings.games import (
     Card,
     BotAction,
-    SettleOutcome,
     GameParticipant,
     OtherPlayerView,
     BlackjackDealerStep,
@@ -61,6 +60,7 @@ from discordbot.cogs._games.presentation import (
     IN_PROGRESS_COLOR,
     NATURAL_RESULT_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
+    SETTLEMENT_FALLBACK_LINES,
     card_line,
     metadata_line,
     player_result_title,
@@ -86,17 +86,6 @@ FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
 HintRefreshContext = tuple[int, str, int, int]
-BLACKJACK_SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
-    "win": "本局玩家獲勝, 賭場已支付賠付",
-    "lose": "本局玩家未過關, 籌碼歸入賭場",
-    "push": "本局雙方點數一致, 押注全額退回",
-    "blackjack": "Blackjack 達成, 賭場依規則支付 1.5 倍賠付",
-    "five_card_win": "過五關未爆, 玩家獲得本局勝利",
-    "five_card_twenty_one": "過五關 21 點, 額外加碼支付",
-    "player_bust": "玩家點數超過 21, 本局結算為輸",
-    "dealer_bust": "莊家點數超過 21, 本局玩家獲勝",
-    "surrender": "玩家投降, 退回一半本金",
-}
 
 
 def _blackjack_table_edit_kwargs(
@@ -1215,6 +1204,7 @@ class BlackjackView(View):
             insurance_cost=bot_player.participant.bet // 2,
         )
         decision = await bot_ai.decide_bot_insurance(
+            dealer_cards=list(self.round_state.dealer),
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,
@@ -1638,7 +1628,7 @@ class BlackjackView(View):
     def _fallback_settlement_line(self, results: list[BlackjackPlayerResult]) -> str:
         """Returns the immediate non-LLM narrator line for a final table."""
         if len(results) == 1:
-            return BLACKJACK_SETTLEMENT_FALLBACK_LINES[results[0].settlement.outcome]
+            return SETTLEMENT_FALLBACK_LINES[results[0].settlement.outcome]
         net_delta = sum(result.settlement.delta for result in results)
         if net_delta > 0:
             return "本桌整體玩家略勝, 賭場結算後支付差額"

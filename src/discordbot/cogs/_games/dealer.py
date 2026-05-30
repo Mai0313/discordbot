@@ -15,6 +15,7 @@ from discordbot.cogs._games.prompts import (
     SYSTEM_SETTLE_PROMPT,
     SYSTEM_TAUNT_BET_PROMPT,
 )
+from discordbot.cogs._games.presentation import SETTLEMENT_FALLBACK_LINES
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 NARRATOR_AI_TIMEOUT_SECONDS = 5.0
@@ -111,17 +112,6 @@ class SystemNarrator(BaseModel):
             "dealer_bust": "莊家爆牌",
             "surrender": "玩家投降, 退回一半本金",
         }
-        fallback_lines: dict[SettleOutcome, str] = {
-            "win": "本局玩家獲勝, 賭場已支付賠付",
-            "lose": "本局玩家未過關, 籌碼歸入賭場",
-            "push": "本局雙方點數一致, 押注全額退回",
-            "blackjack": "Blackjack 達成, 賭場依規則支付 1.5 倍賠付",
-            "five_card_win": "過五關未爆, 玩家獲得本局勝利",
-            "five_card_twenty_one": "過五關 21 點, 額外加碼支付",
-            "player_bust": "玩家點數超過 21, 本局結算為輸",
-            "dealer_bust": "莊家點數超過 21, 本局玩家獲勝",
-            "surrender": "玩家投降, 退回一半本金",
-        }
         user_text = (
             f"遊戲: {game_labels[game]}\n"
             f"玩家: {player_name}\n"
@@ -134,7 +124,7 @@ class SystemNarrator(BaseModel):
         return await self._ask(
             instructions=SYSTEM_SETTLE_PROMPT,
             user_text=user_text,
-            fallback=fallback_lines[outcome],
+            fallback=SETTLEMENT_FALLBACK_LINES[outcome],
             end_user_id=_SETTLE_END_USER_ID,
         )
 

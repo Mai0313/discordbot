@@ -117,4 +117,4 @@ def _pressure_label(pressure_bps: int) -> str:
     return "balanced"
 
 
-__all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "STOCK_NEWS_PROMPT", "StockNewsAI", "StockNewsDraft"]
+__all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "StockNewsAI", "StockNewsDraft"]

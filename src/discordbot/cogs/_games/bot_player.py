@@ -877,6 +877,7 @@ class BotPlayerAI(BaseModel):
     async def decide_bot_insurance(  # noqa: PLR0913 -- insurance prompt needs full table context.
         self,
         *,
+        dealer_cards: list[Card],
         dealer_up: Card | None,
         hand_repr: str,
         bet: int,
@@ -890,7 +891,7 @@ class BotPlayerAI(BaseModel):
         the known dealer hole card already makes a Blackjack, and declines
         otherwise.
         """
-        if insurance_context is not None and insurance_context.dealer_blackjack:
+        if fallback_insurance(dealer_cards=dealer_cards):
             fallback_decision = BotPlayerInsuranceDecision(
                 take_insurance=True, reason="暗牌成 BJ, 買保險打平"
             )

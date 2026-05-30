@@ -73,8 +73,9 @@ class VideoCogs(commands.Cog):
             downloader = VideoDownloader(output_folder="./data/downloads")
             result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
             with result:
-                file_size_mb = result.filename.stat().st_size / 1024 / 1024
-                if result.filename.stat().st_size <= _DISCORD_FILE_LIMIT_BYTES:
+                size_bytes = result.filename.stat().st_size
+                file_size_mb = size_bytes / 1024 / 1024
+                if size_bytes <= _DISCORD_FILE_LIMIT_BYTES:
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
@@ -94,8 +95,9 @@ class VideoCogs(commands.Cog):
                 )
                 low_result = await asyncio.to_thread(downloader.download, url=url, quality="low")
                 with low_result:
-                    file_size_mb = low_result.filename.stat().st_size / 1024 / 1024
-                    if low_result.filename.stat().st_size > _DISCORD_FILE_LIMIT_BYTES:
+                    low_size_bytes = low_result.filename.stat().st_size
+                    file_size_mb = low_size_bytes / 1024 / 1024
+                    if low_size_bytes > _DISCORD_FILE_LIMIT_BYTES:
                         await interaction.edit_original_message(
                             content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                         )
