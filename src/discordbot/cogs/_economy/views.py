@@ -29,7 +29,23 @@ from discordbot.cogs._economy.database import (
 from discordbot.cogs._economy.interactions import edit_response_embed, send_ephemeral_response
 
 
-class CentralBankLoanDecisionView(View):
+class LoanDecisionViewBase(View):
+    """Shared cleanup behavior for public loan-decision views."""
+
+    message: nextcord.Message | None
+
+    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
+        """Schedules the public request message for cleanup after a terminal state."""
+        message = self.message or getattr(interaction, "message", None)
+        if message is None:
+            return
+        user_name = None
+        if interaction is not None and interaction.user is not None:
+            user_name = interaction.user.name
+        schedule_public_message_delete(message=message, user_name=user_name)
+
+
+class CentralBankLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public central-bank loan request."""
 
     def __init__(
@@ -46,16 +62,6 @@ class CentralBankLoanDecisionView(View):
         self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
         self.message: nextcord.Message | None = None
-
-    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
-        """Schedules the public request message for cleanup after a terminal state."""
-        message = self.message or getattr(interaction, "message", None)
-        if message is None:
-            return
-        user_name = None
-        if interaction is not None and interaction.user is not None:
-            user_name = interaction.user.name
-        schedule_public_message_delete(message=message, user_name=user_name)
 
     async def on_timeout(self) -> None:
         """Rejects a stale central-bank request and cleans up its message."""
@@ -203,7 +209,7 @@ class CentralBankLoanDecisionView(View):
         self._schedule_cleanup(interaction=interaction)
 
 
-class CreditLoanDecisionView(View):
+class CreditLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public personal credit request."""
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
@@ -213,16 +219,6 @@ class CreditLoanDecisionView(View):
         self.lender_id = lender_id
         self.creator_id = creator_id
         self.message: nextcord.Message | None = None
-
-    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
-        """Schedules the public request message for cleanup after a terminal state."""
-        message = self.message or getattr(interaction, "message", None)
-        if message is None:
-            return
-        user_name = None
-        if interaction is not None and interaction.user is not None:
-            user_name = interaction.user.name
-        schedule_public_message_delete(message=message, user_name=user_name)
 
     async def on_timeout(self) -> None:
         """Rejects a stale personal credit request and cleans up its message."""

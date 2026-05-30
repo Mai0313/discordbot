@@ -298,6 +298,21 @@ class MapleStoryService(BaseModel):
             ]
         return list(self._scroll_cache[key])
 
+    def get_scroll(self, name: str) -> Scroll | None:
+        """Gets a specific scroll by exact name (English or Chinese).
+
+        Args:
+            name: The exact name of the scroll.
+
+        Returns:
+            The Scroll object if found, None otherwise.
+        """
+        name_lower = name.lower()
+        for s in self._scrolls:
+            if s.name.lower() == name_lower or s.name_zh.lower() == name_lower:
+                return s
+        return None
+
     # ── NPC searches ────────────────────────────────────────────────
 
     def search_npcs_by_name(self, query: str) -> list[NPC]:
@@ -315,6 +330,21 @@ class MapleStoryService(BaseModel):
                 n for n in self._npcs if key in n.name.lower() or key in n.name_zh.lower()
             ]
         return list(self._npc_cache[key])
+
+    def get_npc(self, name: str) -> NPC | None:
+        """Gets a specific NPC by exact name (English or Chinese).
+
+        Args:
+            name: The exact name of the NPC.
+
+        Returns:
+            The NPC object if found, None otherwise.
+        """
+        name_lower = name.lower()
+        for n in self._npcs:
+            if n.name.lower() == name_lower or n.name_zh.lower() == name_lower:
+                return n
+        return None
 
     # ── Quest searches ──────────────────────────────────────────────
 
@@ -334,6 +364,21 @@ class MapleStoryService(BaseModel):
             ]
         return list(self._quest_cache[key])
 
+    def get_quest(self, name: str) -> Quest | None:
+        """Gets a specific quest by exact name (English or Chinese).
+
+        Args:
+            name: The exact name of the quest.
+
+        Returns:
+            The Quest object if found, None otherwise.
+        """
+        name_lower = name.lower()
+        for q in self._quests:
+            if q.name.lower() == name_lower or q.name_zh.lower() == name_lower:
+                return q
+        return None
+
     # ── Map searches ────────────────────────────────────────────────
 
     def search_maps_by_name(self, query: str) -> list[MapEntry]:
@@ -351,6 +396,21 @@ class MapleStoryService(BaseModel):
                 m for m in self._maps if key in m.name.lower() or key in m.name_zh.lower()
             ]
         return list(self._map_cache[key])
+
+    def get_map(self, name: str) -> MapEntry | None:
+        """Gets a specific map by exact name (English or Chinese).
+
+        Args:
+            name: The exact name of the map.
+
+        Returns:
+            The MapEntry object if found, None otherwise.
+        """
+        name_lower = name.lower()
+        for m in self._maps:
+            if m.name.lower() == name_lower or m.name_zh.lower() == name_lower:
+                return m
+        return None
 
     # ── Cross-type item search ──────────────────────────────────────
 

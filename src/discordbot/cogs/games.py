@@ -10,6 +10,7 @@ import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.games import (
     SystemIdentity,
@@ -70,8 +71,7 @@ class GamesCogs(commands.Cog):
     @cached_property
     def client(self) -> AsyncOpenAI:
         """The cached OpenAI-compatible client used for the system narrator and bot AI."""
-        client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
-        return client
+        return create_litellm_client(config=self.config)
 
     @cached_property
     def narrator(self) -> SystemNarrator:

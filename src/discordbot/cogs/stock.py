@@ -3,13 +3,13 @@
 import asyncio
 from functools import cached_property
 
-from openai import AsyncOpenAI
 import logfire
 import nextcord
 from nextcord import Locale, Interaction
 from pydantic import ValidationError
 from nextcord.ext import commands
 
+from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._stock.news import StockNewsAI
@@ -42,7 +42,7 @@ class StockCogs(commands.Cog):
         except ValidationError:
             return None
         return StockNewsAI(
-            client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
+            client=create_litellm_client(config=config),
             model=self.runtime_models.fast_model,
         )
 

@@ -16,6 +16,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
@@ -67,8 +68,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Returns:
             A configured AsyncOpenAI client reused across reply requests.
         """
-        client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
-        return client
+        return create_litellm_client(config=self.config)
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
