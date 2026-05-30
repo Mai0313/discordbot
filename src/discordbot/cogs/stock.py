@@ -42,8 +42,7 @@ class StockCogs(commands.Cog):
         except ValidationError:
             return None
         return StockNewsAI(
-            client=create_litellm_client(config=config),
-            model=self.runtime_models.fast_model,
+            client=create_litellm_client(config=config), model=self.runtime_models.fast_model
         )
 
     @nextcord.slash_command(

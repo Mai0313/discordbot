@@ -60,13 +60,13 @@ from discordbot.cogs._games.presentation import (
     IN_PROGRESS_COLOR,
     NATURAL_RESULT_EMOJI,
     LOBBY_PLAYERS_FIELD_EMOJI,
+    SETTLEMENT_FALLBACK_LINES,
     card_line,
     metadata_line,
     player_result_title,
     settlement_metadata,
     lobby_participant_line,
     build_system_talk_embed,
-    SETTLEMENT_FALLBACK_LINES,
     blackjack_outcome_presentation,
 )
 from discordbot.cogs._economy.presentation import amount_code, currency_text
