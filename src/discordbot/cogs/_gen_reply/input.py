@@ -89,7 +89,7 @@ class MessageInputBuilder(BaseModel):
                 b64_data = await asyncio.to_thread(get_image_data, image_file=source)
                 data_uri = convert_base64_to_data_uri(base64_image=b64_data)
                 return ResponseInputImageParam(
-                    image_url=data_uri, detail="low", type="input_image"
+                    image_url=data_uri, detail="auto", type="input_image"
                 )
             if isinstance(source, Attachment):
                 content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
@@ -98,7 +98,7 @@ class MessageInputBuilder(BaseModel):
             file_bytes = await source.read()
             b64_data = base64.b64encode(file_bytes).decode("utf-8")
             data_uri = f"data:{content_type};base64,{b64_data}"
-            return ResponseInputImageParam(image_url=data_uri, detail="low", type="input_image")
+            return ResponseInputImageParam(image_url=data_uri, detail="auto", type="input_image")
         except Exception:
             logfire.warn("Failed to convert this image")
             return None
