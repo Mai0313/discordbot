@@ -2958,7 +2958,7 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
     now = _database_now()
     async with open_session() as session:
         # Acquire SQLite's write lock before reading capacity or proposal state.
-        await session.execute(statement=text(text="BEGIN IMMEDIATE"))
+        await session.execute(statement=text("BEGIN IMMEDIATE"))
         result = await session.execute(
             statement=select(LoanProposal).where(
                 LoanProposal.id == proposal_id, LoanProposal.status == LoanProposalStatus.PENDING

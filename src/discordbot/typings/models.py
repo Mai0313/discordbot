@@ -57,7 +57,7 @@ class RuntimeModelCatalog(BaseModel):
         """Whether runtime model selection is in the peak-hour window.
 
         Returns:
-            True during UTC weekdays from 08:00 to 17:00, otherwise False.
+            True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
         """
         now = datetime.now(UTC)
         return now.weekday() < 5 and 8 <= now.hour < 17

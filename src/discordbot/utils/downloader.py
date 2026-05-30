@@ -198,7 +198,7 @@ class VideoDownloader(BaseModel):
 
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
         with YoutubeDL(params=params) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url=url, download=True)
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
