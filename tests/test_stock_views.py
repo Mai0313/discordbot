@@ -28,11 +28,7 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
-from discordbot.cogs._stock.chart import (
-    build_price_chart,
-    _render_price_chart,
-    invalidate_stock_chart_cache,
-)
+from discordbot.cogs._stock.chart import build_price_chart, _render_price_chart
 from discordbot.cogs._stock.views import (
     StockActionView,
     StockDetailView,
@@ -48,7 +44,6 @@ from discordbot.cogs._stock.presentation import (
     build_market_board_image,
     build_stock_detail_embed,
     _build_market_board_image_cached,
-    invalidate_stock_market_board_cache,
 )
 
 BCAT_SYMBOL = "BCAT"
@@ -431,7 +426,7 @@ def test_stock_market_board_handles_large_market_caps() -> None:
 
 def test_stock_market_board_image_cache_key_changes_with_quote_digest() -> None:
     """Market board renders are cached by immutable quote fields."""
-    invalidate_stock_market_board_cache()
+    _build_market_board_image_cached.cache_clear()
     quote = _quote()
 
     build_market_board_image(quotes=(quote,))
@@ -450,7 +445,7 @@ def test_stock_market_board_image_cache_key_changes_with_quote_digest() -> None:
 
 def test_stock_chart_image_cache_key_changes_with_ticks() -> None:
     """7D chart renders are cached by immutable tick rows."""
-    invalidate_stock_chart_cache()
+    _render_price_chart.cache_clear()
     first_ticks = (
         StockPriceTickView(
             symbol=BCAT_SYMBOL, price_cents=10_000, created_at=datetime(2026, 1, 1)

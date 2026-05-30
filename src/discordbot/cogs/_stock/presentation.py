@@ -145,11 +145,6 @@ def build_market_board_image(
     )
 
 
-def invalidate_stock_market_board_cache() -> None:
-    """Clears process-local market board images."""
-    _build_market_board_image_cached.cache_clear()
-
-
 def _market_board_spec(
     quotes: tuple[StockMarketQuote, ...], page_index: int, page_size: int
 ) -> _MarketBoardSpec:
@@ -172,6 +167,8 @@ def _market_board_spec(
     )
 
 
+# The cache key is the digest of every pixel-affecting quote field, so any quote
+# change yields a new key and a fresh render; stale entries are never served.
 @lru_cache(maxsize=128)
 def _build_market_board_image_cached(spec: _MarketBoardSpec) -> bytes:
     """Renders the market list as a fixed-layout PNG board."""

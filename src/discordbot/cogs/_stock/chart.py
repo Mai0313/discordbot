@@ -23,11 +23,8 @@ def build_price_chart(ticks: tuple[StockPriceTickView, ...]) -> bytes:
     return _render_price_chart(ticks=ticks)
 
 
-def invalidate_stock_chart_cache() -> None:
-    """Clears process-local stock chart images."""
-    _render_price_chart.cache_clear()
-
-
+# The cache key is the immutable tick tuple, so any quote/tick change yields a new
+# key and a fresh render; stale entries can never be served and need no invalidation.
 @lru_cache(maxsize=128)
 def _render_price_chart(ticks: tuple[StockPriceTickView, ...]) -> bytes:
     """Renders a simple non-empty 7D price chart PNG."""
