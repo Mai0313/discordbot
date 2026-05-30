@@ -1,7 +1,6 @@
 """Casino-style games (`/games blackjack`, `/games dragon_gate`) wagering economy points."""
 
 from random import SystemRandom
-import asyncio
 from functools import partial, cached_property
 from collections.abc import Callable
 
@@ -120,15 +119,14 @@ class GamesCogs(commands.Cog):
         bot_user = self.bot.user
         if bot_user is None:
             return None
-        account, daily_stats = await asyncio.gather(
-            get_account(user_id=bot_user.id), get_casino_daily_stats(user_id=bot_user.id)
-        )
+        account = await get_account(user_id=bot_user.id)
         balance = account.balance if account is not None else 0
         if balance <= 0:
             logfire.info(
                 "Bot player skipped Blackjack lobby; wallet is empty", user_id=bot_user.id
             )
             return None
+        daily_stats = await get_casino_daily_stats(user_id=bot_user.id)
         finance = BotFinancialContext(
             balance=balance,
             total_earned=account.total_earned if account is not None else 0,
