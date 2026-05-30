@@ -133,7 +133,7 @@ def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
     """Formats compact dealer actions for the final embed."""
     if not steps:
         return ""
-    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "guard"}
+    source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "防呆"}
     parts: list[str] = []
     for step in steps:
         part = f"{source_labels[step.source]}: {step.total_before} {step.action}"
@@ -561,6 +561,11 @@ def build_final_embeds(  # noqa: PLR0913 -- final render mirrors in-progress sig
     }
     for player in round_state.players:
         result = results_by_user.get(player.participant.user_id)
+        if result is None:
+            logfire.error(
+                "Blackjack player has no settlement result at final embed build",
+                user_id=player.participant.user_id,
+            )
         settlement = result.settlement if result is not None else None
         reason = (
             bot_reasons.get(player.participant.user_id)
@@ -718,6 +723,9 @@ class BlackjackView(View):
         # Last LLM-decided reason per user_id (bot only). Surfaced in the seat
         # embed so observers can see *why* the bot picked an action / insurance.
         self._bot_reasons: dict[int, str] = {}
+        # The bot wallet is stable until settlement, so its finance snapshot is
+        # built once per round and reused across the bot's turns.
+        self._bot_finance_context: BotFinancialContext | None = None
         self._action_buttons: dict[str, Button] = {
             "bj:hit": cast("Button", self.hit),
             "bj:stand": cast("Button", self.stand),
@@ -1131,10 +1139,18 @@ class BlackjackView(View):
         return None
 
     async def _build_bot_finance_context(self, *, user_id: int) -> BotFinancialContext:
-        """Snapshots the bot's wallet + daily casino counters for AI context."""
-        account = await get_account(user_id=user_id)
-        daily_stats = await get_casino_daily_stats(user_id=user_id)
-        return BotFinancialContext(
+        """Snapshots the bot's wallet + daily casino counters for AI context.
+
+        Cached for the round: the bot's wallet only changes at settlement, so
+        the snapshot is reused across the bot's turns instead of re-reading the
+        economy DB on every action.
+        """
+        if self._bot_finance_context is not None:
+            return self._bot_finance_context
+        account, daily_stats = await asyncio.gather(
+            get_account(user_id=user_id), get_casino_daily_stats(user_id=user_id)
+        )
+        self._bot_finance_context = BotFinancialContext(
             balance=account.balance if account is not None else 0,
             total_earned=account.total_earned if account is not None else 0,
             total_spent=account.total_spent if account is not None else 0,
@@ -1142,6 +1158,7 @@ class BlackjackView(View):
             daily_win=daily_stats.daily_win,
             daily_net=daily_stats.daily_net,
         )
+        return self._bot_finance_context
 
     def _build_other_players_views(self, *, exclude_user_id: int) -> list[OtherPlayerView]:
         """Returns visible state for every non-bot player at the table."""

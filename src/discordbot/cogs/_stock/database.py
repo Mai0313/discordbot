@@ -41,17 +41,16 @@ from discordbot.typings.stock import (
     StockParticipantPositionView,
     StockReconciliationOperation,
 )
+from discordbot.utils.currency import cash_ceil, cash_floor
+from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import WalletDeltaLeg
 from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs._stock.market import (
-    TAIWAN_TIMEZONE,
     NEWS_SENTIMENT_DECAY_BPS,
     NEWS_SENTIMENT_LIMIT_BPS,
     NEWS_SENTIMENT_DECAY_SECONDS,
     as_taipei,
-    cash_ceil,
     clamp_bps,
-    cash_floor,
     format_price,
     tick_boundary,
     decay_news_sentiment,
@@ -65,10 +64,8 @@ from discordbot.cogs._stock.prompts import (
     STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
 )
-from discordbot.utils.stored_integer import (
-    StoredInteger,
-    configure_sqlite_stored_integer_functions,
-)
+from discordbot.utils.sqlite_config import configure_sqlite_connection
+from discordbot.utils.stored_integer import StoredInteger
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
@@ -300,12 +297,7 @@ class _StockOrderFlowSummary(BaseModel):
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     """Configures SQLite for stock storage."""
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
-    cursor.close()
+    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
@@ -331,11 +323,6 @@ def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
         event.listen(
             target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
         )
-
-
-def _database_now() -> datetime:
-    """Returns the timestamp used for stock rows."""
-    return datetime.now(tz=TAIWAN_TIMEZONE)
 
 
 def _current_schema_lock() -> asyncio.Lock:
@@ -2632,36 +2619,37 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
     await _ensure_schema()
     async with open_stock_session() as session:
         result = await session.execute(
-            statement=select(StockOperation)
+            statement=select(StockOperation, StockTradeLeg)
+            .outerjoin(StockTradeLeg, StockTradeLeg.operation_id == StockOperation.operation_id)
             .where(StockOperation.status.notin_(_FINAL_OPERATION_STATUSES))
-            .order_by(StockOperation.created_at.asc())
+            .order_by(StockOperation.created_at.asc(), StockTradeLeg.leg_order.asc())
         )
-        operations = list(result.scalars())
-        output: list[StockReconciliationOperation] = []
-        for operation in operations:
-            leg_result = await session.execute(
-                statement=select(StockTradeLeg)
-                .where(StockTradeLeg.operation_id == operation.operation_id)
-                .order_by(StockTradeLeg.leg_order.asc())
+        operations: list[StockOperation] = []
+        legs_by_operation: dict[str, list[StockTradeLeg]] = {}
+        for operation, leg in result.all():
+            if operation.operation_id not in legs_by_operation:
+                operations.append(operation)
+                legs_by_operation[operation.operation_id] = []
+            if leg is not None:
+                legs_by_operation[operation.operation_id].append(leg)
+        return tuple(
+            StockReconciliationOperation(
+                operation_id=operation.operation_id,
+                status=StockOperationStatus(operation.status),
+                user_id=operation.user_id,
+                user_name=operation.user_name or str(operation.user_id),
+                symbol=operation.symbol,
+                requested_action=StockAction(operation.requested_action),
+                failure_reason=operation.failure_reason,
+                created_at=operation.created_at,
+                updated_at=operation.updated_at,
+                legs=tuple(
+                    _trade_leg_view(leg=leg, user_name=operation.user_name)
+                    for leg in legs_by_operation[operation.operation_id]
+                ),
             )
-            output.append(
-                StockReconciliationOperation(
-                    operation_id=operation.operation_id,
-                    status=StockOperationStatus(operation.status),
-                    user_id=operation.user_id,
-                    user_name=operation.user_name or str(operation.user_id),
-                    symbol=operation.symbol,
-                    requested_action=StockAction(operation.requested_action),
-                    failure_reason=operation.failure_reason,
-                    created_at=operation.created_at,
-                    updated_at=operation.updated_at,
-                    legs=tuple(
-                        _trade_leg_view(leg=leg, user_name=operation.user_name)
-                        for leg in leg_result.scalars()
-                    ),
-                )
-            )
-        return tuple(output)
+            for operation in operations
+        )
 
 
 __all__ = [

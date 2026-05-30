@@ -4,6 +4,7 @@ from nextcord import Embed
 from pydantic import BaseModel, ConfigDict
 
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
+from discordbot.typings.colors import TRANSFER_COLOR
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
@@ -41,7 +42,6 @@ from discordbot.cogs._economy.presentation import (
 BALANCE_COLOR = 0x57F287
 LEADERBOARD_COLOR = 0xFEE75C
 LOSS_LEADERBOARD_COLOR = 0xE67E22
-TRANSFER_COLOR = 0x5865F2
 ADMIN_COLOR = 0x3498DB
 CASINO_COLOR = 0xEB459E
 BORROW_COLOR = 0xF1C40F

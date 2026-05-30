@@ -36,7 +36,7 @@ from discordbot.cogs._games.prompts import (
     BOT_PLAYER_ACTION_PROMPT,
     BOT_PLAYER_INSURANCE_PROMPT,
 )
-from discordbot.cogs._games.blackjack import is_blackjack
+from discordbot.cogs._games.blackjack import is_blackjack, is_soft_total, _card_blackjack_value
 from discordbot.cogs._games.blackjack_ev import compute_action_evs
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
@@ -192,28 +192,10 @@ def _dealer_up_value(*, up_card: Card | None) -> int:
     return int(up_card.rank)
 
 
-def _card_blackjack_value(*, card: Card) -> int:
-    """Returns the Blackjack value used by fallback strategy tables."""
-    if card.rank == "A":
-        return 11
-    if card.rank in ("J", "Q", "K"):
-        return 10
-    return int(card.rank)
-
-
 def _hand_total_and_soft(*, cards: list[Card]) -> tuple[int, bool]:
     """Returns the best total and whether at least one Ace remains high."""
-    total = 0
-    aces = 0
-    for card in cards:
-        if card.rank == "A":
-            aces += 1
-        total += _card_blackjack_value(card=card)
-    aces_high = aces
-    while total > 21 and aces_high > 0:
-        total -= 10
-        aces_high -= 1
-    return total, aces_high > 0
+    is_soft, total = is_soft_total(cards=cards)
+    return total, is_soft
 
 
 def _pair_value(*, cards: list[Card]) -> int | None:

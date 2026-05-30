@@ -98,7 +98,11 @@ class ResponseStreamer(BaseModel):
         used_web_search = False
 
         async for response in self.responses:
-            if response.type == "response.completed":
+            if response.type in {"response.created", "response.completed"}:
+                # Capture the model on `created` too so the usage footer never
+                # falls back to an empty model name (and $0.00000000) when a
+                # stream ends without a clean `completed` event. Usage only
+                # arrives on `completed`.
                 model_name = response.response.model
                 if response.response.usage:
                     input_tokens = response.response.usage.input_tokens

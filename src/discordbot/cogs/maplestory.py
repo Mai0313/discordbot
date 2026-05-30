@@ -62,6 +62,13 @@ class MapleStoryCogs(commands.Cog):
         """Translates a game string based on category and name."""
         return self.service.translate(category=category, name=name)
 
+    def _item_select_label(self, item: str) -> str:
+        """Returns the item search option label, translating equipment once."""
+        equipment_label = self._translate(category="equipment", name=item)
+        if equipment_label != item:
+            return equipment_label
+        return self._translate(category="misc", name=item)
+
     async def _send_error(self, interaction: Interaction) -> None:
         """Sends a generic error message to the user."""
         embed = Embed(
@@ -494,10 +501,8 @@ class MapleStoryCogs(commands.Cog):
         view = MapleDropSearchView(service=self.service, search_type="item", query=name)
         view.set_options([
             SelectOption(
-                label=self._translate(category="equipment", name=item)
-                if self._translate(category="equipment", name=item) != item
-                else self._translate(category="misc", name=item),
-                description=self.service.get_item_type(item),
+                label=self._item_select_label(item=item),
+                description=self.service.get_item_type(item_name=item),
                 value=item,
             )
             for item in items_found
@@ -538,4 +543,4 @@ def setup(bot: commands.Bot) -> None:
     Args:
         bot: The Discord bot instance.
     """
-    bot.add_cog(MapleStoryCogs(bot))
+    bot.add_cog(MapleStoryCogs(bot), override=True)

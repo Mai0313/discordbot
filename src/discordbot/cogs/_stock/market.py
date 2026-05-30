@@ -1,25 +1,15 @@
 """Pure market helpers for the simulated stock market."""
 
 from random import Random
-from datetime import UTC, datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 from discordbot.typings.stock import STOCK_TICK_SECONDS, MAX_TICKS_PER_INTERACTION
+from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei
 
-TAIWAN_TIMEZONE = timezone(offset=timedelta(hours=8), name="Asia/Taipei")
 NEWS_SENTIMENT_DECAY_BPS = 20
 NEWS_SENTIMENT_DECAY_SECONDS = 60 * 60
 NEWS_SENTIMENT_LIMIT_BPS = 300
 PRESSURE_LIMIT_BPS = 90
-
-
-def cash_ceil(cents: int) -> int:
-    """Converts cents to integer cash with a ceiling."""
-    return (cents + 99) // 100
-
-
-def cash_floor(cents: int) -> int:
-    """Converts cents to integer cash with a floor."""
-    return cents // 100
 
 
 def format_price(price_cents: int) -> str:
@@ -30,13 +20,6 @@ def format_price(price_cents: int) -> str:
 def clamp_bps(value: int, lower: int, upper: int) -> int:
     """Clamps basis-point values."""
     return max(lower, min(upper, value))
-
-
-def as_taipei(dt: datetime) -> datetime:
-    """Returns `dt` interpreted in Asia/Taipei."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=TAIWAN_TIMEZONE)
-    return dt.astimezone(tz=TAIWAN_TIMEZONE)
 
 
 def tick_boundary(dt: datetime) -> datetime:

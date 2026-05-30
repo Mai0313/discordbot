@@ -9,12 +9,8 @@ import contextlib
 from urllib.parse import urlparse
 from collections.abc import Iterator
 
-from rich import get_console
 from pydantic import Field, BaseModel, computed_field
 import requests
-
-console = get_console()
-
 
 # ---------------------------------------------------------------------------
 # URL parsing
@@ -802,12 +798,3 @@ class ThreadsDownloader(BaseModel):
                 self._build_output(post=reply, url=self._post_url(post=reply), download=False)
             )
         return results
-
-
-if __name__ == "__main__":
-    test_url = "https://www.threads.com/@cyj308/post/DVn6dqzjzQf?hl=zh-tw"
-    downloader = ThreadsDownloader()
-    with downloader.parse(url=test_url) as results:
-        console.print(results)
-    console.rule(title="list_all")
-    console.print(downloader.list_all(url=test_url))

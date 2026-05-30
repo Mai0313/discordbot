@@ -276,7 +276,9 @@ async def settle_blackjack_player(
     The aggregate casino-paid delta (sum of per-hand deltas plus insurance) is
     passed through the existing VIP bonus rule once at the player level.
     Five-card 21 adds a system-funded bonus to the player-side delta without
-    moving the casino ledger.
+    moving the casino ledger. The VIP bonus credited is the larger of the 0.5x
+    on the dealer-paid win and the 0.5x on the five-card 21 bonus (a max, not a
+    sum).
 
     Args:
         round_state: Round providing the dealer cards, RNG, and peek state.

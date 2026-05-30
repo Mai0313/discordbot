@@ -85,6 +85,7 @@ class EconomyCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+        self.economy_config = EconomyConfig()
 
     @nextcord.slash_command(
         name="admin",
@@ -920,7 +921,7 @@ class EconomyCogs(commands.Cog):
                 bot=self.bot,
                 proposal_id=proposal.proposal_id,
                 creator_id=user.id,
-                allow_self_approval=EconomyConfig().allow_central_bank_self_approval,
+                allow_self_approval=self.economy_config.allow_central_bank_self_approval,
             ),
         )
 

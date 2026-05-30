@@ -35,6 +35,13 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
 
 
+def _system_separator_message(text: str) -> EasyInputMessageParam:
+    """Builds a system-role separator marker message for the Responses API input."""
+    return EasyInputMessageParam(
+        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
+    )
+
+
 class ReplyGeneratorCogs(commands.Cog):
     """Generates AI replies for Discord messages.
 
@@ -89,14 +96,8 @@ class ReplyGeneratorCogs(commands.Cog):
             processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
 
             messages.append(
-                EasyInputMessageParam(
-                    role="system",
-                    content=[
-                        ResponseInputTextParam(
-                            text="==== Chat History that might be helpful for answering. ====",
-                            type="input_text",
-                        )
-                    ],
+                _system_separator_message(
+                    text="==== Chat History that might be helpful for answering. ===="
                 )
             )
             messages.extend(processed)
@@ -131,18 +132,12 @@ class ReplyGeneratorCogs(commands.Cog):
         messages: list[EasyInputMessageParam] = []
         for ref, processed_ref in zip(reversed(chain), reversed(processed), strict=True):
             messages.append(
-                EasyInputMessageParam(
-                    role="system",
-                    content=[
-                        ResponseInputTextParam(
-                            text=(
-                                f"==== Reference Message from {ref.author.display_name} "
-                                f"({ref.author.name}) [id: {ref.author.id}] that might be helpful "
-                                "for answering. ===="
-                            ),
-                            type="input_text",
-                        )
-                    ],
+                _system_separator_message(
+                    text=(
+                        f"==== Reference Message from {ref.author.display_name} "
+                        f"({ref.author.name}) [id: {ref.author.id}] that might be helpful "
+                        "for answering. ===="
+                    )
                 )
             )
             messages.append(processed_ref)
@@ -151,14 +146,8 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_current_message(self, message: Message) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
         messages: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(
-                role="system",
-                content=[
-                    ResponseInputTextParam(
-                        text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ====",
-                        type="input_text",
-                    )
-                ],
+            _system_separator_message(
+                text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ===="
             )
         ]
         current_msg = await self.input_builder.process_single_message(message=message)
