@@ -1215,6 +1215,7 @@ class BlackjackView(View):
             insurance_cost=bot_player.participant.bet // 2,
         )
         decision = await bot_ai.decide_bot_insurance(
+            dealer_cards=list(self.round_state.dealer),
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,

@@ -500,6 +500,10 @@ def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService
     assert service.search_quests_by_name(query="help")
     assert service.search_maps_by_name(query="hunting")
     assert service.search_items_by_name(query="Bubble") == ["Blue Bubble", "Slime Bubble"]
+    # Non-equipment drops must resolve through their own translation category.
+    assert service.search_items_by_name(query="紅色藥水") == ["Red Potion"]
+    assert service.search_items_by_name(query="手套攻擊卷軸") == ["Scroll for Gloves for ATT"]
+    assert service.search_items_by_name(query="綠水靈泡泡") == ["Slime Bubble"]
     assert service.get_item_type(item_name="Wooden Sword") == "裝備"
     assert service.get_item_type(item_name="Scroll for Gloves for ATT") == "捲軸"
     assert service.get_item_type(item_name="Red Potion") == "消耗品"

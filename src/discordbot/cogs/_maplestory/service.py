@@ -368,11 +368,14 @@ class MapleStoryService(BaseModel):
             items_found: set[str] = set()
             for monster in self._monsters:
                 for drop in monster.drops.all_items:
-                    zh = (
-                        self.translate(category="equipment", name=drop.name)
-                        or self.translate(category="scrolls", name=drop.name)
-                        or self.translate(category="useable", name=drop.name)
-                        or self.translate(category="misc", name=drop.name)
+                    zh = next(
+                        (
+                            translated
+                            for category in ("equipment", "scrolls", "useable", "misc")
+                            if (translated := self.translate(category=category, name=drop.name))
+                            != drop.name
+                        ),
+                        drop.name,
                     )
                     if key in drop.name.lower() or (zh and key in zh.lower()):
                         items_found.add(drop.name)
