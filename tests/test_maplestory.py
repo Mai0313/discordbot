@@ -705,17 +705,18 @@ async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -
 
 def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies setup registers the MapleStory cog synchronously."""
-    added: list[MapleStoryCogs] = []
+    added: list[tuple[MapleStoryCogs, bool | None]] = []
     monkeypatch.setattr(
         "discordbot.cogs.maplestory.MapleStoryService.from_directory",
         lambda data_dir: MapleStoryService(),
     )
 
     def record_cog(cog: MapleStoryCogs, override: bool | None = None) -> None:
-        added.append(cog)
+        added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
 
     maplestory.setup(bot=bot)
 
-    assert isinstance(added[0], MapleStoryCogs)
+    assert isinstance(added[0][0], MapleStoryCogs)
+    assert added[0][1] is True
