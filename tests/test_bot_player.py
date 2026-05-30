@@ -132,10 +132,21 @@ def test_fallback_action_without_shoe_uses_plain_strategy() -> None:
     assert action == "surrender"
 
 
-def test_fallback_insurance_is_hole_card_aware() -> None:
-    """Insurance fallback takes only when the known hole card makes a dealer Blackjack."""
-    assert fallback_insurance(dealer_cards=[_card(rank="K"), _card(rank="A")]) is True
-    assert fallback_insurance(dealer_cards=[_card(rank="9"), _card(rank="A")]) is False
+def test_fallback_insurance_is_count_based() -> None:
+    """Insurance fallback takes only when the remaining-shoe ten density makes it +EV."""
+    take_context = build_bot_insurance_context(
+        dealer_up=_card(rank="A"),
+        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
+        insurance_cost=50,
+    )
+    decline_context = build_bot_insurance_context(
+        dealer_up=_card(rank="A"),
+        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
+        insurance_cost=50,
+    )
+
+    assert fallback_insurance(insurance_context=take_context) is True
+    assert fallback_insurance(insurance_context=decline_context) is False
     assert fallback_insurance() is False
 
 
@@ -163,18 +174,19 @@ def test_bot_player_prompts_use_english_strategy_with_traditional_chinese_reason
     assert "Decision priority:" in BOT_PLAYER_ACTION_PROMPT
     assert "Traditional Chinese" in BOT_PLAYER_ACTION_PROMPT
     assert "expected_value" in BOT_PLAYER_ACTION_PROMPT
-    assert "hole_card_aware_recommendation" in BOT_PLAYER_ACTION_PROMPT
+    assert "recommended_action" in BOT_PLAYER_ACTION_PROMPT
+    assert "ten_value_probability" in BOT_PLAYER_INSURANCE_PROMPT
     assert "insurance_recommendation" in BOT_PLAYER_INSURANCE_PROMPT
     assert "Do not chase losses" in BOT_PLAYER_BET_PROMPT
 
 
-def test_action_context_includes_true_counts_and_hole_without_future_order() -> None:
-    """Action context exposes rank counts and dealer hole card, not ordered shoe data."""
+def test_action_context_exposes_up_card_only_without_hole() -> None:
+    """Action context exposes rank counts and the dealer up-card, never the hole."""
     context = build_bot_action_context(
         hand_cards=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5")],
         dealer_cards=[_card(rank="K"), _card(rank="A")],
         dealer_up=_card(rank="A"),
-        shoe=[_card(rank="10"), _card(rank="7"), _card(rank="2")],
+        shoe=[_card(rank="7"), _card(rank="2")],
         allowed_actions=("hit", "stand"),
         is_pair_hand=False,
         bet=100,
@@ -182,12 +194,18 @@ def test_action_context_includes_true_counts_and_hole_without_future_order() -> 
     )
     rendered = format_action_context(context=context)
 
-    assert context.dealer.hole_card == "K♠"
-    assert context.shoe_summary.total_cards == 3
-    assert context.shoe_summary.rank_counts["10"] == 1
+    assert context.dealer.up_card == "A♠"
+    assert context.dealer.up_value == 11
+    assert context.shoe_summary.total_cards == 2
     assert context.action_analysis.hit_odds is not None
     assert context.action_analysis.hit_odds.five_card_non_bust_probability > 0
-    assert "dealer.hole_card: K♠" in rendered
+    # The actual hole card (K♠) and any combined dealer total must not appear.
+    assert "K♠" not in rendered
+    assert "dealer.hole_card" not in rendered
+    assert "dealer.known_total" not in rendered
+    assert "natural_blackjack" not in rendered
+    assert "dealer.up_card: A♠" in rendered
+    assert "dealer.up_value: 11" in rendered
     assert "remaining_shoe.rank_counts:" in rendered
     assert "five_card_non_bust_probability" in rendered
     assert "next_card" not in rendered
@@ -207,28 +225,50 @@ def test_action_context_includes_true_counts_and_hole_without_future_order() -> 
     assert abs(distribution_total - 1.0) < 1e-9
     assert "dealer_outcome.bust_probability" in rendered
     assert "expected_value." in rendered
-    assert "hole_card_aware_recommendation.action:" in rendered
+    assert "recommended_action.action:" in rendered
+    assert "hole_card_aware_recommendation" not in rendered
 
 
-def test_insurance_context_uses_dealer_hole_card_for_known_result() -> None:
-    """Insurance context includes the known dealer Blackjack result."""
+def test_insurance_context_uses_remaining_shoe_count_not_hole() -> None:
+    """A ten-rich remaining shoe makes insurance +EV without revealing the hole."""
     context = build_bot_insurance_context(
-        dealer_cards=[_card(rank="K"), _card(rank="A")],
         dealer_up=_card(rank="A"),
-        shoe=[_card(rank="2"), _card(rank="3")],
+        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
         insurance_cost=50,
     )
     rendered = format_insurance_context(context=context)
 
-    assert context.dealer_blackjack is True
-    assert context.side_bet_delta_if_taken == 100
+    assert context.ten_value_probability > 1 / 3
     assert context.insurance_recommendation == "take"
     assert context.insurance_expected_value > 0
-    assert "dealer.hole_card: K♠" in rendered
-    assert "dealer_blackjack: True" in rendered
-    assert "insurance_expected_value:" in rendered
+    # The shown probability matches the shoe-only counts exactly, so it cannot be
+    # cross-solved for the hole, and no Blackjack verdict is exposed.
+    assert context.ten_value_probability == context.shoe_summary.ten_value_count / (
+        context.shoe_summary.total_cards
+    )
+    assert "dealer.hole_card" not in rendered
+    assert "dealer_blackjack" not in rendered
+    assert "dealer.up_card: A♠" in rendered
+    assert "ten_value_probability:" in rendered
     assert "insurance_recommendation: take" in rendered
     assert "next_card" not in rendered
+
+
+def test_insurance_declines_in_a_non_ten_rich_shoe() -> None:
+    """A non-ten-rich shoe declines insurance regardless of the dealer's hole.
+
+    This is the anti-cheat guarantee: `build_bot_insurance_context` is never even
+    given the hole card, so it cannot win insurance on a real dealer Blackjack.
+    """
+    context = build_bot_insurance_context(
+        dealer_up=_card(rank="A"),
+        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
+        insurance_cost=50,
+    )
+
+    assert context.ten_value_probability < 1 / 3
+    assert context.insurance_recommendation == "decline"
+    assert context.insurance_expected_value < 0
 
 
 type _ResponseDecision = BotPlayerActionDecision | BotPlayerInsuranceDecision
@@ -272,7 +312,7 @@ class _FailingClient:
 async def test_legal_ai_action_is_not_overridden_by_basic_strategy_hint() -> None:
     """A legal AI action remains authoritative even when fallback would differ."""
     fake_client = _FakeClient(
-        output_parsed=BotPlayerActionDecision(action="stand", reason="看暗牌停手")
+        output_parsed=BotPlayerActionDecision(action="stand", reason="依 EV 停手")
     )
     ai = BotPlayerAI.model_construct(
         client=fake_client, model=ModelSettings(name="test-model", effort="none")
@@ -312,7 +352,9 @@ async def test_legal_ai_action_is_not_overridden_by_basic_strategy_hint() -> Non
     assert isinstance(sent_input, list)
     sent_content = sent_input[0]["content"]
     assert "server_computed_context:" in sent_content
-    assert "hole_card_aware_recommendation.action: hit" in sent_content
+    assert "recommended_action.action: hit" in sent_content
+    assert "5♠" not in sent_content
+    assert "dealer.hole_card" not in sent_content
 
 
 async def test_missing_dealer_up_uses_english_unknown_in_bot_action_prompt() -> None:
@@ -361,12 +403,7 @@ async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() 
     )
 
     await insurance_ai.decide_bot_insurance(
-        dealer_cards=[],
-        dealer_up=None,
-        hand_repr="A♠ 10♠",
-        bet=100,
-        finance=finance,
-        other_players=[],
+        dealer_up=None, hand_repr="A♠ 10♠", bet=100, finance=finance, other_players=[]
     )
 
     insurance_input = insurance_client.responses.calls[0]["input"]
@@ -376,20 +413,18 @@ async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() 
     assert "未知" not in insurance_content
 
 
-async def test_decide_bot_insurance_fallback_takes_on_known_dealer_blackjack() -> None:
-    """When the LLM fails, the fallback still buys insurance against a known dealer Blackjack."""
+async def test_decide_bot_insurance_fallback_takes_when_count_is_favorable() -> None:
+    """When the LLM fails, the fallback buys insurance only on a ten-rich unseen deck."""
     ai = BotPlayerAI.model_construct(
         client=_FailingClient(), model=ModelSettings(name="test-model", effort="none")
     )
     insurance_context = build_bot_insurance_context(
-        dealer_cards=[_card(rank="K"), _card(rank="A")],
         dealer_up=_card(rank="A"),
-        shoe=[_card(rank="2"), _card(rank="3")],
+        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
         insurance_cost=50,
     )
 
     decision = await ai.decide_bot_insurance(
-        dealer_cards=[_card(rank="K"), _card(rank="A")],
         dealer_up=_card(rank="A"),
         hand_repr="A♠ 9♠",
         bet=100,

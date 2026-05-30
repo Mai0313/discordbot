@@ -36,7 +36,7 @@ from discordbot.cogs._games.prompts import (
     BOT_PLAYER_ACTION_PROMPT,
     BOT_PLAYER_INSURANCE_PROMPT,
 )
-from discordbot.cogs._games.blackjack import is_blackjack, is_soft_total, _card_blackjack_value
+from discordbot.cogs._games.blackjack import is_soft_total, _card_blackjack_value
 from discordbot.cogs._games.blackjack_ev import compute_action_evs
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
@@ -68,7 +68,8 @@ _TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
 _LOW_RANKS: Final[frozenset[str]] = frozenset({"2", "3", "4", "5", "6"})
 _NEUTRAL_RANKS: Final[frozenset[str]] = frozenset({"7", "8", "9"})
 _INFO_BOUNDARY: Final[str] = (
-    "server_true_counts_plus_dealer_hole; no next-card field and no ordered future shoe"
+    "server_true_remaining_shoe_counts_and_dealer_up_card; no hole card, "
+    "no next-card field, and no ordered future shoe"
 )
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
@@ -97,16 +98,17 @@ class ShoeSummary(BaseModel):
 
 
 class DealerKnowledge(BaseModel):
-    """Server-visible dealer state exposed to the bot player AI."""
+    """Dealer state exposed to the bot player AI.
+
+    Only the up-card is shared, exactly what any seated player sees. The hole
+    card, the combined two-card total, and the natural-Blackjack flag are
+    deliberately withheld so nothing the model receives can reveal the hole.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     up_card: str
-    hole_card: str
-    cards: str
-    total: int
-    natural_blackjack: bool
-    h17_status: str
+    up_value: int
 
 
 class DrawOdds(BaseModel):
@@ -150,7 +152,12 @@ class BotPlayerActionContext(BaseModel):
 
 
 class BotPlayerInsuranceContext(BaseModel):
-    """Complete computed context for one bot-player insurance decision."""
+    """Computed context for one bot-player insurance decision.
+
+    Insurance is priced from the remaining-shoe ten-value density (card
+    counting), not the hole card, so the recommendation never reveals whether
+    the dealer actually has Blackjack.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -159,8 +166,7 @@ class BotPlayerInsuranceContext(BaseModel):
     dealer: DealerKnowledge
     insurance_cost: int
     insurance_payout: int
-    dealer_blackjack: bool
-    side_bet_delta_if_taken: int
+    ten_value_probability: float
     insurance_expected_value: float
     insurance_recommendation: str
     summary: str
@@ -237,16 +243,6 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
     )
 
 
-def _is_blackjack_cards(*, cards: list[Card]) -> bool:
-    """Returns whether cards form a natural Blackjack."""
-    return len(cards) == 2 and _hand_total_and_soft(cards=cards)[0] == 21
-
-
-def _card_list_text(*, cards: list[Card]) -> str:
-    """Returns a compact card list for prompt context."""
-    return " ".join(str(card) for card in cards) if cards else "none"
-
-
 def _rank_counts(*, cards: list[Card]) -> dict[str, int]:
     """Counts card ranks in stable Blackjack rank order."""
     counts = dict.fromkeys(_RANK_ORDER, 0)
@@ -273,33 +269,11 @@ def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
     )
 
 
-def _dealer_h17_status(*, dealer_cards: list[Card]) -> str:
-    """Returns the dealer's forced H17 status from server-visible cards."""
-    if not dealer_cards:
-        return "unknown"
-    total, is_soft = _hand_total_and_soft(cards=dealer_cards)
-    if _is_blackjack_cards(cards=dealer_cards):
-        return "natural_blackjack"
-    if total > 21:
-        return "bust"
-    if total < 17:
-        return "must_hit_below_17"
-    if total == 17 and is_soft:
-        return "must_hit_soft_17"
-    return "stand_hard_17_or_more"
-
-
-def build_dealer_knowledge(*, dealer_cards: list[Card], dealer_up: Card | None) -> DealerKnowledge:
-    """Builds the dealer state intentionally exposed to the bot player AI."""
-    hole_card = dealer_cards[0] if dealer_cards else None
-    total = _hand_total_and_soft(cards=dealer_cards)[0] if dealer_cards else 0
+def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
+    """Builds the up-card-only dealer state exposed to the bot player AI."""
     return DealerKnowledge(
         up_card=str(dealer_up) if dealer_up is not None else "unknown",
-        hole_card=str(hole_card) if hole_card is not None else "unknown",
-        cards=_card_list_text(cards=dealer_cards),
-        total=total,
-        natural_blackjack=_is_blackjack_cards(cards=dealer_cards),
-        h17_status=_dealer_h17_status(dealer_cards=dealer_cards),
+        up_value=_dealer_up_value(up_card=dealer_up),
     )
 
 
@@ -481,7 +455,7 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     if ev_analysis is not None:
         basic_strategy_action = ev_analysis.recommended_action
         basic_strategy_reason = (
-            "EV-max legal action given the dealer hole card and remaining shoe; "
+            "EV-max legal action given the dealer up-card and remaining shoe; "
             f"expected_value={ev_analysis.recommended_expected_value:+.2f} base bets."
         )
     else:
@@ -493,7 +467,7 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
             allowed_actions=allowed_actions,
         )
         basic_strategy_reason = _basic_strategy_reason(action=basic_strategy_action)
-    dealer = build_dealer_knowledge(dealer_cards=dealer_cards, dealer_up=dealer_up)
+    dealer = build_dealer_knowledge(dealer_up=dealer_up)
     hit_odds = (
         _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=doubled)
         if "hit" in allowed_actions
@@ -528,9 +502,9 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
             hit_odds=hit_odds,
             double_odds=double_odds,
             stand_summary=(
-                f"Standing leaves active hand total {hand_total} against known dealer total "
-                f"{dealer.total}; dealer status: {dealer.h17_status}; "
-                f"uncommitted balance after current wagers: {balance_remaining} {CURRENCY_NAME}."
+                f"Standing leaves active hand total {hand_total} against dealer up-card "
+                f"{dealer.up_card} (value {dealer.up_value}); uncommitted balance after current "
+                f"wagers: {balance_remaining} {CURRENCY_NAME}."
             ),
             split_summary=split_summary,
             surrender_summary=surrender_summary,
@@ -539,36 +513,46 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
 
 
 def build_bot_insurance_context(
-    *, dealer_cards: list[Card], dealer_up: Card | None, shoe: list[Card], insurance_cost: int
+    *, dealer_up: Card | None, shoe: list[Card], insurance_cost: int
 ) -> BotPlayerInsuranceContext:
-    """Builds computed AI context for the insurance side bet."""
-    dealer = build_dealer_knowledge(dealer_cards=dealer_cards, dealer_up=dealer_up)
-    dealer_blackjack = dealer.natural_blackjack
+    """Builds insurance context from the remaining-shoe ten density only.
+
+    The dealer hole card is never passed in, so it cannot reach the decision or
+    the prompt. Insurance pays only on a ten-value hole, so the remaining shoe's
+    ten-value fraction is the fair probability a counter would use. Insurance is
+    +EV only when that fraction clears 1/3; the probability matches the exposed
+    shoe counts exactly, leaving nothing to cross-solve.
+    """
+    ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
+    total = len(shoe)
+    ten_probability = ten_count / total if total > 0 else 0.0
     insurance_payout = insurance_cost * 2
-    delta_if_taken = insurance_payout if dealer_blackjack else -insurance_cost
+    # Take pays +2x cost on a ten hole, loses cost otherwise: EV = cost*(3p - 1),
+    # so it only turns positive once ten-value density clears one third.
+    break_even = 1.0 / 3.0
+    expected_value = insurance_cost * (3.0 * ten_probability - 1.0)
+    recommendation = "take" if ten_probability > break_even else "decline"
     return BotPlayerInsuranceContext(
         information_boundary=_INFO_BOUNDARY,
         shoe_summary=build_shoe_summary(shoe=shoe),
-        dealer=dealer,
+        dealer=build_dealer_knowledge(dealer_up=dealer_up),
         insurance_cost=insurance_cost,
         insurance_payout=insurance_payout,
-        dealer_blackjack=dealer_blackjack,
-        side_bet_delta_if_taken=delta_if_taken,
-        insurance_expected_value=float(delta_if_taken),
-        insurance_recommendation="take" if dealer_blackjack else "decline",
+        ten_value_probability=ten_probability,
+        insurance_expected_value=expected_value,
+        insurance_recommendation=recommendation,
         summary=(
-            "Dealer has natural Blackjack; insurance side bet wins."
-            if dealer_blackjack
-            else "Dealer does not have natural Blackjack; insurance side bet loses."
+            "Insurance pays only on a ten-value hole; estimated ten-value probability "
+            f"{ten_probability * 100:.1f}% from the remaining shoe; +EV only above 33.3%."
         ),
     )
 
 
-def fallback_insurance(*, dealer_cards: list[Card] | None = None) -> bool:
-    """Hole-card-aware insurance fallback: take only when the dealer truly has Blackjack."""
-    if dealer_cards is None:
+def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = None) -> bool:
+    """Count-based insurance fallback: take only when the unseen deck makes it +EV."""
+    if insurance_context is None:
         return False
-    return is_blackjack(cards=dealer_cards)
+    return insurance_context.insurance_recommendation == "take"
 
 
 def _format_percent(value: float) -> str:
@@ -605,7 +589,7 @@ def _format_draw_odds(*, label: str, odds: DrawOdds | None) -> list[str]:
 
 
 def _format_ev_block(*, ev_analysis: ActionEvAnalysis | None) -> list[str]:
-    """Renders the exact dealer outcome distribution and per-action EV as prompt lines."""
+    """Renders the dealer outcome distribution and per-action EV as prompt lines."""
     if ev_analysis is None:
         return ["- ev_analysis: unavailable"]
     outcome = ev_analysis.dealer_outcome
@@ -622,14 +606,14 @@ def _format_ev_block(*, ev_analysis: ActionEvAnalysis | None) -> list[str]:
         lines.append(
             f"- expected_value.{action_ev.action}: {action_ev.expected_value:+.2f}{suffix}"
         )
-    lines.append(f"- hole_card_aware_recommendation.action: {ev_analysis.recommended_action}")
+    lines.append(f"- recommended_action.action: {ev_analysis.recommended_action}")
     lines.append(
-        "- hole_card_aware_recommendation.expected_value: "
-        f"{ev_analysis.recommended_expected_value:+.2f}"
+        f"- recommended_action.expected_value: {ev_analysis.recommended_expected_value:+.2f}"
     )
     lines.append(
-        "- ev_units_note: EV is in multiples of the base hand bet; higher is better; values "
-        "already account for the dealer hole card, the five-card-21 bonus, and this table's payouts."
+        "- ev_units_note: EV is in multiples of the base hand bet; higher is better; the dealer "
+        "outcome and EVs are estimated from the dealer up-card and the remaining shoe with the "
+        "hole card unknown, and include the five-card-21 bonus and this table's payouts."
     )
     return lines
 
@@ -652,11 +636,7 @@ def format_action_context(*, context: BotPlayerActionContext | None) -> str:
         f"- remaining_shoe.neutral_card_count_7_to_9: {shoe.neutral_card_count}",
         f"- remaining_shoe.high_card_count_A_or_10_value: {shoe.high_card_count}",
         f"- dealer.up_card: {dealer.up_card}",
-        f"- dealer.hole_card: {dealer.hole_card}",
-        f"- dealer.cards: {dealer.cards}",
-        f"- dealer.known_total: {dealer.total}",
-        f"- dealer.natural_blackjack: {dealer.natural_blackjack}",
-        f"- dealer.h17_status: {dealer.h17_status}",
+        f"- dealer.up_value: {dealer.up_value}",
         *_format_ev_block(ev_analysis=analysis.ev_analysis),
         f"- allowed_actions: {', '.join(analysis.allowed_actions)}",
         f"- basic_strategy_hint.action: {analysis.basic_strategy_action}",
@@ -684,14 +664,10 @@ def format_insurance_context(*, context: BotPlayerInsuranceContext | None) -> st
         f"- remaining_shoe.ace_count: {shoe.ace_count}",
         f"- remaining_shoe.ten_value_count: {shoe.ten_value_count}",
         f"- dealer.up_card: {dealer.up_card}",
-        f"- dealer.hole_card: {dealer.hole_card}",
-        f"- dealer.cards: {dealer.cards}",
-        f"- dealer.known_total: {dealer.total}",
-        f"- dealer.natural_blackjack: {dealer.natural_blackjack}",
+        f"- dealer.up_value: {dealer.up_value}",
+        f"- ten_value_probability: {_format_percent(context.ten_value_probability)}",
         f"- insurance_cost: {context.insurance_cost}",
         f"- insurance_payout: {context.insurance_payout}",
-        f"- dealer_blackjack: {context.dealer_blackjack}",
-        f"- side_bet_delta_if_taken: {context.side_bet_delta_if_taken}",
         f"- insurance_expected_value: {context.insurance_expected_value:+.0f} {CURRENCY_NAME}",
         f"- insurance_recommendation: {context.insurance_recommendation}",
         f"- insurance_analysis: {context.summary}",
@@ -877,7 +853,6 @@ class BotPlayerAI(BaseModel):
     async def decide_bot_insurance(  # noqa: PLR0913 -- insurance prompt needs full table context.
         self,
         *,
-        dealer_cards: list[Card],
         dealer_up: Card | None,
         hand_repr: str,
         bet: int,
@@ -887,13 +862,13 @@ class BotPlayerAI(BaseModel):
     ) -> BotPlayerInsuranceDecision:
         """Returns whether the bot takes insurance with reasoning.
 
-        On LLM failure the fallback is hole-card-aware: it takes insurance when
-        the known dealer hole card already makes a Blackjack, and declines
-        otherwise.
+        On LLM failure the fallback is count-based: it takes insurance only when
+        the unseen-deck ten density makes the side bet +EV, and declines
+        otherwise. The dealer hole card never enters the decision.
         """
-        if fallback_insurance(dealer_cards=dealer_cards):
+        if fallback_insurance(insurance_context=insurance_context):
             fallback_decision = BotPlayerInsuranceDecision(
-                take_insurance=True, reason="暗牌成 BJ, 買保險打平"
+                take_insurance=True, reason="牌堆 10 點偏多, 保險划算"
             )
         else:
             fallback_decision = BotPlayerInsuranceDecision(

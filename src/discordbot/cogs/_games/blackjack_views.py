@@ -1198,13 +1198,11 @@ class BlackjackView(View):
             exclude_user_id=bot_player.participant.user_id
         )
         insurance_context = build_bot_insurance_context(
-            dealer_cards=list(self.round_state.dealer),
             dealer_up=dealer_up,
             shoe=list(self.round_state.shoe),
             insurance_cost=bot_player.participant.bet // 2,
         )
         decision = await bot_ai.decide_bot_insurance(
-            dealer_cards=list(self.round_state.dealer),
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,

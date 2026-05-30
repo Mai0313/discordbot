@@ -92,8 +92,14 @@ def test_standing_beats_hitting_on_hard_twenty() -> None:
     assert _ev_for(analysis=analysis, action="stand") > _ev_for(analysis=analysis, action="hit")
 
 
-def test_recommendation_depends_on_dealer_hole_card() -> None:
-    """Hard 16 stands against a known weak dealer but surrenders against a known strong one."""
+def test_recommendation_uses_hole_but_shown_distribution_hides_it() -> None:
+    """The recommendation reflects the true hole, yet the shown distribution does not.
+
+    Both hands face an up-card 10 but a different hole (a weak 5 versus a strong
+    10). The hole-aware recommendation diverges, the bot's private edge. The
+    exposed dealer distribution is marginalized over the remaining shoe only, so
+    for the same up-card and shoe it is byte-identical and reveals no hole.
+    """
     shoe = _full_shoe()
     weak = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
@@ -112,7 +118,9 @@ def test_recommendation_depends_on_dealer_hole_card() -> None:
 
     assert weak.recommended_action == "stand"
     assert strong.recommended_action == "surrender"
-    assert weak.dealer_outcome.bust_probability > strong.dealer_outcome.bust_probability
+    # Same up-card and shoe, so the exposed distribution must be exactly equal.
+    assert weak.dealer_outcome == strong.dealer_outcome
+    assert _ev_for(analysis=weak, action="stand") == _ev_for(analysis=strong, action="stand")
 
 
 def test_five_card_non_bust_stand_pays_one_unit() -> None:

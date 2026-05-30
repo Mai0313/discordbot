@@ -118,18 +118,18 @@ Task: choose the next legal Blackjack action for the active hand.
 
 Input includes:
 - bankroll_context and uncommitted balance.
-- active_hand, other split hands, dealer knowledge, and visible table state.
-- server_computed_context with the true remaining shoe and the dealer hole card.
-- Usually an exact dealer_outcome distribution and a per-action expected_value (EV), computed from the KNOWN dealer hole card, the true remaining shoe, H17 rules, and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
-- hole_card_aware_recommendation: the EV-maximizing legal action. Treat it as a strong default.
+- active_hand, other split hands, the dealer up-card, and visible table state.
+- server_computed_context with the true remaining shoe counts and the dealer up-card only. You never see the dealer hole card.
+- Usually a dealer_outcome distribution and a per-action expected_value (EV), estimated from the dealer up-card and the remaining shoe with the hole card unknown, under H17 rules and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
+- recommended_action: the server's recommended legal action. Treat it as a strong default.
 - If server_computed_context shows `ev_analysis: unavailable`, the EV engine could not run this turn; only `basic_strategy_hint` is reliable then.
-- No next-card field and no ordered future shoe are provided.
+- No hole card, no next-card field, and no ordered future shoe are provided.
 - allowed_actions: you must choose exactly one action from this list.
 
 Decision priority:
 1. Only choose from allowed_actions.
-2. Default to the action with the highest expected_value. The dealer_outcome distribution and EV already incorporate the dealer hole card, the remaining shoe, and the five-card rules, so do not re-derive them yourself or fall back to generic basic strategy.
-3. Deviate from hole_card_aware_recommendation only with a concrete EV-based reason, such as two actions within a hair of each other or double/split bankroll risk outweighing a thin EV edge. The split EV is an estimate.
+2. Default to recommended_action. The dealer_outcome distribution and EV already account for the dealer up-card, the remaining shoe, and the five-card rules, so do not re-derive them yourself or fall back to generic basic strategy.
+3. Deviate from recommended_action only with a concrete EV-based reason, such as two actions within a hair of each other or double/split bankroll risk outweighing a thin EV edge. The split EV is an estimate.
 4. When EV is unavailable, follow `basic_strategy_hint.action` together with sound dealer-state reasoning instead.
 5. Use bankroll only to judge whether extra wager exposure is acceptable.
 6. Treat table mood, today's win/loss, and other players' bet sizes as weak signals.
@@ -150,12 +150,13 @@ Task: decide whether to take insurance.
 
 Input includes:
 - bankroll_context and insurance cost.
-- dealer knowledge, including the server-provided dealer hole card.
+- the dealer up-card only. You never see the dealer hole card.
 - true remaining shoe rank counts.
-- insurance_expected_value and insurance_recommendation, computed exactly from the known dealer hole card (not a guess), plus insurance_analysis.
+- ten_value_probability: the estimated chance the hole is a ten-value card, from the remaining shoe.
+- insurance_expected_value, insurance_recommendation, and insurance_analysis, derived from that ten-value density (card counting), not from the hole card.
 
 Decision guidance:
-- The server knows the dealer hole card, so insurance EV is exact. Take insurance only when insurance_recommendation is "take" (the dealer actually has Blackjack); otherwise decline.
+- Insurance pays only when the hole is a ten-value card. It is +EV only when ten_value_probability is above one third, which is rare. Take insurance only when insurance_recommendation is "take"; otherwise decline.
 - Do not take insurance because of fear, table mood, or today's loss.
 - Use bankroll only to judge whether the extra side-bet exposure is acceptable.
 

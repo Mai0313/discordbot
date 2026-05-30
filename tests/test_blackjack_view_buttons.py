@@ -540,7 +540,7 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
 async def test_bot_action_dispatch_passes_computed_ai_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Bot action decisions receive dealer-hole and shoe-count context."""
+    """Bot action decisions receive dealer up-card and shoe-count context, not the hole."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="10", suit="♦")],
@@ -573,7 +573,8 @@ async def test_bot_action_dispatch_passes_computed_ai_context(
 
     context = bot_ai.kwargs["action_context"]
     assert isinstance(context, BotPlayerActionContext)
-    assert context.dealer.hole_card == "5♣"
+    assert context.dealer.up_card == "10♦"
+    assert context.dealer.up_value == 10
     assert context.shoe_summary.total_cards == 1
     assert context.shoe_summary.rank_counts["3"] == 1
     assert round_state.players[0].hands[0].cards[-1] == Card(rank="3", suit="♠")

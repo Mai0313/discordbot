@@ -338,12 +338,13 @@ class OtherPlayerView(BaseModel):
 
 
 class DealerOutcome(BaseModel):
-    """Exact dealer final-total distribution under H17 over a no-replacement shoe.
+    """Dealer final-total distribution under H17 over a no-replacement shoe.
 
     The six probabilities are mutually exclusive and sum to ~1.0. They are
-    computed from the dealer's known two cards (hole + up) and the true
-    remaining shoe, so the bot player can reason about stand-versus-hit from
-    the actual dealer outcome instead of guessing.
+    estimated from the dealer up-card with a hypothetical hole integrated out
+    over the remaining shoe (and, when the dealer peeked under an Ace/ten
+    up-card, conditioned on no Blackjack), so the bot player can reason about
+    stand-versus-hit without the estimate ever depending on the actual hole.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -387,19 +388,26 @@ class ActionEv(BaseModel):
 
 
 class ActionEvAnalysis(BaseModel):
-    """Hole-card-aware exact EV analysis for one bot-player action decision."""
+    """EV analysis for one bot-player action decision.
+
+    `dealer_outcome` and `action_evs` are the hole-unknown (marginalized) numbers
+    shown to the model, while `recommended_action` is selected from the engine's
+    private hole-aware pass; the two never leak the hole card to the model.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    dealer_outcome: DealerOutcome = Field(description="Exact dealer final-total distribution.")
+    dealer_outcome: DealerOutcome = Field(
+        description="Marginalized dealer final-total distribution shown to the model."
+    )
     action_evs: tuple[ActionEv, ...] = Field(
-        description="Per-allowed-action expected values, ordered from highest to lowest EV."
+        description="Per-allowed-action marginalized expected values, ordered highest to lowest EV."
     )
     recommended_action: BotAction = Field(
         description="EV-maximizing legal action (split is only recommended past a safety margin)."
     )
     recommended_expected_value: float = Field(
-        description="Expected value of the recommended action, in base-bet units."
+        description="Marginalized expected value of the recommended action, in base-bet units."
     )
 
 
