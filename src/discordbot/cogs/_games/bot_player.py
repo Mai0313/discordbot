@@ -26,27 +26,33 @@ from discordbot.typings.games import (
     OtherPlayerView,
     ActionEvAnalysis,
     BotFinancialContext,
-    BotPlayerBetDecision,
     BotPlayerActionDecision,
     BotPlayerInsuranceDecision,
 )
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._games.prompts import (
-    BOT_PLAYER_BET_PROMPT,
-    BOT_PLAYER_ACTION_PROMPT,
-    BOT_PLAYER_INSURANCE_PROMPT,
-)
+from discordbot.cogs._games.prompts import BOT_PLAYER_ACTION_PROMPT, BOT_PLAYER_INSURANCE_PROMPT
 from discordbot.cogs._games.blackjack import is_soft_total, _card_blackjack_value
 from discordbot.cogs._games.blackjack_ev import compute_action_evs
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-BOT_BET_AI_TIMEOUT_SECONDS = 30.0
 BOT_ACTION_AI_TIMEOUT_SECONDS = 30.0
 BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
+# Per-round edge and variance of the bot's hole-aware optimal play on this table,
+# measured by scripts/simulate_bot_blackjack.py (e ~ +0.14, sigma^2 ~ 1.34). The
+# shoe is rebuilt every round, so the pre-deal edge is a single constant and the
+# growth-optimal wager is a fixed fraction of bankroll, not a count-based spread.
+# The edge is large because the EV engine plays the dealer hole card and this
+# table's five-card rules are player-favorable; re-run that script to re-measure
+# if those rules change.
+BOT_TABLE_EDGE: Final[float] = 0.14
+BOT_TABLE_VARIANCE: Final[float] = 1.34
+# Half-Kelly keeps drawdown variance down; the hard fraction cap protects the
+# bankroll even if the measured edge drifts.
+BOT_KELLY_FRACTION: Final[float] = 0.5
+BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # Bot decisions are system-side LLM calls. ASCII labels per method let LiteLLM
 # telemetry split bet / action / insurance traffic, mirroring the
 # `auto_unmute.py` / `_stock/news.py` / `prompt_dev.py` pattern.
-_BET_END_USER_ID: Final[str] = "bot_player_bet"
 _ACTION_END_USER_ID: Final[str] = "bot_player_action"
 _INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
 _RANK_ORDER: Final[tuple[str, ...]] = (
@@ -326,15 +332,43 @@ def _basic_strategy_reason(*, action: BotAction) -> str:
     return f"Deterministic fallback table would choose {action}; use as a hint, not a hard rule."
 
 
-def fallback_bet(*, balance: int, table_bet: int) -> int:
-    """Deterministic bet fallback when the LLM is slow or fails.
+def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap) as overridable args.
+    *,
+    balance: int,
+    table_minimum: int,
+    edge: float = BOT_TABLE_EDGE,
+    variance: float = BOT_TABLE_VARIANCE,
+    kelly_fraction: float = BOT_KELLY_FRACTION,
+    max_fraction: float = BOT_MAX_BET_FRACTION,
+) -> int:
+    """Returns the fractional-Kelly wager from the constant per-round edge.
 
-    Matches the table bet, clamped into [1, balance]. Returns 1 when balance
-    is non-positive; callers guard auto-join against that already.
+    The shoe resets every round, so the pre-deal edge is fixed and the
+    growth-optimal stake is a constant fraction of the bankroll. The fraction is
+    clamped to `max_fraction` so a misestimated edge can never risk the whole
+    bankroll, floored at the table minimum so the bot always sits, and capped at
+    the balance. A non-positive edge falls back to the table minimum instead of
+    refusing to play.
+
+    Args:
+        balance: The bot's spendable balance.
+        table_minimum: The table's wager the bot must at least match.
+        edge: Per-round expected value in base-bet units.
+        variance: Per-round variance in base-bet units.
+        kelly_fraction: Fraction of full Kelly to apply (0.5 is half-Kelly).
+        max_fraction: Hard cap on the bankroll fraction wagered in one round.
+
+    Returns:
+        A positive integer wager within `[table_minimum, balance]`.
     """
     if balance <= 0:
         return 1
-    return max(1, min(balance, table_bet))
+    floor = max(1, min(table_minimum, balance))
+    if edge <= 0 or variance <= 0:
+        return floor
+    fraction = min(max(kelly_fraction * edge / variance, 0.0), max_fraction)
+    wager = round(fraction * balance)
+    return max(floor, min(wager, balance))
 
 
 def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirroring its signature.
@@ -512,6 +546,42 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     )
 
 
+def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors the full decision surface.
+    *,
+    action_context: BotPlayerActionContext | None,
+    hand_cards: list[Card],
+    hand_total: int,
+    dealer_up: Card | None,
+    is_pair_hand: bool,
+    allowed_actions: tuple[BotAction, ...],
+) -> BotAction:
+    """Returns the deterministic action the bot plays this turn.
+
+    The action is the EV engine's hole-aware recommendation carried on the
+    action context (always one of `allowed_actions`); it degrades to the
+    up-card-only basic-strategy fallback only when the context is missing. The
+    LLM never chooses the action; it only narrates the reason afterwards.
+    """
+    if action_context is not None:
+        return action_context.action_analysis.basic_strategy_action
+    return fallback_action(
+        hand_cards=hand_cards,
+        hand_total=hand_total,
+        dealer_up=dealer_up,
+        is_pair_hand=is_pair_hand,
+        allowed_actions=allowed_actions,
+    )
+
+
+def action_decision_reason(*, action_context: BotPlayerActionContext | None) -> str:
+    """Returns the instant Traditional Chinese reason shown before LLM narration."""
+    if action_context is not None and action_context.action_analysis.ev_analysis is not None:
+        return (
+            f"EV {action_context.action_analysis.ev_analysis.recommended_expected_value:+.2f} 最佳"
+        )
+    return "基本策略最佳"
+
+
 def build_bot_insurance_context(
     *, dealer_up: Card | None, shoe: list[Card], insurance_cost: int
 ) -> BotPlayerInsuranceContext:
@@ -549,10 +619,28 @@ def build_bot_insurance_context(
 
 
 def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = None) -> bool:
-    """Count-based insurance fallback: take only when the unseen deck makes it +EV."""
+    """Count-based insurance decision: take only when the unseen deck makes it +EV.
+
+    This is the bot's authoritative insurance choice, not just a failure
+    fallback: insurance is +EV only when the remaining-shoe ten density clears
+    one third, so the deterministic count drives the decision and the LLM only
+    narrates it.
+    """
     if insurance_context is None:
         return False
     return insurance_context.insurance_recommendation == "take"
+
+
+def insurance_decision_reason(
+    *, take_insurance: bool, insurance_context: BotPlayerInsuranceContext | None
+) -> str:
+    """Returns the instant Traditional Chinese reason shown before LLM narration."""
+    if insurance_context is None:
+        return "無牌堆資料, 不買保險"
+    ten_percent = insurance_context.ten_value_probability * 100
+    if take_insurance:
+        return f"牌堆十點 {ten_percent:.0f}%, 保險划算"
+    return f"牌堆十點僅 {ten_percent:.0f}%, 不買"
 
 
 def _format_percent(value: float) -> str:
@@ -709,6 +797,43 @@ def _format_other_player_bets_block(other_player_bets: list[tuple[str, int]]) ->
     return "\n".join(lines)
 
 
+class BotActionReasonRequest(BaseModel):
+    """Computed inputs for the background LLM narration of a chosen bot action.
+
+    The action is already decided deterministically by the EV engine; these
+    fields only let the model write a faithful Traditional Chinese reason for
+    that fixed action.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action: BotAction
+    hand_repr: str
+    hand_total: int
+    dealer_up: Card | None
+    allowed_actions: tuple[BotAction, ...]
+    bet: int
+    balance_remaining: int
+    finance: BotFinancialContext
+    other_players: list[OtherPlayerView]
+    own_other_hands: list[str]
+    action_context: BotPlayerActionContext | None
+
+
+class BotInsuranceReasonRequest(BaseModel):
+    """Computed inputs for the background LLM narration of an insurance choice."""
+
+    model_config = ConfigDict(frozen=True)
+
+    take_insurance: bool
+    dealer_up: Card | None
+    hand_repr: str
+    bet: int
+    finance: BotFinancialContext
+    other_players: list[OtherPlayerView]
+    insurance_context: BotPlayerInsuranceContext | None
+
+
 class BotPlayerAI(BaseModel):
     """Wraps slow-model calls for the bot's player-side decisions.
 
@@ -722,100 +847,32 @@ class BotPlayerAI(BaseModel):
     client: AsyncOpenAI
     model: ModelSettings
 
-    async def decide_bot_bet(
-        self,
-        *,
-        finance: BotFinancialContext,
-        table_bet: int,
-        other_player_bets: list[tuple[str, int]],
-    ) -> int:
-        """Returns the bot's bet for the upcoming round, falling back on error."""
-        fallback = fallback_bet(balance=finance.balance, table_bet=table_bet)
-        user_text = (
-            f"{_format_finance_block(finance=finance)}\n\n"
-            f"table_bet_{CURRENCY_NAME}: {table_bet}\n"
-            f"{_format_other_player_bets_block(other_player_bets=other_player_bets)}"
-        )
-        try:
-            async with asyncio.timeout(delay=BOT_BET_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=BOT_PLAYER_BET_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=BotPlayerBetDecision,
-                    reasoning=self.model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _BET_END_USER_ID},
-                    extra_body={"mock_testing_fallbacks": False},
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Bot bet decision timed out; using deterministic fallback",
-                timeout_seconds=BOT_BET_AI_TIMEOUT_SECONDS,
-            )
-            return fallback
-        except Exception:
-            logfire.warn("Bot bet decision failed; using deterministic fallback", _exc_info=True)
-            return fallback
-        if responses.output_parsed is None:
-            return fallback
-        candidate = responses.output_parsed.bet_amount
-        return max(1, min(finance.balance, candidate)) if finance.balance > 0 else fallback
+    async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:
+        """Returns a Traditional Chinese reason for the already-chosen action.
 
-    async def decide_bot_action(  # noqa: PLR0913 -- bot action decision needs full table context
-        self,
-        *,
-        hand_cards: list[Card],
-        hand_total: int,
-        hand_repr: str,
-        dealer_up: Card | None,
-        is_pair_hand: bool,
-        allowed_actions: tuple[BotAction, ...],
-        bet: int,
-        balance_remaining: int,
-        finance: BotFinancialContext,
-        other_players: list[OtherPlayerView],
-        own_other_hands: list[str],
-        action_context: BotPlayerActionContext | None = None,
-    ) -> BotPlayerActionDecision:
-        """Returns the bot's next action with reasoning, falling back to basic strategy."""
-        if action_context is not None and action_context.action_analysis.ev_analysis is not None:
-            fallback_decision = BotPlayerActionDecision(
-                action=action_context.action_analysis.basic_strategy_action, reason="EV 最佳保底"
-            )
-        else:
-            fallback_decision = BotPlayerActionDecision(
-                action=fallback_action(
-                    hand_cards=hand_cards,
-                    hand_total=hand_total,
-                    dealer_up=dealer_up,
-                    is_pair_hand=is_pair_hand,
-                    allowed_actions=allowed_actions,
-                ),
-                reason="基本策略 fallback",
-            )
-        dealer_label = str(dealer_up) if dealer_up else "unknown"
-        allowed_text = ", ".join(allowed_actions)
+        The action is fixed by the EV engine; this call only produces flavor
+        text and runs off the table's critical path, so any timeout or failure
+        falls back to the deterministic template reason.
+        """
+        template = action_decision_reason(action_context=request.action_context)
+        dealer_label = str(request.dealer_up) if request.dealer_up else "unknown"
         own_other = (
-            "own_other_split_hands: " + " | ".join(own_other_hands)
-            if own_other_hands
+            "own_other_split_hands: " + " | ".join(request.own_other_hands)
+            if request.own_other_hands
             else "own_other_split_hands: none"
         )
         user_text = (
-            f"{_format_finance_block(finance=finance)}\n\n"
-            f"active_hand_bet_{CURRENCY_NAME}: {bet}\n"
-            f"uncommitted_balance_{CURRENCY_NAME}: {balance_remaining}\n\n"
-            f"active_hand: {hand_repr}\n"
-            f"active_hand_total: {hand_total}\n"
-            f"is_pair_hand_for_split: {is_pair_hand}\n"
+            f"chosen_action: {request.action}\n\n"
+            f"{_format_finance_block(finance=request.finance)}\n\n"
+            f"active_hand_bet_{CURRENCY_NAME}: {request.bet}\n"
+            f"uncommitted_balance_{CURRENCY_NAME}: {request.balance_remaining}\n\n"
+            f"active_hand: {request.hand_repr}\n"
+            f"active_hand_total: {request.hand_total}\n"
             f"{own_other}\n\n"
             f"dealer_up_card: {dealer_label}\n"
-            f"{_format_other_players_block(other_players=other_players)}\n\n"
-            f"allowed_actions: [{allowed_text}]\n\n"
-            f"{format_action_context(context=action_context)}"
+            f"{_format_other_players_block(other_players=request.other_players)}\n\n"
+            f"allowed_actions: [{', '.join(request.allowed_actions)}]\n\n"
+            f"{format_action_context(context=request.action_context)}"
         )
         try:
             async with asyncio.timeout(delay=BOT_ACTION_AI_TIMEOUT_SECONDS):
@@ -834,57 +891,39 @@ class BotPlayerAI(BaseModel):
                 )
         except TimeoutError:
             logfire.warn(
-                "Bot action decision timed out; using basic-strategy fallback",
+                "Bot action reason narration timed out; using template",
                 timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
             )
-            return fallback_decision
+            return template
         except Exception:
-            logfire.warn(
-                "Bot action decision failed; using basic-strategy fallback", _exc_info=True
-            )
-            return fallback_decision
+            logfire.warn("Bot action reason narration failed; using template", _exc_info=True)
+            return template
         if responses.output_parsed is None:
-            return fallback_decision
-        candidate = responses.output_parsed
-        if candidate.action in allowed_actions:
-            return candidate
-        return fallback_decision
+            return template
+        return responses.output_parsed.reason
 
-    async def decide_bot_insurance(  # noqa: PLR0913 -- insurance prompt needs full table context.
-        self,
-        *,
-        dealer_up: Card | None,
-        hand_repr: str,
-        bet: int,
-        finance: BotFinancialContext,
-        other_players: list[OtherPlayerView],
-        insurance_context: BotPlayerInsuranceContext | None = None,
-    ) -> BotPlayerInsuranceDecision:
-        """Returns whether the bot takes insurance with reasoning.
+    async def narrate_bot_insurance_reason(self, *, request: BotInsuranceReasonRequest) -> str:
+        """Returns a Traditional Chinese reason for the already-made insurance choice.
 
-        On LLM failure the fallback is count-based: it takes insurance only when
-        the unseen-deck ten density makes the side bet +EV, and declines
-        otherwise. The dealer hole card never enters the decision.
+        The take/decline decision is fixed by the remaining-shoe ten density;
+        this call only narrates it off the critical path and degrades to the
+        deterministic template reason on timeout or failure.
         """
-        if fallback_insurance(insurance_context=insurance_context):
-            fallback_decision = BotPlayerInsuranceDecision(
-                take_insurance=True, reason="牌堆 10 點偏多, 保險划算"
-            )
-        else:
-            fallback_decision = BotPlayerInsuranceDecision(
-                take_insurance=False, reason="保險長期 EV 為負, 直接拒絕"
-            )
-        dealer_label = str(dealer_up) if dealer_up else "unknown"
-        insurance_cost = bet // 2
+        template = insurance_decision_reason(
+            take_insurance=request.take_insurance, insurance_context=request.insurance_context
+        )
+        dealer_label = str(request.dealer_up) if request.dealer_up else "unknown"
+        insurance_cost = request.bet // 2
         user_text = (
-            f"{_format_finance_block(finance=finance)}\n\n"
-            f"main_bet_{CURRENCY_NAME}: {bet}\n"
+            f"chosen_decision: {'take' if request.take_insurance else 'decline'}\n\n"
+            f"{_format_finance_block(finance=request.finance)}\n\n"
+            f"main_bet_{CURRENCY_NAME}: {request.bet}\n"
             f"insurance_cost_{CURRENCY_NAME}: {insurance_cost}\n"
             f"insurance_payout_if_won_{CURRENCY_NAME}: {insurance_cost * 2}\n\n"
-            f"opening_hand: {hand_repr}\n"
+            f"opening_hand: {request.hand_repr}\n"
             f"dealer_up_card: {dealer_label}\n"
-            f"{_format_other_players_block(other_players=other_players)}\n\n"
-            f"{format_insurance_context(context=insurance_context)}"
+            f"{_format_other_players_block(other_players=request.other_players)}\n\n"
+            f"{format_insurance_context(context=request.insurance_context)}"
         )
         try:
             async with asyncio.timeout(delay=BOT_INSURANCE_AI_TIMEOUT_SECONDS):
@@ -903,13 +942,13 @@ class BotPlayerAI(BaseModel):
                 )
         except TimeoutError:
             logfire.warn(
-                "Bot insurance decision timed out; declining insurance",
+                "Bot insurance reason narration timed out; using template",
                 timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
             )
-            return fallback_decision
+            return template
         except Exception:
-            logfire.warn("Bot insurance decision failed; declining insurance", _exc_info=True)
-            return fallback_decision
+            logfire.warn("Bot insurance reason narration failed; using template", _exc_info=True)
+            return template
         if responses.output_parsed is None:
-            return fallback_decision
-        return responses.output_parsed
+            return template
+        return responses.output_parsed.reason

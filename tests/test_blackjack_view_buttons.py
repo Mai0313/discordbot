@@ -17,10 +17,15 @@ import pytest
 from nextcord import Embed, Interaction
 
 from discordbot.cogs._games import blackjack_views
-from discordbot.typings.games import GameParticipant, BotFinancialContext, BotPlayerActionDecision
+from discordbot.typings.games import GameParticipant, BotFinancialContext
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.bot_player import BotPlayerAI, BotPlayerActionContext
+from discordbot.cogs._games.bot_player import (
+    BotPlayerAI,
+    BotActionReasonRequest,
+    BotPlayerActionContext,
+    format_action_context,
+)
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
 
 
@@ -478,8 +483,8 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
     view.bot_user_id = 999
     message = MagicMock()
     await view._maybe_play_bot_turn_locked(message=message)
-    assert bot_ai.decide_bot_action.called is False
-    assert bot_ai.decide_bot_insurance.called is False
+    assert bot_ai.narrate_bot_action_reason.called is False
+    assert bot_ai.narrate_bot_insurance_reason.called is False
 
 
 async def test_bot_dispatcher_breaks_when_action_does_not_advance(
@@ -537,24 +542,31 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
     assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
 
 
-async def test_bot_action_dispatch_passes_computed_ai_context(
+async def test_bot_action_plays_ev_action_and_narrates_up_card_only_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Bot action decisions receive dealer up-card and shoe-count context, not the hole."""
+    """The bot plays the EV action deterministically and narrates up-card-only context later."""
     round_state = _round_with_two_cards(
-        player_cards=[Card(rank="10", suit="♠"), Card(rank="2", suit="♥")],
+        player_cards=[Card(rank="2", suit="♠"), Card(rank="3", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="10", suit="♦")],
     )
-    round_state.shoe = [Card(rank="3", suit="♠")]
+    round_state.shoe = [
+        Card(rank="4", suit="♠"),
+        Card(rank="9", suit="♥"),
+        Card(rank="8", suit="♦"),
+        Card(rank="7", suit="♣"),
+        Card(rank="6", suit="♠"),
+        Card(rank="2", suit="♥"),
+    ]
     view = _make_view(round_state=round_state)
 
     class _BotAI:
         def __init__(self) -> None:
-            self.kwargs: dict[str, object] = {}
+            self.request: BotActionReasonRequest | None = None
 
-        async def decide_bot_action(self, **kwargs: object) -> BotPlayerActionDecision:
-            self.kwargs = kwargs
-            return BotPlayerActionDecision(action="hit", reason="補牌安全")
+        async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:
+            self.request = request
+            return "補牌安全"
 
     bot_ai = _BotAI()
 
@@ -570,14 +582,21 @@ async def test_bot_action_dispatch_passes_computed_ai_context(
     await view._dispatch_bot_action_locked(
         message=MagicMock(), active=round_state.players[0], bot_ai=cast("BotPlayerAI", bot_ai)
     )
+    await view.wait_for_background_tasks()
 
-    context = bot_ai.kwargs["action_context"]
+    # A stiff hard 5 is always a hit, so the EV engine drives the deterministic action.
+    assert round_state.players[0].hands[0].cards[-1] == Card(rank="4", suit="♠")
+    request = bot_ai.request
+    assert request is not None
+    assert request.action == "hit"
+    context = request.action_context
     assert isinstance(context, BotPlayerActionContext)
     assert context.dealer.up_card == "10♦"
     assert context.dealer.up_value == 10
-    assert context.shoe_summary.total_cards == 1
-    assert context.shoe_summary.rank_counts["3"] == 1
-    assert round_state.players[0].hands[0].cards[-1] == Card(rank="3", suit="♠")
+    assert context.shoe_summary.total_cards == 6
+    # The dealer hole card (5♣) never reaches the narration context.
+    assert "5♣" not in format_action_context(context=context)
+    assert view._bot_reasons[1] == "hit: 補牌安全"
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:

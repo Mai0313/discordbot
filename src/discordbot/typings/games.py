@@ -280,15 +280,6 @@ class BlackjackDealerDecision(BaseModel):
     reason: str = Field(description="Rationale for the dealer's decision.")
 
 
-class BotPlayerBetDecision(BaseModel):
-    """Structured bet decision returned by the bot player AI."""
-
-    model_config = ConfigDict(frozen=True)
-
-    bet_amount: int = Field(ge=1, description="Chosen wager; at least 1.")
-    reason: str = Field(description="Short Traditional Chinese rationale shown on the bot's seat.")
-
-
 class BotPlayerActionDecision(BaseModel):
     """Structured hit / stand / double / split / surrender decision."""
 
@@ -488,7 +479,6 @@ __all__ = [
     "BotAction",
     "BotFinancialContext",
     "BotPlayerActionDecision",
-    "BotPlayerBetDecision",
     "BotPlayerInsuranceDecision",
     "Card",
     "DealerOutcome",

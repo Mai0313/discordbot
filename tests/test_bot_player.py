@@ -10,18 +10,20 @@ from discordbot.typings.games import (
     BotPlayerInsuranceDecision,
 )
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._games.prompts import (
-    BOT_PLAYER_BET_PROMPT,
-    BOT_PLAYER_ACTION_PROMPT,
-    BOT_PLAYER_INSURANCE_PROMPT,
-)
+from discordbot.cogs._games.prompts import BOT_PLAYER_ACTION_PROMPT, BOT_PLAYER_INSURANCE_PROMPT
 from discordbot.cogs._games.bot_player import (
     BotPlayerAI,
+    BotActionReasonRequest,
+    BotInsuranceReasonRequest,
+    kelly_bet,
     fallback_action,
+    choose_bot_action,
     fallback_insurance,
     format_action_context,
+    action_decision_reason,
     build_bot_action_context,
     format_insurance_context,
+    insurance_decision_reason,
     _format_other_players_block,
     build_bot_insurance_context,
     _format_other_player_bets_block,
@@ -168,16 +170,15 @@ def test_other_player_prompt_blocks_use_neutral_labels() -> None:
     assert "Player1" in bet_block
 
 
-def test_bot_player_prompts_use_english_strategy_with_traditional_chinese_reason() -> None:
-    """Strategy prompts should be English while preserving Traditional Chinese reasons."""
-    assert "Task: choose the next legal Blackjack action" in BOT_PLAYER_ACTION_PROMPT
-    assert "Decision priority:" in BOT_PLAYER_ACTION_PROMPT
+def test_bot_player_prompts_are_narration_only_with_traditional_chinese_reason() -> None:
+    """Decision prompts should narrate the already-fixed choice, never pick it."""
+    assert "narrate the action" in BOT_PLAYER_ACTION_PROMPT
+    assert "chosen_action" in BOT_PLAYER_ACTION_PROMPT
+    assert "`action` must equal chosen_action" in BOT_PLAYER_ACTION_PROMPT
     assert "Traditional Chinese" in BOT_PLAYER_ACTION_PROMPT
-    assert "expected_value" in BOT_PLAYER_ACTION_PROMPT
-    assert "recommended_action" in BOT_PLAYER_ACTION_PROMPT
+    assert "narrate the insurance decision" in BOT_PLAYER_INSURANCE_PROMPT
+    assert "chosen_decision" in BOT_PLAYER_INSURANCE_PROMPT
     assert "ten_value_probability" in BOT_PLAYER_INSURANCE_PROMPT
-    assert "insurance_recommendation" in BOT_PLAYER_INSURANCE_PROMPT
-    assert "Do not chase losses" in BOT_PLAYER_BET_PROMPT
 
 
 def test_action_context_exposes_up_card_only_without_hole() -> None:
@@ -309,14 +310,15 @@ class _FailingClient:
         self.responses = _FailingResponses()
 
 
-async def test_legal_ai_action_is_not_overridden_by_basic_strategy_hint() -> None:
-    """A legal AI action remains authoritative even when fallback would differ."""
-    fake_client = _FakeClient(
-        output_parsed=BotPlayerActionDecision(action="stand", reason="依 EV 停手")
+def _finance() -> BotFinancialContext:
+    """Builds a neutral financial context for bot-player decision tests."""
+    return BotFinancialContext(
+        balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
     )
-    ai = BotPlayerAI.model_construct(
-        client=fake_client, model=ModelSettings(name="test-model", effort="none")
-    )
+
+
+def test_action_uses_ev_recommendation_not_the_llm() -> None:
+    """The played action is the EV engine's hole-aware recommendation; the LLM never decides."""
     action_context = build_bot_action_context(
         hand_cards=[_card(rank="10"), _card(rank="6")],
         dealer_cards=[_card(rank="5"), _card(rank="10")],
@@ -327,112 +329,193 @@ async def test_legal_ai_action_is_not_overridden_by_basic_strategy_hint() -> Non
         bet=100,
         balance_remaining=900,
     )
+    assert action_context.action_analysis.ev_analysis is not None
+    assert action_context.action_analysis.basic_strategy_action == "hit"
 
-    result = await ai.decide_bot_action(
+    chosen = choose_bot_action(
+        action_context=action_context,
         hand_cards=[_card(rank="10"), _card(rank="6")],
         hand_total=16,
-        hand_repr="10♠ 6♠",
         dealer_up=_card(rank="10"),
         is_pair_hand=False,
         allowed_actions=("hit", "stand"),
+    )
+
+    assert chosen == "hit"
+
+
+def test_choose_bot_action_without_context_uses_basic_strategy() -> None:
+    """With no EV context, the deterministic action falls back to the basic-strategy table."""
+    chosen = choose_bot_action(
+        action_context=None,
+        hand_cards=[_card(rank="10"), _card(rank="6")],
+        hand_total=16,
+        dealer_up=_card(rank="J"),
+        is_pair_hand=False,
+        allowed_actions=("hit", "stand", "surrender"),
+    )
+
+    assert chosen == "surrender"
+
+
+def test_insurance_decision_is_count_based_not_llm() -> None:
+    """The insurance decision is the count recommendation; the LLM only narrates it."""
+    take_context = build_bot_insurance_context(
+        dealer_up=_card(rank="A"),
+        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
+        insurance_cost=50,
+    )
+    decline_context = build_bot_insurance_context(
+        dealer_up=_card(rank="A"),
+        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
+        insurance_cost=50,
+    )
+
+    assert fallback_insurance(insurance_context=take_context) is True
+    assert fallback_insurance(insurance_context=decline_context) is False
+
+
+def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:
+    """A positive edge wagers the clamped half-Kelly fraction, floored at the table minimum."""
+    bet = kelly_bet(
+        balance=100_000, table_minimum=100, edge=0.163, variance=1.334, kelly_fraction=0.5
+    )
+
+    assert bet == round(0.5 * 0.163 / 1.334 * 100_000)
+    assert 100 <= bet <= 100_000
+
+
+def test_kelly_bet_floors_at_table_minimum_on_non_positive_edge() -> None:
+    """A non-positive edge falls back to the table minimum instead of refusing to play."""
+    assert kelly_bet(balance=100_000, table_minimum=500, edge=0.0) == 500
+    assert kelly_bet(balance=100_000, table_minimum=500, edge=-0.2) == 500
+
+
+def test_kelly_bet_caps_fraction_and_clamps_to_balance() -> None:
+    """The hard fraction cap bounds the wager even when the edge is extreme."""
+    assert kelly_bet(
+        balance=1_000, table_minimum=1, edge=10.0, variance=1.0, max_fraction=0.10
+    ) == (100)
+    assert kelly_bet(balance=0, table_minimum=100) == 1
+    assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 50
+
+
+async def test_action_narration_returns_llm_reason_for_unknown_dealer() -> None:
+    """Action narration sends the chosen action and a missing up-card as English `unknown`."""
+    client = _FakeClient(output_parsed=BotPlayerActionDecision(action="hit", reason="先停手"))
+    ai = BotPlayerAI.model_construct(
+        client=client, model=ModelSettings(name="test-model", effort="none")
+    )
+    request = BotActionReasonRequest(
+        action="stand",
+        hand_repr="10♠ 7♠",
+        hand_total=17,
+        dealer_up=None,
+        allowed_actions=("hit", "stand"),
         bet=100,
         balance_remaining=900,
-        finance=BotFinancialContext(
-            balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
-        ),
+        finance=_finance(),
+        other_players=[],
+        own_other_hands=[],
+        action_context=None,
+    )
+
+    reason = await ai.narrate_bot_action_reason(request=request)
+
+    assert reason == "先停手"
+    sent_input = client.responses.calls[0]["input"]
+    assert isinstance(sent_input, list)
+    content = sent_input[0]["content"]
+    assert "chosen_action: stand" in content
+    assert "dealer_up_card: unknown" in content
+    assert "未知" not in content
+
+
+async def test_action_narration_falls_back_to_template_on_failure() -> None:
+    """A failed narration degrades to the deterministic template reason, not a crash."""
+    action_context = build_bot_action_context(
+        hand_cards=[_card(rank="10"), _card(rank="6")],
+        dealer_cards=[_card(rank="5"), _card(rank="10")],
+        dealer_up=_card(rank="10"),
+        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4")],
+        allowed_actions=("hit", "stand"),
+        is_pair_hand=False,
+        bet=100,
+        balance_remaining=900,
+    )
+    ai = BotPlayerAI.model_construct(
+        client=_FailingClient(), model=ModelSettings(name="test-model", effort="none")
+    )
+    request = BotActionReasonRequest(
+        action="hit",
+        hand_repr="10♠ 6♠",
+        hand_total=16,
+        dealer_up=_card(rank="10"),
+        allowed_actions=("hit", "stand"),
+        bet=100,
+        balance_remaining=900,
+        finance=_finance(),
         other_players=[],
         own_other_hands=[],
         action_context=action_context,
     )
 
-    assert result.action == "stand"
-    assert action_context.action_analysis.ev_analysis is not None
-    assert action_context.action_analysis.basic_strategy_action == "hit"
-    sent_input = fake_client.responses.calls[0]["input"]
-    assert isinstance(sent_input, list)
-    sent_content = sent_input[0]["content"]
-    assert "server_computed_context:" in sent_content
-    assert "recommended_action.action: hit" in sent_content
-    assert "5♠" not in sent_content
-    assert "dealer.hole_card" not in sent_content
+    reason = await ai.narrate_bot_action_reason(request=request)
+
+    assert reason == action_decision_reason(action_context=action_context)
 
 
-async def test_missing_dealer_up_uses_english_unknown_in_bot_action_prompt() -> None:
-    """Missing dealer up-card labels should match the English prompt contract."""
-    finance = BotFinancialContext(
-        balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
+async def test_insurance_narration_returns_llm_reason_for_unknown_dealer() -> None:
+    """Insurance narration sends the chosen decision and an English `unknown` up-card."""
+    client = _FakeClient(
+        output_parsed=BotPlayerInsuranceDecision(take_insurance=True, reason="不買保險")
     )
-    action_client = _FakeClient(
-        output_parsed=BotPlayerActionDecision(action="stand", reason="先停手")
-    )
-    action_ai = BotPlayerAI.model_construct(
-        client=action_client, model=ModelSettings(name="test-model", effort="none")
-    )
-
-    await action_ai.decide_bot_action(
-        hand_cards=[_card(rank="10"), _card(rank="7")],
-        hand_total=17,
-        hand_repr="10♠ 7♠",
-        dealer_up=None,
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand"),
-        bet=100,
-        balance_remaining=900,
-        finance=finance,
-        other_players=[],
-        own_other_hands=[],
-    )
-
-    action_input = action_client.responses.calls[0]["input"]
-    assert isinstance(action_input, list)
-    action_content = action_input[0]["content"]
-    assert "dealer_up_card: unknown" in action_content
-    assert "未知" not in action_content
-
-
-async def test_missing_dealer_up_uses_english_unknown_in_bot_insurance_prompt() -> None:
-    """Missing dealer up-card labels should match the English insurance prompt contract."""
-    finance = BotFinancialContext(
-        balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
-    )
-    insurance_client = _FakeClient(
-        output_parsed=BotPlayerInsuranceDecision(take_insurance=False, reason="不買保險")
-    )
-    insurance_ai = BotPlayerAI.model_construct(
-        client=insurance_client, model=ModelSettings(name="test-model", effort="none")
-    )
-
-    await insurance_ai.decide_bot_insurance(
-        dealer_up=None, hand_repr="A♠ 10♠", bet=100, finance=finance, other_players=[]
-    )
-
-    insurance_input = insurance_client.responses.calls[0]["input"]
-    assert isinstance(insurance_input, list)
-    insurance_content = insurance_input[0]["content"]
-    assert "dealer_up_card: unknown" in insurance_content
-    assert "未知" not in insurance_content
-
-
-async def test_decide_bot_insurance_fallback_takes_when_count_is_favorable() -> None:
-    """When the LLM fails, the fallback buys insurance only on a ten-rich unseen deck."""
     ai = BotPlayerAI.model_construct(
-        client=_FailingClient(), model=ModelSettings(name="test-model", effort="none")
+        client=client, model=ModelSettings(name="test-model", effort="none")
     )
+    request = BotInsuranceReasonRequest(
+        take_insurance=False,
+        dealer_up=None,
+        hand_repr="A♠ 10♠",
+        bet=100,
+        finance=_finance(),
+        other_players=[],
+        insurance_context=None,
+    )
+
+    reason = await ai.narrate_bot_insurance_reason(request=request)
+
+    assert reason == "不買保險"
+    sent_input = client.responses.calls[0]["input"]
+    assert isinstance(sent_input, list)
+    content = sent_input[0]["content"]
+    assert "chosen_decision: decline" in content
+    assert "dealer_up_card: unknown" in content
+    assert "未知" not in content
+
+
+async def test_insurance_narration_falls_back_to_template_on_failure() -> None:
+    """A failed insurance narration degrades to the count-based template reason."""
     insurance_context = build_bot_insurance_context(
         dealer_up=_card(rank="A"),
         shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
         insurance_cost=50,
     )
-
-    decision = await ai.decide_bot_insurance(
+    ai = BotPlayerAI.model_construct(
+        client=_FailingClient(), model=ModelSettings(name="test-model", effort="none")
+    )
+    request = BotInsuranceReasonRequest(
+        take_insurance=True,
         dealer_up=_card(rank="A"),
         hand_repr="A♠ 9♠",
         bet=100,
-        finance=BotFinancialContext(
-            balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
-        ),
+        finance=_finance(),
         other_players=[],
         insurance_context=insurance_context,
     )
 
-    assert decision.take_insurance is True
+    reason = await ai.narrate_bot_insurance_reason(request=request)
+
+    assert reason == insurance_decision_reason(
+        take_insurance=True, insurance_context=insurance_context
+    )
