@@ -50,8 +50,8 @@ START_BALANCE = 100_000_000
 _BOT_USER_ID = 0
 _MAX_ACTION_STEPS = 64
 # Persistent-shoe mode reshuffles once fewer than this many cards remain, matching
-# the production per-channel shoe penetration cut.
-RESHUFFLE_THRESHOLD_CARDS = 52
+# the production per-channel shoe penetration cut (shoe.py RESHUFFLE_THRESHOLD_CARDS).
+RESHUFFLE_THRESHOLD_CARDS = 96
 console = Console()
 
 

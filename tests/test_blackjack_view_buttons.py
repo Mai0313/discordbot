@@ -660,4 +660,6 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     with pytest.raises(RuntimeError, match="stop after shoe save"):
         await view.finalize(message=view.message)
 
-    assert store.shoes.get(42) is round_state.shoe
+    # The store holds a decoupled copy of the round's remaining shoe.
+    assert store.shoes.get(42) == round_state.shoe
+    assert store.shoes.get(42) is not round_state.shoe

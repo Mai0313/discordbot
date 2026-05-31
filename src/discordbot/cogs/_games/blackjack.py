@@ -517,8 +517,9 @@ class BlackjackRound(BaseModel):
 
         When `shoe` is provided the round deals from it (a persistent per-channel
         shoe carried across rounds for card counting); otherwise a fresh shuffled
-        multi-deck shoe is built. The round draws in place, so the caller's list
-        is left holding the cards that remain after the round.
+        multi-deck shoe is built. The shoe is validated into `round_state.shoe`,
+        which may be a copy of the passed list, so callers persist card depletion
+        by saving `round_state.shoe` after the round, not the list passed in.
         """
         players = [
             BlackjackPlayerHand(

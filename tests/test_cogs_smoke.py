@@ -1666,9 +1666,10 @@ async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     monkeypatch.setattr(games, "guild_avatar_url", fake_avatar)
 
     neutral = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=1)
-    # A ten-rich stored shoe gives channel 2 a strongly positive true count.
+    # A ten-rich stored shoe above the reshuffle threshold gives channel 2 a strongly
+    # positive true count.
     cog._blackjack_shoes.save_shoe(
-        channel_id=2, cards=[Card(rank="10", suit="♠") for _ in range(80)]
+        channel_id=2, cards=[Card(rank="10", suit="♠") for _ in range(120)]
     )
     favorable = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=2)
 

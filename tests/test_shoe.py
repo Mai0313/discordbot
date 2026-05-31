@@ -30,7 +30,7 @@ def test_take_returns_the_stored_shoe_above_the_threshold() -> None:
 
     shoe, reshuffled = store.take_shoe(channel_id=7, rng=Random(0))
 
-    assert shoe is stored
+    assert shoe == stored
     assert reshuffled is False
     # Taking removes it so a concurrent game cannot share the same list.
     assert 7 not in store.shoes
