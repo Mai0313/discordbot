@@ -1507,7 +1507,16 @@ class BlackjackView(View):
             )
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.info("Blackjack settlement done", results=len(results))
-        self._track_background_task(self._record_history_later(message=message, results=results))
+        dealer_cards = list(self.round_state.dealer)
+        dealer_total = self.round_state.dealer_total()
+        self._track_background_task(
+            self._record_history_later(
+                message=message,
+                results=results,
+                dealer_cards=dealer_cards,
+                dealer_total=dealer_total,
+            )
+        )
 
         system_line = self._fallback_settlement_line(results=results)
         talk_embed = build_system_talk_embed(
@@ -1748,7 +1757,12 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=message)
 
     async def _record_history_later(
-        self, *, message: Message, results: list[BlackjackPlayerResult]
+        self,
+        *,
+        message: Message,
+        results: list[BlackjackPlayerResult],
+        dealer_cards: list[Card],
+        dealer_total: int,
     ) -> None:
         """Persists the settled round to the games-history store off the critical path."""
         try:
@@ -1759,8 +1773,8 @@ class BlackjackView(View):
                 message_id=message.id,
                 bot_user_id=self.bot_user_id,
                 results=results,
-                dealer_cards=list(self.round_state.dealer),
-                dealer_total=self.round_state.dealer_total(),
+                dealer_cards=dealer_cards,
+                dealer_total=dealer_total,
             )
         except Exception:
             logfire.warn("Blackjack round history persistence failed", _exc_info=True)
