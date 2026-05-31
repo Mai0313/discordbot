@@ -16,7 +16,7 @@ def _card(rank: str) -> Card:
 def test_first_take_builds_a_fresh_shoe_without_announcing_a_reshuffle() -> None:
     """A channel with no stored shoe gets a full fresh shoe and no reshuffle flag."""
     store = BlackjackShoeStore()
-    shoe, reshuffled = store.take_shoe(channel_id=1, rng=Random(0))
+    shoe, reshuffled, _generation = store.take_shoe(channel_id=1, rng=Random(0))
 
     assert len(shoe) == 208
     assert reshuffled is False
@@ -28,7 +28,7 @@ def test_take_returns_the_stored_shoe_above_the_threshold() -> None:
     stored = [_card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 5)
     store.save_shoe(channel_id=7, cards=stored)
 
-    shoe, reshuffled = store.take_shoe(channel_id=7, rng=Random(0))
+    shoe, reshuffled, _generation = store.take_shoe(channel_id=7, rng=Random(0))
 
     assert shoe == stored
     assert reshuffled is False
@@ -41,7 +41,7 @@ def test_take_reshuffles_and_announces_below_the_threshold() -> None:
     store = BlackjackShoeStore()
     store.save_shoe(channel_id=3, cards=[_card(rank="5")] * (RESHUFFLE_THRESHOLD_CARDS - 1))
 
-    shoe, reshuffled = store.take_shoe(channel_id=3, rng=Random(0))
+    shoe, reshuffled, _generation = store.take_shoe(channel_id=3, rng=Random(0))
 
     assert len(shoe) == 208
     assert reshuffled is True
@@ -53,7 +53,7 @@ def test_save_then_take_round_trips_card_depletion() -> None:
     remaining = [_card(rank="A")] * (RESHUFFLE_THRESHOLD_CARDS + 1)
     store.save_shoe(channel_id=9, cards=remaining)
 
-    shoe, reshuffled = store.take_shoe(channel_id=9, rng=Random(0))
+    shoe, reshuffled, _generation = store.take_shoe(channel_id=9, rng=Random(0))
 
     assert shoe == remaining
     assert reshuffled is False
@@ -75,3 +75,25 @@ def test_true_count_reads_a_countable_stored_shoe() -> None:
     store.save_shoe(channel_id=1, cards=[_card(rank="10")] * (RESHUFFLE_THRESHOLD_CARDS + 4))
 
     assert store.true_count(channel_id=1) > 0
+
+
+def test_older_round_does_not_clobber_a_newer_shoe() -> None:
+    """An earlier-started overlapping round cannot overwrite a newer table's saved shoe."""
+    store = BlackjackShoeStore()
+    # Two tables open in the same channel: the first take pops the (empty) channel, the
+    # second take starts from a fresh shoe; both carry their own generation token.
+    _first_shoe, _first_reshuffled, first_generation = store.take_shoe(channel_id=5, rng=Random(0))
+    _second_shoe, _second_reshuffled, second_generation = store.take_shoe(
+        channel_id=5, rng=Random(1)
+    )
+    assert second_generation > first_generation
+
+    newer = [_card(rank="K")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
+    older = [_card(rank="2")] * (RESHUFFLE_THRESHOLD_CARDS + 2)
+
+    # The newer table settles first and persists its shoe.
+    store.save_shoe(channel_id=5, cards=newer, generation=second_generation)
+    # The older table settles later and must not clobber the newer shoe.
+    store.save_shoe(channel_id=5, cards=older, generation=first_generation)
+
+    assert store.shoes[5] == newer

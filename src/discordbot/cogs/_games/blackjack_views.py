@@ -640,8 +640,9 @@ class BlackjackLobbyView(BaseGameLobbyView):
             return False
         shoe: list[Card] | None = None
         reshuffled = False
+        shoe_generation = 0
         if self._shoe_store is not None:
-            shoe, reshuffled = self._shoe_store.take_shoe(
+            shoe, reshuffled, shoe_generation = self._shoe_store.take_shoe(
                 channel_id=self._channel_id, rng=self.rng
             )
         round_state = BlackjackRound.from_participants(
@@ -670,6 +671,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
             bot_user_id=self.bot_user_id,
             shoe_store=self._shoe_store,
             channel_id=self._channel_id,
+            shoe_generation=shoe_generation,
         )
         view.message = message
         if round_state.finished:
@@ -715,6 +717,7 @@ class BlackjackView(View):
         bot_user_id: int | None = None,
         shoe_store: BlackjackShoeStore | None = None,
         channel_id: int = 0,
+        shoe_generation: int = 0,
     ) -> None:
         """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
@@ -728,6 +731,7 @@ class BlackjackView(View):
         self.bot_user_id = bot_user_id
         self._shoe_store = shoe_store
         self._channel_id = channel_id
+        self._shoe_generation = shoe_generation
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
@@ -1483,7 +1487,11 @@ class BlackjackView(View):
         logfire.info("Blackjack dealer phase done", dealer_total=self.round_state.dealer_total())
 
         if self._shoe_store is not None:
-            self._shoe_store.save_shoe(channel_id=self._channel_id, cards=self.round_state.shoe)
+            self._shoe_store.save_shoe(
+                channel_id=self._channel_id,
+                cards=self.round_state.shoe,
+                generation=self._shoe_generation,
+            )
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:
