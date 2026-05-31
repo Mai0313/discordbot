@@ -30,14 +30,17 @@ nav:
                   - blackjack_ev: Reference/discordbot/cogs/_games/blackjack_ev.md
                   - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
                   - bot_player: Reference/discordbot/cogs/_games/bot_player.md
+                  - database: Reference/discordbot/cogs/_games/database.md
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
+                  - history_board: Reference/discordbot/cogs/_games/history_board.md
                   - interactions: Reference/discordbot/cogs/_games/interactions.md
                   - lobby: Reference/discordbot/cogs/_games/lobby.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
                   - prompts: Reference/discordbot/cogs/_games/prompts.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md
+                  - shoe: Reference/discordbot/cogs/_games/shoe.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
@@ -87,6 +90,7 @@ nav:
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
+              - llm: Reference/discordbot/utils/llm.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
@@ -110,6 +114,7 @@ nav:
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - route_dev: Scripts/route_dev.md
+      - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md
   # <<< auto-generated nav end

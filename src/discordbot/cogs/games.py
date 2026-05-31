@@ -1,5 +1,6 @@
 """Casino-style games (`/games blackjack`, `/games dragon_gate`) wagering economy points."""
 
+from io import BytesIO
 from random import SystemRandom
 from functools import partial, cached_property
 from collections.abc import Callable
@@ -20,10 +21,12 @@ from discordbot.typings.games import (
     ParticipantPreparationResult,
 )
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.cogs._games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
@@ -34,6 +37,10 @@ from discordbot.cogs._economy.database import get_account, get_balance
 from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.cogs._games.history_board import (
+    BLACKJACK_HISTORY_BOARD_FILENAME,
+    build_blackjack_history_board,
+)
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
@@ -282,6 +289,15 @@ class GamesCogs(commands.Cog):
             color=ERROR_COLOR,
         )
 
+    @staticmethod
+    def _blackjack_history_empty_embed(player_name: str) -> Embed:
+        """Builds the embed shown when a player has no recorded Blackjack rounds."""
+        return Embed(
+            title="查無紀錄",
+            description=f"{player_name} 還沒有任何二十一點對局紀錄。",
+            color=IN_PROGRESS_COLOR,
+        )
+
     @nextcord.slash_command(
         name="games",
         description="Game commands.",
@@ -467,6 +483,70 @@ class GamesCogs(commands.Cog):
         )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
+
+    @games.subcommand(
+        name="blackjack_history",
+        description="Show a player's recent Blackjack rounds: hands, bets, and results.",
+        name_localizations={Locale.zh_TW: "二十一點紀錄", Locale.ja: "ブラックジャック履歴"},
+        description_localizations={
+            Locale.zh_TW: "查看某位玩家近期的 21 點對局紀錄：手牌、下注與結果",
+            Locale.ja: "プレイヤーの最近のブラックジャックの手札・賭け金・結果を表示します。",
+        },
+    )
+    async def blackjack_history(
+        self,
+        interaction: Interaction,
+        member: nextcord.Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="Player to inspect; defaults to yourself.",
+            name_localizations={Locale.zh_TW: "玩家", Locale.ja: "プレイヤー"},
+            description_localizations={
+                Locale.zh_TW: "要查看的玩家；預設是自己",
+                Locale.ja: "表示するプレイヤー。省略時は自分。",
+            },
+            required=False,
+            default=None,
+        ),
+        count: int = SlashOption(
+            name="count",
+            description="How many recent rounds to show (1-50, default 10).",
+            name_localizations={Locale.zh_TW: "場數", Locale.ja: "件数"},
+            description_localizations={
+                Locale.zh_TW: "要顯示的最近場數（1-50，預設 10）",
+                Locale.ja: "表示する直近の件数（1〜50、既定 10）。",
+            },
+            required=False,
+            default=10,
+            min_value=1,
+            max_value=50,
+        ),
+    ) -> None:
+        """Replies privately with a player's recent Blackjack rounds as a board image.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            member: Player to inspect; defaults to the caller.
+            count: Number of most recent rounds to render.
+        """
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user is None:
+            return
+        target = member or interaction.user
+        target_name = getattr(target, "display_name", "") or target.name
+        records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
+        if not records:
+            await interaction.followup.send(
+                embed=self._blackjack_history_empty_embed(player_name=target_name), ephemeral=True
+            )
+            return
+        board = build_blackjack_history_board(player_name=target_name, records=records)
+        embed = Embed(title=f"🃏 {target_name} 的二十一點紀錄", color=IN_PROGRESS_COLOR)
+        embed.set_image(url=f"attachment://{BLACKJACK_HISTORY_BOARD_FILENAME}")
+        await interaction.followup.send(
+            embed=embed,
+            file=nextcord.File(fp=BytesIO(board), filename=BLACKJACK_HISTORY_BOARD_FILENAME),
+            ephemeral=True,
+        )
 
 
 def setup(bot: commands.Bot) -> None:
