@@ -244,8 +244,8 @@ def build_simple_embed(  # noqa: PLR0913 -- generic single-section embed exposes
     return embed
 
 
-def build_invalid_admin_amount_embed(*, title: str) -> Embed:
-    """Builds the validation embed for malformed admin adjustment amounts."""
+def build_invalid_amount_embed(*, title: str) -> Embed:
+    """Builds the validation embed for malformed point amount text."""
     return Embed(
         title=title,
         description="### 金額格式錯誤\n請輸入正整數，可以加逗號，例如 `1,000`。",

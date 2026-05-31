@@ -71,6 +71,20 @@ def _parse_positive_amount(raw_amount: str | None) -> int | None:
     return amount
 
 
+def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
+    """Parses optional collection-amount text; blank or 0 collects all owed.
+
+    Returns ``(is_valid, amount)`` where ``amount`` is ``None`` when collecting
+    everything owed. ``is_valid`` is ``False`` only for malformed text.
+    """
+    normalized = (raw_amount or "").replace(",", "").strip()
+    if not normalized:
+        return True, None
+    if not normalized.isdecimal():
+        return False, None
+    return True, int(normalized) or None
+
+
 class EconomyCogs(commands.Cog):
     """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
 
@@ -138,8 +152,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction,
-                embed=embeds.build_invalid_admin_amount_embed(title="退稅失敗"),
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="退稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -188,8 +201,7 @@ class EconomyCogs(commands.Cog):
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
-                interaction=interaction,
-                embed=embeds.build_invalid_admin_amount_embed(title="收稅失敗"),
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="收稅失敗")
             )
             return
         await self._run_admin_adjustment(
@@ -386,16 +398,16 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to transfer (must be positive).",
+            description=f"How much {CURRENCY_NAME} to transfer (must be positive). Commas are allowed.",
             name_localizations={Locale.zh_TW: "虛擬歡樂豆", Locale.ja: "虛擬歡樂豆"},
             description_localizations={
-                Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)",
-                Locale.ja: f"送る{CURRENCY_NAME} (1以上)。",
+                Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)，可加逗號",
+                Locale.ja: f"送る{CURRENCY_NAME} (1以上)。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
     ) -> None:
         """Transfers points from the caller to `member`.
@@ -403,8 +415,14 @@ class EconomyCogs(commands.Cog):
         Args:
             interaction: The interaction that triggered the command.
             member: The recipient.
-            amount: How many points to transfer.
+            amount: Raw transfer amount text parsed by the bot.
         """
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await send_ephemeral_response(
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="轉帳失敗")
+            )
+            return
         await interaction.response.defer()
         if interaction.user is None:
             return
@@ -433,7 +451,7 @@ class EconomyCogs(commands.Cog):
             receiver_id=member.id,
             receiver_name=member.name,
             receiver_avatar_url=receiver_avatar_url,
-            amount=amount,
+            amount=parsed_amount,
         )
         if transfer_result is None:
             balance_now = await get_balance(user_id=sender.id)
@@ -443,13 +461,13 @@ class EconomyCogs(commands.Cog):
                     sender_name=sender.display_name,
                     sender_avatar_url=sender_avatar_url,
                     balance_now=balance_now,
-                    amount=amount,
+                    amount=parsed_amount,
                 ),
             )
             return
 
         embed = embeds.build_transfer_embed(
-            amount=amount,
+            amount=parsed_amount,
             sender=embeds.TransferParticipant(
                 mention=sender.mention, display_name=sender.display_name
             ),
@@ -556,16 +574,16 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to request.",
+            description=f"How much {CURRENCY_NAME} to request. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要借入的{CURRENCY_NAME}",
-                Locale.ja: f"借入する{CURRENCY_NAME}。",
+                Locale.zh_TW: f"要借入的{CURRENCY_NAME}，可加逗號",
+                Locale.ja: f"借入する{CURRENCY_NAME}。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
         monthly_rate_percent: float = SlashOption(
             name="monthly_rate_percent",
@@ -586,9 +604,15 @@ class EconomyCogs(commands.Cog):
         Args:
             interaction: The interaction that triggered the command.
             member: The requested lender.
-            amount: How many points to borrow.
+            amount: Raw borrow amount text parsed by the bot.
             monthly_rate_percent: Monthly simple-interest rate.
         """
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await send_ephemeral_response(
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="借款失敗")
+            )
+            return
         await interaction.response.defer()
         if interaction.user is None:
             return
@@ -627,7 +651,7 @@ class EconomyCogs(commands.Cog):
             lender_id=member.id,
             lender_name=member.name,
             lender_avatar_url=lender_avatar_url,
-            amount=amount,
+            amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
         if proposal is None:
@@ -647,7 +671,7 @@ class EconomyCogs(commands.Cog):
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
             lender=embeds.LoanParty(mention=member.mention, avatar_url=lender_avatar_url),
-            amount=amount,
+            amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
         await send_loan_request_followup(
@@ -677,16 +701,16 @@ class EconomyCogs(commands.Cog):
             description_localizations={Locale.zh_TW: "要還款給誰", Locale.ja: "返済先の lender。"},
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"Maximum {CURRENCY_NAME} to apply against personal debt.",
+            description=f"Maximum {CURRENCY_NAME} to apply against personal debt. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME}",
-                Locale.ja: f"返済する{CURRENCY_NAME}の上限。",
+                Locale.zh_TW: f"要還款的最高{CURRENCY_NAME}，可加逗號",
+                Locale.ja: f"返済する{CURRENCY_NAME}の上限。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
     ) -> None:
         """Pays down active personal loans owed to `member`.
@@ -694,9 +718,15 @@ class EconomyCogs(commands.Cog):
         Args:
             interaction: The interaction that triggered the command.
             member: The personal lender.
-            amount: Maximum amount to repay.
+            amount: Raw repayment amount text parsed by the bot.
         """
         if interaction.user is None:
+            return
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await send_ephemeral_response(
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="還款失敗")
+            )
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(
@@ -708,7 +738,7 @@ class EconomyCogs(commands.Cog):
             borrower_name=user.name,
             borrower_avatar_url=user_avatar_url,
             lender_id=member.id,
-            amount=amount,
+            amount=parsed_amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)
@@ -755,21 +785,26 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description="Maximum amount to collect; omit or 0 means all owed.",
+            description="Maximum amount to collect; omit or 0 means all owed. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: "最多回收多少；0 代表嘗試全收",
-                Locale.ja: "回収上限。0 は全額。",
+                Locale.zh_TW: "最多回收多少；留空或 0 代表嘗試全收，可加逗號",
+                Locale.ja: "回収上限。空欄または 0 は全額。カンマ可。",
             },
             required=False,
-            default=0,
-            min_value=0,
+            default="",
         ),
     ) -> None:
         """Forcibly collects a personal loan from a borrower."""
         if interaction.user is None:
+            return
+        is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
+        if not is_valid:
+            await send_ephemeral_response(
+                interaction=interaction, embed=embeds.build_invalid_amount_embed(title="催收失敗")
+            )
             return
         user = interaction.user
         borrower_avatar_url = await guild_avatar_url(
@@ -780,7 +815,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=amount or None,
+            amount=collect_amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)
@@ -858,16 +893,16 @@ class EconomyCogs(commands.Cog):
     async def central_bank_borrow(
         self,
         interaction: Interaction,
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description=f"How much {CURRENCY_NAME} to request.",
+            description=f"How much {CURRENCY_NAME} to request. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: f"要向中央銀行借的{CURRENCY_NAME}",
-                Locale.ja: f"中央銀行から借入する{CURRENCY_NAME}。",
+                Locale.zh_TW: f"要向中央銀行借的{CURRENCY_NAME}，可加逗號",
+                Locale.ja: f"中央銀行から借入する{CURRENCY_NAME}。カンマ可。",
             },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
         monthly_rate_percent: float = SlashOption(
             name="monthly_rate_percent",
@@ -884,6 +919,13 @@ class EconomyCogs(commands.Cog):
         ),
     ) -> None:
         """Creates a central bank loan request."""
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await send_ephemeral_response(
+                interaction=interaction,
+                embed=embeds.build_invalid_amount_embed(title="央行借款失敗"),
+            )
+            return
         await interaction.response.defer()
         if interaction.user is None:
             return
@@ -896,7 +938,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=user.id,
             borrower_name=user.name,
             borrower_avatar_url=user_avatar_url,
-            amount=amount,
+            amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
         if proposal is None:
@@ -911,7 +953,7 @@ class EconomyCogs(commands.Cog):
             borrower=embeds.LoanParty(
                 mention=user.mention, display_name=user.display_name, avatar_url=user_avatar_url
             ),
-            amount=amount,
+            amount=parsed_amount,
             monthly_rate_bps=monthly_rate_bps,
         )
         await send_loan_request_followup(
@@ -937,17 +979,27 @@ class EconomyCogs(commands.Cog):
     async def central_bank_repay(
         self,
         interaction: Interaction,
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description="Maximum amount to repay.",
+            description="Maximum amount to repay. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
-            description_localizations={Locale.zh_TW: "最多還款多少", Locale.ja: "返済上限。"},
+            description_localizations={
+                Locale.zh_TW: "最多還款多少，可加逗號",
+                Locale.ja: "返済上限。カンマ可。",
+            },
             required=True,
-            min_value=1,
+            min_length=1,
         ),
     ) -> None:
         """Repays central-bank debt."""
         if interaction.user is None:
+            return
+        parsed_amount = _parse_positive_amount(raw_amount=amount)
+        if parsed_amount is None:
+            await send_ephemeral_response(
+                interaction=interaction,
+                embed=embeds.build_invalid_amount_embed(title="央行還款失敗"),
+            )
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(
@@ -957,7 +1009,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=user.id,
             borrower_name=user.name,
             borrower_avatar_url=user_avatar_url,
-            amount=amount,
+            amount=parsed_amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)
@@ -999,21 +1051,27 @@ class EconomyCogs(commands.Cog):
             },
             required=True,
         ),
-        amount: int = SlashOption(
+        amount: str = SlashOption(
             name="amount",
-            description="Maximum amount to collect; 0 means all owed.",
+            description="Maximum amount to collect; omit or 0 means all owed. Commas are allowed.",
             name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
-                Locale.zh_TW: "最多回收多少；0 代表嘗試全收",
-                Locale.ja: "回収上限。0 は全額。",
+                Locale.zh_TW: "最多回收多少；留空或 0 代表嘗試全收，可加逗號",
+                Locale.ja: "回収上限。空欄または 0 は全額。カンマ可。",
             },
             required=False,
-            default=0,
-            min_value=0,
+            default="",
         ),
     ) -> None:
         """Central-bank forced collection."""
         if interaction.user is None:
+            return
+        is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
+        if not is_valid:
+            await send_ephemeral_response(
+                interaction=interaction,
+                embed=embeds.build_invalid_amount_embed(title="央行催收失敗"),
+            )
             return
         if not await get_central_banker(user_id=interaction.user.id):
             await interaction.response.defer(ephemeral=True)
@@ -1031,7 +1089,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=amount or None,
+            amount=collect_amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)

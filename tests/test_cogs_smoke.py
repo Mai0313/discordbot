@@ -60,7 +60,7 @@ TEST_DEALER_MODEL = "test-dealer-llm-model"
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import AsyncIterator
+    from collections.abc import Callable, Awaitable, AsyncIterator
 
     from openai import AsyncOpenAI
     import pytest
@@ -638,28 +638,28 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="50"
     )
     await EconomyCogs.give.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=100
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="100"
     )
     await EconomyCogs.credit_borrow.callback(
         cog,
         interaction,
         member=FakeUser(user_id=2, name="bob"),
-        amount=100,
+        amount="100",
         monthly_rate_percent=3.0,
     )
     await EconomyCogs.credit_repay.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=50
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="50"
     )
     await EconomyCogs.credit_call.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="0"
     )
     await EconomyCogs.credit_status.callback(cog, interaction)
     await EconomyCogs.central_bank_borrow.callback(
-        cog, interaction, amount=100, monthly_rate_percent=3.0
+        cog, interaction, amount="100", monthly_rate_percent=3.0
     )
-    await EconomyCogs.central_bank_repay.callback(cog, interaction, amount=50)
+    await EconomyCogs.central_bank_repay.callback(cog, interaction, amount="50")
     await EconomyCogs.central_bank_call.callback(
-        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount=0
+        cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="0"
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
     await EconomyCogs.checkin_command.callback(cog, interaction)
@@ -714,7 +714,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
-        cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount=1
+        cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount="1"
     )
     assert "轉帳完成" in bot_receiver.followup.sent[0]["embed"].title
 
@@ -1078,7 +1078,7 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     )
     cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
 
-    await EconomyCogs.give.callback(cog, interaction, member=receiver, amount=100)
+    await EconomyCogs.give.callback(cog, interaction, member=receiver, amount="100")
 
     assert captured_sender_avatar_url == "https://example.test/alice-server.png"
     assert captured_receiver_avatar_url == "https://example.test/bob-server.png"
@@ -1117,7 +1117,7 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     )
     cog = EconomyCogs(bot=SimpleNamespace(user=bot_receiver))
 
-    await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount=100)
+    await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount="100")
 
     assert captured_transfer == {
         "sender_id": 1,
@@ -1127,6 +1127,165 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
         "amount": 100,
     }
     assert "轉帳完成" in interaction.followup.sent[0]["embed"].title
+
+
+async def test_economy_money_commands_accept_large_string_amounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loan, transfer, and collection amounts parse beyond Discord integer option limits."""
+    big_amount = 9_007_199_254_740_993
+    captured: dict[str, int | None] = {}
+
+    async def record_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
+        captured["give"] = kwargs["amount"]
+        return TransferResult(sender_balance=0, receiver_balance=0)
+
+    async def record_create_personal(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+        captured["credit_borrow"] = kwargs["amount"]
+        return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST)
+
+    async def record_create_central(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+        captured["central_bank_borrow"] = kwargs["amount"]
+        return _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
+
+    async def record_repay_personal(**kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+        captured["credit_repay"] = kwargs["amount"]
+        return await fake_loan_payment()
+
+    async def record_repay_central(**kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+        captured["central_bank_repay"] = kwargs["amount"]
+        return await fake_loan_payment()
+
+    async def record_call_personal(**kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+        captured["credit_call"] = kwargs["amount"]
+        return await fake_loan_payment()
+
+    async def record_call_central(**kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+        captured["central_bank_call"] = kwargs["amount"]
+        return await fake_loan_payment()
+
+    monkeypatch.setattr(economy, "transfer", record_transfer)
+    monkeypatch.setattr(economy, "create_personal_loan_request", record_create_personal)
+    monkeypatch.setattr(economy, "create_central_bank_loan_request", record_create_central)
+    monkeypatch.setattr(economy, "repay_personal_loans", record_repay_personal)
+    monkeypatch.setattr(economy, "repay_central_bank_loans", record_repay_central)
+    monkeypatch.setattr(economy, "call_personal_loans", record_call_personal)
+    monkeypatch.setattr(economy, "call_central_bank_loans", record_call_central)
+    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    monkeypatch.setattr(
+        interactions, "schedule_public_message_delete", ignore_scheduled_public_message
+    )
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    big_text = "9,007,199,254,740,993"
+    member = FakeUser(user_id=2, name="bob")
+
+    await EconomyCogs.give.callback(cog, interaction, member=member, amount=big_text)
+    await EconomyCogs.credit_borrow.callback(
+        cog, interaction, member=member, amount=big_text, monthly_rate_percent=3.0
+    )
+    await EconomyCogs.credit_repay.callback(cog, interaction, member=member, amount=big_text)
+    await EconomyCogs.credit_call.callback(cog, interaction, member=member, amount=big_text)
+    await EconomyCogs.central_bank_borrow.callback(
+        cog, interaction, amount=big_text, monthly_rate_percent=3.0
+    )
+    await EconomyCogs.central_bank_repay.callback(cog, interaction, amount=big_text)
+    await EconomyCogs.central_bank_call.callback(cog, interaction, member=member, amount=big_text)
+
+    assert captured == {
+        "give": big_amount,
+        "credit_borrow": big_amount,
+        "credit_repay": big_amount,
+        "credit_call": big_amount,
+        "central_bank_borrow": big_amount,
+        "central_bank_repay": big_amount,
+        "central_bank_call": big_amount,
+    }
+
+    await EconomyCogs.credit_call.callback(cog, interaction, member=member, amount="0")
+    await EconomyCogs.central_bank_call.callback(cog, interaction, member=member, amount="")
+    assert captured["credit_call"] is None
+    assert captured["central_bank_call"] is None
+
+
+async def test_economy_money_commands_reject_invalid_amount_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed amount text is rejected before any balance, loan, or collection mutation."""
+    mutated: list[str] = []
+
+    async def guard_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
+        del kwargs
+        mutated.append("transfer")
+        return TransferResult(sender_balance=0, receiver_balance=0)
+
+    async def guard_create_personal(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+        del kwargs
+        mutated.append("create_personal")
+        return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST)
+
+    async def guard_create_central(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+        del kwargs
+        mutated.append("create_central")
+        return _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
+
+    async def guard_payment(**kwargs: Any) -> LoanPaymentResult:  # noqa: ANN401 -- command facade double
+        del kwargs
+        mutated.append("payment")
+        return await fake_loan_payment()
+
+    monkeypatch.setattr(economy, "transfer", guard_transfer)
+    monkeypatch.setattr(economy, "create_personal_loan_request", guard_create_personal)
+    monkeypatch.setattr(economy, "create_central_bank_loan_request", guard_create_central)
+    monkeypatch.setattr(economy, "repay_personal_loans", guard_payment)
+    monkeypatch.setattr(economy, "repay_central_bank_loans", guard_payment)
+    monkeypatch.setattr(economy, "call_personal_loans", guard_payment)
+    monkeypatch.setattr(economy, "call_central_bank_loans", guard_payment)
+    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    member = FakeUser(user_id=2, name="bob")
+
+    def assert_rejected(interaction: FakeInteraction, expected_title: str) -> None:
+        """Asserts an ephemeral malformed-amount rejection with no mutation followup."""
+        assert interaction.response.sent[0]["ephemeral"] is True
+        assert interaction.response.sent[0]["embed"].title == expected_title
+        assert "金額格式錯誤" in interaction.response.sent[0]["embed"].description
+        assert interaction.followup.sent == []
+
+    rejections: list[tuple[str, Callable[[FakeInteraction], Awaitable[None]]]] = [
+        ("轉帳失敗", lambda i: EconomyCogs.give.callback(cog, i, member=member, amount="x")),
+        (
+            "借款失敗",
+            lambda i: EconomyCogs.credit_borrow.callback(
+                cog, i, member=member, amount="x", monthly_rate_percent=3.0
+            ),
+        ),
+        (
+            "還款失敗",
+            lambda i: EconomyCogs.credit_repay.callback(cog, i, member=member, amount="x"),
+        ),
+        (
+            "催收失敗",
+            lambda i: EconomyCogs.credit_call.callback(cog, i, member=member, amount="x"),
+        ),
+        (
+            "央行借款失敗",
+            lambda i: EconomyCogs.central_bank_borrow.callback(
+                cog, i, amount="x", monthly_rate_percent=3.0
+            ),
+        ),
+        ("央行還款失敗", lambda i: EconomyCogs.central_bank_repay.callback(cog, i, amount="x")),
+        (
+            "央行催收失敗",
+            lambda i: EconomyCogs.central_bank_call.callback(cog, i, member=member, amount="x"),
+        ),
+    ]
+    for expected_title, invoke in rejections:
+        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+        await invoke(interaction)
+        assert_rejected(interaction, expected_title)
+
+    assert mutated == []
 
 
 async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyPatch) -> None:
