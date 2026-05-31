@@ -1691,6 +1691,22 @@ def test_games_commands_are_grouped_under_games() -> None:
     assert GamesCogs.dragon_gate.name_localizations[nextcord.Locale.zh_TW] == "射龍門"
 
 
+async def test_blackjack_history_missing_user_sends_notice() -> None:
+    """A missing interaction user gets feedback instead of an empty deferred response."""
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    interaction = FakeInteraction()
+    cast("Any", interaction).user = None
+
+    await GamesCogs.blackjack_history.callback(cog, interaction, member=None, count=10)
+
+    assert interaction.response.deferred is False
+    assert interaction.response.sent[0]["ephemeral"] is True
+    content = interaction.response.sent[0]["content"]
+    assert isinstance(content, str)
+    assert "無法辨識使用者" in content
+    assert interaction.followup.sent == []
+
+
 def test_parse_wager_amount_accepts_formatted_text() -> None:
     """Verifies wager text parsing avoids Discord integer option limits."""
     assert parse_wager_amount(raw_amount="9,007,199,254,740,993") == 9_007_199_254_740_993

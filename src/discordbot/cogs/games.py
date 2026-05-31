@@ -35,6 +35,7 @@ from discordbot.cogs._economy.database import get_account, get_balance
 from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
+from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
@@ -515,9 +516,14 @@ class GamesCogs(commands.Cog):
             member: Player to inspect; defaults to the caller.
             count: Number of most recent rounds to render.
         """
-        await interaction.response.defer()
         if interaction.user is None:
+            await send_ephemeral_notice(
+                interaction=interaction,
+                content="無法辨識使用者，請稍後再試",
+                log_message="Failed to send Blackjack history missing-user notice",
+            )
             return
+        await interaction.response.defer()
         target = member or interaction.user
         target_name = getattr(target, "display_name", "") or target.name
         records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
