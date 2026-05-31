@@ -5,22 +5,22 @@ from pathlib import Path
 from datetime import datetime
 from collections.abc import AsyncIterator
 
-import pytest
 from PIL import Image
+import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.typings.games import (
     Card,
     GameParticipant,
-    BlackjackPlayerResult,
     BlackjackHistoryHand,
+    BlackjackPlayerResult,
     BlackjackHistoryRecord,
-    BlackjackHistoryPayload,
     BlackjackHandSettlement,
+    BlackjackHistoryPayload,
     BlackjackPlayerSettlement,
     BlackjackInsuranceSettlement,
 )
+from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.cogs._games.database import (
     Base,
     record_blackjack_history,
@@ -61,7 +61,7 @@ def _participant(*, user_id: int, name: str, bet: int) -> GameParticipant:
     )
 
 
-def _result(
+def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     *,
     participant: GameParticipant,
     outcome: str,
@@ -79,7 +79,7 @@ def _result(
         base_delta=delta,
         vip_bonus=0,
         is_vip=is_vip,
-        outcome=outcome,  # type: ignore[arg-type]
+        outcome=outcome,
         detail="",
         hands=hands,
         insurance=insurance,
@@ -99,7 +99,7 @@ def _record_view(*, delta: int, outcome: str) -> BlackjackHistoryRecord:
         is_bot=False,
         is_vip=False,
         bet=1_000,
-        outcome=outcome,  # type: ignore[arg-type]
+        outcome=outcome,
         delta=delta,
         payload=BlackjackHistoryPayload(
             hands=[
@@ -107,7 +107,7 @@ def _record_view(*, delta: int, outcome: str) -> BlackjackHistoryRecord:
                     cards=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")],
                     total=21,
                     bet=1_000,
-                    outcome=outcome,  # type: ignore[arg-type]
+                    outcome=outcome,
                     delta=delta,
                 )
             ],
@@ -153,7 +153,11 @@ async def test_record_and_fetch_roundtrip(games_isolated_db: None) -> None:
         delta=-2_000,
         hands=[
             BlackjackHandSettlement(
-                cards=[Card(rank="J", suit="♠"), Card(rank="Q", suit="♥"), Card(rank="5", suit="♣")],
+                cards=[
+                    Card(rank="J", suit="♠"),
+                    Card(rank="Q", suit="♥"),
+                    Card(rank="5", suit="♣"),
+                ],
                 bet=2_000,
                 outcome="player_bust",
                 delta=-2_000,

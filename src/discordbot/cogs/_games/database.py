@@ -24,21 +24,21 @@ from sqlalchemy import Text, Index, String, Boolean, Integer, DateTime, event, s
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
-from discordbot.utils.timezone import as_taipei as _as_taipei
-from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.games import (
     Card,
     SettleOutcome,
-    BlackjackPlayerResult,
     BlackjackHistoryHand,
+    BlackjackPlayerResult,
     BlackjackHistoryRecord,
-    BlackjackHistoryPayload,
     BlackjackHandSettlement,
+    BlackjackHistoryPayload,
     BlackjackHistoryInsurance,
 )
+from discordbot.utils.timezone import as_taipei as _as_taipei
+from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.sqlite_config import configure_sqlite_connection
-from discordbot.cogs._games.blackjack import hand_value
 from discordbot.utils.stored_integer import StoredInteger
+from discordbot.cogs._games.blackjack import hand_value
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/games.db")
 _schema_ready_for: AsyncEngine | None = None
@@ -181,7 +181,7 @@ def _history_payload(
     )
 
 
-async def record_blackjack_history(
+async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs full table context
     *,
     round_id: str,
     channel_id: int,

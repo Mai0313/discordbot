@@ -16,8 +16,8 @@ from collections.abc import Sequence
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict
 
-from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.typings.games import SettleOutcome, BlackjackHistoryRecord, BlackjackHistoryPayload
+from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.utils.number_text import compact_amount
 
 BLACKJACK_HISTORY_BOARD_FILENAME = "blackjack_history.png"
@@ -173,8 +173,7 @@ def _draw_header(
     )
     draw.text(xy=(x, y), text=title, font=fonts["title"], fill=_TEXT)
     record_summary = (
-        f"近 {summary.rounds} 場 · "
-        f"{summary.wins} 勝 {summary.losses} 敗 {summary.pushes} 和"
+        f"近 {summary.rounds} 場 · {summary.wins} 勝 {summary.losses} 敗 {summary.pushes} 和"
     )
     draw.text(xy=(x, y + 44), text=record_summary, font=fonts["summary"], fill=_MUTED)
     draw_text_right(
