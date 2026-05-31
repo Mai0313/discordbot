@@ -161,4 +161,6 @@ def build_blackjack_history_embed(
     parts = [summary_line, _render_block(rows=rows)]
     if omitted:
         parts.append(f"-# 還有 {omitted} 場較舊紀錄未顯示")
-    return Embed(title=title, description="\n".join(parts), color=_net_color(net_delta=summary.net_delta))
+    return Embed(
+        title=title, description="\n".join(parts), color=_net_color(net_delta=summary.net_delta)
+    )
