@@ -24,6 +24,7 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.cogs._games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
     track_public_message,
@@ -33,7 +34,10 @@ from discordbot.utils.message_cleanup import (
 from discordbot.cogs._economy.database import get_account, get_balance
 from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
+from discordbot.cogs._games.history_text import build_blackjack_history_embed
+from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
@@ -467,6 +471,64 @@ class GamesCogs(commands.Cog):
         )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
+
+    @games.subcommand(
+        name="blackjack_history",
+        description="Show a player's recent Blackjack rounds: hands, bets, and results.",
+        name_localizations={Locale.zh_TW: "二十一點紀錄", Locale.ja: "ブラックジャック履歴"},
+        description_localizations={
+            Locale.zh_TW: "查看某位玩家近期的 21 點對局紀錄：手牌、下注與結果",
+            Locale.ja: "プレイヤーの最近のブラックジャックの手札・賭け金・結果を表示します。",
+        },
+    )
+    async def blackjack_history(
+        self,
+        interaction: Interaction,
+        member: nextcord.Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+            name="member",
+            description="Player to inspect; defaults to yourself.",
+            name_localizations={Locale.zh_TW: "玩家", Locale.ja: "プレイヤー"},
+            description_localizations={
+                Locale.zh_TW: "要查看的玩家；預設是自己",
+                Locale.ja: "表示するプレイヤー。省略時は自分。",
+            },
+            required=False,
+            default=None,
+        ),
+        count: int = SlashOption(
+            name="count",
+            description="How many recent rounds to show (1-50, default 10).",
+            name_localizations={Locale.zh_TW: "場數", Locale.ja: "件数"},
+            description_localizations={
+                Locale.zh_TW: "要顯示的最近場數（1-50，預設 10）",
+                Locale.ja: "表示する直近の件数（1〜50、既定 10）。",
+            },
+            required=False,
+            default=10,
+            min_value=1,
+            max_value=50,
+        ),
+    ) -> None:
+        """Publicly posts a player's recent Blackjack rounds as a text table.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            member: Player to inspect; defaults to the caller.
+            count: Number of most recent rounds to render.
+        """
+        if interaction.user is None:
+            await send_ephemeral_notice(
+                interaction=interaction,
+                content="無法辨識使用者，請稍後再試",
+                log_message="Failed to send Blackjack history missing-user notice",
+            )
+            return
+        await interaction.response.defer()
+        target = member or interaction.user
+        target_name = getattr(target, "display_name", "") or target.name
+        records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
+        embed = build_blackjack_history_embed(player_name=target_name, records=records)
+        await send_expiring_followup(interaction=interaction, embed=embed)
 
 
 def setup(bot: commands.Bot) -> None:

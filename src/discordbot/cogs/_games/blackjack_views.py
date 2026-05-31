@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 import contextlib
@@ -23,6 +24,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs._games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
+from discordbot.cogs._games.database import record_blackjack_history
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
@@ -1505,6 +1507,16 @@ class BlackjackView(View):
             )
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
         logfire.info("Blackjack settlement done", results=len(results))
+        dealer_cards = list(self.round_state.dealer)
+        dealer_total = self.round_state.dealer_total()
+        self._track_background_task(
+            self._record_history_later(
+                message=message,
+                results=results,
+                dealer_cards=dealer_cards,
+                dealer_total=dealer_total,
+            )
+        )
 
         system_line = self._fallback_settlement_line(results=results)
         talk_embed = build_system_talk_embed(
@@ -1743,6 +1755,29 @@ class BlackjackView(View):
                 return
             self._system_line = system_line
             await self._edit_in_progress_locked(message=message)
+
+    async def _record_history_later(
+        self,
+        *,
+        message: Message,
+        results: list[BlackjackPlayerResult],
+        dealer_cards: list[Card],
+        dealer_total: int,
+    ) -> None:
+        """Persists the settled round to the games-history store off the critical path."""
+        try:
+            await record_blackjack_history(
+                round_id=uuid4().hex,
+                channel_id=self._channel_id,
+                guild_id=message.guild.id if message.guild is not None else 0,
+                message_id=message.id,
+                bot_user_id=self.bot_user_id,
+                results=results,
+                dealer_cards=dealer_cards,
+                dealer_total=dealer_total,
+            )
+        except Exception:
+            logfire.warn("Blackjack round history persistence failed", _exc_info=True)
 
     async def _refresh_settlement_line_later(
         self, *, message: Message, results: list[BlackjackPlayerResult], seat_embeds: list[Embed]

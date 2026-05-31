@@ -1,4 +1,5 @@
 from typing import Literal
+from datetime import datetime
 
 from pydantic import Field, BaseModel, ConfigDict
 
@@ -269,6 +270,132 @@ class BlackjackPlayerResult(BaseModel):
     settlement: BlackjackPlayerSettlement = Field(
         description="Database-backed result for that player's hand."
     )
+
+
+class BlackjackHistoryHand(BaseModel):
+    """One sub-hand snapshot persisted in a Blackjack round-history record.
+
+    Attributes:
+        cards: Cards held by this sub-hand at settlement time.
+        total: Final hand value for this sub-hand (bust totals exceed 21).
+        bet: Effective wager for this hand (doubled bets land here as 2x).
+        outcome: Player-facing outcome label for this sub-hand.
+        delta: Dealer-paid signed point change for this single hand.
+        five_card_bonus: System-funded bonus for a five-card 21.
+        five_card_twenty_one: True when this hand made five or more cards totaling 21.
+        doubled: True if this hand was doubled.
+        surrendered: True if this hand was surrendered.
+        is_split_hand: True if this hand came out of a Split.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cards: list[Card] = Field(description="Cards held by this sub-hand at settlement time.")
+    total: int = Field(description="Final hand value for this sub-hand (bust totals exceed 21).")
+    bet: int = Field(description="Effective wager for this hand (doubled bets land here as 2x).")
+    outcome: SettleOutcome = Field(description="Player-facing outcome label for this sub-hand.")
+    delta: int = Field(description="Dealer-paid signed point change for this single hand.")
+    five_card_bonus: int = Field(default=0, description="System-funded bonus for a five-card 21.")
+    five_card_twenty_one: bool = Field(
+        default=False, description="True when this hand made five or more cards totaling 21."
+    )
+    doubled: bool = Field(default=False, description="True if this hand was doubled.")
+    surrendered: bool = Field(default=False, description="True if this hand was surrendered.")
+    is_split_hand: bool = Field(
+        default=False, description="True if this hand came out of a Split."
+    )
+
+
+class BlackjackHistoryInsurance(BaseModel):
+    """Insurance side-bet snapshot persisted in a Blackjack round-history record.
+
+    Attributes:
+        bet: Insurance bet amount (half the original wager).
+        won: True only when the dealer's hole-card peek was a Blackjack.
+        delta: Signed point change for this side bet.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bet: int = Field(description="Insurance bet amount (half the original wager).")
+    won: bool = Field(description="True only when the dealer's hole-card peek was a Blackjack.")
+    delta: int = Field(description="Signed point change for this side bet.")
+
+
+class BlackjackHistoryPayload(BaseModel):
+    """Full per-player round snapshot serialized into a history row's JSON column.
+
+    Attributes:
+        hands: Per-hand snapshots in display order (one entry, or two after a Split).
+        dealer_cards: Dealer's final hand at settlement time.
+        dealer_total: Dealer's final hand value.
+        insurance: Insurance side-bet snapshot, or None when never taken.
+        vip_bonus: Extra points added by the VIP payout bonus.
+        five_card_bonus: Aggregate system-funded five-card 21 bonus.
+        balance_at_start: Player balance observed when the round started.
+        new_balance: Player balance after applying the round delta.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    hands: list[BlackjackHistoryHand] = Field(
+        default_factory=list, description="Per-hand snapshots in display order."
+    )
+    dealer_cards: list[Card] = Field(
+        default_factory=list, description="Dealer's final hand at settlement time."
+    )
+    dealer_total: int = Field(default=0, description="Dealer's final hand value.")
+    insurance: BlackjackHistoryInsurance | None = Field(
+        default=None, description="Insurance side-bet snapshot, or None when never taken."
+    )
+    vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
+    five_card_bonus: int = Field(
+        default=0, description="Aggregate system-funded five-card 21 bonus."
+    )
+    balance_at_start: int = Field(
+        default=0, description="Player balance observed when the round started."
+    )
+    new_balance: int = Field(
+        default=0, description="Player balance after applying the round delta."
+    )
+
+
+class BlackjackHistoryRecord(BaseModel):
+    """One persisted Blackjack round result for a player, read back for display.
+
+    Attributes:
+        round_id: Shared identifier for every player row of the same round.
+        channel_id: Discord channel the round was played in.
+        guild_id: Discord guild the round was played in, or 0 for DMs.
+        message_id: Discord message id of the settled table.
+        user_id: Discord user id of the player.
+        user_name: Stored Discord username of the player.
+        is_bot: True when this row belongs to the bot player.
+        is_vip: True when the VIP perk was active for this settlement.
+        bet: Base wager for the player this round.
+        outcome: Aggregate player-facing outcome for the round.
+        delta: Net signed point change for the round.
+        payload: Full per-player round snapshot used by the history renderer.
+        created_at: Asia/Taipei timestamp the round settled at.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    round_id: str = Field(description="Shared identifier for every player row of the same round.")
+    channel_id: int = Field(description="Discord channel the round was played in.")
+    guild_id: int = Field(description="Discord guild the round was played in, or 0 for DMs.")
+    message_id: int = Field(description="Discord message id of the settled table.")
+    user_id: int = Field(description="Discord user id of the player.")
+    user_name: str = Field(description="Stored Discord username of the player.")
+    is_bot: bool = Field(description="True when this row belongs to the bot player.")
+    is_vip: bool = Field(description="True when the VIP perk was active for this settlement.")
+    bet: int = Field(description="Base wager for the player this round.")
+    outcome: SettleOutcome = Field(description="Aggregate player-facing outcome for the round.")
+    delta: int = Field(description="Net signed point change for the round.")
+    payload: BlackjackHistoryPayload = Field(
+        description="Full per-player round snapshot used by the history renderer."
+    )
+    created_at: datetime = Field(description="Asia/Taipei timestamp the round settled at.")
 
 
 class BlackjackDealerDecision(BaseModel):

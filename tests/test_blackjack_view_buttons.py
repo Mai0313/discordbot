@@ -9,6 +9,7 @@ player AI integration.
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
+from types import SimpleNamespace
 from random import Random
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +18,13 @@ import pytest
 from nextcord import Embed, Interaction
 
 from discordbot.cogs._games import blackjack_views
-from discordbot.typings.games import GameParticipant, BotFinancialContext
+from discordbot.typings.games import (
+    GameParticipant,
+    BotFinancialContext,
+    BlackjackPlayerResult,
+    BlackjackHandSettlement,
+    BlackjackPlayerSettlement,
+)
 from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
@@ -663,3 +670,55 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
     # The store holds a decoupled copy of the round's remaining shoe.
     assert store.shoes.get(42) == round_state.shoe
     assert store.shoes.get(42) is not round_state.shoe
+
+
+async def test_history_persistence_uses_scheduled_dealer_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """History persistence uses the dealer cards captured when the task is scheduled."""
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    view = _make_view(round_state=round_state)
+    dealer_cards = list(round_state.dealer)
+    dealer_total = round_state.dealer_total()
+    captured: dict[str, object] = {}
+
+    async def fake_record_blackjack_history(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(blackjack_views, "record_blackjack_history", fake_record_blackjack_history)
+    round_state.dealer.append(Card(rank="K", suit="♣"))
+    await view._record_history_later(
+        message=SimpleNamespace(id=999, guild=SimpleNamespace(id=888)),
+        results=[
+            BlackjackPlayerResult(
+                participant=round_state.players[0].participant,
+                settlement=BlackjackPlayerSettlement(
+                    delta=100,
+                    payout=100,
+                    new_balance=1_100,
+                    casino_balance=0,
+                    base_delta=100,
+                    vip_bonus=0,
+                    is_vip=False,
+                    outcome="win",
+                    detail="",
+                    hands=[
+                        BlackjackHandSettlement(
+                            cards=round_state.players[0].hands[0].cards,
+                            bet=100,
+                            outcome="win",
+                            delta=100,
+                        )
+                    ],
+                ),
+            )
+        ],
+        dealer_cards=dealer_cards,
+        dealer_total=dealer_total,
+    )
+
+    assert captured["dealer_cards"] == [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
+    assert captured["dealer_total"] == 11
