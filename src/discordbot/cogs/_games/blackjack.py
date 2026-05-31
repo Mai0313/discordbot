@@ -507,9 +507,20 @@ class BlackjackRound(BaseModel):
 
     @classmethod
     def from_participants(
-        cls, rng: Random, participants: list[GameParticipant], auto_play_dealer: bool = True
+        cls,
+        rng: Random,
+        participants: list[GameParticipant],
+        auto_play_dealer: bool = True,
+        shoe: list[Card] | None = None,
     ) -> "BlackjackRound":
-        """Builds a round from registered lobby participants."""
+        """Builds a round from registered lobby participants.
+
+        When `shoe` is provided the round deals from it (a persistent per-channel
+        shoe carried across rounds for card counting); otherwise a fresh shuffled
+        multi-deck shoe is built. The shoe is validated into `round_state.shoe`,
+        which may be a copy of the passed list, so callers persist card depletion
+        by saving `round_state.shoe` after the round, not the list passed in.
+        """
         players = [
             BlackjackPlayerHand(
                 participant=participant,
@@ -518,7 +529,10 @@ class BlackjackRound(BaseModel):
             for participant in participants
         ]
         return cls(
-            rng=rng, players=players, auto_play_dealer=auto_play_dealer, shoe=build_shoe(rng=rng)
+            rng=rng,
+            players=players,
+            auto_play_dealer=auto_play_dealer,
+            shoe=shoe if shoe is not None else build_shoe(rng=rng),
         )
 
     def _draw_one_card(self) -> Card:

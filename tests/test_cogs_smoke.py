@@ -45,6 +45,7 @@ from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.cogs._games.blackjack import Card
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
@@ -1645,6 +1646,36 @@ class FakeDealer:
     ) -> str:
         """Returns deterministic settlement banter."""
         return "settled"
+
+
+async def test_bot_blackjack_participant_spreads_bet_by_true_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bot's Kelly wager rises with a favorable channel true count."""
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+
+    async def fake_get_account(*, user_id: int) -> object:
+        return SimpleNamespace(balance=1_000_000, total_earned=0, total_spent=0)
+
+    async def fake_avatar(*, user: object, guild: object = None) -> str:
+        return ""
+
+    monkeypatch.setattr(games, "get_account", fake_get_account)
+    monkeypatch.setattr(games, "guild_avatar_url", fake_avatar)
+
+    neutral = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=1)
+    # A ten-rich stored shoe above the reshuffle threshold gives channel 2 a strongly
+    # positive true count.
+    cog._blackjack_shoes.save_shoe(
+        channel_id=2, cards=[Card(rank="10", suit="♠") for _ in range(120)]
+    )
+    favorable = await cog._bot_blackjack_participant(guild=None, table_bet=100, channel_id=2)
+
+    assert neutral is not None
+    assert favorable is not None
+    assert favorable.bet > neutral.bet
 
 
 def test_games_commands_are_grouped_under_games() -> None:

@@ -21,6 +21,7 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -30,7 +31,7 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 from discordbot.cogs._economy.database import get_account, get_balance
-from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet
+from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
@@ -66,6 +67,7 @@ class GamesCogs(commands.Cog):
         self.runtime_models = RuntimeModelCatalog()
         self.rng = SystemRandom()
         self._startup_cleanup_done = False
+        self._blackjack_shoes = BlackjackShoeStore()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -108,7 +110,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _bot_blackjack_participant(
-        self, *, guild: nextcord.Guild | None, table_bet: int
+        self, *, guild: nextcord.Guild | None, table_bet: int, channel_id: int
     ) -> GameParticipant | None:
         """Returns a Blackjack participant for the bot player, or None if it cannot join."""
         bot_user = self.bot.user
@@ -121,7 +123,12 @@ class GamesCogs(commands.Cog):
                 "Bot player skipped Blackjack lobby; wallet is empty", user_id=bot_user.id
             )
             return None
-        decided_bet = kelly_bet(balance=balance, table_minimum=table_bet)
+        true_count = self._blackjack_shoes.true_count(channel_id=channel_id)
+        decided_bet = kelly_bet(
+            balance=balance,
+            table_minimum=table_bet,
+            edge=count_adjusted_edge(true_count=true_count),
+        )
         avatar_url = await guild_avatar_url(user=bot_user, guild=guild)
         identity = GameParticipantIdentity(
             user_id=bot_user.id,
@@ -350,8 +357,11 @@ class GamesCogs(commands.Cog):
             return
 
         table_bet = owner.bet
+        channel_id = getattr(interaction, "channel_id", None) or 0
         system_identity = await self._system_identity(guild=guild)
-        bot_participant = await self._bot_blackjack_participant(guild=guild, table_bet=table_bet)
+        bot_participant = await self._bot_blackjack_participant(
+            guild=guild, table_bet=table_bet, channel_id=channel_id
+        )
         extra_initial_participants: list[GameParticipant] = (
             [bot_participant] if bot_participant is not None else []
         )
@@ -372,6 +382,8 @@ class GamesCogs(commands.Cog):
             bot_player_ai=self.bot_player_ai,
             bot_user_id=bot_participant.user_id if bot_participant is not None else None,
             extra_initial_participants=extra_initial_participants,
+            shoe_store=self._blackjack_shoes,
+            channel_id=channel_id,
         )
         embed = build_blackjack_lobby_embed(
             owner=owner,

@@ -2,9 +2,9 @@
 
 The bot plays the EV engine's hole-aware `recommended_action` on every decision
 and the count-based insurance recommendation, exactly the deterministic policy
-the production bot uses. Each round draws a fresh 4-deck shoe, mirroring
-production where the shoe is rebuilt per round, so this measures the bot's
-per-round edge `e` (mean net result in base-bet units) and variance `sigma^2`.
+the production bot uses. The default mode draws a fresh 4-deck shoe each round,
+so it measures the bot's neutral-count edge `e` (mean net result in base-bet
+units) and variance `sigma^2`.
 
 Those two numbers are the constants the fractional-Kelly bet sizer needs. Run:
 
@@ -14,6 +14,10 @@ The reported `half_kelly_fraction = 0.5 * e / sigma^2` is the fraction of
 bankroll the bot should wager each round under half-Kelly. A positive `e`
 confirms this table's player-favorable five-card rules make the hole-aware bot
 +EV before any bet sizing.
+
+`--persistent` carries one shoe across rounds (reshuffling near the cut) and
+reports the edge binned by pre-deal Hi-Lo true count plus the fitted slope,
+which is the `BOT_EDGE_PER_TRUE_COUNT` constant for count-based bet spreading.
 """
 
 from random import Random
@@ -22,12 +26,13 @@ import argparse
 from rich.table import Table
 from rich.console import Console
 
-from discordbot.typings.games import BotAction, GameParticipant
+from discordbot.typings.games import Card, BotAction, GameParticipant
 from discordbot.cogs._games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
     BlackjackPlayerHand,
     can_split,
+    build_shoe,
     can_double,
     settle_hand,
     can_surrender,
@@ -36,7 +41,7 @@ from discordbot.cogs._games.blackjack import (
     is_five_card_twenty_one,
 )
 from discordbot.cogs._games.bot_player import fallback_insurance, build_bot_insurance_context
-from discordbot.cogs._games.blackjack_ev import compute_action_evs
+from discordbot.cogs._games.blackjack_ev import compute_action_evs, compute_true_count
 
 # A large base bet keeps insurance (half-bet), doubles, and splits affordable and
 # divisible; results are normalized back to base-bet units by dividing by it.
@@ -44,6 +49,9 @@ BASE_BET = 100
 START_BALANCE = 100_000_000
 _BOT_USER_ID = 0
 _MAX_ACTION_STEPS = 64
+# Persistent-shoe mode reshuffles once fewer than this many cards remain, matching
+# the production per-channel shoe penetration cut (shoe.py RESHUFFLE_THRESHOLD_CARDS).
+RESHUFFLE_THRESHOLD_CARDS = 96
 console = Console()
 
 
@@ -144,8 +152,12 @@ def _round_delta(*, round_state: BlackjackRound) -> float:
     return (base + five_card_bonus) / BASE_BET
 
 
-def simulate_round(*, rng: Random) -> float:
-    """Plays one hole-aware optimal round and returns its base-bet-unit result."""
+def simulate_round(*, rng: Random, shoe: list[Card] | None = None) -> float:
+    """Plays one hole-aware optimal round and returns its base-bet-unit result.
+
+    When `shoe` is given the round deals from it in place (persistent-shoe mode),
+    so the caller's list is left holding the cards that remain after the round.
+    """
     participant = GameParticipant(
         user_id=_BOT_USER_ID,
         account_name="bot",
@@ -157,6 +169,8 @@ def simulate_round(*, rng: Random) -> float:
     round_state = BlackjackRound.from_participants(
         rng=rng, participants=[participant], auto_play_dealer=True
     )
+    if shoe is not None:
+        round_state.shoe = shoe
     round_state.deal_initial()
     if round_state.phase == "insurance":
         _resolve_insurance(round_state=round_state)
@@ -188,13 +202,67 @@ def _render_report(  # noqa: PLR0913 -- aggregates the independent measurement t
     return table
 
 
+def _run_persistent(*, rng: Random, rounds: int, threshold: int) -> list[tuple[float, float]]:
+    """Plays rounds from a persistent shoe, returning (pre-deal true count, delta) pairs."""
+    records: list[tuple[float, float]] = []
+    shoe: list[Card] = []
+    for _ in range(rounds):
+        if len(shoe) < threshold:
+            shoe = build_shoe(rng=rng)
+        true_count = compute_true_count(shoe=shoe)
+        delta = simulate_round(rng=rng, shoe=shoe)
+        records.append((true_count, delta))
+    return records
+
+
+def _render_count_report(*, records: list[tuple[float, float]], seed: int) -> Table:
+    """Bins persistent-shoe results by Hi-Lo true count and fits the edge slope."""
+    rounds = len(records)
+    true_counts = [record[0] for record in records]
+    deltas = [record[1] for record in records]
+    tc_mean = sum(true_counts) / rounds
+    delta_mean = sum(deltas) / rounds
+    covariance = sum((tc - tc_mean) * (d - delta_mean) for tc, d in records) / rounds
+    tc_variance = sum((tc - tc_mean) ** 2 for tc in true_counts) / rounds
+    slope = covariance / tc_variance if tc_variance > 0 else 0.0
+    intercept = delta_mean - slope * tc_mean
+    bins: dict[int, list[float]] = {}
+    for true_count, delta in records:
+        bins.setdefault(round(true_count), []).append(delta)
+    table = Table(
+        title=f"Persistent-shoe edge vs Hi-Lo true count, {rounds:,} rounds (seed {seed})"
+    )
+    table.add_column("true_count_bin")
+    table.add_column("rounds", justify="right")
+    table.add_column("mean_edge", justify="right")
+    for true_count_bin in sorted(bins):
+        bucket = bins[true_count_bin]
+        table.add_row(
+            f"{true_count_bin:+d}", f"{len(bucket):,}", f"{sum(bucket) / len(bucket):+.4f}"
+        )
+    table.add_section()
+    table.add_row("slope (edge per +1 TC)", "", f"{slope:+.5f}")
+    table.add_row("intercept (edge at TC 0)", "", f"{intercept:+.5f}")
+    return table
+
+
 def main() -> None:
     """Runs the Monte Carlo simulation and prints the measured constants."""
     parser = argparse.ArgumentParser(description="Measure the bot player's Blackjack edge.")
     parser.add_argument("--rounds", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=12_345)
+    parser.add_argument(
+        "--persistent",
+        action="store_true",
+        help="Carry the shoe across rounds and report edge vs Hi-Lo true count.",
+    )
+    parser.add_argument("--reshuffle-threshold", type=int, default=RESHUFFLE_THRESHOLD_CARDS)
     args = parser.parse_args()
     rng = Random(args.seed)  # noqa: S311 -- reproducible measurement, not security-sensitive.
+    if args.persistent:
+        records = _run_persistent(rng=rng, rounds=args.rounds, threshold=args.reshuffle_threshold)
+        console.print(_render_count_report(records=records, seed=args.seed))
+        return
     total = 0.0
     total_sq = 0.0
     wins = pushes = losses = 0
