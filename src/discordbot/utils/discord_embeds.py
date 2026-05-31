@@ -5,7 +5,7 @@ from typing import Any, Final
 from functools import cache
 
 from PIL import Image
-from nextcord import File, Embed
+from nextcord import File, Embed, Attachment
 
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 DEFAULT_EMBED_SPACER_WIDTH: Final[int] = 640
@@ -72,6 +72,16 @@ def apply_embed_spacer_image(
     return embeds
 
 
+def _existing_spacer_attachment(*, target: object | None, filename: str) -> Attachment | None:
+    """Returns an already-uploaded spacer attachment on the edit target, if present."""
+    message = target if hasattr(target, "attachments") else getattr(target, "message", None)
+    attachments = getattr(message, "attachments", None) or ()
+    for attachment in attachments:
+        if getattr(attachment, "filename", None) == filename:
+            return attachment
+    return None
+
+
 def embed_spacer_payload(
     *,
     embeds: list[Embed],
@@ -80,14 +90,27 @@ def embed_spacer_payload(
     extra_files: list[File] | None = None,
     filename: str = DEFAULT_EMBED_SPACER_FILENAME,
 ) -> dict[str, Any]:
-    """Returns the spacer files/attachments increment to merge into a send or edit."""
+    """Returns the spacer files/attachments increment to merge into a send or edit.
+
+    The spacer never changes, so an edit retains an already-uploaded spacer by id
+    instead of re-uploading it. Re-uploading the same spacer on every edit trips
+    Discord's per-message edit attachment upload limit (error code 400009) for
+    rapidly edited messages such as the Blackjack table.
+    """
     spacer_url = embed_spacer_url(filename=filename)
     needs_spacer = any(
         not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds
     )
     files: list[File] = list(extra_files or [])
+    retained: list[Attachment] = []
+    existing_spacer = (
+        _existing_spacer_attachment(target=target, filename=filename) if is_edit else None
+    )
     can_upload_spacer = _target_allows_file_uploads(target=target)
-    if needs_spacer and can_upload_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:
+    if needs_spacer and existing_spacer is not None:
+        apply_embed_spacer_image(embeds=embeds, filename=filename)
+        retained.append(existing_spacer)
+    elif needs_spacer and can_upload_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:
         apply_embed_spacer_image(embeds=embeds, filename=filename)
         files.append(build_embed_spacer_file(filename=filename))
     elif needs_spacer:
@@ -98,7 +121,7 @@ def embed_spacer_payload(
     if files:
         payload["files"] = files
     if is_edit:
-        payload["attachments"] = []
+        payload["attachments"] = retained
     return payload
 
 

@@ -30,7 +30,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Cogs should not import peer cogs directly. Use the bot instance, shared typings, or cog-private helper packages.
 - Slash commands need localized names and descriptions for English, Traditional Chinese, and Japanese where the command is user-facing.
 - Any user-visible command or behavior change must update `src/discordbot/cogs/help.py` in the same change and keep `tests/test_help.py` passing.
-- When one Discord message sends multiple embeds that need aligned widths, use `discordbot.utils.discord_embeds.apply_embed_spacer_image(...)` plus a fresh `build_embed_spacer_file(...)` in the same send/edit payload; on edits include `attachments=[]` so stale spacer attachments are replaced.
+- When one Discord message sends multiple embeds that need aligned widths, use `discordbot.utils.discord_embeds.embed_spacer_payload(...)`; pass `target=` so edits can retain an already-uploaded spacer by id instead of re-uploading it. Re-uploading the unchanging spacer on every edit trips Discord's per-message edit attachment upload limit (error code 400009) on rapidly edited messages like the Blackjack table. Genuinely changing PNGs still upload via `extra_files`.
 - Discord embed hard limits (the API rejects the whole message on overflow): title 256 chars, description 4,096 chars, each field name 256 chars, each field value 1,024 chars, footer text 2,048 chars, author name 256 chars, at most 25 fields per embed, at most 10 embeds per message, and at most 6,000 characters summed across every embed in one message. Stay inside these when building embeds; when content cannot fit, paginate or render a PNG with Pillow and reference it via `attachment://...` instead of truncating silently.
 
 ## AI Pipeline

@@ -73,13 +73,40 @@ def test_apply_embed_spacer_image_treats_thumbnail_as_image_less() -> None:
 
 
 def test_embed_spacer_payload_edit_adds_spacer_file_and_clears_attachments() -> None:
-    """An edit payload uploads a fresh spacer and clears stale attachments."""
+    """An edit without an existing spacer uploads a fresh one and clears stale attachments."""
     embed = Embed(description="text")
 
     payload = embed_spacer_payload(embeds=[embed], is_edit=True)
 
     assert payload["attachments"] == []
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
+    assert embed.image.url == embed_spacer_url()
+
+
+def test_embed_spacer_payload_edit_retains_existing_spacer_without_reupload() -> None:
+    """An edit reuses an already-uploaded spacer by id instead of re-uploading it."""
+    embed = Embed(description="text")
+    spacer = SimpleNamespace(filename=DEFAULT_EMBED_SPACER_FILENAME)
+    other = SimpleNamespace(filename="board.png")
+    target = SimpleNamespace(attachments=[other, spacer])
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=True, target=target)
+
+    assert "files" not in payload
+    assert payload["attachments"] == [spacer]
+    assert embed.image.url == embed_spacer_url()
+
+
+def test_embed_spacer_payload_edit_retains_spacer_from_interaction_message() -> None:
+    """An interaction edit target resolves the spacer through its message attachments."""
+    embed = Embed(description="text")
+    spacer = SimpleNamespace(filename=DEFAULT_EMBED_SPACER_FILENAME)
+    target = SimpleNamespace(message=SimpleNamespace(attachments=[spacer]))
+
+    payload = embed_spacer_payload(embeds=[embed], is_edit=True, target=target)
+
+    assert "files" not in payload
+    assert payload["attachments"] == [spacer]
     assert embed.image.url == embed_spacer_url()
 
 
