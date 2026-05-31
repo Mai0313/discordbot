@@ -40,7 +40,16 @@ from discordbot.cogs._games.blackjack import (
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import get_account, get_casino_daily_stats
-from discordbot.cogs._games.bot_player import build_bot_action_context, build_bot_insurance_context
+from discordbot.cogs._games.bot_player import (
+    BotActionReasonRequest,
+    BotInsuranceReasonRequest,
+    choose_bot_action,
+    fallback_insurance,
+    action_decision_reason,
+    build_bot_action_context,
+    insurance_decision_reason,
+    build_bot_insurance_context,
+)
 from discordbot.cogs._games.settlement import (
     settle_blackjack_player,
     blackjack_player_early_finish_note,
@@ -1188,21 +1197,27 @@ class BlackjackView(View):
     async def _dispatch_bot_insurance_locked(
         self, *, message: Message, bot_player: BlackjackPlayerHand, bot_ai: BotPlayerAI
     ) -> None:
-        """Asks the bot AI whether to take insurance, then applies the decision."""
+        """Applies the count-based insurance decision, narrating the reason later."""
         first_hand = bot_player.hands[0] if bot_player.hands else None
         if first_hand is None:
             return
+        user_id = bot_player.participant.user_id
         dealer_up = dealer_up_card(dealer=self.round_state.dealer)
-        finance = await self._build_bot_finance_context(user_id=bot_player.participant.user_id)
-        other_players = self._build_other_players_views(
-            exclude_user_id=bot_player.participant.user_id
-        )
+        finance = await self._build_bot_finance_context(user_id=user_id)
+        other_players = self._build_other_players_views(exclude_user_id=user_id)
         insurance_context = build_bot_insurance_context(
             dealer_up=dealer_up,
             shoe=list(self.round_state.shoe),
             insurance_cost=bot_player.participant.bet // 2,
         )
-        decision = await bot_ai.decide_bot_insurance(
+        take_insurance = fallback_insurance(insurance_context=insurance_context)
+        label = "買保險" if take_insurance else "不買保險"
+        self._bot_reasons[user_id] = (
+            f"{label}: "
+            f"{insurance_decision_reason(take_insurance=take_insurance, insurance_context=insurance_context)}"
+        )
+        reason_request = BotInsuranceReasonRequest(
+            take_insurance=take_insurance,
             dealer_up=dealer_up,
             hand_repr=f"{render_hand(cards=first_hand.cards)} = {first_hand.total()}",
             bet=bot_player.participant.bet,
@@ -1210,24 +1225,27 @@ class BlackjackView(View):
             other_players=other_players,
             insurance_context=insurance_context,
         )
-        self._bot_reasons[bot_player.participant.user_id] = (
-            f"{'買保險' if decision.take_insurance else '不買保險'}: {decision.reason}"
-        )
         try:
-            if decision.take_insurance:
+            if take_insurance:
                 self.round_state.take_insurance(
-                    user_id=bot_player.participant.user_id, amount=bot_player.participant.bet // 2
+                    user_id=user_id, amount=bot_player.participant.bet // 2
                 )
             else:
-                self.round_state.decline_insurance(user_id=bot_player.participant.user_id)
+                self.round_state.decline_insurance(user_id=user_id)
         except ValueError:
-            logfire.warn(
-                "Bot insurance action rejected; declining as fallback",
-                user_id=bot_player.participant.user_id,
-            )
+            logfire.warn("Bot insurance action rejected; declining as fallback", user_id=user_id)
             with contextlib.suppress(ValueError):
-                self.round_state.decline_insurance(user_id=bot_player.participant.user_id)
+                self.round_state.decline_insurance(user_id=user_id)
         self._state_revision += 1
+        self._track_background_task(
+            self._refresh_bot_reason_later(
+                message=message,
+                user_id=user_id,
+                revision=self._state_revision,
+                label=label,
+                narration=bot_ai.narrate_bot_insurance_reason(request=reason_request),
+            )
+        )
         if self.round_state.finished:
             await self._finalize_locked(message=message)
             return
@@ -1277,12 +1295,22 @@ class BlackjackView(View):
             balance_remaining=balance_remaining,
             doubled=hand.doubled,
         )
-        decision = await bot_ai.decide_bot_action(
-            hand_cards=hand.cards,
+        chosen_action = choose_bot_action(
+            action_context=action_context,
+            hand_cards=list(hand.cards),
             hand_total=hand.total(),
-            hand_repr=render_hand(cards=hand.cards),
             dealer_up=dealer_up,
             is_pair_hand=is_pair_hand,
+            allowed_actions=tuple(allowed),
+        )
+        self._bot_reasons[active.participant.user_id] = (
+            f"{chosen_action}: {action_decision_reason(action_context=action_context)}"
+        )
+        reason_request = BotActionReasonRequest(
+            action=chosen_action,
+            hand_repr=render_hand(cards=hand.cards),
+            hand_total=hand.total(),
+            dealer_up=dealer_up,
             allowed_actions=tuple(allowed),
             bet=hand.bet,
             balance_remaining=balance_remaining,
@@ -1291,14 +1319,22 @@ class BlackjackView(View):
             own_other_hands=own_other_hands,
             action_context=action_context,
         )
-        self._bot_reasons[active.participant.user_id] = f"{decision.action}: {decision.reason}"
         applied = self._apply_bot_action(
-            user_id=active.participant.user_id, action=decision.action, allowed=tuple(allowed)
+            user_id=active.participant.user_id, action=chosen_action, allowed=tuple(allowed)
         )
         if not applied:
             with contextlib.suppress(ValueError):
                 self.round_state.stand(user_id=active.participant.user_id)
         self._state_revision += 1
+        self._track_background_task(
+            self._refresh_bot_reason_later(
+                message=message,
+                user_id=active.participant.user_id,
+                revision=self._state_revision,
+                label=chosen_action,
+                narration=bot_ai.narrate_bot_action_reason(request=reason_request),
+            )
+        )
         if self.round_state.finished:
             await self._finalize_locked(message=message)
             return
@@ -1633,6 +1669,32 @@ class BlackjackView(View):
         if net_delta < 0:
             return "本桌整體玩家未過關, 籌碼流向賭場"
         return "本桌全部結算後雙方持平"
+
+    async def _refresh_bot_reason_later(
+        self,
+        *,
+        message: Message,
+        user_id: int,
+        revision: int,
+        label: str,
+        narration: Coroutine[Any, Any, str],
+    ) -> None:
+        """Upgrades a bot seat's template reason with LLM narration if still current.
+
+        The deterministic template reason is already shown, so this background
+        refresh is best-effort: it is dropped when the table advanced past the
+        decision or already settled, leaving the template reason in place.
+        """
+        try:
+            reason = await narration
+        except Exception:
+            logfire.warn("Bot reason narration failed", _exc_info=True)
+            return
+        async with self._round_lock:
+            if self._settled or self._state_revision != revision:
+                return
+            self._bot_reasons[user_id] = f"{label}: {reason}"
+            await self._edit_in_progress_locked(message=message)
 
     async def _refresh_hint_later(
         self, *, message: Message, hint_context: HintRefreshContext

@@ -84,60 +84,27 @@ Blackjack rules for this table:
 - Doubled hands do not qualify for five-card rules.
 """
 
-BOT_PLAYER_BET_PROMPT = f"""
-{BOT_PLAYER_PERSONA}
-
-{BLACKJACK_RULES_BRIEF}
-
-Task: choose the bot player's wager for the upcoming Blackjack round.
-
-Input includes:
-- bankroll_context: current balance, lifetime earned/spent, today's win/loss/net.
-- table_bet: the table owner's wager.
-- other_player_bets: neutral labels and wager sizes only.
-
-Decision guidance:
-- Maximize long-term bankroll growth, not single-round excitement.
-- Use bankroll context for risk sizing only.
-- Do not chase losses.
-- Do not increase risk only because today's net result is negative.
-- Other players' bet sizes are weak social signals, not card EV.
-
-Hard constraints:
-- `bet_amount` must be a positive integer and must not exceed the current balance.
-- `reason` must be Traditional Chinese, concise, and under 30 Chinese characters.
-- Output only the structured result fields `bet_amount` and `reason`.
-"""
-
 BOT_PLAYER_ACTION_PROMPT = f"""
 {BOT_PLAYER_PERSONA}
 
 {BLACKJACK_RULES_BRIEF}
 
-Task: choose the next legal Blackjack action for the active hand.
+Task: narrate the action the table's EV engine has already chosen. You do not pick the action; you only write a short Traditional Chinese `reason` explaining why that fixed action is sound.
 
 Input includes:
-- bankroll_context and uncommitted balance.
-- active_hand, other split hands, the dealer up-card, and visible table state.
+- chosen_action: the action the bot is taking this turn. It is final; never contradict or second-guess it.
+- bankroll_context, active_hand, the dealer up-card, and visible table state.
 - server_computed_context with the true remaining shoe counts and the dealer up-card only. You never see the dealer hole card.
-- Usually a dealer_outcome distribution and a per-action expected_value (EV), estimated from the dealer up-card and the remaining shoe with the hole card unknown, under H17 rules and this table's exact payouts including the five-card-21 bonus. EV is in units of the base hand bet; higher EV is strictly better.
-- recommended_action: the server's recommended legal action. Treat it as a strong default.
-- If server_computed_context shows `ev_analysis: unavailable`, the EV engine could not run this turn; only `basic_strategy_hint` is reliable then.
-- No hole card, no next-card field, and no ordered future shoe are provided.
-- allowed_actions: you must choose exactly one action from this list.
+- Usually a dealer_outcome distribution and a per-action expected_value (EV) in base-bet units, plus recommended_action and basic_strategy_hint.
 
-Decision priority:
-1. Only choose from allowed_actions.
-2. Default to recommended_action. The dealer_outcome distribution and EV already account for the dealer up-card, the remaining shoe, and the five-card rules, so do not re-derive them yourself or fall back to generic basic strategy.
-3. Deviate from recommended_action only with a concrete EV-based reason, such as two actions within a hair of each other or double/split bankroll risk outweighing a thin EV edge. The split EV is an estimate.
-4. When EV is unavailable, follow `basic_strategy_hint.action` together with sound dealer-state reasoning instead.
-5. Use bankroll only to judge whether extra wager exposure is acceptable.
-6. Treat table mood, today's win/loss, and other players' bet sizes as weak signals.
+Narration guidance:
+- Explain chosen_action using the dealer up-card, the EV numbers, the hand total, and the five-card rules where relevant.
+- Stay calm, restrained, and concise. Do not chase losses or sound overconfident.
+- If server_computed_context shows `ev_analysis: unavailable`, lean on basic_strategy_hint and the dealer up-card for the explanation.
 
 Hard constraints:
-- `action` must be one of allowed_actions.
+- `action` must equal chosen_action.
 - `reason` must be Traditional Chinese, concise, and under 30 Chinese characters.
-- Do not chase losses.
 - Output only the structured result fields `action` and `reason`.
 """
 
@@ -146,21 +113,20 @@ BOT_PLAYER_INSURANCE_PROMPT = f"""
 
 {BLACKJACK_RULES_BRIEF}
 
-Task: decide whether to take insurance.
+Task: narrate the insurance decision that card counting has already made. You do not flip the decision; you only write a short Traditional Chinese `reason` explaining it.
 
 Input includes:
+- chosen_decision: take or decline. It is final.
 - bankroll_context and insurance cost.
 - the dealer up-card only. You never see the dealer hole card.
-- true remaining shoe rank counts.
-- ten_value_probability: the estimated chance the hole is a ten-value card, from the remaining shoe.
-- insurance_expected_value, insurance_recommendation, and insurance_analysis, derived from that ten-value density (card counting), not from the hole card.
+- ten_value_probability, insurance_expected_value, insurance_recommendation, and insurance_analysis, derived from the remaining-shoe ten density (card counting), not from the hole card.
 
-Decision guidance:
-- Insurance pays only when the hole is a ten-value card. It is +EV only when ten_value_probability is above one third, which is rare. Take insurance only when insurance_recommendation is "take"; otherwise decline.
-- Do not take insurance because of fear, table mood, or today's loss.
-- Use bankroll only to judge whether the extra side-bet exposure is acceptable.
+Narration guidance:
+- Explain chosen_decision via ten_value_probability against the one-third break-even: insurance is +EV only above one third, which is rare.
+- Do not invoke fear, table mood, or today's loss.
 
 Hard constraints:
-- Output only the structured result fields `take_insurance` and `reason`.
+- `take_insurance` must equal chosen_decision.
 - `reason` must be Traditional Chinese, concise, and under 30 Chinese characters.
+- Output only the structured result fields `take_insurance` and `reason`.
 """
