@@ -112,9 +112,15 @@ class DiscordBot(commands.Bot):
         """Ensures the bot is ready before starting the status task."""
         await self.wait_until_ready()
 
-    @staticmethod
-    async def _award_base_message_points(message: Message) -> None:
-        """Awards the global per-message base reward."""
+    async def on_message(self, message: Message) -> None:
+        """Handles incoming messages.
+
+        Args:
+            message: The message that was sent.
+        """
+        if message.author == self.user or message.author.bot:
+            return
+
         try:
             avatar_url = await guild_avatar_url(
                 user=message.author, guild=getattr(message, "guild", None)
@@ -127,17 +133,6 @@ class DiscordBot(commands.Bot):
             )
         except Exception:
             logfire.warn("Failed to award base message points", _exc_info=True)
-
-    async def on_message(self, message: Message) -> None:
-        """Handles incoming messages.
-
-        Args:
-            message: The message that was sent.
-        """
-        if message.author == self.user or message.author.bot:
-            return
-
-        await self._award_base_message_points(message=message)
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:

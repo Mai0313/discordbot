@@ -115,9 +115,15 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
         captured_avatar_url = avatar_url
         return SimpleNamespace(new_balance=0)
 
+    async def noop_process_commands(message: SimpleNamespace) -> None:
+        """Ignores command processing during the reward test."""
+        del message
+
     monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
+    author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
+    author.bot = False
     message = SimpleNamespace(
-        author=FakeUser(user_id=7, avatar_url="https://cdn.test/global.png"),
+        author=author,
         guild=FakeGuild(
             cached_member=FakeMember(
                 user_id=7,
@@ -127,7 +133,8 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
             fetched_member=None,
         ),
     )
+    bot = SimpleNamespace(user=object(), process_commands=noop_process_commands)
 
-    await cli.DiscordBot._award_base_message_points(message=message)
+    await cli.DiscordBot.on_message(bot, message=message)
 
     assert captured_avatar_url == "https://cdn.test/server.png"

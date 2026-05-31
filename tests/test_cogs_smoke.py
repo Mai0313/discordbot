@@ -1877,11 +1877,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         )
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True),
-        process_commands=record_processed,
-        _award_base_message_points=cli.DiscordBot._award_base_message_points,
-    )
+    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True), process_commands=record_processed)
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
     await cli.DiscordBot.on_message(bot, message=user_message)
     assert processed == [user_message]
