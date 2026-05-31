@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     from random import Random
     from collections.abc import Coroutine
 
+    from discordbot.cogs._games.shoe import BlackjackShoeStore
     from discordbot.cogs._games.dealer import SystemNarrator
     from discordbot.cogs._games.bot_player import BotPlayerAI
 
@@ -602,6 +603,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
         bot_player_ai: BotPlayerAI | None = None,
         bot_user_id: int | None = None,
         extra_initial_participants: list[GameParticipant] | None = None,
+        shoe_store: BlackjackShoeStore | None = None,
+        channel_id: int = 0,
     ) -> None:
         """Initializes a Blackjack lobby with wager and system identity."""
         super().__init__(
@@ -618,6 +621,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
         self.requested_bet = requested_bet
         self.bot_player_ai = bot_player_ai
         self.bot_user_id = bot_user_id
+        self._shoe_store = shoe_store
+        self._channel_id = channel_id
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
         """Builds the Blackjack lobby embed from current participants."""
@@ -633,8 +638,14 @@ class BlackjackLobbyView(BaseGameLobbyView):
         """Deals the table and replaces the lobby message with the game view."""
         if message is None:
             return False
+        shoe: list[Card] | None = None
+        reshuffled = False
+        if self._shoe_store is not None:
+            shoe, reshuffled = self._shoe_store.take_shoe(
+                channel_id=self._channel_id, rng=self.rng
+            )
         round_state = BlackjackRound.from_participants(
-            rng=self.rng, participants=self.participants, auto_play_dealer=False
+            rng=self.rng, participants=self.participants, auto_play_dealer=False, shoe=shoe
         )
         round_state.deal_initial()
         table_bet = sum(participant.bet for participant in self.participants)
@@ -645,6 +656,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
             bet=table_bet,
             game="blackjack",
         )
+        if reshuffled:
+            system_line = f"🔀 換上新牌靴。{system_line}"
         view = BlackjackView(
             narrator=self.narrator,
             round_state=round_state,
@@ -655,6 +668,8 @@ class BlackjackLobbyView(BaseGameLobbyView):
             system_line=system_line,
             bot_player_ai=self.bot_player_ai,
             bot_user_id=self.bot_user_id,
+            shoe_store=self._shoe_store,
+            channel_id=self._channel_id,
         )
         view.message = message
         if round_state.finished:
@@ -698,6 +713,8 @@ class BlackjackView(View):
         system_line: str = "賭場已收到下注, 牌桌即將發牌",
         bot_player_ai: BotPlayerAI | None = None,
         bot_user_id: int | None = None,
+        shoe_store: BlackjackShoeStore | None = None,
+        channel_id: int = 0,
     ) -> None:
         """Initializes the active Blackjack table view."""
         super().__init__(timeout=BLACKJACK_ACTION_TIMEOUT_SECONDS)
@@ -709,6 +726,8 @@ class BlackjackView(View):
         self.system_avatar_url = system_avatar_url
         self.bot_player_ai = bot_player_ai
         self.bot_user_id = bot_user_id
+        self._shoe_store = shoe_store
+        self._channel_id = channel_id
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
@@ -1462,6 +1481,9 @@ class BlackjackView(View):
 
         await self._play_dealer_locked()
         logfire.info("Blackjack dealer phase done", dealer_total=self.round_state.dealer_total())
+
+        if self._shoe_store is not None:
+            self._shoe_store.save_shoe(channel_id=self._channel_id, cards=self.round_state.shoe)
 
         results: list[BlackjackPlayerResult] = []
         for player in self.round_state.players:

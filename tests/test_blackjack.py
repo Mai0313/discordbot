@@ -1035,3 +1035,35 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
     assert round_state.peeked_blackjack is True
     assert round_state.phase == "settled"
     assert round_state.players[0].insurance_bet == 50
+
+
+def test_from_participants_deals_from_an_injected_shoe() -> None:
+    """An injected persistent shoe is the round's deck, dealt front to back.
+
+    The round's own `shoe` depletes as cards are dealt; the caller persists card
+    counting by saving `round_state.shoe` after the round, not by relying on the
+    passed list being mutated in place.
+    """
+    injected = [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+        Card(rank="9", suit="♣"),
+        Card(rank="7", suit="♦"),
+        Card(rank="5", suit="♠"),
+        Card(rank="6", suit="♥"),
+    ]
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[_participant(user_id=1, display_name="Alice")],
+        shoe=injected,
+    )
+    assert round_state.shoe == injected
+
+    round_state.deal_initial()
+
+    # Two player cards plus two dealer cards were dealt from the front.
+    assert round_state.players[0].hands[0].cards == [
+        Card(rank="2", suit="♠"),
+        Card(rank="3", suit="♥"),
+    ]
+    assert round_state.shoe == [Card(rank="5", suit="♠"), Card(rank="6", suit="♥")]

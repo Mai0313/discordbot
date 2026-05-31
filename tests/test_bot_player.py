@@ -12,6 +12,7 @@ from discordbot.typings.games import (
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import BOT_PLAYER_ACTION_PROMPT, BOT_PLAYER_INSURANCE_PROMPT
 from discordbot.cogs._games.bot_player import (
+    BOT_TABLE_EDGE,
     BotPlayerAI,
     BotActionReasonRequest,
     BotInsuranceReasonRequest,
@@ -19,6 +20,7 @@ from discordbot.cogs._games.bot_player import (
     fallback_action,
     choose_bot_action,
     fallback_insurance,
+    count_adjusted_edge,
     format_action_context,
     action_decision_reason,
     build_bot_action_context,
@@ -398,6 +400,25 @@ def test_kelly_bet_caps_fraction_and_clamps_to_balance() -> None:
     ) == (100)
     assert kelly_bet(balance=0, table_minimum=100) == 1
     assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 50
+
+
+def test_count_adjusted_edge_rises_with_true_count() -> None:
+    """The edge equals the base at a neutral count and increases with the true count."""
+    assert count_adjusted_edge(true_count=0.0) == BOT_TABLE_EDGE
+    assert count_adjusted_edge(true_count=6.0) > count_adjusted_edge(true_count=0.0)
+    assert count_adjusted_edge(true_count=-6.0) < count_adjusted_edge(true_count=0.0)
+
+
+def test_kelly_bet_spreads_higher_on_a_favorable_count() -> None:
+    """A favorable true count raises the count-adjusted Kelly wager (bet spread)."""
+    neutral = kelly_bet(
+        balance=1_000_000, table_minimum=100, edge=count_adjusted_edge(true_count=0.0)
+    )
+    favorable = kelly_bet(
+        balance=1_000_000, table_minimum=100, edge=count_adjusted_edge(true_count=8.0)
+    )
+
+    assert favorable > neutral
 
 
 async def test_action_narration_returns_llm_reason_for_unknown_dealer() -> None:

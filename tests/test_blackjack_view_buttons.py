@@ -18,6 +18,7 @@ from nextcord import Embed, Interaction
 
 from discordbot.cogs._games import blackjack_views
 from discordbot.typings.games import GameParticipant, BotFinancialContext
+from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._games.bot_player import (
@@ -622,3 +623,41 @@ async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:
 
     applied = view._apply_bot_action(user_id=1, action="split", allowed=("hit", "stand"))
     assert applied is False
+
+
+async def test_finalize_persists_remaining_shoe_to_the_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settling a round writes the round's remaining shoe back into the channel store."""
+    store = BlackjackShoeStore()
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
+        dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+    round_state.shoe = [
+        Card(rank="7", suit="♠"),
+        Card(rank="8", suit="♥"),
+        Card(rank="2", suit="♦"),
+        Card(rank="3", suit="♣"),
+    ]
+    view = BlackjackView(
+        narrator=MagicMock(),
+        round_state=round_state,
+        starter_id=1,
+        author_name="alice",
+        shoe_store=store,
+        channel_id=42,
+    )
+    view.message = MagicMock()
+    monkeypatch.setattr(view, "_safe_edit_view_locked", AsyncMock())
+
+    async def _stop_after_save(**_kwargs: object) -> None:
+        raise RuntimeError("stop after shoe save")
+
+    # Settlement runs after the shoe save, so raising there proves the save already ran.
+    monkeypatch.setattr(blackjack_views, "settle_blackjack_player", _stop_after_save)
+
+    with pytest.raises(RuntimeError, match="stop after shoe save"):
+        await view.finalize(message=view.message)
+
+    assert store.shoes.get(42) is round_state.shoe

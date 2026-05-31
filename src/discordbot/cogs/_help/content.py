@@ -86,7 +86,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack and Dragon Gate tables",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. `bet` accepts comma-formatted numbers, and `0` means all in.\n\n"
+                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. The shoe carries over between rounds in the same channel and reshuffles once it runs low. `bet` accepts comma-formatted numbers, and `0` means all in.\n\n"
                     "**`/games dragon_gate`**\n"
                     "Start a Dragon Gate jackpot table."
                 ),
@@ -159,7 +159,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack 與射龍門",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；`bet` 可輸入含逗號的數字，`0` 就是 all in。\n\n"
+                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；同一頻道的牌靴會跨局延續，剩牌不足時才重新洗牌；`bet` 可輸入含逗號的數字，`0` 就是 all in。\n\n"
                     "**`/games dragon_gate`**\n"
                     "開射龍門 jackpot 桌。"
                 ),
@@ -232,7 +232,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack と Dragon Gate",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。`bet` はカンマ付き数字に対応し、`0` は all in です。\n\n"
+                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。シューは同じチャンネルでラウンドをまたいで引き継がれ、残りが少なくなるとシャッフルし直します。`bet` はカンマ付き数字に対応し、`0` は all in です。\n\n"
                     "**`/games dragon_gate`**\n"
                     "Dragon Gate jackpot テーブルを開始します。"
                 ),

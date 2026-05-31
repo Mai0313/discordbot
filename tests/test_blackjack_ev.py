@@ -4,6 +4,7 @@ from discordbot.typings.games import Card
 from discordbot.cogs._games.blackjack_ev import (
     _add_value,
     compute_action_evs,
+    compute_true_count,
     build_shoe_value_counts,
     dealer_outcome_distribution,
 )
@@ -292,3 +293,25 @@ def test_shoe_value_counts_collapse_ten_values() -> None:
     assert counts[8] == 4
     assert counts[9] == 1
     assert sum(counts) == 5
+
+
+def test_compute_true_count_neutral_for_full_and_empty_shoe() -> None:
+    """A balanced full shoe and an empty shoe both read as a neutral count of zero."""
+    assert compute_true_count(shoe=_full_shoe()) == 0.0
+    assert compute_true_count(shoe=[]) == 0.0
+
+
+def test_compute_true_count_positive_when_low_cards_are_gone() -> None:
+    """A shoe drained of its low cards is ten-rich, which is a positive true count."""
+    shoe = [card for card in _full_shoe() if card.rank not in ("2", "3", "4", "5", "6")]
+    true_count = compute_true_count(shoe=shoe)
+
+    assert true_count > 0
+
+
+def test_compute_true_count_negative_when_high_cards_are_gone() -> None:
+    """A shoe drained of its ten-value cards and aces is low-rich, a negative count."""
+    shoe = [card for card in _full_shoe() if card.rank not in ("10", "J", "Q", "K", "A")]
+    true_count = compute_true_count(shoe=shoe)
+
+    assert true_count < 0

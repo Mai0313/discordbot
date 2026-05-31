@@ -93,6 +93,29 @@ def build_shoe_value_counts(*, shoe: list[Card]) -> tuple[int, ...]:
     return tuple(counts)
 
 
+_CARDS_PER_DECK: Final[int] = 52
+
+
+def compute_true_count(*, shoe: list[Card]) -> float:
+    """Returns the Hi-Lo true count of the cards already dealt out of a shoe.
+
+    Hi-Lo assigns +1 to 2-6, 0 to 7-9, and -1 to ten-value cards and aces. A
+    full balanced shoe sums to zero, so the running count of the dealt cards is
+    the negative of the Hi-Lo sum still in `shoe`. The true count divides that
+    running count by the decks remaining; a positive true count means the
+    remaining shoe is rich in ten-value cards and aces, which favors the player.
+    Returns 0.0 for an empty shoe (a neutral, just-shuffled count).
+    """
+    if not shoe:
+        return 0.0
+    counts = build_shoe_value_counts(shoe=shoe)
+    low_remaining = counts[0] + counts[1] + counts[2] + counts[3] + counts[4]
+    high_remaining = counts[_TEN_BUCKET] + counts[_ACE_BUCKET]
+    running_count = high_remaining - low_remaining
+    decks_remaining = len(shoe) / _CARDS_PER_DECK
+    return running_count / decks_remaining if decks_remaining > 0 else 0.0
+
+
 def _decrement(*, shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
     """Returns a copy of the shoe vector with one card removed from a bucket."""
     mutable = list(shoe)
