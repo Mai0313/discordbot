@@ -140,7 +140,7 @@ class RuntimeModelCatalog(BaseModel):
             Model settings used by the Blackjack bot player for bet sizing,
             hit/stand, double/split, surrender, and insurance decisions.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="high")
+        return ModelSettings(name="gemini-flash-latest", effort="minimal")
 
 
 class RouteDecision(BaseModel):
