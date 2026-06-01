@@ -133,7 +133,9 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
             fetched_member=None,
         ),
     )
-    bot = SimpleNamespace(user=object(), process_commands=noop_process_commands)
+    bot = SimpleNamespace(
+        user=object(), process_commands=noop_process_commands, _message_reward_at={}
+    )
 
     await cli.DiscordBot.on_message(bot, message=message)
 

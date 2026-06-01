@@ -1056,7 +1056,9 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
         del sender_id, sender_name, receiver_id, receiver_name, amount
         captured_sender_avatar_url = sender_avatar_url
         captured_receiver_avatar_url = receiver_avatar_url
-        return TransferResult(sender_balance=50, receiver_balance=100)
+        return TransferResult(
+            sender_balance=50, receiver_balance=100, received_amount=100, tax_amount=0
+        )
 
     sender = FakeUser(user_id=1, name="alice")
     receiver = FakeUser(user_id=2, name="bob")
@@ -1107,7 +1109,9 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
             "receiver_name": receiver_name,
             "amount": amount,
         })
-        return TransferResult(sender_balance=50, receiver_balance=100)
+        return TransferResult(
+            sender_balance=50, receiver_balance=100, received_amount=100, tax_amount=0
+        )
 
     sender = FakeUser(user_id=1, name="alice")
     bot_receiver = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
@@ -1139,7 +1143,9 @@ async def test_economy_money_commands_accept_large_string_amounts(
 
     async def record_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
         captured["give"] = kwargs["amount"]
-        return TransferResult(sender_balance=0, receiver_balance=0)
+        return TransferResult(
+            sender_balance=0, receiver_balance=0, received_amount=0, tax_amount=0
+        )
 
     async def record_create_personal(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
         captured["credit_borrow"] = kwargs["amount"]
@@ -1218,7 +1224,9 @@ async def test_economy_money_commands_reject_invalid_amount_text(
     async def guard_transfer(**kwargs: Any) -> TransferResult:  # noqa: ANN401 -- command facade double
         del kwargs
         mutated.append("transfer")
-        return TransferResult(sender_balance=0, receiver_balance=0)
+        return TransferResult(
+            sender_balance=0, receiver_balance=0, received_amount=0, tax_amount=0
+        )
 
     async def guard_create_personal(**kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
         del kwargs
@@ -1448,7 +1456,9 @@ async def fake_transfer(  # noqa: PLR0913 -- mirrors transfer signature
     receiver_avatar_url: str = "",
 ) -> TransferResult | None:
     """Returns a successful fake transfer result."""
-    return TransferResult(sender_balance=50, receiver_balance=100)
+    return TransferResult(
+        sender_balance=50, receiver_balance=100, received_amount=100, tax_amount=0
+    )
 
 
 async def fake_adjust_balance(
@@ -1856,7 +1866,7 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
 async def test_blackjack_string_bet_accepts_large_formatted_amount(
     monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
 ) -> None:
-    """Verifies Blackjack slash bet parsing accepts values above Discord integer limits."""
+    """A large formatted bet is parsed without error but caps at MAX_SINGLE_BET."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
@@ -1876,8 +1886,9 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
     lobby_view = owner_interaction.followup.sent[0]["view"]
 
     assert isinstance(lobby_view, BlackjackLobbyView)
-    assert lobby_view.requested_bet == 9_007_199_254_740_993
-    assert lobby_view.participants[0].bet == 9_007_199_254_740_993
+    # The wager is parsed and the lobby is created, but the single-bet cap applies.
+    assert lobby_view.requested_bet == 1_000_000
+    assert lobby_view.participants[0].bet == 1_000_000
 
 
 async def test_blackjack_string_bet_rejects_invalid_text() -> None:
@@ -1895,15 +1906,15 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
     assert owner_interaction.response.deferred is False
 
 
-async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
+async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
     monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
 ) -> None:
-    """Verifies bet zero avoids typing a very large numeric bet."""
+    """Bet zero means all in, but a huge balance still caps at MAX_SINGLE_BET."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns a large owner balance that is awkward to type in Discord."""
+        """Returns a large owner balance that exceeds the single-bet cap."""
         return {1: 300_000_000_000_000, 2: 500_000_000_000_000, 999: 0}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
@@ -1915,9 +1926,10 @@ async def test_blackjack_owner_zero_bet_sets_table_bet_to_balance(
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
     lobby_view = owner_interaction.followup.sent[0]["view"]
     assert isinstance(lobby_view, BlackjackLobbyView)
-    assert lobby_view.requested_bet == 300_000_000_000_000
-    assert lobby_view.participants[0].bet == 300_000_000_000_000
-    assert lobby_view.participants[0].is_allin is True
+    # All-in caps at the single-bet ceiling, so it is no longer a true all-in.
+    assert lobby_view.requested_bet == 1_000_000
+    assert lobby_view.participants[0].bet == 1_000_000
+    assert lobby_view.participants[0].is_allin is False
 
 
 async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2085,7 +2097,11 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         )
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True), process_commands=record_processed)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True),
+        process_commands=record_processed,
+        _message_reward_at={},
+    )
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
     await cli.DiscordBot.on_message(bot, message=user_message)
     assert processed == [user_message]
@@ -2114,3 +2130,100 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     )
     await cli.DiscordBot.on_command_error(bot, context, commands.CommandNotFound("nope"))
     assert len(sent) == 4
+
+
+async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second message within the cooldown earns nothing; a later one earns again."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        rewards.append(kwargs)
+        return CreditResult(
+            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
+        )
+
+    async def noop_process(message: SimpleNamespace) -> None:
+        del message
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True), process_commands=noop_process, _message_reward_at={}
+    )
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+
+    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(bot, message=message)
+    assert len(rewards) == 1
+
+    # Backdate the last-reward stamp so the cooldown window has elapsed.
+    bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
+    await cli.DiscordBot.on_message(bot, message=message)
+    assert len(rewards) == 2
+
+
+async def test_cli_message_reward_cooldown_prunes_expired_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired per-user cooldown slots are dropped lazily on later messages."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        rewards.append(kwargs)
+        return CreditResult(
+            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
+        )
+
+    async def noop_process(message: SimpleNamespace) -> None:
+        del message
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True),
+        process_commands=noop_process,
+        _message_reward_at={1: 900.0, 2: 975.0},
+        _message_reward_pruned_at=0.0,
+    )
+
+    await cli.DiscordBot.on_message(
+        bot, message=SimpleNamespace(author=FakeUser(user_id=3, bot=False))
+    )
+
+    assert 1 not in bot._message_reward_at
+    assert bot._message_reward_at[2] == 975.0
+    assert bot._message_reward_at[3] == 1_000.0
+    assert len(rewards) == 1
+
+
+async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed credit must not leave the user on cooldown for the next message."""
+    attempts = 0
+
+    async def flaky_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient DB failure")
+        return CreditResult(
+            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
+        )
+
+    async def noop_process(message: SimpleNamespace) -> None:
+        del message
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True), process_commands=noop_process, _message_reward_at={}
+    )
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+
+    await cli.DiscordBot.on_message(bot, message=message)
+    # The first credit failed, so the slot is rolled back and the next message retries.
+    assert 1 not in bot._message_reward_at
+    await cli.DiscordBot.on_message(bot, message=message)
+    assert attempts == 2
+    assert bot._message_reward_at.get(1) is not None

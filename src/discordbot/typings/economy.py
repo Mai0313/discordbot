@@ -4,9 +4,9 @@ from datetime import datetime
 
 from pydantic import Field, BaseModel, ConfigDict
 
-BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 5_000
-BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 100_000
-VIP_PURCHASE_COST: Final[int] = 10_000_000
+BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 10
+BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 500
+VIP_PURCHASE_COST: Final[int] = 50_000
 LOAN_PROPOSAL_TIMEOUT_SECONDS: Final[int] = 180
 DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
 MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
@@ -16,6 +16,22 @@ MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 MIN_INTEREST_DAYS: Final[int] = 30
 # Daily check-in streak cycles through 1..7 then loops back to 1.
 CHECKIN_STREAK_CYCLE: Final[int] = 7
+
+# Anti-inflation guardrails. Faucets are deflated and a few structural caps keep
+# balances from compounding back to pre-reset astronomical levels.
+# Absolute ceiling on any single casino wager (Blackjack table bet, Dragon Gate
+# bet). Invisible to ordinary players; it turns runaway exponential growth from
+# all-in doubling into bounded linear growth once a balance gets large.
+MAX_SINGLE_BET: Final[int] = 1_000_000
+# Per-user cooldown between message rewards, so the flat per-message grant cannot
+# be farmed by spamming. Tracked process-locally; resets on restart by design.
+MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
+# Chat reward is token-based; divide and cap so a single long (e.g. web-search)
+# reply cannot mint tens of thousands of points at once.
+CHAT_REWARD_TOKEN_DIVISOR: Final[int] = 100
+CHAT_REWARD_MAX_PER_REPLY: Final[int] = 50
+# Permanent money sink: a burn on every /give transfer, in basis points.
+TRANSFER_TAX_BPS: Final[int] = 500
 
 
 class LoanLenderType(StrEnum):
@@ -46,6 +62,20 @@ class LoanContractStatus(StrEnum):
 
     ACTIVE = "active"
     CLOSED = "closed"
+
+
+class WalletResetMode(StrEnum):
+    """How an offline economy reset rewrites every wallet balance.
+
+    LOG_COMPRESS: monotonic log10 compression that preserves rank ordering
+        while collapsing absolute magnitude.
+    FIXED: set every account to the same starting balance.
+    WIPE: set every account to zero.
+    """
+
+    LOG_COMPRESS = "log_compress"
+    FIXED = "fixed"
+    WIPE = "wipe"
 
 
 class AccountSnapshot(BaseModel):
@@ -155,6 +185,32 @@ class BalanceAdjustmentResult(BaseModel):
 
     new_balance: int = Field(description="User balance after the adjustment.")
     applied_delta: int = Field(description="Signed balance delta that was actually applied.")
+
+
+class WalletResetSummary(BaseModel):
+    """Outcome of a bulk offline wallet reset.
+
+    Attributes:
+        mode: Reset transform that was applied.
+        accounts: Number of wallet rows rewritten.
+        total_before: Sum of every balance before the reset.
+        total_after: Sum of every balance after the reset.
+        max_before: Largest single balance before the reset.
+        max_after: Largest single balance after the reset.
+        dry_run: Whether the reset only computed the summary without writing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: WalletResetMode = Field(description="Reset transform that was applied.")
+    accounts: int = Field(description="Number of wallet rows rewritten.")
+    total_before: int = Field(description="Sum of every balance before the reset.")
+    total_after: int = Field(description="Sum of every balance after the reset.")
+    max_before: int = Field(description="Largest single balance before the reset.")
+    max_after: int = Field(description="Largest single balance after the reset.")
+    dry_run: bool = Field(
+        default=False, description="Whether the reset only computed the summary without writing."
+    )
 
 
 class WalletDeltaLeg(BaseModel):
@@ -327,12 +383,20 @@ class TransferResult(BaseModel):
     Attributes:
         sender_balance: Sender balance after the debit.
         receiver_balance: Receiver balance after the credit.
+        received_amount: Net amount credited to the receiver after the tax burn.
+        tax_amount: Amount burned by the transfer tax (removed from circulation).
     """
 
     model_config = ConfigDict(frozen=True)
 
     sender_balance: int = Field(description="Sender balance after the debit.")
     receiver_balance: int = Field(description="Receiver balance after the credit.")
+    received_amount: int = Field(
+        description="Net amount credited to the receiver after the tax burn."
+    )
+    tax_amount: int = Field(
+        description="Amount burned by the transfer tax (removed from circulation)."
+    )
 
 
 class CheckinResult(BaseModel):
@@ -490,12 +554,17 @@ class PortfolioView(BaseModel):
 __all__ = [
     "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
+    "CHAT_REWARD_MAX_PER_REPLY",
+    "CHAT_REWARD_TOKEN_DIVISOR",
     "CHECKIN_STREAK_CYCLE",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
+    "MAX_SINGLE_BET",
+    "MESSAGE_REWARD_COOLDOWN_SECONDS",
     "MIN_INTEREST_DAYS",
     "MIN_LOAN_MONTHLY_RATE_BPS",
+    "TRANSFER_TAX_BPS",
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
     "AdminAccount",
@@ -526,4 +595,6 @@ __all__ = [
     "TransferResult",
     "VipPurchaseResult",
     "WalletDeltaLeg",
+    "WalletResetMode",
+    "WalletResetSummary",
 ]

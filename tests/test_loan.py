@@ -34,15 +34,15 @@ async def _add_balance(user_id: int, name: str, amount: int) -> int:
     argnames=("delta", "is_vip", "expected"),
     argvalues=[
         (100, False, 100),
-        (100, True, 150),
-        (101, True, 151),
+        (100, True, 120),
+        (101, True, 121),
         (1, True, 1),
         (0, True, 0),
         (-50, True, -50),
     ],
 )
 def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> None:
-    """VIP bonus applies only to positive winnings and floors fractional halves."""
+    """VIP bonus applies only to positive winnings and floors fractional fifths."""
     assert apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip) == expected
 
 
@@ -114,7 +114,7 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
 
 
 async def test_transfer_updates_sender_and_receiver_totals() -> None:
-    """Transfer debits sender spent total and credits receiver earned total."""
+    """Transfer debits sender the full amount and credits receiver the taxed net."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
     await transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40)
@@ -123,8 +123,9 @@ async def test_transfer_updates_sender_and_receiver_totals() -> None:
     receiver = await get_account(user_id=2)
     assert sender is not None
     assert receiver is not None
+    # 40 transferred, 5% (2) burned; receiver nets 38.
     assert (sender.balance, sender.total_earned, sender.total_spent) == (60, 100, 40)
-    assert (receiver.balance, receiver.total_earned, receiver.total_spent) == (40, 40, 0)
+    assert (receiver.balance, receiver.total_earned, receiver.total_spent) == (38, 38, 0)
 
 
 async def test_apply_round_settlement_updates_player_and_casino_totals() -> None:
