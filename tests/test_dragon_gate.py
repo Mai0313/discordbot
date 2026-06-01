@@ -841,6 +841,42 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     assert view._jackpot_snapshot == state.jackpot
 
 
+async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A low-balance player's max bet is capped at their balance, not the whole pool."""
+    owner = _participant(user_id=1, display_name="Alice", balance=100)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
+    )
+    state = JackpotState(initial_jackpot=100_000, initial_balance=100)
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    message = MessageStub()
+    view = DragonGateView(
+        narrator=DealerStub(),
+        round_state=round_state,
+        owner=owner,
+        system_name="Dealer",
+        system_line="taunt",
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 100},
+    )
+    view.message = message
+    view.sync_controls()
+
+    # The 100,000 pool is bounded down to the player's 100 balance.
+    assert view._active_max_bet() == 100
+
+    await view._handle_bet_choice(
+        choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    )
+
+    # Gate win pays only the balance-bounded 100, closing the free-option.
+    assert state.calls[-1]["player_delta"] == 100
+    assert round_state.player_delta(user_id=1) == 100
+
+
 async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_clawback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

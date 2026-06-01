@@ -561,14 +561,14 @@ class DragonGateView(View):
             modal = DragonGateBetModal(
                 view=self,
                 minimum=self.round_state.current_min_bet(jackpot=self._jackpot_snapshot),
-                maximum=self.round_state.current_max_bet(jackpot=self._jackpot_snapshot),
+                maximum=self._active_max_bet(),
             )
             await interaction.response.send_modal(modal=modal)
             return
         if choice == "min":
             amount = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
         else:
-            amount = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
+            amount = self._active_max_bet()
         await self._place_select_bet(interaction=interaction, amount=amount)
 
     async def submit_custom_bet(self, interaction: Interaction, raw_amount: str | None) -> None:
@@ -586,7 +586,7 @@ class DragonGateView(View):
         needs_pair_choice = not self._settled and self.round_state.needs_pair_choice()
         can_bet = not self._settled and active is not None and not needs_pair_choice
         minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
-        maximum = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
+        maximum = self._active_max_bet()
 
         higher_button = self._buttons["dg:higher"]
         lower_button = self._buttons["dg:lower"]
@@ -666,6 +666,27 @@ class DragonGateView(View):
                 )
             )
 
+    def _max_bet_for(self, user_id: int | None) -> int:
+        """Returns the max legal bet bounded by the pool, the single-bet cap, and balance.
+
+        Losses already clamp at the player's balance, so bounding the bet by the
+        same balance closes the asymmetric free option where a low-balance player
+        risks only their wallet yet could win the full pool.
+        """
+        pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
+        if user_id is None:
+            return pool_max
+        balance = self._final_balances.get(user_id)
+        if balance is None:
+            return pool_max
+        return min(pool_max, max(balance, 0))
+
+    def _active_max_bet(self) -> int:
+        """Returns the active player's balance-bounded maximum bet."""
+        active = self.round_state.active_turn
+        user_id = active.participant.user_id if active is not None else None
+        return self._max_bet_for(user_id=user_id)
+
     async def _place_select_bet(self, interaction: Interaction, amount: int) -> None:
         """Defers a select interaction and places the chosen fixed bet."""
         await interaction.response.defer()
@@ -686,6 +707,8 @@ class DragonGateView(View):
             jackpot_before = self._jackpot_snapshot
             participant = self._participant_for(user_id=interaction.user.id)
             try:
+                if amount > self._max_bet_for(user_id=interaction.user.id):
+                    raise DragonGateBetRangeError("Bet exceeds the player's balance")
                 turn_result = self.round_state.place_bet(
                     user_id=interaction.user.id, amount=amount, jackpot=self._jackpot_snapshot
                 )
@@ -949,7 +972,7 @@ class DragonGateView(View):
             content = self._current_turn_notice()
         elif isinstance(error, DragonGateBetRangeError):
             minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
-            maximum = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
+            maximum = self._active_max_bet()
             content = (
                 "下注金額需介於 "
                 f"{currency_text(amount=minimum, compact=True)} 到 "
