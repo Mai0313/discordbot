@@ -584,9 +584,14 @@ class DragonGateView(View):
         """Updates button labels and select options from the current table state."""
         active = self.round_state.active_turn
         needs_pair_choice = not self._settled and self.round_state.needs_pair_choice()
-        can_bet = not self._settled and active is not None and not needs_pair_choice
         minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
         maximum = self._active_max_bet()
+        can_bet = (
+            not self._settled
+            and active is not None
+            and not needs_pair_choice
+            and maximum >= minimum
+        )
 
         higher_button = self._buttons["dg:higher"]
         lower_button = self._buttons["dg:lower"]
@@ -671,9 +676,9 @@ class DragonGateView(View):
 
         Losses already clamp at the player's balance, so bounding the bet by the
         same balance closes the asymmetric free option where a low-balance player
-        risks only their wallet yet could win the full pool. The result is floored
-        at the minimum bet so a player whose balance dipped below the minimum is
-        still offered a placeable bet instead of a max-below-min dead state.
+        risks only their wallet yet could win the full pool. If the balance drops
+        below the table minimum, the betting controls are hidden until the player
+        leaves instead of flooring the maximum back above their wallet.
         """
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
@@ -681,8 +686,7 @@ class DragonGateView(View):
         balance = self._final_balances.get(user_id)
         if balance is None:
             return pool_max
-        minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
-        return max(min(pool_max, max(balance, 0)), minimum)
+        return min(pool_max, max(balance, 0))
 
     def _active_max_bet(self) -> int:
         """Returns the active player's balance-bounded maximum bet."""
@@ -976,11 +980,14 @@ class DragonGateView(View):
         elif isinstance(error, DragonGateBetRangeError):
             minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
             maximum = self._active_max_bet()
-            content = (
-                "下注金額需介於 "
-                f"{currency_text(amount=minimum, compact=True)} 到 "
-                f"{currency_text(amount=maximum, compact=True)}"
-            )
+            if maximum < minimum:
+                content = "餘額不足以下注，請先離桌"
+            else:
+                content = (
+                    "下注金額需介於 "
+                    f"{currency_text(amount=minimum, compact=True)} 到 "
+                    f"{currency_text(amount=maximum, compact=True)}"
+                )
         else:
             content = "這桌已經不能操作了"
         await self._send_notice(interaction=interaction, content=content)

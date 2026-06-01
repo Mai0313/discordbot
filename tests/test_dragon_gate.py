@@ -877,10 +877,10 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     assert round_state.player_delta(user_id=1) == 100
 
 
-async def test_dragon_gate_view_sub_min_balance_is_not_stuck(
+async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player whose balance is below the minimum bet can still place a valid bet."""
+    """A player whose balance is below the minimum bet cannot win above wallet risk."""
     owner = _participant(user_id=1, display_name="Alice", balance=15)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
@@ -901,14 +901,17 @@ async def test_dragon_gate_view_sub_min_balance_is_not_stuck(
     view.message = message
     view.sync_controls()
 
-    # Balance 15 is below the 20 minimum, so the max is floored to the minimum
-    # instead of dropping below it and leaving the player unable to bet.
-    assert view._active_max_bet() == 20
+    # Balance 15 is below the 20 minimum, so betting is unavailable instead of
+    # being floored back above the player's wallet.
+    assert view._active_max_bet() == 15
+    assert _component_ids(view=view) == {"dg:leave"}
 
+    interaction = InteractionStub(user_id=1, message=message, custom_id="dg:bet")
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min", interaction=interaction
     )
-    assert state.calls[-1]["player_delta"] == 20
+    assert state.calls == []
+    assert interaction.followup.sent[-1]["content"] == "餘額不足以下注，請先離桌"
 
 
 async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_clawback(
