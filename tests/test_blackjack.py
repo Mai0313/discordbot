@@ -611,8 +611,7 @@ def test_can_double_after_split_disabled_by_default() -> None:
 def test_can_double_rejected_when_doubling_exceeds_single_bet_cap() -> None:
     """Doubling cannot push the hand stake past MAX_SINGLE_BET."""
     over_cap = _make_hand(
-        cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
-        bet=MAX_SINGLE_BET // 2 + 1,
+        cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")], bet=MAX_SINGLE_BET // 2 + 1
     )
     assert can_double(hand=over_cap, balance_remaining=MAX_SINGLE_BET) is False
     at_cap = _make_hand(
