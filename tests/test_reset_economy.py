@@ -3,17 +3,16 @@
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select, update
-
 from scripts import reset_economy as reset_script
+from sqlalchemy import select, update
 
 from discordbot.typings.economy import AccountSnapshot, WalletResetMode, WalletResetSummary
 from discordbot.cogs._economy.database import (
-    JackpotPool,
     UserWallet,
+    JackpotPool,
     get_account,
-    adjust_balance,
     open_session,
+    adjust_balance,
     set_wallet_exact,
     get_casino_ledger,
     reset_all_wallets,
@@ -159,8 +158,8 @@ async def test_reset_all_wallets_updates_wallet_timestamps() -> None:
 
     async with open_session() as session:
         updated_at_values = (
-            await session.execute(statement=select(UserWallet.updated_at))
-        ).scalars().all()
+            (await session.execute(statement=select(UserWallet.updated_at))).scalars().all()
+        )
 
     assert updated_at_values
     assert all(updated_at > old_timestamp for updated_at in updated_at_values)

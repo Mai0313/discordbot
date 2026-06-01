@@ -59,10 +59,7 @@ class DiscordBot(commands.Bot):
 
     def _prune_message_reward_cooldowns(self, now: float) -> None:
         """Drops expired message-reward cooldown entries."""
-        if (
-            now - getattr(self, "_message_reward_pruned_at", 0.0)
-            < MESSAGE_REWARD_COOLDOWN_SECONDS
-        ):
+        if now - getattr(self, "_message_reward_pruned_at", 0.0) < MESSAGE_REWARD_COOLDOWN_SECONDS:
             return
         cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
         self._message_reward_at = {

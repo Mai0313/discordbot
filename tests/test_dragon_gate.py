@@ -907,9 +907,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     assert _component_ids(view=view) == {"dg:leave"}
 
     interaction = InteractionStub(user_id=1, message=message, custom_id="dg:bet")
-    await view._handle_bet_choice(
-        choice="min", interaction=interaction
-    )
+    await view._handle_bet_choice(choice="min", interaction=interaction)
     assert state.calls == []
     assert interaction.followup.sent[-1]["content"] == "餘額不足以下注，請先離桌"
 
