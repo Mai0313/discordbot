@@ -32,9 +32,12 @@ def build_wager_participant(
     if mode == "exact" and balance < wager:
         return None
 
-    # MAX_SINGLE_BET caps any single wager so balances cannot compound
-    # exponentially through repeated all-in doubling.
-    bet = min(wager, balance, MAX_SINGLE_BET)
+    bet = min(wager, balance)
+    if mode == "clamp":
+        # MAX_SINGLE_BET caps player-chosen table bets so balances cannot compound
+        # exponentially through repeated all-in doubling. Exact-mode antes must be
+        # paid in full, so they are never reduced by the cap.
+        bet = min(bet, MAX_SINGLE_BET)
     return GameParticipant(
         user_id=identity.user_id,
         account_name=identity.account_name,
