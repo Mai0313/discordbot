@@ -66,6 +66,13 @@ def test_compute_reset_balance_log_compress_is_monotonic_and_bounded() -> None:
     assert whale < 100_000
 
 
+def test_compute_reset_balance_log_compress_clamps_negative_inputs() -> None:
+    """A mistyped negative floor/scale cannot produce a negative balance."""
+    assert (
+        compute_reset_balance(1_000_000, WalletResetMode.LOG_COMPRESS, floor=0, scale=-1000) == 0
+    )
+
+
 # reset_all_wallets ----------------------------------------------------------
 
 

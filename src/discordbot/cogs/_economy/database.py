@@ -3520,7 +3520,9 @@ def compute_reset_balance(
         return max(fixed_amount, 0)
     if old_balance <= 0:
         return 0
-    return round(floor + scale * math.log10(1 + old_balance))
+    # Clamp at zero so a mistyped negative --floor / --scale cannot write a
+    # negative balance, honoring the non-negative result this helper promises.
+    return max(0, round(floor + scale * math.log10(1 + old_balance)))
 
 
 async def count_wallet_invariant_violations() -> int:
