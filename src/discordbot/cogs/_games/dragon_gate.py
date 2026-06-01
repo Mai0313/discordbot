@@ -15,6 +15,7 @@ from typing import Final, Literal
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, GameParticipant
+from discordbot.typings.economy import MAX_SINGLE_BET
 
 DragonGateDirection = Literal["higher", "lower"]
 DragonGateOutcome = Literal[
@@ -25,8 +26,8 @@ RANKS: tuple[str, ...] = ("A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J"
 SUITS: tuple[str, ...] = ("♠", "♥", "♦", "♣")
 
 GAME_ID: Final[str] = "dragon_gate"
-ANTE: Final[int] = 5_000
-MIN_BET: Final[int] = 10_000
+ANTE: Final[int] = 10
+MIN_BET: Final[int] = 20
 
 
 class DragonGateError(ValueError):
@@ -169,8 +170,12 @@ class DragonGateRound(BaseModel):
         return min(MIN_BET, jackpot)
 
     def current_max_bet(self, jackpot: int) -> int:
-        """Returns the maximum legal bet given the live jackpot snapshot."""
-        return max(jackpot, 0)
+        """Returns the maximum legal bet given the live jackpot snapshot.
+
+        Capped by `MAX_SINGLE_BET` so a large pool cannot fund an unbounded
+        single wager; the view layer further clamps to the player's balance.
+        """
+        return min(max(jackpot, 0), MAX_SINGLE_BET)
 
     def choose_pair_direction(self, user_id: int, direction: DragonGateDirection) -> None:
         """Stores the active player's high/low choice for a same-point gate."""

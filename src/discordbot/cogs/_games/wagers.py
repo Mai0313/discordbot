@@ -3,6 +3,7 @@
 from typing import Literal
 
 from discordbot.typings.games import GameParticipant, GameParticipantIdentity
+from discordbot.typings.economy import MAX_SINGLE_BET
 
 WagerMode = Literal["clamp", "exact"]
 
@@ -31,7 +32,9 @@ def build_wager_participant(
     if mode == "exact" and balance < wager:
         return None
 
-    bet = min(wager, balance)
+    # MAX_SINGLE_BET caps any single wager so balances cannot compound
+    # exponentially through repeated all-in doubling.
+    bet = min(wager, balance, MAX_SINGLE_BET)
     return GameParticipant(
         user_id=identity.user_id,
         account_name=identity.account_name,

@@ -374,14 +374,15 @@ def build_transfer_embed(  # noqa: PLR0913 -- mirrors both transfer sides and ba
     result: TransferResult,
 ) -> Embed:
     """Builds the public transfer-completed embed."""
-    embed = Embed(
-        title="💸 轉帳完成",
-        description=(
-            f"### {currency_text(amount=amount, compact=True)}\n"
-            f"{sender.mention} → {receiver.mention}"
-        ),
-        color=TRANSFER_COLOR,
+    description = (
+        f"### {currency_text(amount=amount, compact=True)}\n{sender.mention} → {receiver.mention}"
     )
+    if result.tax_amount > 0:
+        description += (
+            f"\n實收 {currency_text(amount=result.received_amount, compact=True)}"
+            f"（已扣稅 {currency_text(amount=result.tax_amount, compact=True)}）"
+        )
+    embed = Embed(title="💸 轉帳完成", description=description, color=TRANSFER_COLOR)
     embed.set_author(name=sender.display_name, icon_url=sender_avatar_url)
     _set_optional_thumbnail(embed=embed, avatar_url=receiver_avatar_url)
     embed.add_field(

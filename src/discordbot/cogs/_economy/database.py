@@ -44,6 +44,7 @@ errors before either commit; SQLite still cannot make a hard crash between two
 database-file commits fully atomic.
 """
 
+import math
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
@@ -74,6 +75,7 @@ from sqlalchemy.dialects.sqlite import insert
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import (
+    TRANSFER_TAX_BPS,
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
@@ -92,6 +94,7 @@ from discordbot.typings.economy import (
     WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
+    WalletResetMode,
     CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
@@ -102,6 +105,7 @@ from discordbot.typings.economy import (
     VipPurchaseResult,
     LoanContractStatus,
     LoanProposalStatus,
+    WalletResetSummary,
     CasinoLedgerSnapshot,
     CentralBankerAccount,
     LossLeaderboardEntry,
@@ -130,9 +134,9 @@ _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
 _CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
 _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
 _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
-# Blackjack VIP perk: 1.5x payout on winning rounds, applied as floor(delta * 3 / 2).
-_VIP_WIN_MULTIPLIER_NUM: Final[int] = 3
-_VIP_WIN_MULTIPLIER_DEN: Final[int] = 2
+# Blackjack VIP perk: 1.2x payout on winning rounds, applied as floor(delta * 6 / 5).
+_VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
+_VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
 _global_state_engine: AsyncEngine = create_async_engine(
@@ -466,7 +470,7 @@ CASINO_LEDGER_ID: Final[str] = "casino"
 # bookkeeping only — the bot's user_account row is never decremented to fund
 # it, so /casino P&L stays unaffected by the donation. Seeded pools are also
 # topped back up to this amount whenever they are drained.
-_JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 100_000),)
+_JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 1_000),)
 
 
 def _jackpot_seed_amount(game_id: str) -> int:
@@ -677,7 +681,7 @@ def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
 
 
 def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
-    """Applies the VIP 1.5x payout multiplier on a winning player delta.
+    """Applies the VIP 1.2x payout multiplier on a winning player delta.
 
     The bonus only fires on positive deltas (wins). Pushes and losses pass
     through unchanged so VIP never softens a loss.
@@ -2381,7 +2385,7 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     sender_avatar_url: str = "",
     receiver_avatar_url: str = "",
 ) -> TransferResult | None:
-    """Atomically moves points from sender to receiver.
+    """Atomically moves points from sender to receiver, burning a transfer tax.
 
     The debit is a single conditional `UPDATE` gated on `balance >= amount`;
     if that returns no row the transfer is rejected without ever touching
@@ -2389,6 +2393,13 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     receiver row is created on first contact and the whole transfer is one
     all-or-nothing operation. Both balances are returned from the same SQL
     writes, so callers do not need extra reads after a successful transfer.
+
+    The sender is debited the full `amount`, but the receiver only receives
+    `amount - tax` where `tax = amount * TRANSFER_TAX_BPS // 10_000`. The
+    burned difference is removed from circulation entirely, acting as a
+    permanent money sink. Per-side the `balance == total_earned - total_spent`
+    invariant is preserved (sender `total_spent += amount`, receiver
+    `total_earned += net`).
 
     Args:
         sender_id: Discord user ID to debit.
@@ -2437,8 +2448,10 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
             now=now,
         )
 
+        tax = amount * TRANSFER_TAX_BPS // 10_000
+        net = amount - tax
         credit_stmt = _build_credit_upsert(
-            user_id=receiver_id, name=receiver_name, amount=amount, now=now
+            user_id=receiver_id, name=receiver_name, amount=net, now=now
         )
         await _upsert_user_metadata_in_session(
             session=session,
@@ -2452,7 +2465,12 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 
         await session.commit()
         invalidate_economy_leaderboard_cache()
-        return TransferResult(sender_balance=sender_balance, receiver_balance=receiver_balance)
+        return TransferResult(
+            sender_balance=sender_balance,
+            receiver_balance=receiver_balance,
+            received_amount=net,
+            tax_amount=tax,
+        )
 
 
 async def top_n(
@@ -3463,3 +3481,247 @@ async def remove_bot_status(status_id: int) -> bool:
         )
         await session.commit()
         return bool(result.rowcount)
+
+
+# --- Offline economy reset helpers ----------------------------------------
+# One-time maintenance used by scripts/reset_economy.py to deflate balances
+# accumulated under the pre-reset faucets. All writes go through the ORM so the
+# StoredInteger decimal-text encoding stays canonical, and every wallet write
+# sets the full (balance, total_earned, total_spent) triple so the
+# `balance == total_earned - total_spent` invariant holds by construction.
+
+
+def compute_reset_balance(
+    old_balance: int,
+    mode: WalletResetMode,
+    floor: int = 1_000,
+    scale: int = 1_000,
+    fixed_amount: int = 10_000,
+) -> int:
+    """Returns the post-reset balance for one account under `mode`.
+
+    LOG_COMPRESS applies a monotonic `floor + scale * log10(1 + balance)`
+    transform that preserves rank ordering while collapsing magnitude; empty
+    accounts stay at zero. FIXED returns `fixed_amount`; WIPE returns zero.
+
+    Args:
+        old_balance: Current balance for the account.
+        mode: Reset transform to apply.
+        floor: Baseline added to every positive balance in LOG_COMPRESS.
+        scale: Multiplier on the log10 term in LOG_COMPRESS.
+        fixed_amount: Flat balance assigned in FIXED mode.
+
+    Returns:
+        The new non-negative balance.
+    """
+    if mode is WalletResetMode.WIPE:
+        return 0
+    if mode is WalletResetMode.FIXED:
+        return max(fixed_amount, 0)
+    if old_balance <= 0:
+        return 0
+    return round(floor + scale * math.log10(1 + old_balance))
+
+
+async def count_wallet_invariant_violations() -> int:
+    """Counts wallets where `balance != total_earned - total_spent`.
+
+    Used to verify the wallet invariant after an offline reset. StoredInteger
+    decodes to Python `int`, so the comparison is exact at any magnitude.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        rows = (
+            await session.execute(
+                statement=select(
+                    UserWallet.balance, UserWallet.total_earned, UserWallet.total_spent
+                )
+            )
+        ).all()
+        return sum(1 for balance, earned, spent in rows if balance != earned - spent)
+
+
+async def set_wallet_exact(
+    user_id: int, balance: int, total_earned: int, total_spent: int, name: str = ""
+) -> int:
+    """Sets an account's full wallet triple, creating the row if missing.
+
+    Unlike `adjust_balance`, this writes `balance`, `total_earned`, and
+    `total_spent` together, so callers can repair or reset a wallet without
+    leaving the `balance == total_earned - total_spent` invariant broken.
+
+    Returns:
+        The post-write balance.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        await _upsert_user_metadata_in_session(
+            session=session, user_id=user_id, name=name, avatar_url="", now=now
+        )
+        set_: dict[str, Any] = {
+            "balance": balance,
+            "total_earned": total_earned,
+            "total_spent": total_spent,
+            "updated_at": now,
+        }
+        if name:
+            set_["name"] = name
+        stmt = (
+            insert(UserWallet)
+            .values(
+                user_id=user_id,
+                name=name or str(user_id),
+                balance=balance,
+                total_earned=total_earned,
+                total_spent=total_spent,
+                updated_at=now,
+            )
+            .on_conflict_do_update(index_elements=["user_id"], set_=set_)
+            .returning(UserWallet.balance)
+        )
+        result = await session.execute(statement=stmt)
+        new_balance = result.scalar_one()
+        await session.commit()
+        invalidate_economy_leaderboard_cache()
+        return new_balance
+
+
+async def reset_all_wallets(
+    mode: WalletResetMode,
+    floor: int = 1_000,
+    scale: int = 1_000,
+    fixed_amount: int = 10_000,
+    dry_run: bool = False,
+) -> WalletResetSummary:
+    """Rewrites every wallet balance under `mode` in one transaction.
+
+    Each row is set to `(new_balance, new_balance, 0)` for
+    `(balance, total_earned, total_spent)`, which both deflates the balance and
+    resets the polluted lifetime gross totals while guaranteeing the wallet
+    invariant. A dry run computes the summary without writing.
+
+    Returns:
+        A summary of the accounts touched and the supply before/after.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        rows = (await session.execute(statement=select(UserWallet))).scalars().all()
+        total_before = 0
+        total_after = 0
+        max_before = 0
+        max_after = 0
+        for row in rows:
+            old_balance = row.balance
+            new_balance = compute_reset_balance(
+                old_balance, mode, floor=floor, scale=scale, fixed_amount=fixed_amount
+            )
+            total_before += old_balance
+            total_after += new_balance
+            max_before = max(max_before, old_balance)
+            max_after = max(max_after, new_balance)
+            if not dry_run:
+                row.balance = new_balance
+                row.total_earned = new_balance
+                row.total_spent = 0
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
+            invalidate_economy_leaderboard_cache()
+        return WalletResetSummary(
+            mode=mode,
+            accounts=len(rows),
+            total_before=total_before,
+            total_after=total_after,
+            max_before=max_before,
+            max_after=max_after,
+            dry_run=dry_run,
+        )
+
+
+async def reset_casino_daily_counters() -> int:
+    """Deletes all per-user daily casino counters; returns rows removed.
+
+    The rows lazily recreate on the next casino settlement, so deletion is the
+    cleanest way to clear the loss-leaderboard state.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(statement=delete(CasinoAccount))
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
+async def forgive_loan_contracts() -> int:
+    """Closes every active loan contract with zero owed, moving no balance.
+
+    Returns:
+        The number of contracts closed.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(LoanContract)
+            .where(LoanContract.status == LoanContractStatus.ACTIVE.value)
+            .values(
+                principal_remaining=0,
+                interest_due=0,
+                status=LoanContractStatus.CLOSED.value,
+                closed_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
+async def expire_loan_proposals() -> int:
+    """Cancels every pending loan proposal; returns proposals canceled."""
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(LoanProposal)
+            .where(LoanProposal.status == LoanProposalStatus.PENDING.value)
+            .values(status=LoanProposalStatus.CANCELED.value, updated_at=now)
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
+async def reset_casino_ledger() -> None:
+    """Zeroes the cumulative casino system ledger (balance/earned/spent)."""
+    await _ensure_global_state_schema()
+    now = _database_now()
+    async with open_global_state_session() as session:
+        await session.execute(
+            statement=update(CasinoLedger)
+            .where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
+            .values(balance=0, total_earned=0, total_spent=0, updated_at=now)
+        )
+        await session.commit()
+
+
+async def reset_jackpot_pools() -> None:
+    """Resets every seeded jackpot pool back to its seed with a fresh generation."""
+    await _ensure_global_state_schema()
+    now = _database_now()
+    async with open_global_state_session() as session:
+        for game_id, seed_amount in _JACKPOT_SEEDS:
+            seed_values: dict[str, Any] = {
+                "pool_balance": seed_amount,
+                "total_contributed": 0,
+                "total_claimed": 0,
+                "seeded_amount": seed_amount,
+                "generation": 0,
+                "updated_at": now,
+            }
+            stmt = (
+                insert(JackpotPool)
+                .values(game_id=game_id, **seed_values)
+                .on_conflict_do_update(index_elements=["game_id"], set_=seed_values)
+            )
+            await session.execute(statement=stmt)
+        await session.commit()
