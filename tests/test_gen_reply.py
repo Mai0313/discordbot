@@ -320,12 +320,39 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     result = await ResponseStreamer(message=message, responses=_stream_events()).stream()
 
+    # 46 tokens // 100 divisor rounds down to a 0 chat reward.
     expected = (
         f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
-        " · 46 虛擬歡樂豆 (+46 虛擬歡樂豆)"
+        " · 0 虛擬歡樂豆 (0 虛擬歡樂豆)"
     )
     assert result == expected
     assert message.replies[0].content == result
+
+
+async def test_handle_streaming_chat_reward_divided_and_capped(economy_isolated_db: None) -> None:
+    """A long reply's chat reward is divided by the token divisor and capped."""
+    del economy_isolated_db
+    message = FakeMessage()
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                model=TEST_LLM_MODEL,
+                usage=SimpleNamespace(
+                    input_tokens=3_000, output_tokens=3_000, output_tokens_details=None
+                ),
+            ),
+        ),
+    ]
+
+    result = await ResponseStreamer(
+        message=message, responses=_stream_events_from(events=events)
+    ).stream()
+
+    # 6,000 tokens // 100 = 60, capped at 50; the footer shows the credited amount.
+    assert "⬆ 3,000 ⬇ 3,000" in result
+    assert "· 50 虛擬歡樂豆 (+50 虛擬歡樂豆)" in result
 
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain(
@@ -353,9 +380,8 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
         ),
     ).stream()
 
-    usage_footer = (
-        f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 3 虛擬歡樂豆 (+3 虛擬歡樂豆)"
-    )
+    # 3 tokens // 100 divisor rounds down to a 0 chat reward.
+    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 0 虛擬歡樂豆 (0 虛擬歡樂豆)"
     assert result == f"{body}{usage_footer}"
 
     parent = message.replies[0]

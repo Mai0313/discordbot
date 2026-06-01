@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, SkipValidation
 from openai.types.responses import ResponseStreamEvent
 
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._economy.database import credit_with_repayment
@@ -133,10 +134,12 @@ class ResponseStreamer(BaseModel):
         input_rate, output_rate = get_token_rates(model_name=model_name)
         cost = input_rate * input_tokens + output_rate * output_tokens
 
-        # Award chat points equal to total tokens used. We await this (rather than fire-and-forget)
-        # so the resulting balance can land in the footer.
+        # Award chat points from token usage, divided down and capped per reply so a
+        # single long (e.g. web-search) reply cannot mint a huge balance. We await this
+        # (rather than fire-and-forget) so the resulting balance can land in the footer.
         # On DB failure, it returns None and the footer falls back to the delta-only format.
         total_tokens = input_tokens + output_tokens
+        reward = min(total_tokens // CHAT_REWARD_TOKEN_DIVISOR, CHAT_REWARD_MAX_PER_REPLY)
         avatar_url = await guild_avatar_url(
             user=self.message.author, guild=getattr(self.message, "guild", None)
         )
@@ -144,14 +147,14 @@ class ResponseStreamer(BaseModel):
             user_id=self.message.author.id,
             name=self.message.author.name,
             avatar_url=avatar_url,
-            amount=total_tokens,
+            amount=reward,
         )
 
         stored_content = CODED_MENTION_RE.sub(r"\1", stored_content)
         if result.new_balance is not None:
-            balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=total_tokens, signed=True, compact=True)})"
+            balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
-            balance_text = currency_text(amount=total_tokens, signed=True, compact=True)
+            balance_text = currency_text(amount=reward, signed=True, compact=True)
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
         usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
 

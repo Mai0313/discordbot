@@ -1960,3 +1960,41 @@ async def _set_bcat_price(price_cents: int) -> None:
             .values(price_cents=price_cents, created_at=now)
         )
         await session.commit()
+
+
+async def test_reset_all_positions_flattens_and_zeros_pnl(stock_empty_db: None) -> None:
+    """reset_all_positions flattens every position and zeroes realized P&L."""
+    del stock_empty_db
+    # Touch the DB once so the schema exists, then seed a fat position.
+    assert await stock_db.reset_all_positions() == 0
+    async with stock_db.open_stock_session() as session:
+        session.add(
+            stock_db.StockPosition(
+                symbol="BCAT",
+                user_id=1,
+                user_name="alice",
+                long_shares=1_000,
+                long_cost_basis=5_000,
+                short_shares=200,
+                short_entry_value=400,
+                short_collateral=600,
+                realized_pnl=999_999,
+                version=3,
+                updated_at=datetime(2026, 1, 1),
+            )
+        )
+        await session.commit()
+
+    affected = await stock_db.reset_all_positions()
+
+    assert affected == 1
+    async with stock_db.open_stock_session() as session:
+        row = (
+            await session.execute(
+                select(stock_db.StockPosition).where(stock_db.StockPosition.user_id == 1)
+            )
+        ).scalar_one()
+    assert (row.long_shares, row.long_cost_basis) == (0, 0)
+    assert (row.short_shares, row.short_entry_value, row.short_collateral) == (0, 0, 0)
+    assert row.realized_pnl == 0
+    assert row.version == 4
