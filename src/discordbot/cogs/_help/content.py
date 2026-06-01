@@ -86,7 +86,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack and Dragon Gate tables",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. The shoe carries over between rounds in the same channel and reshuffles once it runs low. `bet` accepts comma-formatted numbers, and `0` means all in.\n\n"
+                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. The shoe carries over between rounds in the same channel and reshuffles once it runs low. `bet` accepts comma-formatted numbers, and `0` means all in — though any single bet is still capped at 1,000,000.\n\n"
                     "**`/games blackjack_history [member] [count]`**\n"
                     "Publicly post a player's recent Blackjack rounds as a shared table: hands, bets, dealer hands, and results. Defaults to yourself and the last 10 rounds (up to 50).\n\n"
                     "**`/games dragon_gate`**\n"
@@ -103,7 +103,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/checkin` — daily reward and streak bonus\n"
                     "`/vip` — buy or check VIP (boosts check-in and Blackjack rewards)\n\n"
                     "**Transfers & boards**\n"
-                    "`/give` — transfer to members or bots\n"
+                    "`/give` — transfer to members or bots (a 5% transfer tax is burned)\n"
                     "`/leaderboard` — balance board\n"
                     "`/loss_leaderboard` — today's loss board\n"
                     "`/casino` — casino system ledger\n"
@@ -161,7 +161,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack 與射龍門",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；同一頻道的牌靴會跨局延續，剩牌不足時才重新洗牌；`bet` 可輸入含逗號的數字，`0` 就是 all in。\n\n"
+                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；同一頻道的牌靴會跨局延續，剩牌不足時才重新洗牌；`bet` 可輸入含逗號的數字，`0` 就是 all in（但單注一樣最多 100 萬，餘額更高也只押到上限）。\n\n"
                     "**`/games blackjack_history [member] [count]`**\n"
                     "公開貼出某位玩家近期的 21 點對局表格：手牌、下注、莊家手牌與結果；預設查自己、近 10 場（最多 50）。\n\n"
                     "**`/games dragon_gate`**\n"
@@ -178,7 +178,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/checkin` — 每日簽到與 streak bonus\n"
                     "`/vip` — 購買或查看 VIP（加成 check-in 與 Blackjack reward）\n\n"
                     "**轉帳與排行**\n"
-                    "`/give` — 轉帳給成員或 bot\n"
+                    "`/give` — 轉帳給成員或 bot（收取 5% 轉帳稅並銷毀）\n"
                     "`/leaderboard` — 餘額排行榜\n"
                     "`/loss_leaderboard` — 今日輸錢榜\n"
                     "`/casino` — 賭場系統 ledger\n"
@@ -236,7 +236,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Blackjack と Dragon Gate",
                 detail=(
                     "**`/games blackjack`**\n"
-                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。シューは同じチャンネルでラウンドをまたいで引き継がれ、残りが少なくなるとシャッフルし直します。`bet` はカンマ付き数字に対応し、`0` は all in です。\n\n"
+                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。シューは同じチャンネルでラウンドをまたいで引き継がれ、残りが少なくなるとシャッフルし直します。`bet` はカンマ付き数字に対応し、`0` は all in ですが、1ベットの上限は100万です（残高がそれ以上でも上限まで）。\n\n"
                     "**`/games blackjack_history [member] [count]`**\n"
                     "プレイヤーの最近のブラックジャックの対局を共有テーブルで公開投稿：手札、賭け金、ディーラーの手札、結果。既定は自分・直近 10 件（最大 50）。\n\n"
                     "**`/games dragon_gate`**\n"
@@ -253,7 +253,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/checkin` — daily reward と streak bonus\n"
                     "`/vip` — VIP の購入・確認（check-in と Blackjack reward を強化）\n\n"
                     "**送金・ランキング**\n"
-                    "`/give` — メンバーや bot への送金\n"
+                    "`/give` — メンバーや bot への送金（5% の送金税を徴収して焼却）\n"
                     "`/leaderboard` — 残高ランキング\n"
                     "`/loss_leaderboard` — 本日の loss ランキング\n"
                     "`/casino` — casino system ledger\n"

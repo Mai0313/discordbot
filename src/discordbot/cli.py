@@ -1,6 +1,7 @@
 """Discord bot entry point and runtime event handlers."""
 
 import os
+from time import monotonic
 import asyncio
 import logging
 from pathlib import Path
@@ -16,7 +17,7 @@ from nextcord.ext import tasks, commands
 from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
-from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT
+from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import warm_pricing_cache
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._economy.database import get_bot_statuses, credit_with_repayment
@@ -51,6 +52,22 @@ class DiscordBot(commands.Bot):
         # zero commands and register nothing with Discord.
         self._load_cogs_sync()
         self._initial_setup_done = False
+        # Process-local per-user cooldown for the flat message reward, so it
+        # cannot be farmed by spamming. Resets on restart by design.
+        self._message_reward_at: dict[int, float] = {}
+        self._message_reward_pruned_at = 0.0
+
+    def _prune_message_reward_cooldowns(self, now: float) -> None:
+        """Drops expired message-reward cooldown entries."""
+        if now - getattr(self, "_message_reward_pruned_at", 0.0) < MESSAGE_REWARD_COOLDOWN_SECONDS:
+            return
+        cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
+        self._message_reward_at = {
+            user_id: rewarded_at
+            for user_id, rewarded_at in self._message_reward_at.items()
+            if rewarded_at > cutoff
+        }
+        self._message_reward_pruned_at = now
 
     def _load_cogs_sync(self) -> None:
         """Loads all cogs found in the cogs directory."""
@@ -121,18 +138,30 @@ class DiscordBot(commands.Bot):
         if message.author == self.user or message.author.bot:
             return
 
-        try:
-            avatar_url = await guild_avatar_url(
-                user=message.author, guild=getattr(message, "guild", None)
-            )
-            await credit_with_repayment(
-                user_id=message.author.id,
-                name=message.author.name,
-                avatar_url=avatar_url,
-                amount=BASE_MESSAGE_REWARD_AMOUNT,
-            )
-        except Exception:
-            logfire.warn("Failed to award base message points", _exc_info=True)
+        now = monotonic()
+        DiscordBot._prune_message_reward_cooldowns(self, now=now)
+        last_rewarded_at = self._message_reward_at.get(message.author.id)
+        if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
+            # Reserve the cooldown slot before awaiting so two rapid messages cannot
+            # both pass the check and double-credit; roll it back if the credit fails
+            # so a transient error does not cost the user their reward window.
+            self._message_reward_at[message.author.id] = now
+            try:
+                avatar_url = await guild_avatar_url(
+                    user=message.author, guild=getattr(message, "guild", None)
+                )
+                await credit_with_repayment(
+                    user_id=message.author.id,
+                    name=message.author.name,
+                    avatar_url=avatar_url,
+                    amount=BASE_MESSAGE_REWARD_AMOUNT,
+                )
+            except Exception:
+                if last_rewarded_at is None:
+                    self._message_reward_at.pop(message.author.id, None)
+                else:
+                    self._message_reward_at[message.author.id] = last_rewarded_at
+                logfire.warn("Failed to award base message points", _exc_info=True)
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:

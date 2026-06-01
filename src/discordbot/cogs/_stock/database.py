@@ -2652,6 +2652,48 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
         )
 
 
+async def reset_all_positions() -> int:
+    """Flattens every stock position and finalizes any non-final operation.
+
+    Used by the offline economy reset so stale, inflated positions cannot be
+    re-extracted into wallet cash after balances are deflated. Non-final
+    operations (pending / wallet_applied / reconcile_required) are also forced to
+    `failed`; otherwise `_blocking_operation` would keep the affected users from
+    trading that symbol even though the reset claims to flatten stock state.
+    Market prices in `stock_profile` are intentionally left untouched.
+
+    Returns:
+        The number of position rows affected.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_stock_session() as session:
+        result = await session.execute(
+            statement=update(StockPosition).values(
+                long_shares=0,
+                long_cost_basis=0,
+                short_shares=0,
+                short_entry_value=0,
+                short_collateral=0,
+                realized_pnl=0,
+                version=StockPosition.version + 1,
+                updated_at=now,
+            )
+        )
+        await session.execute(
+            statement=update(StockOperation)
+            .where(StockOperation.status.notin_(_FINAL_OPERATION_STATUSES))
+            .values(
+                status=StockOperationStatus.FAILED.value,
+                failure_reason="economy reset",
+                updated_at=now,
+            )
+        )
+        await session.commit()
+        invalidate_stock_portfolio_cache()
+        return int(result.rowcount or 0)
+
+
 __all__ = [
     "Base",
     "StockNews",
@@ -2673,6 +2715,7 @@ __all__ = [
     "list_stock_profiles",
     "list_stock_supply_audit",
     "open_stock_session",
+    "reset_all_positions",
     "settle_stock_operation",
     "upsert_stock_profile",
 ]

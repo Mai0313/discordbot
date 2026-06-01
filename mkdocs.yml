@@ -113,6 +113,7 @@ nav:
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
+      - reset_economy: Scripts/reset_economy.md
       - route_dev: Scripts/route_dev.md
       - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
       - test_fallback: Scripts/test_fallback.md

@@ -399,7 +399,17 @@ def test_kelly_bet_caps_fraction_and_clamps_to_balance() -> None:
         balance=1_000, table_minimum=1, edge=10.0, variance=1.0, max_fraction=0.10
     ) == (100)
     assert kelly_bet(balance=0, table_minimum=100) == 1
-    assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 50
+    # A short stack stays inside the 10% ceiling instead of going all-in to match.
+    assert kelly_bet(balance=50, table_minimum=100, edge=0.0) == 5
+
+
+def test_kelly_bet_caps_a_large_table_stake_at_the_bankroll_fraction() -> None:
+    """A table stake larger than the bankroll ceiling no longer drags the bot above it."""
+    # The owner opens a 1,000,000 table; the bot has 1,000,000 but stays within its
+    # 10% Kelly ceiling instead of matching the whole stake.
+    assert kelly_bet(balance=1_000_000, table_minimum=1_000_000, edge=0.13) == 100_000
+    # The ceiling also bounds the non-positive-edge floor path.
+    assert kelly_bet(balance=1_000_000, table_minimum=1_000_000, edge=0.0) == 100_000
 
 
 def test_count_adjusted_edge_rises_with_true_count() -> None:
