@@ -3609,6 +3609,7 @@ async def reset_all_wallets(
     await _ensure_schema()
     async with open_session() as session:
         rows = (await session.execute(statement=select(UserWallet))).scalars().all()
+        now = _database_now()
         total_before = 0
         total_after = 0
         max_before = 0
@@ -3626,6 +3627,7 @@ async def reset_all_wallets(
                 row.balance = new_balance
                 row.total_earned = new_balance
                 row.total_spent = 0
+                row.updated_at = now
         if dry_run:
             await session.rollback()
         else:

@@ -1,13 +1,19 @@
 """Tests for the offline economy reset helpers and script."""
 
+from datetime import datetime
+
 import pytest
+from sqlalchemy import select, update
+
 from scripts import reset_economy as reset_script
 
 from discordbot.typings.economy import AccountSnapshot, WalletResetMode, WalletResetSummary
 from discordbot.cogs._economy.database import (
     JackpotPool,
+    UserWallet,
     get_account,
     adjust_balance,
+    open_session,
     set_wallet_exact,
     get_casino_ledger,
     reset_all_wallets,
@@ -139,6 +145,25 @@ async def test_reset_all_wallets_wipe_zeroes_everything() -> None:
         account = await get_account(user_id=user_id)
         assert account is not None
         assert (account.balance, account.total_earned, account.total_spent) == (0, 0, 0)
+
+
+async def test_reset_all_wallets_updates_wallet_timestamps() -> None:
+    """Wallet rows rewritten by an offline reset get a fresh update timestamp."""
+    await _seed_mixed_wallets()
+    old_timestamp = datetime(2026, 1, 1)
+    async with open_session() as session:
+        await session.execute(statement=update(UserWallet).values(updated_at=old_timestamp))
+        await session.commit()
+
+    await reset_all_wallets(mode=WalletResetMode.LOG_COMPRESS)
+
+    async with open_session() as session:
+        updated_at_values = (
+            await session.execute(statement=select(UserWallet.updated_at))
+        ).scalars().all()
+
+    assert updated_at_values
+    assert all(updated_at > old_timestamp for updated_at in updated_at_values)
 
 
 async def test_reset_all_wallets_dry_run_does_not_write() -> None:
