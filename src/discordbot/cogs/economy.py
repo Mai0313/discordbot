@@ -1178,12 +1178,12 @@ class EconomyCogs(commands.Cog):
         name="vip",
         description=(
             f"Buy permanent VIP for {currency_text(amount=VIP_PURCHASE_COST, compact=True)}: "
-            "2x check-in and 1.5x Blackjack wins."
+            "2x check-in and 1.2x Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: "購買永久 VIP：簽到 2x、Blackjack 贏局 1.5x",
-            Locale.ja: "永久 VIP を購入: check-in 2x、Blackjack 勝利 1.5x。",
+            Locale.zh_TW: "購買永久 VIP：簽到 2x、Blackjack 贏局 1.2x",
+            Locale.ja: "永久 VIP を購入: check-in 2x、Blackjack 勝利 1.2x。",
         },
         nsfw=False,
     )

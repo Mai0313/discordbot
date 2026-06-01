@@ -182,7 +182,7 @@ async def settle_wager(
     Bets are not deducted when a round starts; unfinished in-memory rounds
     vanish on bot restart without touching balances.
 
-    VIP players receive a 1.5x payout on winning rounds; pushes and losses are
+    VIP players receive a 1.2x payout on winning rounds; pushes and losses are
     passed through unchanged. The VIP flag is permanent, so reading it outside
     the settlement transaction is safe — a freshly-bought VIP that races a
     settlement only misses the bonus on a single in-flight round.
