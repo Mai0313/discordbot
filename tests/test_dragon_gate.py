@@ -877,6 +877,40 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     assert round_state.player_delta(user_id=1) == 100
 
 
+async def test_dragon_gate_view_sub_min_balance_is_not_stuck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A player whose balance is below the minimum bet can still place a valid bet."""
+    owner = _participant(user_id=1, display_name="Alice", balance=15)
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
+    )
+    state = JackpotState(initial_jackpot=100_000, initial_balance=15)
+    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
+
+    message = MessageStub()
+    view = DragonGateView(
+        narrator=DealerStub(),
+        round_state=round_state,
+        owner=owner,
+        system_name="Dealer",
+        system_line="taunt",
+        jackpot_snapshot=state.jackpot,
+        final_balances={1: 15},
+    )
+    view.message = message
+    view.sync_controls()
+
+    # Balance 15 is below the 20 minimum, so the max is floored to the minimum
+    # instead of dropping below it and leaving the player unable to bet.
+    assert view._active_max_bet() == 20
+
+    await view._handle_bet_choice(
+        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+    )
+    assert state.calls[-1]["player_delta"] == 20
+
+
 async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_clawback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

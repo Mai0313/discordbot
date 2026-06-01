@@ -671,7 +671,9 @@ class DragonGateView(View):
 
         Losses already clamp at the player's balance, so bounding the bet by the
         same balance closes the asymmetric free option where a low-balance player
-        risks only their wallet yet could win the full pool.
+        risks only their wallet yet could win the full pool. The result is floored
+        at the minimum bet so a player whose balance dipped below the minimum is
+        still offered a placeable bet instead of a max-below-min dead state.
         """
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
@@ -679,7 +681,8 @@ class DragonGateView(View):
         balance = self._final_balances.get(user_id)
         if balance is None:
             return pool_max
-        return min(pool_max, max(balance, 0))
+        minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
+        return max(min(pool_max, max(balance, 0)), minimum)
 
     def _active_max_bet(self) -> int:
         """Returns the active player's balance-bounded maximum bet."""
