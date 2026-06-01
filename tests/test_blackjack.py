@@ -12,6 +12,7 @@ from discordbot.typings.games import (
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
+from discordbot.typings.economy import MAX_SINGLE_BET
 from discordbot.cogs._games.blackjack import (
     Card,
     BlackjackRound,
@@ -605,6 +606,19 @@ def test_can_double_after_split_disabled_by_default() -> None:
     split_hand.is_split_hand = True
     assert can_double(hand=split_hand, balance_remaining=200) is False
     assert can_double(hand=split_hand, balance_remaining=200, allow_after_split=True) is True
+
+
+def test_can_double_rejected_when_doubling_exceeds_single_bet_cap() -> None:
+    """Doubling cannot push the hand stake past MAX_SINGLE_BET."""
+    over_cap = _make_hand(
+        cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
+        bet=MAX_SINGLE_BET // 2 + 1,
+    )
+    assert can_double(hand=over_cap, balance_remaining=MAX_SINGLE_BET) is False
+    at_cap = _make_hand(
+        cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")], bet=MAX_SINGLE_BET // 2
+    )
+    assert can_double(hand=at_cap, balance_remaining=MAX_SINGLE_BET) is True
 
 
 def test_can_split_only_on_same_value_pairs() -> None:
