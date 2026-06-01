@@ -1998,3 +1998,37 @@ async def test_reset_all_positions_flattens_and_zeros_pnl(stock_empty_db: None) 
     assert (row.short_shares, row.short_entry_value, row.short_collateral) == (0, 0, 0)
     assert row.realized_pnl == 0
     assert row.version == 4
+
+
+async def test_reset_all_positions_finalizes_non_final_operations(stock_empty_db: None) -> None:
+    """reset_all_positions forces non-final operations to failed so they stop blocking trades."""
+    del stock_empty_db
+    assert await stock_db.reset_all_positions() == 0
+    async with stock_db.open_stock_session() as session:
+        session.add(
+            stock_db.StockOperation(
+                operation_id="op-pending",
+                symbol="BCAT",
+                user_id=1,
+                user_name="alice",
+                requested_action="buy",
+                status=stock_db.StockOperationStatus.PENDING.value,
+                failure_reason="",
+                created_at=datetime(2026, 1, 1),
+                updated_at=datetime(2026, 1, 1),
+            )
+        )
+        await session.commit()
+
+    await stock_db.reset_all_positions()
+
+    async with stock_db.open_stock_session() as session:
+        op = (
+            await session.execute(
+                select(stock_db.StockOperation).where(
+                    stock_db.StockOperation.operation_id == "op-pending"
+                )
+            )
+        ).scalar_one()
+    assert op.status == stock_db.StockOperationStatus.FAILED.value
+    assert op.failure_reason == "economy reset"
