@@ -55,6 +55,22 @@ class DiscordBot(commands.Bot):
         # Process-local per-user cooldown for the flat message reward, so it
         # cannot be farmed by spamming. Resets on restart by design.
         self._message_reward_at: dict[int, float] = {}
+        self._message_reward_pruned_at = 0.0
+
+    def _prune_message_reward_cooldowns(self, now: float) -> None:
+        """Drops expired message-reward cooldown entries."""
+        if (
+            now - getattr(self, "_message_reward_pruned_at", 0.0)
+            < MESSAGE_REWARD_COOLDOWN_SECONDS
+        ):
+            return
+        cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
+        self._message_reward_at = {
+            user_id: rewarded_at
+            for user_id, rewarded_at in self._message_reward_at.items()
+            if rewarded_at > cutoff
+        }
+        self._message_reward_pruned_at = now
 
     def _load_cogs_sync(self) -> None:
         """Loads all cogs found in the cogs directory."""
@@ -126,6 +142,7 @@ class DiscordBot(commands.Bot):
             return
 
         now = monotonic()
+        DiscordBot._prune_message_reward_cooldowns(self, now=now)
         last_rewarded_at = self._message_reward_at.get(message.author.id)
         if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
             # Reserve the cooldown slot before awaiting so two rapid messages cannot

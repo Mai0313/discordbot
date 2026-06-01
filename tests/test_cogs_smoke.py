@@ -2163,6 +2163,40 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
     assert len(rewards) == 2
 
 
+async def test_cli_message_reward_cooldown_prunes_expired_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired per-user cooldown slots are dropped lazily on later messages."""
+    rewards: list[dict[str, Any]] = []
+
+    async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        rewards.append(kwargs)
+        return CreditResult(
+            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
+        )
+
+    async def noop_process(message: SimpleNamespace) -> None:
+        del message
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
+    monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True),
+        process_commands=noop_process,
+        _message_reward_at={1: 900.0, 2: 975.0},
+        _message_reward_pruned_at=0.0,
+    )
+
+    await cli.DiscordBot.on_message(
+        bot, message=SimpleNamespace(author=FakeUser(user_id=3, bot=False))
+    )
+
+    assert 1 not in bot._message_reward_at
+    assert bot._message_reward_at[2] == 975.0
+    assert bot._message_reward_at[3] == 1_000.0
+    assert len(rewards) == 1
+
+
 async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
