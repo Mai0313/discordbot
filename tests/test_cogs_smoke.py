@@ -2161,3 +2161,35 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
     bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
     await cli.DiscordBot.on_message(bot, message=message)
     assert len(rewards) == 2
+
+
+async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed credit must not leave the user on cooldown for the next message."""
+    attempts = 0
+
+    async def flaky_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient DB failure")
+        return CreditResult(
+            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
+        )
+
+    async def noop_process(message: SimpleNamespace) -> None:
+        del message
+
+    monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True), process_commands=noop_process, _message_reward_at={}
+    )
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+
+    await cli.DiscordBot.on_message(bot, message=message)
+    # The first credit failed, so the slot is rolled back and the next message retries.
+    assert 1 not in bot._message_reward_at
+    await cli.DiscordBot.on_message(bot, message=message)
+    assert attempts == 2
+    assert bot._message_reward_at.get(1) is not None

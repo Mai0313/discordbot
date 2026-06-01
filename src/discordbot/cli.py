@@ -128,6 +128,9 @@ class DiscordBot(commands.Bot):
         now = monotonic()
         last_rewarded_at = self._message_reward_at.get(message.author.id)
         if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
+            # Reserve the cooldown slot before awaiting so two rapid messages cannot
+            # both pass the check and double-credit; roll it back if the credit fails
+            # so a transient error does not cost the user their reward window.
             self._message_reward_at[message.author.id] = now
             try:
                 avatar_url = await guild_avatar_url(
@@ -140,6 +143,10 @@ class DiscordBot(commands.Bot):
                     amount=BASE_MESSAGE_REWARD_AMOUNT,
                 )
             except Exception:
+                if last_rewarded_at is None:
+                    self._message_reward_at.pop(message.author.id, None)
+                else:
+                    self._message_reward_at[message.author.id] = last_rewarded_at
                 logfire.warn("Failed to award base message points", _exc_info=True)
         await self.process_commands(message)
 
