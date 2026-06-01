@@ -349,31 +349,40 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
 
     The growth-optimal stake is a fraction of the bankroll set by the edge. With
     a fresh shoe the edge is the constant `BOT_TABLE_EDGE`; with a persistent shoe
-    it is `count_adjusted_edge(...)` so the bot spreads its bet by true count. The
-    fraction is clamped to `max_fraction` so a misestimated edge can never risk
-    the whole bankroll, floored at the table minimum so the bot always sits, and
-    capped at the balance. A non-positive edge falls back to the table minimum
+    it is `count_adjusted_edge(...)` so the bot spreads its bet by true count.
+
+    `max_fraction` of the bankroll is a hard ceiling, not merely a cap on the Kelly
+    fraction: the owner-chosen table stake floors the bet only up to that ceiling,
+    so a large table stake can no longer drag the bot past its risk limit. The bot
+    still sits at any table, but it never wagers more than `max_fraction` of its
+    balance in one round. A non-positive edge falls back to that capped table floor
     instead of refusing to play.
 
     Args:
         balance: The bot's spendable balance.
-        table_minimum: The table's wager the bot must at least match.
+        table_minimum: The table stake the bot matches, up to the bankroll ceiling.
         edge: Per-round expected value in base-bet units.
         variance: Per-round variance in base-bet units.
         kelly_fraction: Fraction of full Kelly to apply (0.5 is half-Kelly).
-        max_fraction: Hard cap on the bankroll fraction wagered in one round.
+        max_fraction: Hard ceiling on the bankroll fraction wagered in one round.
 
     Returns:
-        A positive integer wager within `[table_minimum, balance]`.
+        A positive integer wager within `[1, max_fraction * balance]`, never above
+        `balance`.
     """
     if balance <= 0:
         return 1
-    floor = max(1, min(table_minimum, balance))
+    # The bankroll fraction is a hard ceiling: the bot never risks more than
+    # `max_fraction` of its balance in one round, even when the owner-chosen table
+    # stake is larger. The stake only floors the bet up to this ceiling so the bot
+    # still sits; it can no longer be dragged past its Kelly risk limit.
+    ceiling = max(1, min(round(max_fraction * balance), balance))
+    floor = max(1, min(table_minimum, ceiling))
     if edge <= 0 or variance <= 0:
         return floor
     fraction = min(max(kelly_fraction * edge / variance, 0.0), max_fraction)
     wager = round(fraction * balance)
-    return max(floor, min(wager, balance))
+    return max(floor, min(wager, ceiling))
 
 
 def count_adjusted_edge(*, true_count: float) -> float:

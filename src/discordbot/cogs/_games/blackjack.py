@@ -10,6 +10,7 @@ from typing import Final, Literal
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, SettleOutcome, GameParticipant
+from discordbot.typings.economy import MAX_SINGLE_BET
 
 RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
 
@@ -323,6 +324,10 @@ def can_double(
     if len(hand.cards) != 2 or hand.actions_taken != 0:
         return False
     if hand.is_split_hand and not allow_after_split:
+        return False
+    # Doubling doubles the hand's stake; keep it within the single-bet cap so it
+    # cannot bypass the anti-inflation guardrail that bounds every wager.
+    if hand.bet * 2 > MAX_SINGLE_BET:
         return False
     return balance_remaining >= hand.bet
 
