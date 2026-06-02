@@ -25,6 +25,13 @@ nav:
                   - interactions: Reference/discordbot/cogs/_economy/interactions.md
                   - presentation: Reference/discordbot/cogs/_economy/presentation.md
                   - views: Reference/discordbot/cogs/_economy/views.md
+              - _fishing:
+                  - catch: Reference/discordbot/cogs/_fishing/catch.md
+                  - database: Reference/discordbot/cogs/_fishing/database.md
+                  - defaults: Reference/discordbot/cogs/_fishing/defaults.md
+                  - presentation: Reference/discordbot/cogs/_fishing/presentation.md
+                  - shop: Reference/discordbot/cogs/_fishing/shop.md
+                  - views: Reference/discordbot/cogs/_fishing/views.md
               - _games:
                   - blackjack: Reference/discordbot/cogs/_games/blackjack.md
                   - blackjack_ev: Reference/discordbot/cogs/_games/blackjack_ev.md
@@ -80,6 +87,7 @@ nav:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
               - economy: Reference/discordbot/typings/economy.md
+              - fishing: Reference/discordbot/typings/fishing.md
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
@@ -109,6 +117,7 @@ nav:
       - manage_admin: Scripts/manage_admin.md
       - manage_bot_status: Scripts/manage_bot_status.md
       - manage_central_banker: Scripts/manage_central_banker.md
+      - manage_fishing: Scripts/manage_fishing.md
       - manage_stock_company: Scripts/manage_stock_company.md
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
@@ -116,6 +125,8 @@ nav:
       - reset_economy: Scripts/reset_economy.md
       - route_dev: Scripts/route_dev.md
       - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
+      - simulate_fishing: Scripts/simulate_fishing.md
+      - simulate_stock_market: Scripts/simulate_stock_market.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md
   # <<< auto-generated nav end

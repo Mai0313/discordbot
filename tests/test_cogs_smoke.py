@@ -1692,13 +1692,20 @@ def test_games_commands_are_grouped_under_games() -> None:
     """Verifies casino games are registered as /games subcommands."""
     assert GamesCogs.games.name == "games"
     assert GamesCogs.games.name_localizations[nextcord.Locale.zh_TW] == "小遊戲"
-    assert set(GamesCogs.games.children) == {"blackjack", "blackjack_history", "dragon_gate"}
+    assert set(GamesCogs.games.children) == {
+        "blackjack",
+        "blackjack_history",
+        "dragon_gate",
+        "fishing",
+    }
     assert GamesCogs.blackjack.name == "blackjack"
     assert GamesCogs.blackjack.name_localizations[nextcord.Locale.zh_TW] == "二十一點"
     assert GamesCogs.blackjack_history.name == "blackjack_history"
     assert GamesCogs.blackjack_history.name_localizations[nextcord.Locale.zh_TW] == "二十一點紀錄"
     assert GamesCogs.dragon_gate.name == "dragon_gate"
     assert GamesCogs.dragon_gate.name_localizations[nextcord.Locale.zh_TW] == "射龍門"
+    assert GamesCogs.fishing.name == "fishing"
+    assert GamesCogs.fishing.name_localizations[nextcord.Locale.zh_TW] == "釣魚"
 
 
 async def test_blackjack_history_missing_user_sends_notice() -> None:

@@ -37,6 +37,7 @@ from discordbot.cogs._economy.database import (
     reset_casino_daily_counters,
     count_wallet_invariant_violations,
 )
+from discordbot.cogs._fishing.database import reset_all_fishing
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 console = Console()
@@ -58,6 +59,7 @@ class EconomyResetSummary(BaseModel):
     loans_forgiven: int
     proposals_canceled: int
     stock_positions_reset: int | None
+    fishing_anglers_reset: int | None
     casino_ledger_reset: bool
     jackpot_pools_reset: bool
     invariant_violations: int
@@ -65,7 +67,13 @@ class EconomyResetSummary(BaseModel):
 
 
 async def reset_everything(  # noqa: PLR0913 -- exposes every wallet-transform knob plus toggles
-    mode: WalletResetMode, floor: int, scale: int, amount: int, reset_stocks: bool, dry_run: bool
+    mode: WalletResetMode,
+    floor: int,
+    scale: int,
+    amount: int,
+    reset_stocks: bool,
+    reset_fishing: bool,
+    dry_run: bool,
 ) -> EconomyResetSummary:
     """Runs the wallet reset plus every companion cleanup.
 
@@ -86,6 +94,7 @@ async def reset_everything(  # noqa: PLR0913 -- exposes every wallet-transform k
             loans_forgiven=0,
             proposals_canceled=0,
             stock_positions_reset=0 if reset_stocks else None,
+            fishing_anglers_reset=0 if reset_fishing else None,
             casino_ledger_reset=False,
             jackpot_pools_reset=False,
             invariant_violations=0,
@@ -98,6 +107,7 @@ async def reset_everything(  # noqa: PLR0913 -- exposes every wallet-transform k
     await reset_casino_ledger()
     await reset_jackpot_pools()
     stock_positions_reset = await reset_all_positions() if reset_stocks else None
+    fishing_anglers_reset = await reset_all_fishing() if reset_fishing else None
     invariant_violations = await count_wallet_invariant_violations()
     return EconomyResetSummary(
         wallets=wallets,
@@ -105,6 +115,7 @@ async def reset_everything(  # noqa: PLR0913 -- exposes every wallet-transform k
         loans_forgiven=loans_forgiven,
         proposals_canceled=proposals_canceled,
         stock_positions_reset=stock_positions_reset,
+        fishing_anglers_reset=fishing_anglers_reset,
         casino_ledger_reset=True,
         jackpot_pools_reset=True,
         invariant_violations=invariant_violations,
@@ -154,6 +165,8 @@ def _print_full_summary(summary: EconomyResetSummary) -> None:
     console.print(f"jackpot pools reset: {summary.jackpot_pools_reset}")
     if summary.stock_positions_reset is not None:
         console.print(f"stock positions reset: {summary.stock_positions_reset}")
+    if summary.fishing_anglers_reset is not None:
+        console.print(f"fishing anglers reset: {summary.fishing_anglers_reset}")
     color = "green" if summary.invariant_violations == 0 else "red"
     console.print(
         f"[{color}]wallet invariant violations after reset: "
@@ -207,6 +220,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also flatten every stock position and zero realized P&L.",
     )
+    all_parser.add_argument(
+        "--reset-fishing",
+        action="store_true",
+        help="Also clear every angler's rod, bait, and catch history.",
+    )
 
     return parser.parse_args(args=argv)
 
@@ -238,6 +256,7 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
         scale=args.scale,
         amount=args.amount,
         reset_stocks=args.reset_stocks,
+        reset_fishing=args.reset_fishing,
         dry_run=args.dry_run,
     )
     _print_full_summary(summary=full_summary)
