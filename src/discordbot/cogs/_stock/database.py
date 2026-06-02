@@ -46,6 +46,7 @@ from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import WalletDeltaLeg
 from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs._stock.market import (
+    DAILY_PRICE_LIMIT_BPS,
     NEWS_SENTIMENT_DECAY_BPS,
     NEWS_SENTIMENT_LIMIT_BPS,
     NEWS_SENTIMENT_DECAY_SECONDS,
@@ -55,6 +56,7 @@ from discordbot.cogs._stock.market import (
     tick_boundary,
     decay_news_sentiment,
     execution_price_cents,
+    apply_daily_price_limit,
     pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
@@ -1228,6 +1230,11 @@ async def advance_market_in_session(
         rolls_over_day = as_taipei(dt=boundary).date() != as_taipei(dt=previous_tick_at).date()
         if rolls_over_day:
             profile.previous_close_price_cents = current_price
+        next_price = apply_daily_price_limit(
+            price_cents=next_price,
+            previous_close_cents=profile.previous_close_price_cents,
+            limit_bps=DAILY_PRICE_LIMIT_BPS,
+        )
         current_price = await _insert_price_tick_or_existing(
             session=session, symbol=symbol, price_cents=next_price, created_at=boundary
         )

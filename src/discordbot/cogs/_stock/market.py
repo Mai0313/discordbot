@@ -9,7 +9,20 @@ from discordbot.utils.timezone import TAIWAN_TIMEZONE, as_taipei
 NEWS_SENTIMENT_DECAY_BPS = 20
 NEWS_SENTIMENT_DECAY_SECONDS = 60 * 60
 NEWS_SENTIMENT_LIMIT_BPS = 300
-PRESSURE_LIMIT_BPS = 90
+PRESSURE_LIMIT_BPS = 60
+
+# Anti-inflation / realism guardrails for the price formula. A 5-minute tick at
+# real-market magnitudes moves fractions of a percent, so the per-company random
+# volatility is scaled down toward that range, every tick is hard-capped no matter
+# how aggressive the per-company knob is, and each Asia/Taipei trading day is bounded
+# to a Taiwan-style price limit measured against the previous close. Reducing per-tick
+# swing and capping the daily move shrinks the volatility-harvesting that mints money.
+# Calibrate MARKET_VOLATILITY_SCALE_BPS with scripts/simulate_stock_market.py: at 800 the
+# most aggressive production profile lands near 70% annualized volatility with the daily
+# limit binding only a few percent of days, and calmer profiles scale down from there.
+MARKET_VOLATILITY_SCALE_BPS = 800
+GLOBAL_MAX_TICK_CHANGE_BPS = 200
+DAILY_PRICE_LIMIT_BPS = 1_000
 
 
 def format_price(price_cents: int) -> str:
@@ -88,6 +101,21 @@ def mean_reversion_bps(
     return fair_value_gap_bps * mean_reversion_strength_bps // 10_000
 
 
+def effective_volatility_width_bps(base_volatility_bps: int, volatility_amplifier_bps: int) -> int:
+    """Returns the scaled per-tick random volatility half-width in basis points."""
+    raw_width = base_volatility_bps * volatility_amplifier_bps // 100
+    return max(raw_width * MARKET_VOLATILITY_SCALE_BPS // 10_000, 0)
+
+
+def apply_daily_price_limit(price_cents: int, previous_close_cents: int, limit_bps: int) -> int:
+    """Clamps a tick price to a Taiwan-style daily band around the previous close."""
+    if previous_close_cents <= 0 or limit_bps <= 0:
+        return max(price_cents, 1)
+    upper = previous_close_cents * (10_000 + limit_bps) // 10_000
+    lower = max(previous_close_cents * (10_000 - limit_bps) // 10_000, 1)
+    return max(min(price_cents, upper), lower)
+
+
 def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes every market factor explicitly
     previous_price_cents: int,
     news_sentiment_bps: int,
@@ -100,7 +128,9 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
     rng: Random,
 ) -> int:
     """Calculates the next price using deterministic inputs plus seeded randomness."""
-    volatility_width = max(base_volatility_bps * volatility_amplifier_bps // 100, 0)
+    volatility_width = effective_volatility_width_bps(
+        base_volatility_bps=base_volatility_bps, volatility_amplifier_bps=volatility_amplifier_bps
+    )
     random_bps = rng.randint(-volatility_width, volatility_width) if volatility_width else 0
     raw_change_bps = (
         random_bps
@@ -116,7 +146,7 @@ def calculate_next_price_cents(  # noqa: PLR0913 -- pure price formula takes eve
             mean_reversion_strength_bps=mean_reversion_strength_bps,
         )
     )
-    change_limit = max(max_tick_change_bps, 1)
+    change_limit = max(min(max_tick_change_bps, GLOBAL_MAX_TICK_CHANGE_BPS), 1)
     change_bps = clamp_bps(value=raw_change_bps, lower=-change_limit, upper=change_limit)
     next_price = previous_price_cents * (10_000 + change_bps) // 10_000
     return max(next_price, 1)

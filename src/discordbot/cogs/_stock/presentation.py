@@ -22,7 +22,7 @@ from discordbot.typings.stock import (
 from discordbot.utils.currency import cash_floor
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.utils.number_text import compact_amount, share_quantity_text
-from discordbot.cogs._stock.market import format_price
+from discordbot.cogs._stock.market import format_price, effective_volatility_width_bps
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
 MARKET_COLOR = 0x2ECC71
@@ -108,8 +108,11 @@ def signed_percent(bps: int) -> str:
 
 
 def volatility_text(base_volatility_bps: int, volatility_amplifier_bps: int) -> str:
-    """Formats stock volatility settings."""
-    return f"{base_volatility_bps / 100:.2f}% x {volatility_amplifier_bps / 100:.2f}"
+    """Formats the effective per-tick volatility band after the global scale."""
+    width_bps = effective_volatility_width_bps(
+        base_volatility_bps=base_volatility_bps, volatility_amplifier_bps=volatility_amplifier_bps
+    )
+    return f"±{width_bps / 100:.2f}%/tick"
 
 
 def build_market_embed(

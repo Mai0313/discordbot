@@ -32,15 +32,20 @@ from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
 from discordbot.cogs._stock.chart import build_price_chart
 from discordbot.cogs._stock.market import (
     TAIWAN_TIMEZONE,
+    PRESSURE_LIMIT_BPS,
+    DAILY_PRICE_LIMIT_BPS,
     NEWS_SENTIMENT_LIMIT_BPS,
+    GLOBAL_MAX_TICK_CHANGE_BPS,
     format_price,
     tick_boundary,
     order_impact_bps,
     decay_news_sentiment,
     execution_price_cents,
+    apply_daily_price_limit,
     pressure_from_order_flow,
     tick_boundaries_to_apply,
     calculate_next_price_cents,
+    effective_volatility_width_bps,
 )
 from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT, STOCK_NEWS_FALLBACK_TEMPLATES
 from discordbot.cogs._economy.database import (
@@ -286,6 +291,52 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
     assert decay_news_sentiment(sentiment_bps=-500, elapsed_seconds=20 * 60 * 60) == 0
 
 
+def test_effective_volatility_width_is_scaled_below_raw() -> None:
+    """The global volatility scale shrinks the raw per-company width toward realism."""
+    raw_width = 180 * 360 // 100
+    scaled = effective_volatility_width_bps(base_volatility_bps=180, volatility_amplifier_bps=360)
+    assert 0 < scaled < raw_width
+    assert effective_volatility_width_bps(base_volatility_bps=0, volatility_amplifier_bps=360) == 0
+
+
+def test_apply_daily_price_limit_clamps_to_band_around_previous_close() -> None:
+    """Each tick price is bounded to a Taiwan-style band around the previous close."""
+    assert (
+        apply_daily_price_limit(price_cents=12_000, previous_close_cents=10_000, limit_bps=1_000)
+        == 11_000
+    )
+    assert (
+        apply_daily_price_limit(price_cents=8_000, previous_close_cents=10_000, limit_bps=1_000)
+        == 9_000
+    )
+    assert (
+        apply_daily_price_limit(price_cents=10_500, previous_close_cents=10_000, limit_bps=1_000)
+        == 10_500
+    )
+    assert (
+        apply_daily_price_limit(price_cents=99_999, previous_close_cents=0, limit_bps=1_000)
+        == 99_999
+    )
+
+
+def test_global_per_tick_ceiling_caps_change_below_company_limit() -> None:
+    """A huge per-company max_tick_change is still bounded by the global ceiling."""
+    previous = 10_000
+    next_price = calculate_next_price_cents(
+        previous_price_cents=previous,
+        news_sentiment_bps=NEWS_SENTIMENT_LIMIT_BPS,
+        pressure_bps=PRESSURE_LIMIT_BPS,
+        base_volatility_bps=0,
+        volatility_amplifier_bps=0,
+        fair_value_cents=previous,
+        mean_reversion_strength_bps=0,
+        max_tick_change_bps=850,
+        rng=_rng(seed=1),
+    )
+    assert next_price <= previous * (10_000 + GLOBAL_MAX_TICK_CHANGE_BPS) // 10_000
+    assert DAILY_PRICE_LIMIT_BPS == 1_000
+
+
 def _stock_news_row(
     created_at: datetime, sentiment_bps: int, news_id: str = "test"
 ) -> stock_db.StockNews:
@@ -411,9 +462,17 @@ def test_stock_price_formula_stays_bounded_under_impulse_news_monte_carlo() -> N
 def test_stock_order_flow_pressure_scales_with_liquidity() -> None:
     """Order-flow pressure uses the liquidity bucket instead of saturating on tiny flow."""
     assert pressure_from_order_flow(net_shares=0, liquidity_shares=25_000) == 0
-    assert pressure_from_order_flow(net_shares=12_500, liquidity_shares=25_000) == 45
-    assert pressure_from_order_flow(net_shares=25_000, liquidity_shares=25_000) == 90
-    assert pressure_from_order_flow(net_shares=-50_000, liquidity_shares=25_000) == -90
+    assert (
+        pressure_from_order_flow(net_shares=12_500, liquidity_shares=25_000)
+        == PRESSURE_LIMIT_BPS // 2
+    )
+    assert (
+        pressure_from_order_flow(net_shares=25_000, liquidity_shares=25_000) == PRESSURE_LIMIT_BPS
+    )
+    assert (
+        pressure_from_order_flow(net_shares=-50_000, liquidity_shares=25_000)
+        == -PRESSURE_LIMIT_BPS
+    )
     assert pressure_from_order_flow(net_shares=1_000, liquidity_shares=0) == 0
 
 
@@ -457,7 +516,7 @@ def test_stock_order_flow_decay_preserves_small_trade_pressure() -> None:
         stock_db._recent_pressure_bps_from_rows(
             pressure_rows=pressure_rows, at=at, liquidity_shares=100
         )
-        == 2
+        == 1
     )
 
 
