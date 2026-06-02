@@ -29,6 +29,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
 - **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading with float-supply, borrow, and per-user 49% long holding caps, position summaries, recent trades, liquidity-based slippage, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own AI strategist, and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
+- **Fishing**: `/games fishing` opens a solo, text-based panel to buy rods (which wear out and break) and bait, cast for N → R → SR → SSR → UR rarity fish, and sell catches. Rod and bait cost more than the average catch, so fishing is a deflationary points sink.
 - **MapleStory Artale database**: `/maplestory` subcommands search monsters, equipment, scrolls, NPCs, quests, maps, item drops, and database stats.
 - **Localized commands**: slash command metadata and `/help` are localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language.
 
@@ -51,6 +52,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments for members or bots.                                                             |
 | `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                      |
 | `/games dragon_gate`                                             | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                    |
+| `/games fishing`                                                 | Opens a solo fishing panel: buy rods and bait, cast for rarity fish, and sell them for points.                         |
 | `/casino`                                                        | Shows the casino system's cumulative profit and loss.                                                                  |
 | `/pocat`                                                         | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                      |
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                             |

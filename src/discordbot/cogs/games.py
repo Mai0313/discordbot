@@ -37,6 +37,7 @@ from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
 from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.cogs._games.fishing_views import FishingContext, open_fishing_panel
 from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._games.blackjack_views import (
@@ -471,6 +472,38 @@ class GamesCogs(commands.Cog):
         )
         await track_public_message(message=message, user_name=owner.account_name)
         view.message = message
+
+    @games.subcommand(
+        name="fishing",
+        description="Open a solo fishing panel: buy rods and bait, cast for fish, sell them for points.",
+        name_localizations={Locale.zh_TW: "釣魚", Locale.ja: "釣り"},
+        description_localizations={
+            Locale.zh_TW: "開一個個人釣魚面板：買釣竿與魚餌、拋竿釣魚、賣魚換虛擬歡樂豆",
+            Locale.ja: "ソロ釣りパネルを開きます：釣り竿と餌を買い、魚を釣って売却します。",
+        },
+    )
+    async def fishing(self, interaction: Interaction) -> None:
+        """Opens a solo fishing panel; rod and bait purchases sink points by design.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        guild = getattr(interaction, "guild", None)
+        avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
+        system_identity = await self._system_identity(guild=guild)
+        ctx = FishingContext(
+            owner_id=interaction.user.id,
+            owner_name=interaction.user.name,
+            owner_avatar_url=avatar_url,
+            rng=self.rng,
+            narrator=self.narrator,
+            system_name=system_identity.system_name,
+            system_avatar_url=system_identity.system_avatar_url,
+        )
+        await open_fishing_panel(interaction=interaction, ctx=ctx)
 
     @games.subcommand(
         name="blackjack_history",

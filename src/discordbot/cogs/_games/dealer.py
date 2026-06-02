@@ -10,10 +10,12 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.games import GameKind, SettleOutcome
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.fishing import Rarity
 from discordbot.cogs._games.prompts import (
     SYSTEM_HINT_PROMPT,
     SYSTEM_SETTLE_PROMPT,
     SYSTEM_TAUNT_BET_PROMPT,
+    SYSTEM_FISH_CATCH_PROMPT,
 )
 from discordbot.cogs._games.presentation import SETTLEMENT_FALLBACK_LINES
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
@@ -26,6 +28,15 @@ _TAUNT_BET_END_USER_ID: Final[str] = "casino_taunt_bet"
 _SETTLE_END_USER_ID: Final[str] = "casino_settle"
 _TABLE_SETTLE_END_USER_ID: Final[str] = "casino_table_settle"
 _HINT_END_USER_ID: Final[str] = "casino_hint"
+_FISH_CATCH_END_USER_ID: Final[str] = "casino_fish_catch"
+
+_FISH_RARITY_LABELS: Final[dict[Rarity, str]] = {
+    "N": "普通",
+    "R": "稀有",
+    "SR": "高度稀有",
+    "SSR": "非常稀有",
+    "UR": "傳說等級",
+}
 
 
 class SystemNarrator(BaseModel):
@@ -151,6 +162,30 @@ class SystemNarrator(BaseModel):
             user_text=user_text,
             fallback=fallback,
             end_user_id=_TABLE_SETTLE_END_USER_ID,
+        )
+
+    async def catch_fish(  # noqa: PLR0913 -- the catch summary needs every field for the prompt
+        self,
+        player_name: str,
+        species_name: str,
+        rarity: Rarity,
+        size_mm: int,
+        sell_value: int,
+        fallback: str,
+    ) -> str:
+        """Returns a neutral narrator line for a fishing catch, off the critical path."""
+        user_text = (
+            f"玩家: {player_name}\n"
+            f"釣到魚種: {species_name}\n"
+            f"稀有度: {_FISH_RARITY_LABELS[rarity]}\n"
+            f"尺寸 (mm): {size_mm}\n"
+            f"可賣金額 ({CURRENCY_NAME}): {sell_value}"
+        )
+        return await self._ask(
+            instructions=SYSTEM_FISH_CATCH_PROMPT,
+            user_text=user_text,
+            fallback=fallback,
+            end_user_id=_FISH_CATCH_END_USER_ID,
         )
 
     async def hint(self, player_name: str, player_total: int, dealer_visible: int) -> str:

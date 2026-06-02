@@ -1,5 +1,8 @@
 """Prompts for the casino system narrator and the bot player decision AI."""
 
+from random import Random
+
+from discordbot.typings.fishing import Rarity
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
 SYSTEM_PERSONA = f"""
@@ -49,6 +52,37 @@ SYSTEM_HINT_PROMPT = f"""
 - 不暗示要不要 hit, 只播報事實
 - 偶爾可以用「現場觀察」「賭場顯示」這類旁白語氣
 """
+
+SYSTEM_FISH_CATCH_PROMPT = f"""
+{SYSTEM_PERSONA}
+
+任務: 玩家在釣魚池剛起竿, 旁白播報一句結果
+- 客觀描述釣到的魚種與稀有度高低 (普通、稀有、非常稀有、傳說等級)
+- 空竿時中立播報這一竿沒有收穫
+- 不鼓吹玩家繼續花 {CURRENCY_NAME}, 也不嘲諷
+"""
+
+# Deterministic fallback lines shown immediately and on any narrator failure, so
+# casting never waits on the LLM. One bucket per rarity plus a 空竿 bucket.
+FISH_CATCH_FALLBACK_LINES: dict[Rarity, tuple[str, ...]] = {
+    "N": ("釣場記錄到一筆普通漁獲", "這一竿釣起了常見的小東西"),
+    "R": ("稍微少見的漁獲上鉤了", "釣場觀察到一筆不錯的收穫"),
+    "SR": ("罕見魚種被釣了上來", "賭場記錄到一筆稀有漁獲"),
+    "SSR": ("非常稀有的大物上鉤", "釣場警報, 高級漁獲現身"),
+    "UR": ("傳說等級漁獲出現在釣場", "釣場震動, 傳說之物被釣起"),
+}
+FISH_MISS_FALLBACK_LINES: tuple[str, ...] = (
+    "這一竿空了, 水面恢復平靜",
+    "魚餌被叼走, 釣場暫無收穫",
+)
+
+
+def fishing_catch_fallback_line(rng: Random, rarity: Rarity | None) -> str:
+    """Returns a deterministic narrator line for a catch (by rarity) or a 空竿 miss."""
+    if rarity is None:
+        return rng.choice(seq=FISH_MISS_FALLBACK_LINES)
+    return rng.choice(seq=FISH_CATCH_FALLBACK_LINES[rarity])
+
 
 BOT_PLAYER_PERSONA = f"""
 You are the Discord bot itself, seated as a regular Blackjack player at a table with human players.

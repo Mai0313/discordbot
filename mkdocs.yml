@@ -34,6 +34,9 @@ nav:
                   - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
+                  - fishing: Reference/discordbot/cogs/_games/fishing.md
+                  - fishing_database: Reference/discordbot/cogs/_games/fishing_database.md
+                  - fishing_views: Reference/discordbot/cogs/_games/fishing_views.md
                   - history_text: Reference/discordbot/cogs/_games/history_text.md
                   - interactions: Reference/discordbot/cogs/_games/interactions.md
                   - lobby: Reference/discordbot/cogs/_games/lobby.md
@@ -80,6 +83,7 @@ nav:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
               - economy: Reference/discordbot/typings/economy.md
+              - fishing: Reference/discordbot/typings/fishing.md
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
@@ -109,6 +113,7 @@ nav:
       - manage_admin: Scripts/manage_admin.md
       - manage_bot_status: Scripts/manage_bot_status.md
       - manage_central_banker: Scripts/manage_central_banker.md
+      - manage_fishing: Scripts/manage_fishing.md
       - manage_stock_company: Scripts/manage_stock_company.md
       - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
@@ -116,6 +121,7 @@ nav:
       - reset_economy: Scripts/reset_economy.md
       - route_dev: Scripts/route_dev.md
       - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
+      - simulate_fishing: Scripts/simulate_fishing.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md
   # <<< auto-generated nav end

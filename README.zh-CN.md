@@ -29,6 +29,7 @@
 - **虚拟欢乐豆与金融系统**：用户可从消息与 AI 回复获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立 AI 策略决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
+- **钓鱼**：`/games fishing` 开个人文字面板，购买会耗损损坏的鱼竿与鱼饵，招竿钓 N → R → SR → SSR → UR 稀有度的鱼再卖出；鱼竿与鱼饵成本高于平均卖价，是回收点数的 sink。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 与 `/help` 支持英文、繁体中文、日文。AI 回复会跟随用户语言。
 
@@ -51,6 +52,7 @@
 | `/admin refund_tax\|collect_tax`                                 | admin-only 手动调整成员或 bot 余额。                                    |
 | `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。 |
 | `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                          |
+| `/games fishing`                                                 | 开个人钓鱼面板：买鱼竿与鱼饵、招竿钓稀有度鱼、卖鱼换点数；是净 sink。   |
 | `/casino`                                                        | 显示赌场系统累积 P&L (跨服务器)。                                       |
 | `/pocat`                                                         | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                        |
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                               |
