@@ -291,10 +291,11 @@ def test_script_parse_args_defaults_to_log_compress() -> None:
 
 
 def test_script_parse_args_all_accepts_reset_stocks() -> None:
-    """The all subcommand accepts the stock reset opt-in."""
-    args = reset_script._parse_args(argv=["all", "--reset-stocks", "--dry-run"])
+    """The all subcommand accepts the stock and fishing reset opt-ins."""
+    args = reset_script._parse_args(argv=["all", "--reset-stocks", "--reset-fishing", "--dry-run"])
     assert args.command == "all"
     assert args.reset_stocks
+    assert args.reset_fishing
     assert args.dry_run
 
 
@@ -308,6 +309,7 @@ async def test_script_reset_everything_dry_run_skips_companions() -> None:
         scale=1_000,
         amount=10_000,
         reset_stocks=True,
+        reset_fishing=True,
         dry_run=True,
     )
 

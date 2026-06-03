@@ -24,6 +24,7 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
+from discordbot.cogs._fishing.views import FishingPanelView
 from discordbot.cogs._games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
@@ -32,6 +33,7 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 from discordbot.cogs._economy.database import get_account, get_balance
+from discordbot.cogs._fishing.database import get_fishing_panel, get_grade_config_map
 from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
@@ -39,6 +41,7 @@ from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
+from discordbot.cogs._fishing.presentation import build_panel_embed
 from discordbot.cogs._games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
     BlackjackLobbyView,
@@ -529,6 +532,37 @@ class GamesCogs(commands.Cog):
         records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
         embed = build_blackjack_history_embed(player_name=target_name, records=records)
         await send_expiring_followup(interaction=interaction, embed=embed)
+
+    @games.subcommand(
+        name="fishing",
+        description="Open your fishing panel: buy gear, cast a line, and recycle currency.",
+        name_localizations={Locale.zh_TW: "釣魚", Locale.ja: "釣り"},
+        description_localizations={
+            Locale.zh_TW: "打開釣魚面板：買釣具、拋竿，把歡樂豆釣回來",
+            Locale.ja: "釣りパネルを開いて、道具購入とキャストで遊びます。",
+        },
+    )
+    async def fishing(self, interaction: Interaction) -> None:
+        """Opens the personal fishing panel as one public, in-place message.
+
+        Args:
+            interaction: The interaction that triggered the command.
+        """
+        await interaction.response.defer()
+        if interaction.user is None:
+            return
+        panel = await get_fishing_panel(user_id=interaction.user.id)
+        grade_map = await get_grade_config_map()
+        embed = build_panel_embed(panel=panel, grade_map=grade_map)
+        view = FishingPanelView(owner_id=interaction.user.id)
+        message = await interaction.followup.send(
+            embed=embed,
+            view=view,
+            wait=True,
+            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
+        )
+        await track_public_message(message=message, user_name=interaction.user.name)
+        view.message = message
 
 
 def setup(bot: commands.Bot) -> None:
