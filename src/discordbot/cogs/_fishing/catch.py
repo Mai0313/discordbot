@@ -45,11 +45,16 @@ def compose_grade_weights(
     moves roll mass monotonically from common grades toward rare ones. The factor
     is clamped to `[LUCK_FACTOR_MIN_BPS, LUCK_FACTOR_MAX_BPS]` so no gear
     combination can suppress or inflate a grade past those bounds. The most
-    common grade (rank 0) is never affected.
+    common grade (rank 0) is never affected. A grade whose base weight is zero
+    stays disabled; the floor-to-1 below only protects a positive weight from
+    rounding away, it must not resurrect a grade an operator removed.
     """
     total_shift = rod_rarity_shift_bps + bait_rarity_shift_bps
     adjusted: dict[FishGrade, int] = {}
     for config in grade_configs:
+        if config.weight <= 0:
+            adjusted[config.grade] = 0
+            continue
         raw_factor = FISHING_BPS_DENOMINATOR + total_shift * config.order_index
         factor = max(LUCK_FACTOR_MIN_BPS, min(LUCK_FACTOR_MAX_BPS, raw_factor))
         adjusted[config.grade] = max(1, config.weight * factor // FISHING_BPS_DENOMINATOR)

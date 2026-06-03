@@ -107,6 +107,23 @@ def test_compose_grade_weights_clamps_extreme_negative_shift() -> None:
             assert weights[config.grade] == expected
 
 
+def test_compose_grade_weights_honors_zero_weight() -> None:
+    """A grade an operator zeroed out stays disabled instead of clamping back to 1."""
+    grades = (
+        FishGradeConfigView(
+            grade=FishGrade.N, weight=100, color=0, emoji="⚪", label="普通", order_index=0
+        ),
+        FishGradeConfigView(
+            grade=FishGrade.SSR, weight=0, color=0, emoji="🟡", label="傳說", order_index=3
+        ),
+    )
+    weights = compose_grade_weights(
+        grade_configs=grades, rod_rarity_shift_bps=400, bait_rarity_shift_bps=400
+    )
+    assert weights[FishGrade.N] == 100
+    assert weights[FishGrade.SSR] == 0
+
+
 def test_roll_catch_is_deterministic_under_seed() -> None:
     """The same seed and inputs always produce an identical roll."""
     catalog = build_default_catalog()
