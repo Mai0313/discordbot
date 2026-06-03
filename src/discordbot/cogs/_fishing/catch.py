@@ -45,11 +45,16 @@ def compose_grade_weights(
     moves roll mass monotonically from common grades toward rare ones. The factor
     is clamped to `[LUCK_FACTOR_MIN_BPS, LUCK_FACTOR_MAX_BPS]` so no gear
     combination can suppress or inflate a grade past those bounds. The most
-    common grade (rank 0) is never affected.
+    common grade (rank 0) is never affected. A grade whose base weight is zero
+    stays disabled; the floor-to-1 below only protects a positive weight from
+    rounding away, it must not resurrect a grade an operator removed.
     """
     total_shift = rod_rarity_shift_bps + bait_rarity_shift_bps
     adjusted: dict[FishGrade, int] = {}
     for config in grade_configs:
+        if config.weight <= 0:
+            adjusted[config.grade] = 0
+            continue
         raw_factor = FISHING_BPS_DENOMINATOR + total_shift * config.order_index
         factor = max(LUCK_FACTOR_MIN_BPS, min(LUCK_FACTOR_MAX_BPS, raw_factor))
         adjusted[config.grade] = max(1, config.weight * factor // FISHING_BPS_DENOMINATOR)
@@ -65,13 +70,21 @@ def _fallback_species(
 
     Defends against a mis-tuned catalog where the rolled grade has no species:
     the catch falls back to the closest grade at or below the rolled rank, or the
-    lowest populated grade when none is at or below it.
+    lowest populated grade when none is at or below it. Grades an operator disabled
+    (base weight zero) are never eligible here either, so the disabled-grade
+    contract still holds on the fallback path; if every populated grade is disabled
+    the roll fails rather than awarding a disabled grade.
     """
     rank_by_grade = {config.grade: config.order_index for config in grade_configs}
+    disabled = {config.grade for config in grade_configs if config.weight <= 0}
     target_rank = rank_by_grade.get(grade, 0)
     populated = sorted(
-        {item.grade for item in species}, key=lambda candidate: rank_by_grade.get(candidate, 0)
+        {item.grade for item in species if item.grade not in disabled},
+        key=lambda candidate: rank_by_grade.get(candidate, 0),
     )
+    if not populated:
+        msg = "cannot roll a catch: every populated grade is disabled"
+        raise ValueError(msg)
     lower_or_equal = [
         candidate for candidate in populated if rank_by_grade.get(candidate, 0) <= target_rank
     ]
@@ -124,6 +137,11 @@ def roll_catch(  # noqa: PLR0913 -- a roll needs rng, configs, species, rod, bai
     )
     grade_choices = [config.grade for config in ordered_configs]
     grade_weights = [weights[config.grade] for config in ordered_configs]
+    # An all-disabled catalog would otherwise fall through _weighted_index's
+    # total <= 0 branch to index 0 and award that disabled grade directly.
+    if sum(grade_weights) <= 0:
+        msg = "cannot roll a catch: every grade is disabled"
+        raise ValueError(msg)
     chosen_grade = grade_choices[_weighted_index(rng=rng, weights=grade_weights)]
     chosen = _select_species(
         rng=rng, species=species, grade=chosen_grade, grade_configs=ordered_configs
