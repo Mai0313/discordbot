@@ -592,7 +592,14 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert await cog._route_message(message=message) == "SUMMARY"
+    reference_messages = await cog._get_reference_message(message=message)
+    current_message = await cog._get_current_message(message=message)
+    assert (
+        await cog._route_message(
+            message=message, reference_messages=reference_messages, current_message=current_message
+        )
+        == "SUMMARY"
+    )
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
@@ -623,7 +630,13 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             return "done"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    await cog._handle_message_reply(message=message, system_prompt="system", history_limit=2)
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="system",
+        history_limit=2,
+        reference_messages=reference_messages,
+        current_message=current_message,
+    )
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
 
@@ -644,9 +657,19 @@ async def test_gen_reply_on_message_dispatches_routes(
     cog = _cog()
     calls: list[str] = []
 
-    async def fake_route(message: FakeMessage) -> str:
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> str:
         """Returns the parametrized route."""
         return route
+
+    async def fake_get_reference(message: FakeMessage) -> list[object]:
+        """Skips real reference-message building in the dispatch test."""
+        return []
+
+    async def fake_get_current(message: FakeMessage) -> list[object]:
+        """Skips real current-message building in the dispatch test."""
+        return []
 
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
@@ -664,12 +687,18 @@ async def test_gen_reply_on_message_dispatches_routes(
         calls.append("_handle_video_reply")
 
     async def fake_message_handler(
-        message: FakeMessage, system_prompt: str, history_limit: int
+        message: FakeMessage,
+        system_prompt: str,
+        history_limit: int,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
+    monkeypatch.setattr(cog, "_get_reference_message", fake_get_reference)
+    monkeypatch.setattr(cog, "_get_current_message", fake_get_current)
     monkeypatch.setattr("discordbot.cogs.gen_reply.update_reaction", fake_reaction)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)

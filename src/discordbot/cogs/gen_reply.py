@@ -254,14 +254,18 @@ class ReplyGeneratorCogs(commands.Cog):
         final_content = f"{message.author.mention} {image_description}"
         await message.reply(content=final_content, file=image_file)
 
-    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        """Routes the message to the appropriate handler."""
-        message_list: list[EasyInputMessageParam] = []
+    async def _route_message(
+        self,
+        message: Message,
+        reference_messages: list[EasyInputMessageParam],
+        current_message: list[EasyInputMessageParam],
+    ) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
+        """Routes the message to the appropriate handler.
 
-        reference_messages, current_message = await asyncio.gather(
-            self._get_reference_message(message=message),
-            self._get_current_message(message=message),
-        )
+        The reference and current message inputs are built once by the caller and
+        reused for generation, so attachments are not downloaded/encoded twice.
+        """
+        message_list: list[EasyInputMessageParam] = []
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
@@ -287,16 +291,21 @@ class ReplyGeneratorCogs(commands.Cog):
             return "QA"
 
     async def _handle_message_reply(
-        self, message: Message, system_prompt: str, history_limit: int
+        self,
+        message: Message,
+        system_prompt: str,
+        history_limit: int,
+        reference_messages: list[EasyInputMessageParam],
+        current_message: list[EasyInputMessageParam],
     ) -> None:
-        """Handles generating text replies using history and context."""
+        """Handles generating text replies using history and context.
+
+        The reference and current message inputs are passed in already built (and
+        already used for routing) so their attachments are not re-downloaded here.
+        """
         message_list: list[EasyInputMessageParam] = []
 
-        hist_messages, reference_messages, current_message = await asyncio.gather(
-            self._get_history_message(message=message, limit=history_limit),
-            self._get_reference_message(message=message),
-            self._get_current_message(message=message),
-        )
+        hist_messages = await self._get_history_message(message=message, limit=history_limit)
         message_list.extend(hist_messages)
         message_list.extend(reference_messages)
         message_list.extend(current_message)
@@ -348,7 +357,15 @@ class ReplyGeneratorCogs(commands.Cog):
             current_emoji = await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="🔀"
             )
-            route = await self._route_message(message=message)
+            reference_messages, current_message = await asyncio.gather(
+                self._get_reference_message(message=message),
+                self._get_current_message(message=message),
+            )
+            route = await self._route_message(
+                message=message,
+                reference_messages=reference_messages,
+                current_message=current_message,
+            )
             if route == "IMAGE":
                 current_emoji = await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="🎨", previous=current_emoji
@@ -364,14 +381,22 @@ class ReplyGeneratorCogs(commands.Cog):
                     message=message, bot_user=self.bot.user, emoji="📖", previous=current_emoji
                 )
                 await self._handle_message_reply(
-                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=100
+                    message=message,
+                    system_prompt=SUMMARY_PROMPT,
+                    history_limit=100,
+                    reference_messages=reference_messages,
+                    current_message=current_message,
                 )
             else:
                 current_emoji = await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="❓", previous=current_emoji
                 )
                 await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
+                    message=message,
+                    system_prompt=REPLY_PROMPT,
+                    history_limit=30,
+                    reference_messages=reference_messages,
+                    current_message=current_message,
                 )
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="🆗", previous=current_emoji
