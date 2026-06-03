@@ -11,6 +11,7 @@ Usage::
 """
 
 import asyncio
+from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
@@ -231,6 +232,9 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the fishing catalog maintenance CLI."""
+    # data/ is gitignored and may not exist on a fresh checkout seeded before the
+    # bot's first run, so create it here like cli.py does before any DB write.
+    Path("./data").mkdir(parents=True, exist_ok=True)
     asyncio.run(main=_async_main(argv=argv))
 
 
