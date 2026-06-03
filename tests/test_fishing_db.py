@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from discordbot.cogs._fishing import database as fdb
-from discordbot.typings.fishing import GearType, CastStatus, GearUpsert
+from discordbot.typings.fishing import MAX_BAIT_PER_PURCHASE, GearType, CastStatus, GearUpsert
 from discordbot.cogs._economy.database import get_balance, adjust_balance
 from discordbot.cogs._fishing.database import (
     CatchLog,
@@ -70,6 +70,22 @@ async def test_insufficient_purchase_is_rejected() -> None:
     assert await get_balance(user_id=1) == 100
     angler = await get_angler_state(user_id=1)
     assert angler.rod is None
+
+
+async def test_purchase_enforces_quantity_at_service_layer() -> None:
+    """Quantity is validated in purchase_gear, not just the view parser."""
+    await _seed_catalog()
+    await _give(user_id=1, amount=10_000_000)
+    zero_rod = await purchase_gear(user_id=1, name="angler", gear_id="rod_bamboo", quantity=0)
+    assert zero_rod.success is False
+    assert zero_rod.reason == "invalid_quantity"
+    assert (await get_angler_state(user_id=1)).rod is None
+    over_cap = await purchase_gear(
+        user_id=1, name="angler", gear_id="bait_worm", quantity=MAX_BAIT_PER_PURCHASE + 1
+    )
+    assert over_cap.success is False
+    assert over_cap.reason == "invalid_quantity"
+    assert await get_balance(user_id=1) == 10_000_000
 
 
 async def test_buy_rod_sets_then_replaces() -> None:

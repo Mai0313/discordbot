@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engin
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import WalletDeltaLeg
 from discordbot.typings.fishing import (
+    MAX_BAIT_PER_PURCHASE,
     FISHING_MAX_SINGLE_CATCH,
     GearType,
     GearView,
@@ -649,9 +650,11 @@ async def purchase_gear(
 ) -> PurchaseResult:
     """Buys a rod or bait, burning the wallet first then granting in fishing.db.
 
-    Rods are bought one at a time and replace any current rod. Bait stacks by the
-    requested quantity. A grant failure after the wallet debit triggers a
-    best-effort refund so the player is not charged for nothing.
+    Rods are bought exactly one at a time and replace any current rod. Bait stacks
+    by the requested quantity, which must be positive and within
+    `MAX_BAIT_PER_PURCHASE`. Quantity semantics are enforced here so the economy
+    invariant never depends on the view layer. A grant failure after the wallet
+    debit triggers a best-effort refund so the player is not charged for nothing.
     """
     await _ensure_schema()
     async with open_fishing_session() as session:
@@ -659,11 +662,18 @@ async def purchase_gear(
         gear = _gear_view(row=gear_row) if gear_row is not None else None
     if gear is None:
         return PurchaseResult(success=False, gear_id=gear_id, reason="unknown_gear")
-    units = quantity if gear.gear_type == GearType.BAIT else 1
-    if units < 1:
+    if quantity < 1:
         return PurchaseResult(
             success=False, gear_id=gear_id, gear_type=gear.gear_type, reason="invalid_quantity"
         )
+    if gear.gear_type == GearType.BAIT:
+        if quantity > MAX_BAIT_PER_PURCHASE:
+            return PurchaseResult(
+                success=False, gear_id=gear_id, gear_type=gear.gear_type, reason="invalid_quantity"
+            )
+        units = quantity
+    else:
+        units = 1
     total_cost = gear.price * units
     wallet = await apply_ordered_wallet_deltas(
         user_id=user_id,
