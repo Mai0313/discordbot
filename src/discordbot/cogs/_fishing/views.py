@@ -220,6 +220,9 @@ class FishingShopView(FishingPublicView):
                 log_message="Failed to send fishing empty-rod notice",
             )
             return
+        # Ack before the wallet debit and shop refresh so a slow DB write cannot
+        # blow Discord's interaction window, mirroring the bait purchase path.
+        await interaction.response.defer()
         self.stop()
         await _purchase_and_refresh_shop(
             interaction=interaction, owner_id=self.owner_id, gear_id=value, quantity=1
