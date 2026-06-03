@@ -10,9 +10,9 @@ from discordbot.utils import model_pricing
 @pytest.fixture(autouse=True)
 def clear_model_price_cache() -> Iterator[None]:
     """Clears the process-level model price cache around each test."""
-    model_pricing._load_model_prices.cache_clear()
+    model_pricing._price_table_cache.clear()
     yield
-    model_pricing._load_model_prices.cache_clear()
+    model_pricing._price_table_cache.clear()
 
 
 def test_model_pricing_parses_typed_rates_and_modalities(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,3 +73,25 @@ def test_model_pricing_handles_empty_fetch(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert model_pricing.get_token_rates(model_name="any-model") == (0.0, 0.0)
     assert model_pricing.get_supported_modalities(model_name="any-model") == {"text", "image"}
+
+
+def test_model_pricing_retries_after_transient_empty_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient empty fetch is not memoized; a later successful fetch populates."""
+    monkeypatch.setattr(target=model_pricing, name="_fetch_upstream", value=lambda: {})
+    assert model_pricing.get_supported_modalities(model_name="late-model") == {"text", "image"}
+
+    recovered = {
+        "late-model": {
+            "input_cost_per_token": 0.1,
+            "output_cost_per_token": 0.2,
+            "supported_modalities": ["text", "image", "audio"],
+        }
+    }
+    monkeypatch.setattr(target=model_pricing, name="_fetch_upstream", value=lambda: recovered)
+    assert model_pricing.get_supported_modalities(model_name="late-model") == {
+        "text",
+        "image",
+        "audio",
+    }

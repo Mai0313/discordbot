@@ -7,7 +7,6 @@ on first use and memoizes it for the rest of the process. Returns
 `$0.00000000` instead of an estimate.
 """
 
-from functools import cache
 from collections.abc import Mapping
 
 import logfire
@@ -40,9 +39,20 @@ def _fetch_upstream() -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-@cache
+_price_table_cache: dict[str, dict[str, ModelPriceEntry]] = {}
+
+
 def _load_model_prices() -> dict[str, ModelPriceEntry]:
-    """Returns the validated price table, fetched once per process."""
+    """Returns the validated price table, fetched once per process.
+
+    A successful (non-empty) fetch is memoized for the rest of the process. A
+    transient fetch failure yields an empty table that is deliberately NOT
+    memoized, so a later lookup retries upstream instead of permanently
+    degrading every model to the `{"text", "image"}` modality fallback.
+    """
+    cached = _price_table_cache.get("table")
+    if cached:
+        return cached
     prices: dict[str, ModelPriceEntry] = {}
     for name, entry in _fetch_upstream().items():
         if not isinstance(entry, Mapping):
@@ -51,6 +61,8 @@ def _load_model_prices() -> dict[str, ModelPriceEntry]:
             prices[name] = ModelPriceEntry.model_validate(obj=entry)
         except ValidationError as exc:
             logfire.warn(f"Skipping malformed model price entry {name}: {exc!s}")
+    if prices:
+        _price_table_cache["table"] = prices
     return prices
 
 
@@ -78,7 +90,12 @@ def warm_pricing_cache() -> None:
     `get_token_rates` / `get_supported_modalities` lookup from blocking on the
     upstream HTTP fetch during a live interaction.
     """
-    _load_model_prices()
+    if not _load_model_prices():
+        logfire.warn(
+            "Model pricing table is empty after the warm fetch; token-cost display and "
+            "slow-model attachment modality detection fall back to defaults until a later "
+            "lookup successfully refetches upstream."
+        )
 
 
 def get_supported_modalities(model_name: str) -> set[str]:
