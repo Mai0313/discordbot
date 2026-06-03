@@ -137,6 +137,11 @@ def roll_catch(  # noqa: PLR0913 -- a roll needs rng, configs, species, rod, bai
     )
     grade_choices = [config.grade for config in ordered_configs]
     grade_weights = [weights[config.grade] for config in ordered_configs]
+    # An all-disabled catalog would otherwise fall through _weighted_index's
+    # total <= 0 branch to index 0 and award that disabled grade directly.
+    if sum(grade_weights) <= 0:
+        msg = "cannot roll a catch: every grade is disabled"
+        raise ValueError(msg)
     chosen_grade = grade_choices[_weighted_index(rng=rng, weights=grade_weights)]
     chosen = _select_species(
         rng=rng, species=species, grade=chosen_grade, grade_configs=ordered_configs

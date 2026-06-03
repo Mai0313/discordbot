@@ -367,3 +367,26 @@ def test_fallback_raises_when_all_populated_grades_disabled() -> None:
             bait=_bait(),
             max_value=100_000,
         )
+
+
+def test_all_zero_catalog_raises_before_awarding() -> None:
+    """A fully disabled catalog fails instead of awarding the index-0 grade directly."""
+    grades = (
+        FishGradeConfigView(
+            grade=FishGrade.N, weight=0, color=0, emoji="⚪", label="普通", order_index=0
+        ),
+        FishGradeConfigView(
+            grade=FishGrade.UR, weight=0, color=0, emoji="🔴", label="神話", order_index=4
+        ),
+    )
+    # The rank-0 disabled grade has species, so without the guard _weighted_index's
+    # total<=0 branch would return index 0 and award it directly.
+    with pytest.raises(ValueError, match="every grade is disabled"):
+        roll_catch(
+            rng=Random(0),
+            grade_configs=grades,
+            species=(_fish(species_id="common", grade=FishGrade.N),),
+            rod=_rod(),
+            bait=_bait(),
+            max_value=100_000,
+        )
