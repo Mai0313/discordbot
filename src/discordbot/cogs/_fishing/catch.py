@@ -70,13 +70,21 @@ def _fallback_species(
 
     Defends against a mis-tuned catalog where the rolled grade has no species:
     the catch falls back to the closest grade at or below the rolled rank, or the
-    lowest populated grade when none is at or below it.
+    lowest populated grade when none is at or below it. Grades an operator disabled
+    (base weight zero) are never eligible here either, so the disabled-grade
+    contract still holds on the fallback path; if every populated grade is disabled
+    the roll fails rather than awarding a disabled grade.
     """
     rank_by_grade = {config.grade: config.order_index for config in grade_configs}
+    disabled = {config.grade for config in grade_configs if config.weight <= 0}
     target_rank = rank_by_grade.get(grade, 0)
     populated = sorted(
-        {item.grade for item in species}, key=lambda candidate: rank_by_grade.get(candidate, 0)
+        {item.grade for item in species if item.grade not in disabled},
+        key=lambda candidate: rank_by_grade.get(candidate, 0),
     )
+    if not populated:
+        msg = "cannot roll a catch: every populated grade is disabled"
+        raise ValueError(msg)
     lower_or_equal = [
         candidate for candidate in populated if rank_by_grade.get(candidate, 0) <= target_rank
     ]

@@ -301,3 +301,69 @@ def test_empty_catalog_raises() -> None:
             bait=_bait(),
             max_value=100_000,
         )
+
+
+def _fish(species_id: str, grade: FishGrade) -> FishSpeciesView:
+    """Builds a fixed-size, fixed-value test species in a grade."""
+    return FishSpeciesView(
+        species_id=species_id,
+        name=species_id,
+        grade=grade,
+        emoji="🐟",
+        intra_grade_weight=1,
+        base_value=1,
+        size_min_bps=10_000,
+        size_max_bps=10_000,
+    )
+
+
+def test_fallback_skips_disabled_grade_with_species() -> None:
+    """The empty-grade fallback never awards a grade an operator disabled."""
+    grades = (
+        FishGradeConfigView(
+            grade=FishGrade.N, weight=100, color=0, emoji="⚪", label="普通", order_index=0
+        ),
+        FishGradeConfigView(
+            grade=FishGrade.SSR, weight=0, color=0, emoji="🟡", label="傳說", order_index=3
+        ),
+        FishGradeConfigView(
+            grade=FishGrade.UR, weight=10_000, color=0, emoji="🔴", label="神話", order_index=4
+        ),
+    )
+    species = (
+        _fish(species_id="common", grade=FishGrade.N),
+        _fish(species_id="legend", grade=FishGrade.SSR),
+    )
+    # UR dominates the draw but has no species, so most rolls hit the fallback; it
+    # must land on enabled N, never disabled SSR even though SSR has species.
+    for seed in range(50):
+        roll = roll_catch(
+            rng=Random(seed),
+            grade_configs=grades,
+            species=species,
+            rod=_rod(),
+            bait=_bait(),
+            max_value=100_000,
+        )
+        assert roll.species_id == "common"
+
+
+def test_fallback_raises_when_all_populated_grades_disabled() -> None:
+    """If every grade with species is disabled, the roll fails instead of awarding one."""
+    grades = (
+        FishGradeConfigView(
+            grade=FishGrade.N, weight=0, color=0, emoji="⚪", label="普通", order_index=0
+        ),
+        FishGradeConfigView(
+            grade=FishGrade.UR, weight=10_000, color=0, emoji="🔴", label="神話", order_index=4
+        ),
+    )
+    with pytest.raises(ValueError, match="every populated grade is disabled"):
+        roll_catch(
+            rng=Random(0),
+            grade_configs=grades,
+            species=(_fish(species_id="only_common", grade=FishGrade.N),),
+            rod=_rod(),
+            bait=_bait(),
+            max_value=100_000,
+        )
