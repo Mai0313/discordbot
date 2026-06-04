@@ -7,9 +7,11 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from nextcord import Embed, Locale
 from pydantic import BaseModel, ValidationError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory import store, pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.constants import MEMORY_INJECTION_MAX_CHARS
@@ -23,6 +25,8 @@ from discordbot.cogs._memory.extraction import (
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from nextcord import Interaction
+    from nextcord.ext import commands
 
 USER_ID = 123456789
 
@@ -497,3 +501,85 @@ async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Pat
     await asyncio.wait([task])
     assert pipeline._inflight_tasks.get(USER_ID) is None
     assert store.count_raw_entries(user_id=USER_ID) == 0
+
+
+# ---------------------------------------------------------------------------
+# /memory cog
+# ---------------------------------------------------------------------------
+
+
+class ResponseStub:
+    """Records the initial interaction response payload."""
+
+    def __init__(self) -> None:
+        """Initializes the recorded payload."""
+        self.sent: dict[str, object] = {}
+
+    async def send_message(self, **kwargs: object) -> None:
+        """Records the response payload."""
+        self.sent = kwargs
+
+
+def _interaction(user_id: int = USER_ID) -> SimpleNamespace:
+    """Builds a minimal interaction stub for the memory cog."""
+    return SimpleNamespace(user=SimpleNamespace(id=user_id), response=ResponseStub())
+
+
+def _memory_cog() -> MemoryCogs:
+    """Builds a MemoryCogs instance with a stub bot."""
+    return MemoryCogs(bot=cast("commands.Bot", SimpleNamespace()))
+
+
+async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
+    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "愛開玩笑" in (embed.description or "")
+
+
+async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "還沒有任何記憶" in (embed.description or "")
+
+
+async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path) -> None:
+    store.write_main_memory(user_id=USER_ID, content="v1\n\nmain")
+    store.append_raw_entry(user_id=USER_ID, entry_text="raw")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "已清除" in (embed.description or "")
+    assert store.read_main_memory(user_id=USER_ID) == ""
+    assert store.count_raw_entries(user_id=USER_ID) == 0
+    started_at = 0.0
+    assert store.cleared_since(user_id=USER_ID, started_at=started_at) is True
+
+
+async def test_memory_clear_without_memory_reports_noop(memory_isolated_dir: Path) -> None:
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "無事發生" in (embed.description or "")
+
+
+def test_memory_commands_have_localizations() -> None:
+    for command in (MemoryCogs.memory, MemoryCogs.memory_show, MemoryCogs.memory_clear):
+        assert command.name_localizations is not None
+        assert Locale.zh_TW in command.name_localizations
+        assert Locale.ja in command.name_localizations
+        assert command.description_localizations is not None
+        assert Locale.zh_TW in command.description_localizations
+        assert Locale.ja in command.description_localizations
