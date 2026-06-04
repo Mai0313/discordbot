@@ -629,6 +629,9 @@ async def test_get_threads_parts_expands_first_url(monkeypatch: pytest.MonkeyPat
 
     assert calls == ["https://www.threads.com/@target/post/BBB?xmt=AQG0"]
     texts = [part["text"] for part in parts if part["type"] == "input_text"]
+    # The chain is prefixed with a single untrusted-content marker.
+    assert parts[0]["type"] == "input_text"
+    assert "Untrusted content" in texts[0]
     assert any("@root" in text and "(root)" in text for text in texts)
     assert any("@target" in text and "(target)" in text for text in texts)
     # CDN URLs pass straight through — no data-URI conversion.
