@@ -671,6 +671,13 @@ async def test_get_threads_parts_video_modality_passthrough(
     file_urls = [part["file_url"] for part in parts if part["type"] == "input_file"]
     assert file_urls == ["https://cdn.example/clip.mp4"]
 
+    # The routing pass opts out of video even when the slow model supports it,
+    # because the fast routing model may not accept video input.
+    routing_parts = await cog.input_builder.get_threads_parts(message=message, include_video=False)
+    assert all(part["type"] != "input_file" for part in routing_parts)
+    routing_texts = [part["text"] for part in routing_parts if part["type"] == "input_text"]
+    assert any("1 部影片" in text for text in routing_texts)
+
 
 async def test_get_threads_parts_caches_chain_across_passes(
     monkeypatch: pytest.MonkeyPatch,

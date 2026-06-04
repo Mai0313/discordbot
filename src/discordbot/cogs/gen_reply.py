@@ -143,7 +143,9 @@ class ReplyGeneratorCogs(commands.Cog):
             messages.append(processed_ref)
         return messages
 
-    async def _get_current_message(self, message: Message) -> list[EasyInputMessageParam]:
+    async def _get_current_message(
+        self, message: Message, threads_video: bool = True
+    ) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
         messages: list[EasyInputMessageParam] = [
             _system_separator_message(
@@ -151,7 +153,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         ]
         current_msg = await self.input_builder.process_single_message(
-            message=message, include_threads=True
+            message=message, include_threads=True, include_threads_video=threads_video
         )
         messages.append(current_msg)
         return messages
@@ -260,9 +262,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """Routes the message to the appropriate handler."""
         message_list: list[EasyInputMessageParam] = []
 
+        # The routing model may not accept video input even when the slow model
+        # does, so Threads video parts are excluded from the routing payload.
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
-            self._get_current_message(message=message),
+            self._get_current_message(message=message, threads_video=False),
         )
         message_list.extend(reference_messages)
         message_list.extend(current_message)

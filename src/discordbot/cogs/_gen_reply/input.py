@@ -278,30 +278,31 @@ class MessageInputBuilder(BaseModel):
         return "\n".join(lines)
 
     def _threads_post_parts(
-        self, post: ThreadsOutput, position: str, modalities: set[str]
+        self, post: ThreadsOutput, position: str, image_ok: bool, video_ok: bool
     ) -> list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam]:
         """Renders one scraped Threads post as labelled text, image, and video parts.
 
         Args:
             post: The scraped Threads post.
             position: Chain position label (`root`, `ancestor`, or `target`).
-            modalities: Input modalities the slow model accepts.
+            image_ok: Whether image parts may be emitted for this payload.
+            video_ok: Whether video file parts may be emitted for this payload.
 
         Returns:
-            Content parts for the post, gated by the supported modalities.
+            Content parts for the post, gated by the caller's modality flags.
         """
         header = self._format_threads_header(post=post, position=position)
         parts: list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam] = [
             ResponseInputTextParam(text=header, type="input_text")
         ]
-        if "image" in modalities:
+        if image_ok:
             for img_url in post.image_urls:
                 parts.append(
                     ResponseInputImageParam(image_url=img_url, detail="auto", type="input_image")
                 )
         if not post.video_urls:
             return parts
-        if "video" in modalities:
+        if video_ok:
             for vid_url in post.video_urls:
                 parts.append(ResponseInputFileParam(file_url=vid_url, type="input_file"))
         else:
@@ -314,18 +315,23 @@ class MessageInputBuilder(BaseModel):
         return parts
 
     async def get_threads_parts(
-        self, message: Message
+        self, message: Message, include_video: bool = True
     ) -> list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam]:
         """Expands the first Threads URL in `message` into Responses API input parts.
 
         The LLM usually cannot crawl threads.com itself, so the scraped reply
         chain is injected directly: each post becomes a labelled `input_text`
         part, images pass through as CDN URLs in `input_image` parts, and
-        videos become `file_url` `input_file` parts only when the slow model
-        supports the `video` modality (otherwise a short text note marks them).
+        videos become `file_url` `input_file` parts only when `include_video`
+        is set and the slow model supports the `video` modality (otherwise a
+        short text note marks them).
 
         Args:
             message: The Discord message being answered.
+            include_video: When False, video file parts are replaced by the
+                text note even if the slow model supports video. The routing
+                pass uses this because its fast model may not accept video
+                input and the route decision never needs to watch the clip.
 
         Returns:
             Content parts for the scraped chain. Empty when the author is a
@@ -341,6 +347,8 @@ class MessageInputBuilder(BaseModel):
             return []
 
         modalities = get_supported_modalities(model_name=self.runtime_models.slow_model.name)
+        image_ok = "image" in modalities
+        video_ok = include_video and "video" in modalities
         # Scraped third-party text is a prompt-injection vector; one explicit
         # untrusted-content marker ahead of the chain tells the model to treat
         # everything below as data rather than instructions.
@@ -362,12 +370,14 @@ class MessageInputBuilder(BaseModel):
             else:
                 position = "ancestor"
             parts.extend(
-                self._threads_post_parts(post=post, position=position, modalities=modalities)
+                self._threads_post_parts(
+                    post=post, position=position, image_ok=image_ok, video_ok=video_ok
+                )
             )
         return parts
 
     async def process_single_message(
-        self, message: Message, include_threads: bool = False
+        self, message: Message, include_threads: bool = False, include_threads_video: bool = True
     ) -> EasyInputMessageParam:
         """Processes a single Discord message into a Responses API input message.
 
@@ -377,6 +387,9 @@ class MessageInputBuilder(BaseModel):
                 scraped and appended as extra content parts. Only the current
                 message being answered opts in; history and reference messages
                 keep the default so bulk processing never hits Threads.
+            include_threads_video: Forwarded to `get_threads_parts`; the routing
+                pass sets this to False so video file parts never reach the
+                fast routing model.
 
         Returns:
             The Responses API input message for `message`.
@@ -385,7 +398,9 @@ class MessageInputBuilder(BaseModel):
             content = await self.get_cleaned_content(message=message)
             attachment_parts = await self.get_attachment_parts(message=message)
             threads_parts = (
-                await self.get_threads_parts(message=message) if include_threads else []
+                await self.get_threads_parts(message=message, include_video=include_threads_video)
+                if include_threads
+                else []
             )
             extra_parts = [*attachment_parts, *threads_parts]
             is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
