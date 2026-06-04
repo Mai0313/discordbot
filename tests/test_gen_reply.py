@@ -12,6 +12,7 @@ from PIL import Image
 import pytest
 from nextcord import File, Embed
 
+from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
@@ -586,6 +587,179 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     assert len(reference) == 4
     assert reference[0]["role"] == "system"
     assert len(await cog._get_current_message(message=current)) == 2
+
+
+async def test_get_threads_parts_expands_first_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threads URLs in the current message expand into labelled text and media parts."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    calls: list[str] = []
+
+    def fake_fetch_chain(self: ThreadsDownloader, url: str) -> list[ThreadsOutput]:
+        """Returns a two-post chain and records the requested URL."""
+        calls.append(url)
+        return [
+            ThreadsOutput(
+                text="Root text",
+                url="https://www.threads.com/@root/post/AAA",
+                image_urls=["https://cdn.example/root.jpg"],
+                author_name="root",
+            ),
+            ThreadsOutput(
+                text="Target text",
+                url="https://www.threads.com/@target/post/BBB",
+                image_urls=["https://cdn.example/target.jpg"],
+                video_urls=["https://cdn.example/target.mp4"],
+                author_name="target",
+            ),
+        ]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="fetch_chain", value=fake_fetch_chain)
+    message = FakeMessage(
+        content=(
+            "<@999> https://www.threads.com/@target/post/BBB?xmt=AQG0 "
+            "https://www.threads.com/@other/post/CCC 你有什麼看法"
+        ),
+        author=FakeAuthor(user_id=1),
+    )
+    parts = await cog.input_builder.get_threads_parts(message=message)
+
+    assert calls == ["https://www.threads.com/@target/post/BBB?xmt=AQG0"]
+    texts = [part["text"] for part in parts if part["type"] == "input_text"]
+    assert any("@root" in text and "(root)" in text for text in texts)
+    assert any("@target" in text and "(target)" in text for text in texts)
+    # CDN URLs pass straight through — no data-URI conversion.
+    image_urls = [part["image_url"] for part in parts if part["type"] == "input_image"]
+    assert image_urls == ["https://cdn.example/root.jpg", "https://cdn.example/target.jpg"]
+    # Video modality unsupported → no input_file, only the text note.
+    assert all(part["type"] != "input_file" for part in parts)
+    assert any("1 部影片" in text for text in texts)
+
+
+async def test_get_threads_parts_video_modality_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Video URLs become file_url input_file parts when the slow model supports video."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image", "video"},
+    )
+
+    def fake_fetch_chain(self: ThreadsDownloader, url: str) -> list[ThreadsOutput]:
+        """Returns a single video post."""
+        return [
+            ThreadsOutput(
+                text="Video post",
+                url="https://www.threads.com/@a/post/AAA",
+                video_urls=["https://cdn.example/clip.mp4"],
+                author_name="a",
+            )
+        ]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="fetch_chain", value=fake_fetch_chain)
+    message = FakeMessage(
+        content="<@999> https://www.threads.com/@a/post/AAA", author=FakeAuthor(user_id=1)
+    )
+    parts = await cog.input_builder.get_threads_parts(message=message)
+    file_urls = [part["file_url"] for part in parts if part["type"] == "input_file"]
+    assert file_urls == ["https://cdn.example/clip.mp4"]
+
+
+async def test_get_threads_parts_caches_chain_across_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Route and reply passes share one fetch, keyed by the cleaned URL."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    calls: list[str] = []
+
+    def fake_fetch_chain(self: ThreadsDownloader, url: str) -> list[ThreadsOutput]:
+        """Returns a minimal chain and records the fetch."""
+        calls.append(url)
+        return [ThreadsOutput(text="hi", url=url, author_name="a")]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="fetch_chain", value=fake_fetch_chain)
+    message = FakeMessage(
+        content="<@999> https://www.threads.com/@a/post/AAA?x=1 看法", author=FakeAuthor(user_id=1)
+    )
+    first = await cog._get_current_message(message=message)
+    second = await cog._get_current_message(message=message)
+    assert len(calls) == 1
+    assert isinstance(first[-1]["content"], list)
+    assert isinstance(second[-1]["content"], list)
+
+    # The threads.net form of the same post resolves to the same cache entry.
+    net_message = FakeMessage(
+        content="<@999> https://www.threads.net/@a/post/AAA 看法", author=FakeAuthor(user_id=1)
+    )
+    await cog._get_current_message(message=net_message)
+    assert len(calls) == 1
+
+
+async def test_get_threads_parts_scrape_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed scrape yields no parts, is not cached, and the message still processes."""
+    cog = _cog()
+    calls: list[str] = []
+
+    def fake_fetch_chain(self: ThreadsDownloader, url: str) -> list[ThreadsOutput]:
+        """Simulates an anti-bot block on every fetch."""
+        calls.append(url)
+        raise RuntimeError("blocked")
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="fetch_chain", value=fake_fetch_chain)
+    message = FakeMessage(
+        content="<@999> https://www.threads.com/@a/post/AAA", author=FakeAuthor(user_id=1)
+    )
+    assert await cog.input_builder.get_threads_parts(message=message) == []
+    processed = await cog.input_builder.process_single_message(
+        message=message, include_threads=True
+    )
+    assert processed["role"] == "user"
+    # Falls back to the string shorthand with the raw URL still in the text.
+    assert isinstance(processed["content"], str)
+    assert "threads.com" in processed["content"]
+    # Failures are not cached, so the reply pass retries the fetch.
+    assert len(calls) == 2
+
+
+async def test_get_threads_parts_skips_bots_and_default_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bot authors, URL-free messages, and default callers never trigger a scrape."""
+    cog = _cog()
+    calls: list[str] = []
+
+    def fake_fetch_chain(self: ThreadsDownloader, url: str) -> list[ThreadsOutput]:
+        """Records any unexpected fetch."""
+        calls.append(url)
+        return [ThreadsOutput(text="hi", url=url, author_name="a")]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="fetch_chain", value=fake_fetch_chain)
+
+    bot_message = FakeMessage(
+        content="https://www.threads.com/@a/post/AAA", author=FakeAuthor(bot=True, user_id=999)
+    )
+    assert await cog.input_builder.get_threads_parts(message=bot_message) == []
+
+    no_url = FakeMessage(content="<@999> hello", author=FakeAuthor(user_id=1))
+    assert await cog.input_builder.get_threads_parts(message=no_url) == []
+
+    # History/reference callers keep the default include_threads=False.
+    history_message = FakeMessage(
+        content="https://www.threads.com/@a/post/AAA", author=FakeAuthor(user_id=1)
+    )
+    processed = await cog.input_builder.process_single_message(message=history_message)
+    assert isinstance(processed["content"], str)
+    assert calls == []
 
 
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:

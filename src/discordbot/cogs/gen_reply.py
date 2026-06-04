@@ -150,7 +150,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ===="
             )
         ]
-        current_msg = await self.input_builder.process_single_message(message=message)
+        current_msg = await self.input_builder.process_single_message(
+            message=message, include_threads=True
+        )
         messages.append(current_msg)
         return messages
 

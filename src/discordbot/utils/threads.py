@@ -16,6 +16,8 @@ import requests
 # URL parsing
 # ---------------------------------------------------------------------------
 
+THREADS_URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
+
 
 class ThreadsURL(BaseModel):
     """Parses and normalises a Threads post URL.
@@ -767,6 +769,31 @@ class ThreadsDownloader(BaseModel):
         finally:
             for output in results:
                 output.unlink()
+
+    def fetch_chain(self, url: str) -> list[ThreadsOutput]:
+        """Returns the reply chain `[root, ..., direct_parent, target]` without downloading media.
+
+        Same chain as `parse`, but no video is written to disk for any post —
+        `video_urls` still carries the CDN URLs while `video_paths` stays
+        empty, so there is no temp-file lifecycle to manage. Blocking
+        `requests` work; async callers should wrap this in `asyncio.to_thread`.
+
+        Args:
+            url: The Threads post URL.
+
+        Returns:
+            Ordered posts in the reply chain. Empty when no post is found.
+        """
+        post, parent_posts = self.extract_post_data(url=url)
+        results: list[ThreadsOutput] = []
+        if post is None:
+            return results
+        for parent in parent_posts:
+            results.append(
+                self._build_output(post=parent, url=self._post_url(post=parent), download=False)
+            )
+        results.append(self._build_output(post=post, url=url, download=False))
+        return results
 
     def list_all(self, url: str) -> list[ThreadsOutput]:
         """Returns the target post followed by every direct reply to it.

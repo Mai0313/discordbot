@@ -1,14 +1,16 @@
 """Builds Responses API input messages from Discord messages."""
 
 import re
+import time
 import base64
 from typing import Literal
 import asyncio
 from mimetypes import guess_type
+from collections import OrderedDict
 
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -16,6 +18,12 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
+from discordbot.utils.threads import (
+    THREADS_URL_REGEX,
+    ThreadsURL,
+    ThreadsOutput,
+    ThreadsDownloader,
+)
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 
@@ -40,6 +48,11 @@ class MessageInputBuilder(BaseModel):
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
+
+    _threads_downloader: ThreadsDownloader = PrivateAttr(default_factory=ThreadsDownloader)
+    _threads_cache: OrderedDict[str, tuple[float, list[ThreadsOutput]]] = PrivateAttr(
+        default_factory=OrderedDict
+    )
 
     async def get_user_prompt(self, content: str) -> str:
         """Removes the bot mention from the content and strips whitespace."""
@@ -199,18 +212,177 @@ class MessageInputBuilder(BaseModel):
         content_parts = [part for part in content_parts if part is not None]
         return content_parts
 
-    async def process_single_message(self, message: Message) -> EasyInputMessageParam:
-        """Processes a single Discord message into a Responses API input message."""
+    async def _fetch_threads_cached(self, url: str) -> list[ThreadsOutput]:
+        """Fetches a Threads reply chain, memoized per cleaned URL.
+
+        `_route_message` and `_handle_message_reply` each build the current
+        message once, so a naive scrape would hit Threads twice per user
+        message; the cache collapses both passes into one network fetch.
+        Entries expire after a short TTL because the scraped CDN media URLs
+        are signed and stop working, and failures or empty results are not
+        cached so a transient error on the routing pass cannot suppress a
+        successful fetch on the reply pass.
+
+        Args:
+            url: The raw Threads post URL found in the message content.
+
+        Returns:
+            Ordered posts in the reply chain. Empty when the scrape fails or
+            finds no post.
+        """
+        key = ThreadsURL(raw_url=url).clean_url
+        cached = self._threads_cache.get(key)
+        if cached is not None and time.monotonic() - cached[0] < 600:
+            self._threads_cache.move_to_end(key)
+            return cached[1]
+        try:
+            results = await asyncio.to_thread(self._threads_downloader.fetch_chain, url=url)
+        except Exception:
+            logfire.warn(f"Threads scrape failed for AI ingestion: {url}", _exc_info=True)
+            return []
+        if not results:
+            return []
+        self._threads_cache[key] = (time.monotonic(), results)
+        self._threads_cache.move_to_end(key)
+        while len(self._threads_cache) > 32:
+            self._threads_cache.popitem(last=False)
+        return results
+
+    @staticmethod
+    def _format_threads_header(post: ThreadsOutput, position: str) -> str:
+        """Builds the labelling text block prefixed before a scraped Threads post.
+
+        Tells the model the content is an expanded Threads post rather than
+        user-typed text, names the author, and includes one compact engagement
+        line so the model can gauge how widely circulated the post is.
+
+        Args:
+            post: The scraped Threads post.
+            position: Chain position label (`root`, `ancestor`, or `target`).
+
+        Returns:
+            The labelled text block ending with the post's text content.
+        """
+        lines = [
+            f"==== Expanded Threads post ({position}) by @{post.author_name} ====",
+            f"URL: {post.url}",
+        ]
+        if post.taken_at:
+            lines.append(f"Posted at: {post.taken_at.isoformat()}")
+        lines.append(
+            f"Engagement: ❤️ {post.like_count} 💬 {post.reply_count} "
+            f"🔁 {post.repost_count} 🔗 {post.quote_count} ↗️ {post.reshare_count}"
+        )
+        lines.append("Content:")
+        lines.append(post.text or "(no text)")
+        return "\n".join(lines)
+
+    def _threads_post_parts(
+        self, post: ThreadsOutput, position: str, modalities: set[str]
+    ) -> list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam]:
+        """Renders one scraped Threads post as labelled text, image, and video parts.
+
+        Args:
+            post: The scraped Threads post.
+            position: Chain position label (`root`, `ancestor`, or `target`).
+            modalities: Input modalities the slow model accepts.
+
+        Returns:
+            Content parts for the post, gated by the supported modalities.
+        """
+        header = self._format_threads_header(post=post, position=position)
+        parts: list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam] = [
+            ResponseInputTextParam(text=header, type="input_text")
+        ]
+        if "image" in modalities:
+            for img_url in post.image_urls:
+                parts.append(
+                    ResponseInputImageParam(image_url=img_url, detail="auto", type="input_image")
+                )
+        if not post.video_urls:
+            return parts
+        if "video" in modalities:
+            for vid_url in post.video_urls:
+                parts.append(ResponseInputFileParam(file_url=vid_url, type="input_file"))
+        else:
+            parts.append(
+                ResponseInputTextParam(
+                    text=f"[此貼文含 {len(post.video_urls)} 部影片，目前模型無法觀看]",
+                    type="input_text",
+                )
+            )
+        return parts
+
+    async def get_threads_parts(
+        self, message: Message
+    ) -> list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam]:
+        """Expands the first Threads URL in `message` into Responses API input parts.
+
+        The LLM usually cannot crawl threads.com itself, so the scraped reply
+        chain is injected directly: each post becomes a labelled `input_text`
+        part, images pass through as CDN URLs in `input_image` parts, and
+        videos become `file_url` `input_file` parts only when the slow model
+        supports the `video` modality (otherwise a short text note marks them).
+
+        Args:
+            message: The Discord message being answered.
+
+        Returns:
+            Content parts for the scraped chain. Empty when the author is a
+            bot, no Threads URL is present, or the scrape fails.
+        """
+        if message.author.bot:
+            return []
+        match = THREADS_URL_REGEX.search(message.content)
+        if match is None:
+            return []
+        chain = await self._fetch_threads_cached(url=match.group(0))
+        if not chain:
+            return []
+
+        modalities = get_supported_modalities(model_name=self.runtime_models.slow_model.name)
+        parts: list[ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam] = []
+        for idx, post in enumerate(chain):
+            if idx == len(chain) - 1:
+                position = "target"
+            elif idx == 0:
+                position = "root"
+            else:
+                position = "ancestor"
+            parts.extend(
+                self._threads_post_parts(post=post, position=position, modalities=modalities)
+            )
+        return parts
+
+    async def process_single_message(
+        self, message: Message, include_threads: bool = False
+    ) -> EasyInputMessageParam:
+        """Processes a single Discord message into a Responses API input message.
+
+        Args:
+            message: The Discord message to convert.
+            include_threads: When True, the first Threads URL in the message is
+                scraped and appended as extra content parts. Only the current
+                message being answered opts in; history and reference messages
+                keep the default so bulk processing never hits Threads.
+
+        Returns:
+            The Responses API input message for `message`.
+        """
         try:
             content = await self.get_cleaned_content(message=message)
             attachment_parts = await self.get_attachment_parts(message=message)
+            threads_parts = (
+                await self.get_threads_parts(message=message) if include_threads else []
+            )
+            extra_parts = [*attachment_parts, *threads_parts]
             is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
 
             # Bot's own history without attachments → role=assistant carries identity,
             # so the sender-prefix is dropped here. Without this, the model sees its
             # own past replies prefixed with `Bot (bot) [id: ...]:` and learns to mimic
             # that header, which leaks into output despite the prompt-level guard.
-            if is_bot and not attachment_parts:
+            if is_bot and not extra_parts:
                 return EasyInputMessageParam(role="assistant", content=content)
 
             prefixed = (
@@ -221,7 +393,7 @@ class MessageInputBuilder(BaseModel):
             # No attachments → use EasyInputMessageParam's string-content shorthand.
             # The SDK serializes it as `input_text` for role=user, which satisfies
             # GPT-5.4's strict rule about content-part types per role.
-            if not attachment_parts:
+            if not extra_parts:
                 return EasyInputMessageParam(role="user", content=prefixed)
 
             # Has attachments → must use a content list with input_text/input_image.
@@ -230,10 +402,7 @@ class MessageInputBuilder(BaseModel):
             # fall back to role=user; the author prefix above preserves bot identity.
             return EasyInputMessageParam(
                 role="user",
-                content=[
-                    ResponseInputTextParam(text=prefixed, type="input_text"),
-                    *attachment_parts,
-                ],
+                content=[ResponseInputTextParam(text=prefixed, type="input_text"), *extra_parts],
             )
         except Exception:
             logfire.warn(f"Failed to process message {message.id}", _exc_info=True)

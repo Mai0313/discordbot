@@ -1,6 +1,5 @@
 """Cog that expands Threads post URLs into Discord embeds and media files."""
 
-import re
 import asyncio
 from pathlib import Path
 import contextlib
@@ -9,11 +8,10 @@ import logfire
 from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
+from discordbot.utils.threads import THREADS_URL_REGEX as URL_REGEX
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
-
-URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
 
 
 class ThreadsCogs(commands.Cog):

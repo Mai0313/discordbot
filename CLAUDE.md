@@ -43,6 +43,7 @@ make gen-docs                    # regenerate docs/ from sources
 - AI progress is communicated with reactions on the user's message. Preserve the no-intermediate-message UX.
 - Attachment ingestion is gated by `get_supported_modalities` for the slow model. Unsupported attachments should be dropped before any LLM call.
 - Images are resized and JPEG re-encoded into `input_image` data URIs. Other supported attachments are sent as `input_file`.
+- The current message's first Threads URL is expanded for AI ingestion via `MessageInputBuilder.get_threads_parts`: scraped chain text as labelled `input_text`, CDN image URLs passed straight through as `input_image`, and video URLs as `file_url` `input_file` only when the slow model supports `video`. History and referenced messages are not expanded. Chains are TTL-cached per cleaned URL on the builder so the route and reply passes share one fetch; any scrape failure falls back to the raw URL as plain text.
 - For Discord embeds, prefer `media.discordapp.net` `proxy_url` over origin URLs because CDN links expire.
 - History, referenced messages, and current messages are fetched with `asyncio.gather`. Keep the task list built in a `for` loop on its own lines.
 

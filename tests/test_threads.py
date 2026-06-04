@@ -167,3 +167,51 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
         assert target.author_name, "author_name should not be empty"
         assert target.taken_at is not None, "taken_at should not be None"
     assert fetched_urls == [threads_url.clean_url]
+
+
+def test_fetch_chain_no_download(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch_chain returns the chain with media URLs and never writes media to disk."""
+    root = _thread_post_payload(code="ROOT", username="root_author", text="Root post")
+    target = _thread_post_payload(
+        code="TARGET",
+        username="target_author",
+        text="Target post",
+        reply_to_username="root_author",
+    )
+    target["post"]["video_versions"] = [{"url": "https://cdn.example/TARGET.mp4"}]  # type: ignore[index]
+    payload = {"require": [{"__bbox": {"result": {"data": {"thread_items": [root, target]}}}}]}
+    html = (
+        f'<html><script type="application/json" data-sjs>{json.dumps(obj=payload)}</script></html>'
+    )
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Returns the deterministic chain HTML."""
+        return html
+
+    def fail_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
+        """Fails the test if fetch_chain ever downloads media."""
+        raise AssertionError("fetch_chain must not download media")
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fail_download_media)
+    downloader = ThreadsDownloader(output_folder=str(tmp_path))
+
+    chain = downloader.fetch_chain(url="https://www.threads.com/@target_author/post/TARGET")
+
+    assert [output.author_name for output in chain] == ["root_author", "target_author"]
+    assert chain[0].image_urls == ["https://cdn.example/ROOT.jpg"]
+    assert chain[-1].video_urls == ["https://cdn.example/TARGET.mp4"]
+    assert all(output.video_paths == [] for output in chain)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_chain_missing_post_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch_chain returns an empty list when the target post is not in the page."""
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Returns HTML without the requested post."""
+        return _thread_html(post_code="OTHER")
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    downloader = ThreadsDownloader()
+    assert downloader.fetch_chain(url="https://www.threads.com/@a/post/MISSING") == []

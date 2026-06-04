@@ -77,6 +77,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Mention me or DM me to get started.\n"
                     "• Chat, answer questions, and summarize articles\n"
                     "• Analyze attached images and files\n"
+                    "• Read Threads links you paste in — post text, images, and videos\n"
                     "• Generate images and short videos on request"
                 ),
             ),
@@ -154,6 +155,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "tag 我或私訊我就能開始。\n"
                     "• 聊天、回答問題、摘要文章\n"
                     "• 分析附上的圖片和檔案\n"
+                    "• 讀取你貼上的 Threads 連結（直接看貼文、圖片與影片）\n"
                     "• 依需求生成圖片或短影片"
                 ),
             ),
@@ -231,6 +233,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "メンションまたはDMで始められます。\n"
                     "• 会話、質問への回答、記事の要約\n"
                     "• 添付画像やファイルの分析\n"
+                    "• 貼り付けた Threads リンクの読み取り（投稿・画像・動画を確認）\n"
                     "• リクエストに応じた画像・短い動画の生成"
                 ),
             ),
