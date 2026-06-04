@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs._memory import store
+from discordbot.cogs._memory import store, pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.constants import MEMORY_INJECTION_MAX_CHARS
 from discordbot.cogs._memory.extraction import (
@@ -307,3 +307,193 @@ def test_transcript_from_messages_truncates_middle(monkeypatch: pytest.MonkeyPat
     assert len(transcript) <= 200
     assert "[... transcript truncated ...]" in transcript
     assert transcript.endswith("tail reply")
+
+
+# ---------------------------------------------------------------------------
+# pipeline
+# ---------------------------------------------------------------------------
+
+
+def _user_message() -> list[EasyInputMessageParam]:
+    """Builds a minimal message list for pipeline tests."""
+    return [EasyInputMessageParam(role="user", content=f"Alice (alice) [id: {USER_ID}]: 哈囉")]
+
+
+async def _wait_for_inflight() -> None:
+    """Awaits the scheduled background memory task for the test user."""
+    task = pipeline._inflight_tasks.get(USER_ID)
+    if task is not None:
+        await task
+
+
+async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True, memory_markdown="偏好訊號:\n- 喜歡簡短"
+    )
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert store.count_raw_entries(user_id=USER_ID) == 1
+    assert store.read_main_memory(user_id=USER_ID) == ""
+
+
+async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert store.raw_file_bytes(user_id=USER_ID) == 0
+
+
+async def test_pipeline_skips_when_update_already_in_flight(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        started.set()
+        await release.wait()
+        return SimpleNamespace(output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="x"))
+
+    fake_client.responses.parse = slow_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="第一", extractor=extractor
+    )
+    await started.wait()
+    first_task = pipeline._inflight_tasks[USER_ID]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="第二", extractor=extractor
+    )
+    assert pipeline._inflight_tasks[USER_ID] is first_task
+    release.set()
+    await first_task
+    assert store.count_raw_entries(user_id=USER_ID) == 1
+
+
+async def test_pipeline_consolidates_at_threshold(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True, memory_markdown="偏好訊號:\n- 第一筆"
+    )
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆一", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert store.count_raw_entries(user_id=USER_ID) == 1
+
+    parsed_outputs = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 第二筆"),
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+
+    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆二", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert store.read_main_memory(user_id=USER_ID).startswith("v1")
+    assert "合併後" in store.read_main_memory(user_id=USER_ID)
+    assert store.count_raw_entries(user_id=USER_ID) == 0
+
+
+async def test_pipeline_keeps_raw_when_consolidation_fails(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    extractor, fake_client = _extractor()
+
+    parse_results: list[SimpleNamespace | None] = [
+        SimpleNamespace(
+            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號")
+        ),
+        None,
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        result = parse_results.pop(0)
+        if result is None:
+            raise RuntimeError("consolidation down")
+        return result
+
+    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert store.count_raw_entries(user_id=USER_ID) == 1
+    assert store.read_main_memory(user_id=USER_ID) == ""
+
+
+async def test_pipeline_unchanged_consolidation_still_clears_raw(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容")
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 已知資訊"),
+        ConsolidatedMemory(changed=False, memory_markdown=""),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+
+    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert "既有內容" in store.read_main_memory(user_id=USER_ID)
+    assert store.count_raw_entries(user_id=USER_ID) == 0
+
+
+async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    parse_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        parse_started.set()
+        await release.wait()
+        return SimpleNamespace(
+            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入")
+        )
+
+    fake_client.responses.parse = slow_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await parse_started.wait()
+    store.mark_cleared(user_id=USER_ID)
+    release.set()
+    await _wait_for_inflight()
+    assert store.count_raw_entries(user_id=USER_ID) == 0
+
+
+async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+
+    async def exploding_parse(**kwargs: object) -> SimpleNamespace:
+        raise MemoryError("unexpected")
+
+    fake_client.responses.parse = exploding_parse  # type: ignore[method-assign]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    task = pipeline._inflight_tasks.get(USER_ID)
+    assert task is not None
+    await asyncio.wait([task])
+    assert pipeline._inflight_tasks.get(USER_ID) is None
+    assert store.count_raw_entries(user_id=USER_ID) == 0
