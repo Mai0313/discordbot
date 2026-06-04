@@ -13,6 +13,7 @@ import time
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
+import itertools
 
 from discordbot.cogs._memory.constants import RAW_FILE_MAX_BYTES, MEMORY_INJECTION_MAX_CHARS
 
@@ -139,7 +140,7 @@ def _split_raw_entries(text: str) -> list[str]:
     if not starts:
         return []
     bounds = [*starts, len(text)]
-    blocks = [text[begin:end].strip() for begin, end in zip(bounds, bounds[1:], strict=False)]
+    blocks = [text[begin:end].strip() for begin, end in itertools.pairwise(bounds)]
     return [block for block in blocks if block]
 
 
