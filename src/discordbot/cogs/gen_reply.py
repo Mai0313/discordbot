@@ -24,7 +24,7 @@ from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
-from discordbot.cogs._memory.prompts import MEMORY_INJECTION_WRAPPER
+from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._gen_reply.prompts import (
@@ -321,7 +321,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if memory_enabled and (
             memory_text := memory_store.read_main_memory(user_id=message.author.id)
         ):
-            instructions = system_prompt + MEMORY_INJECTION_WRAPPER.format(memory=memory_text)
+            instructions = system_prompt + render_memory_injection(memory=memory_text)
 
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(

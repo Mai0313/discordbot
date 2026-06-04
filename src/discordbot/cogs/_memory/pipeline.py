@@ -92,8 +92,13 @@ async def _consolidate_locked(
         return
     if store.cleared_since(user_id=user_id, started_at=started_at):
         return
-    if result.changed and result.memory_markdown.startswith("v1"):
+    if result.changed and not result.memory_markdown.startswith("v1"):
+        # Malformed rewrite (changed but missing the v1 header): keep the raw
+        # batch so the next consolidation retries instead of losing the signal.
+        return
+    if result.changed:
         store.write_main_memory(user_id=user_id, content=result.memory_markdown)
-    # Consumed either way: an unchanged verdict on the same raw batch would
-    # just re-burn a consolidation call on every following extraction.
+    # Written or genuinely unchanged: the batch is consumed either way, since an
+    # unchanged verdict on the same raw entries would just re-burn a
+    # consolidation call on every following extraction.
     store.clear_raw(user_id=user_id)

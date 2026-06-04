@@ -21,14 +21,19 @@ from discordbot.cogs._memory.constants import (
 _OutputT = TypeVar("_OutputT", bound=BaseModel)
 
 # Both phases run on model output that originated in user conversations, so
-# secrets are scrubbed before upload and again on the model output.
+# secrets are scrubbed before upload and again on the model output. Patterns
+# stay shape-specific on purpose: a bare-hex rule would also eat git SHAs,
+# which are common non-secret content in a developer Discord. The prompts
+# instruct the model to redact anything token-like as the generic backstop.
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"AIza[A-Za-z0-9_-]{30,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
-    re.compile(r"\b[0-9a-fA-F]{40,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}\b"),
 )
 
 
@@ -150,19 +155,24 @@ class MemoryExtractorAI(BaseModel):
 
 
 def transcript_from_messages(message_list: list[EasyInputMessageParam], full_reply: str) -> str:
-    """Renders the reply-pipeline input messages plus the streamed reply as plain text."""
-    lines: list[str] = []
+    """Renders the reply-pipeline input messages plus the streamed reply as plain text.
+
+    Each message becomes a block whose `[message <n> | <role>]` marker sits at
+    column 0 while every content line is indented, so user-authored text can
+    never forge a block boundary or plant an author prefix at content start.
+    """
+    blocks: list[str] = []
     for message in message_list:
         text = _message_text(message=message)
         if not text:
             continue
-        if message["role"] == "assistant":
-            lines.append(f"Assistant: {text}")
-        else:
-            lines.append(text)
+        marker = f"[message {len(blocks) + 1} | {message['role']}]"
+        blocks.append(f"{marker}\n{_indent_block(text=text)}")
     reply = USAGE_FOOTER_RE.sub("", full_reply).strip()
-    lines.append(f"Assistant reply (this turn): {reply}")
-    transcript = redact_secrets(text="\n\n".join(lines))
+    blocks.append(
+        f"[message {len(blocks) + 1} | assistant reply (this turn)]\n{_indent_block(text=reply)}"
+    )
+    transcript = redact_secrets(text="\n\n".join(blocks))
     return _truncate_middle(text=transcript, max_chars=MEMORY_TRANSCRIPT_MAX_CHARS)
 
 
@@ -171,6 +181,11 @@ def redact_secrets(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[REDACTED_SECRET]", text)
     return text
+
+
+def _indent_block(text: str) -> str:
+    """Indents content lines so column-0 block markers cannot be forged in bodies."""
+    return "\n".join(f"  {line}" for line in text.splitlines())
 
 
 def _message_text(message: EasyInputMessageParam) -> str:

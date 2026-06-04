@@ -75,11 +75,17 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_clear(self, interaction: Interaction) -> None:
-        """Deletes the caller's memory files and aborts in-flight updates."""
+        """Deletes the caller's memory files and aborts in-flight updates.
+
+        Deliberately lock-free: a background memory update can hold the
+        per-user lock across LLM calls far past Discord's interaction ack
+        window. `clear_user_memory` flags `mark_cleared`, and in-flight
+        updates re-check `cleared_since` before every write, so the clear
+        cannot be resurrected by a slower background task.
+        """
         if interaction.user is None:
             return
-        async with store.user_lock(user_id=interaction.user.id):
-            removed = store.clear_user_memory(user_id=interaction.user.id)
+        removed = store.clear_user_memory(user_id=interaction.user.id)
         description = "已清除我對你的所有記憶。" if removed else "本來就沒有任何記憶，無事發生。"
         embed = Embed(title="🧹 記憶清除", description=description, color=_CLEAR_EMBED_COLOR)
         await interaction.response.send_message(embed=embed, ephemeral=True)
