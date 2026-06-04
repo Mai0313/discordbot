@@ -12,7 +12,9 @@ from PIL import Image
 import pytest
 from nextcord import File, Embed
 
+from discordbot.cogs._memory import store as memory_store
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
+from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -284,11 +286,12 @@ def _png_b64() -> str:
     return base64.b64encode(s=buffer.getvalue()).decode(encoding="utf-8")
 
 
-def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
+def _cog(bot_user_id: int = 999, memory_enabled: bool = False) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
+    cog.memory_config = MemoryConfig(MEMORY_ENABLED=memory_enabled)
     cog.__dict__["client"] = FakeClient()
     return cog
 
@@ -759,3 +762,125 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[0] == after_peak[0] == weekend[0]
     assert peak_start[0] != after_peak[0]
     assert {peak_start[0].effort, after_peak[0].effort} == {"high"}
+
+
+async def test_handle_message_reply_injects_memory_and_schedules_update(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies stored memory lands in instructions and the pipeline is scheduled."""
+    cog = _cog(memory_enabled=True)
+    memory_store.write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆")
+
+    class FakeResponder:
+        """Returns a fixed completed reply."""
+
+        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
+            """Stores the streaming inputs."""
+            self.message = message
+            self.responses = responses
+
+        async def stream(self) -> str:
+            """Returns placeholder reply content."""
+            return "完整回覆"
+
+    scheduled: list[dict[str, object]] = []
+
+    def fake_schedule(
+        user_id: int, message_list: list[object], full_reply: str, extractor: object
+    ) -> None:
+        """Records the scheduled memory update arguments."""
+        scheduled.append({
+            "user_id": user_id,
+            "message_list": message_list,
+            "full_reply": full_reply,
+            "extractor": extractor,
+        })
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    instructions = cog.client.responses.create_instructions[-1]
+    assert instructions.startswith("SYS")
+    assert "喜歡簡短回覆" in instructions
+    assert "Long-term memory" in instructions
+    assert scheduled[0]["user_id"] == 1
+    assert scheduled[0]["full_reply"] == "完整回覆"
+    assert scheduled[0]["extractor"] is cog.memory_extractor
+    assert cog.memory_extractor.model.name == cog.runtime_models.memories_model.name
+
+
+async def test_handle_message_reply_without_stored_memory_keeps_instructions(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies a memory-less user gets untouched instructions but still schedules."""
+    cog = _cog(memory_enabled=True)
+
+    class FakeResponder:
+        """Returns a fixed completed reply."""
+
+        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
+            """Stores the streaming inputs."""
+            self.message = message
+            self.responses = responses
+
+        async def stream(self) -> str:
+            """Returns placeholder reply content."""
+            return "回覆"
+
+    scheduled: list[int] = []
+
+    def fake_schedule(
+        user_id: int, message_list: list[object], full_reply: str, extractor: object
+    ) -> None:
+        """Records that a memory update was scheduled."""
+        scheduled.append(user_id)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    assert cog.client.responses.create_instructions[-1] == "SYS"
+    assert scheduled == [1]
+
+
+async def test_handle_message_reply_disabled_memory_skips_pipeline(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies the kill switch bypasses injection and extraction entirely."""
+    cog = _cog(memory_enabled=False)
+    memory_store.write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入")
+
+    class FakeResponder:
+        """Returns a fixed completed reply."""
+
+        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
+            """Stores the streaming inputs."""
+            self.message = message
+            self.responses = responses
+
+        async def stream(self) -> str:
+            """Returns placeholder reply content."""
+            return "回覆"
+
+    scheduled: list[int] = []
+
+    def fake_schedule(
+        user_id: int, message_list: list[object], full_reply: str, extractor: object
+    ) -> None:
+        """Records that a memory update was scheduled."""
+        scheduled.append(user_id)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    assert cog.client.responses.create_instructions[-1] == "SYS"
+    assert "不該被注入" not in cog.client.responses.create_instructions[-1]
+    assert scheduled == []

@@ -22,6 +22,19 @@ class DiscordConfig(BaseSettings):
     )
 
 
+class MemoryConfig(BaseSettings):
+    """Per-user long-term memory settings loaded from environment variables."""
+
+    enabled: bool = Field(
+        True,
+        description="Master switch for per-user memory injection and background extraction.",
+        examples=[True],
+        validation_alias=AliasChoices("MEMORY_ENABLED"),
+        frozen=False,
+        deprecated=False,
+    )
+
+
 class EconomyConfig(BaseSettings):
     """Economy feature settings loaded from environment variables."""
 
@@ -35,4 +48,4 @@ class EconomyConfig(BaseSettings):
     )
 
 
-__all__ = ["DiscordConfig", "EconomyConfig"]
+__all__ = ["DiscordConfig", "EconomyConfig", "MemoryConfig"]

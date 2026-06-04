@@ -18,9 +18,13 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs._memory import store as memory_store
+from discordbot.cogs._memory import pipeline as memory_pipeline
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
+from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
+from discordbot.cogs._memory.prompts import MEMORY_INJECTION_WRAPPER
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._gen_reply.prompts import (
@@ -29,6 +33,7 @@ from discordbot.cogs._gen_reply.prompts import (
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
 )
+from discordbot.cogs._memory.extraction import MemoryExtractorAI
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -60,6 +65,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self.memory_config = MemoryConfig()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -69,6 +75,15 @@ class ReplyGeneratorCogs(commands.Cog):
             A configured AsyncOpenAI client reused across reply requests.
         """
         return create_litellm_client(config=self.config)
+
+    @cached_property
+    def memory_extractor(self) -> MemoryExtractorAI:
+        """The cached per-user memory extraction service.
+
+        Returns:
+            An extractor bound to this cog's client and the memories model.
+        """
+        return MemoryExtractorAI(client=self.client, model=self.runtime_models.memories_model)
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
@@ -301,10 +316,17 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
+        instructions = system_prompt
+        memory_enabled = self.memory_config.enabled
+        if memory_enabled and (
+            memory_text := memory_store.read_main_memory(user_id=message.author.id)
+        ):
+            instructions = system_prompt + MEMORY_INJECTION_WRAPPER.format(memory=memory_text)
+
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
             model=slow_model.name,
-            instructions=system_prompt,
+            instructions=instructions,
             input=cast("ResponseInputParam", message_list),
             reasoning=slow_model.reasoning,
             tools=slow_model.tools,
@@ -314,7 +336,14 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"mock_testing_fallbacks": False},
         )
 
-        await ResponseStreamer(message=message, responses=responses).stream()
+        full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+        if memory_enabled:
+            memory_pipeline.schedule_memory_update(
+                user_id=message.author.id,
+                message_list=message_list,
+                full_reply=full_reply,
+                extractor=self.memory_extractor,
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
