@@ -37,6 +37,17 @@ async def economy_isolated_db(
 
 
 @pytest.fixture
+def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Per-test memory directory with reset process-local memory state."""
+    memories_dir = tmp_path / "memories"
+    monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
+    monkeypatch.setattr("discordbot.cogs._memory.store._user_locks", {})
+    monkeypatch.setattr("discordbot.cogs._memory.store._user_locks_loop", None)
+    monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
+    return memories_dir
+
+
+@pytest.fixture
 async def fishing_isolated_db(
     economy_isolated_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[None]:
