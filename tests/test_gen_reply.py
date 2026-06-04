@@ -725,8 +725,7 @@ async def test_get_threads_parts_scrape_failure_falls_back(
     )
     assert processed["role"] == "user"
     # Falls back to the string shorthand with the raw URL still in the text.
-    assert isinstance(processed["content"], str)
-    assert "threads.com" in processed["content"]
+    assert processed["content"] == "Tester (tester) [id: 1]: https://www.threads.com/@a/post/AAA"
     # Failures are not cached, so the reply pass retries the fetch.
     assert len(calls) == 2
 
