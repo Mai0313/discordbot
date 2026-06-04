@@ -354,7 +354,9 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
     assert store.raw_file_bytes(user_id=USER_ID) == 0
 
 
-async def test_pipeline_skips_when_update_already_in_flight(memory_isolated_dir: Path) -> None:
+async def test_pipeline_skips_when_update_already_in_flight(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     extractor, fake_client = _extractor()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -364,7 +366,7 @@ async def test_pipeline_skips_when_update_already_in_flight(memory_isolated_dir:
         await release.wait()
         return SimpleNamespace(output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="x"))
 
-    fake_client.responses.parse = slow_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="第一", extractor=extractor
     )
@@ -401,7 +403,7 @@ async def test_pipeline_consolidates_at_threshold(
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
 
-    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆二", extractor=extractor
     )
@@ -430,7 +432,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
             raise RuntimeError("consolidation down")
         return result
 
-    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
@@ -454,7 +456,7 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
 
-    fake_client.responses.parse = staged_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
@@ -463,7 +465,9 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     assert store.count_raw_entries(user_id=USER_ID) == 0
 
 
-async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> None:
+async def test_pipeline_aborts_write_after_clear(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     extractor, fake_client = _extractor()
     parse_started = asyncio.Event()
     release = asyncio.Event()
@@ -475,7 +479,7 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
             output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入")
         )
 
-    fake_client.responses.parse = slow_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
@@ -486,13 +490,15 @@ async def test_pipeline_aborts_write_after_clear(memory_isolated_dir: Path) -> N
     assert store.count_raw_entries(user_id=USER_ID) == 0
 
 
-async def test_pipeline_background_failure_is_swallowed(memory_isolated_dir: Path) -> None:
+async def test_pipeline_background_failure_is_swallowed(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     extractor, fake_client = _extractor()
 
     async def exploding_parse(**kwargs: object) -> SimpleNamespace:
         raise MemoryError("unexpected")
 
-    fake_client.responses.parse = exploding_parse  # type: ignore[method-assign]
+    monkeypatch.setattr(fake_client.responses, "parse", exploding_parse)
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
