@@ -128,9 +128,13 @@ def clear_user_memory(user_id: int) -> bool:
     mark_cleared(user_id=user_id)
     removed = False
     for path in (_main_path(user_id=user_id), _raw_path(user_id=user_id)):
-        if path.exists():
+        try:
             path.unlink()
             removed = True
+        except FileNotFoundError:
+            # Already gone (e.g. offline maintenance); deletion stays idempotent
+            # without the exists()-then-unlink() race.
+            continue
     return removed
 
 
