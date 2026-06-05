@@ -132,14 +132,16 @@ class RuntimeModelCatalog(BaseModel):
 
         Runs only in background tasks after a reply has been delivered, so it
         trades latency for the high reasoning effort that the evidence-grading
-        memory prompts need.
+        memory prompts need. Uses the auto-routed `gemini-flash-latest` alias
+        so Google keeps dispatching the newest Flash tier without code changes
+        on model refreshes.
 
         Callers: `MemoryExtractorAI`.
 
         Returns:
             Model settings used by the two-phase per-user memory pipeline.
         """
-        return ModelSettings(name="gemini-3.5-flash", effort="high")
+        return ModelSettings(name="gemini-flash-latest", effort="high")
 
     @property
     def player_model(self) -> ModelSettings:
