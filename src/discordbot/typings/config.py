@@ -1,5 +1,5 @@
 import dotenv
-from pydantic import Field, AliasChoices
+from pydantic import Field, AliasChoices, field_validator
 from pydantic_settings import BaseSettings
 
 dotenv.load_dotenv()
@@ -33,6 +33,14 @@ class MemoryConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def _blank_env_means_default(cls, value: object) -> object:
+        """Treats a blank `MEMORY_ENABLED=` env line as the default instead of failing cog load."""
+        if isinstance(value, str) and not value.strip():
+            return True
+        return value
 
 
 class EconomyConfig(BaseSettings):
