@@ -1,21 +1,31 @@
 """Slash commands for viewing and clearing per-user long-term memory."""
 
 import nextcord
-from nextcord import Embed, Locale, Interaction
+from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.config import MemoryConfig
-from discordbot.cogs._memory.store import read_main_memory, clear_user_memory, count_raw_entries
+from discordbot.cogs._memory.store import (
+    read_detail_tail,
+    read_main_memory,
+    clear_user_memory,
+    count_raw_entries,
+)
 from discordbot.cogs._memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
     paginate_on_lines,
     build_memory_embed,
+    memory_footer_text,
 )
+from discordbot.cogs._memory.constants import MEMORY_DETAIL_VIEW_MAX_CHARS
 
 _CLEAR_EMBED_COLOR = 0x57F287
 _CLEAR_DISABLED_EMBED_COLOR = 0xFEE75C
+
+_MEMORY_TITLE = "🧠 我對你的記憶"
+_DETAIL_TITLE = "🧠 詳細記憶記錄"
 
 
 class MemoryCogs(commands.Cog):
@@ -57,9 +67,26 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "ボットがあなたについて記憶している内容を表示します。",
         },
     )
-    async def memory_show(self, interaction: Interaction) -> None:
-        """Shows the caller's consolidated memory, paginated when oversized."""
+    async def memory_show(
+        self,
+        interaction: Interaction,
+        detail: bool = SlashOption(
+            name="detail",
+            description="Show the recent fine-grained detail log instead of the consolidated memory.",
+            name_localizations={Locale.zh_TW: "詳細", Locale.ja: "詳細"},
+            description_localizations={
+                Locale.zh_TW: "改為顯示最近的詳細觀察記錄，而非整理後的記憶",
+                Locale.ja: "統合メモリーの代わりに最近の詳細ログを表示します。",
+            },
+            required=False,
+            default=False,
+        ),
+    ) -> None:
+        """Shows the caller's consolidated memory or its detail log, paginated."""
         if interaction.user is None:
+            return
+        if detail:
+            await self._show_detail(interaction=interaction)
             return
         memory_text = read_main_memory(user_id=interaction.user.id)
         pending_count = count_raw_entries(user_id=interaction.user.id)
@@ -67,26 +94,19 @@ class MemoryCogs(commands.Cog):
             # Strip only the exact `v1` header line, never a `v1`-prefixed first
             # token of a malformed/hand-edited file (e.g. `v10...`, `v1: ...`).
             display_text = memory_text.removeprefix("v1\n").strip()
-            pages = paginate_on_lines(text=display_text, limit=MEMORY_PAGE_MAX_CHARS)
-            embed = build_memory_embed(
-                page_text=pages[0],
-                page_index=0,
-                page_count=len(pages),
-                pending_count=pending_count,
+            await self._send_memory_pages(
+                interaction=interaction,
+                text=display_text,
+                footer_text=memory_footer_text(pending_count=pending_count),
+                title=_MEMORY_TITLE,
             )
-            if len(pages) == 1:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            view = MemoryPagesView(pages=pages, pending_count=pending_count)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            view.bind_origin(interaction=interaction)
             return
         if pending_count:
             # Extraction has produced raw observations but the first
             # consolidation has not run yet; saying "no memory" here would
             # contradict what the user just experienced in chat.
             embed = Embed(
-                title="🧠 我對你的記憶",
+                title=_MEMORY_TITLE,
                 description=(
                     f"我已經記下 {pending_count} 筆對你的觀察，正在整理成長期記憶，"
                     "再多聊幾次就會在這裡看到完整內容。"
@@ -95,11 +115,52 @@ class MemoryCogs(commands.Cog):
             )
         else:
             embed = Embed(
-                title="🧠 我對你的記憶",
+                title=_MEMORY_TITLE,
                 description="目前還沒有任何記憶，多跟我聊聊，我會慢慢認識你。",
                 color=MEMORY_EMBED_COLOR,
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _show_detail(self, interaction: Interaction) -> None:
+        """Shows the newest window of the caller's cold-tier detail log."""
+        if interaction.user is None:
+            return
+        detail_text = read_detail_tail(
+            user_id=interaction.user.id, max_chars=MEMORY_DETAIL_VIEW_MAX_CHARS
+        )
+        if not detail_text:
+            embed = Embed(
+                title=_DETAIL_TITLE,
+                description="目前還沒有任何詳細記錄，等我整理過幾輪記憶後就會出現。",
+                color=MEMORY_EMBED_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        await self._send_memory_pages(
+            interaction=interaction,
+            text=detail_text,
+            footer_text="已整理過的詳細觀察記錄，僅顯示最近的視窗",
+            title=_DETAIL_TITLE,
+        )
+
+    async def _send_memory_pages(
+        self, interaction: Interaction, text: str, footer_text: str, title: str
+    ) -> None:
+        """Sends paginated memory pages, attaching the pager only when needed."""
+        pages = paginate_on_lines(text=text, limit=MEMORY_PAGE_MAX_CHARS)
+        embed = build_memory_embed(
+            page_text=pages[0],
+            page_index=0,
+            page_count=len(pages),
+            footer_text=footer_text,
+            title=title,
+        )
+        if len(pages) == 1:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        view = MemoryPagesView(pages=pages, footer_text=footer_text, title=title)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.bind_origin(interaction=interaction)
 
     @memory.subcommand(
         name="clear",

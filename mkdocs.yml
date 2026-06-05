@@ -135,6 +135,7 @@ nav:
       - route_dev: Scripts/route_dev.md
       - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
       - simulate_fishing: Scripts/simulate_fishing.md
+      - simulate_memory_consolidation: Scripts/simulate_memory_consolidation.md
       - simulate_stock_market: Scripts/simulate_stock_market.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md

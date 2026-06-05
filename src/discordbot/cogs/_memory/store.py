@@ -1,14 +1,16 @@
 """File-backed storage for per-user long-term memory.
 
 Memory lives as plain markdown under ``data/memories/<user_id>/``: ``main.md``
-is the consolidated main memory injected into reply prompts, ``raw.md``
+is the consolidated hot tier injected into reply prompts, ``raw.md``
 accumulates phase-1 raw extraction entries until consolidation rewrites the
 main file, ``main.bak.md`` keeps the previous main generation as a manual
-recovery point against a bad consolidation rewrite, and ``archive.md`` retains
-consumed and evicted raw entries verbatim as cold storage that no LLM or
-command path ever reads back. The live files stay tens of KB at most and the
-uncapped archive is only ever appended to in O(1), so IO is synchronous;
-cross-task safety comes from the per-user asyncio locks.
+recovery point against a bad consolidation rewrite, and ``detail.md`` is the
+readable cold tier retaining consumed and evicted raw entries verbatim:
+consolidation reads its tail window as provenance and ``/memory show`` can
+page through it, but it is never injected into reply prompts. The live files
+stay tens of KB at most and the detail file is appended in O(1), tail-window
+read, and trimmed back to a hard byte cap, so IO is synchronous; cross-task
+safety comes from the per-user asyncio locks.
 """
 
 import os
@@ -20,7 +22,11 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
-from discordbot.cogs._memory.constants import RAW_FILE_MAX_BYTES
+from discordbot.cogs._memory.constants import (
+    RAW_FILE_MAX_BYTES,
+    DETAIL_FILE_MAX_BYTES,
+    DETAIL_FILE_TRIM_TARGET_BYTES,
+)
 
 _MEMORY_DIR = Path("./data/memories")
 
@@ -66,9 +72,9 @@ def _bak_path(user_id: int) -> Path:
     return _user_dir(user_id=user_id) / "main.bak.md"
 
 
-def _archive_path(user_id: int) -> Path:
-    """Returns the cold-storage archive path for consumed and evicted raw entries."""
-    return _user_dir(user_id=user_id) / "archive.md"
+def _detail_path(user_id: int) -> Path:
+    """Returns the cold-tier detail path for consumed and evicted raw entries."""
+    return _user_dir(user_id=user_id) / "detail.md"
 
 
 def _read_text(path: Path) -> str:
@@ -143,32 +149,91 @@ def append_raw_entry(user_id: int, entry_text: str, identity: str) -> None:
     if len(encoded) > RAW_FILE_MAX_BYTES:
         # A single oversized entry cannot be evicted; truncate it so the raw
         # file still honors the advertised hard cap (memory is best-effort,
-        # and the truncated tail is the only loss not preserved in the archive).
+        # and the truncated tail is the only loss not kept in the detail file).
         rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
     raw_path.write_text(data=rendered + "\n", encoding="utf-8")
     if evicted:
-        # Archive only after the raw write succeeded so a failed write cannot
-        # archive entries that still live in the raw file.
-        append_archive(user_id=user_id, text="\n\n".join(evicted))
+        # Move to the detail file only after the raw write succeeded so a
+        # failed write cannot retire entries that still live in the raw file.
+        append_detail(user_id=user_id, text="\n\n".join(evicted))
 
 
-def append_archive(user_id: int, text: str) -> None:
-    """Appends consumed or evicted raw evidence to the cold-storage archive.
+def append_detail(user_id: int, text: str) -> None:
+    """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
-    The archive is append-only and uncapped by design (the operator accepts
-    the growth); it preserves raw entries verbatim, including the identity
-    header suffixes, and is never read back by any LLM or command path.
-    Append-mode IO keeps the write O(1) in the archive size so an old, large
-    archive never slows consolidation down or pins the user lock.
+    The detail file preserves raw entries verbatim, including the identity
+    header suffixes, which every read path strips back out. Append-mode IO
+    keeps the common write O(1) in the file size; once the file outgrows
+    `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed away, which is
+    safe because content past the consolidation read window is unreachable
+    by every consumer anyway.
     """
     block = text.strip()
     if not block:
         return
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
-    with _archive_path(user_id=user_id).open(mode="a", encoding="utf-8") as handle:
+    detail_path = _detail_path(user_id=user_id)
+    with detail_path.open(mode="a", encoding="utf-8") as handle:
         if handle.tell() > 0:
             handle.write("\n")
         handle.write(block + "\n")
+    if detail_path.stat().st_size > DETAIL_FILE_MAX_BYTES:
+        _trim_detail(path=detail_path)
+
+
+def _trim_detail(path: Path) -> None:
+    """Drops the oldest detail entries until the file fits the trim target.
+
+    The dropped entries are deleted permanently instead of cascading into yet
+    another unbounded file: nothing can read past the consolidation window, so
+    they carry no functional value. The headroom between the cap and the trim
+    target amortizes this O(file) rewrite to roughly once per megabyte of
+    appended evidence; the write goes through tmp + os.replace so a crash
+    cannot leave a half-trimmed file.
+    """
+    entries = _split_raw_entries(text=_read_text(path=path))
+    # Track the rendered size incrementally; recomputing the joined size per
+    # dropped entry would be O(n^2) on a megabyte-scale file and stall the
+    # event loop, since store IO is synchronous by design.
+    sizes = [len(entry.encode("utf-8")) for entry in entries]
+    total = sum(sizes) + 2 * max(len(entries) - 1, 0)
+    start = 0
+    while len(entries) - start > 1 and total > DETAIL_FILE_TRIM_TARGET_BYTES:
+        # Dropping an entry also drops one "\n\n" separator (2 bytes).
+        total -= sizes[start] + 2
+        start += 1
+    tmp_path = path.with_suffix(".md.tmp")
+    tmp_path.write_text(data="\n\n".join(entries[start:]) + "\n", encoding="utf-8")
+    os.replace(src=tmp_path, dst=path)
+
+
+def read_detail_tail(user_id: int, max_chars: int) -> str:
+    """Returns the newest detail-file window, minus identity metadata.
+
+    Only a bounded byte window is read from the end of the file so the call
+    stays O(window) as the uncapped detail file grows. The window is aligned
+    to the first raw-entry header inside the tail so a partial entry never
+    leads the result; when no header lands inside the window (e.g. one giant
+    entry) the raw tail is returned as a best effort.
+    """
+    try:
+        with _detail_path(user_id=user_id).open(mode="rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            # UTF-8 spends at most 4 bytes per character, so this window can
+            # never decode to fewer than max_chars characters.
+            window_bytes = max_chars * 4
+            handle.seek(max(0, size - window_bytes))
+            data = handle.read()
+    except FileNotFoundError:
+        return ""
+    # A window starting mid-file can cut into a multi-byte character; ignoring
+    # the partial leading bytes keeps the decode safe.
+    text = data.decode(encoding="utf-8", errors="ignore")
+    if size > len(data) or len(text) > max_chars:
+        tail = text[max(0, len(text) - max_chars) :]
+        match = _RAW_ENTRY_HEADER_RE.search(tail)
+        text = tail[match.start() :] if match else tail
+    return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
 
 
 def count_raw_entries(user_id: int) -> int:
@@ -193,10 +258,11 @@ def read_raw_entries(user_id: int) -> str:
 
 
 def read_raw_on_disk(user_id: int) -> str:
-    """Returns the raw file's verbatim on-disk text for archiving.
+    """Returns the raw file's verbatim on-disk text for the detail file.
 
-    Unlike `read_raw_entries`, the identity header suffixes are kept: the
-    archive is a human-inspection record, never LLM input.
+    Unlike `read_raw_entries`, the identity header suffixes are kept: they are
+    disk-only human-inspection metadata, and every detail read path strips
+    them before the text reaches an LLM or a command response.
     """
     return _read_text(path=_raw_path(user_id=user_id)).strip()
 
@@ -219,7 +285,7 @@ def clear_user_memory(user_id: int) -> bool:
         main_path,
         _raw_path(user_id=user_id),
         _bak_path(user_id=user_id),
-        _archive_path(user_id=user_id),
+        _detail_path(user_id=user_id),
     ):
         try:
             path.unlink()
@@ -228,9 +294,11 @@ def clear_user_memory(user_id: int) -> bool:
             # Already gone (e.g. offline maintenance); deletion stays idempotent
             # without the exists()-then-unlink() race.
             continue
-    # A crash between the tmp write and os.replace can leave the tmp file
-    # behind; drop it so the directory removal below does not fail.
+    # A crash between a tmp write and os.replace (main rewrite or detail trim)
+    # can leave a tmp file behind; drop them so the directory removal below
+    # does not fail.
     main_path.with_suffix(".md.tmp").unlink(missing_ok=True)
+    _detail_path(user_id=user_id).with_suffix(".md.tmp").unlink(missing_ok=True)
     # A missing or unexpectedly non-empty directory is left for offline
     # maintenance instead of failing the clear.
     with contextlib.suppress(OSError):

@@ -58,11 +58,11 @@ def memory_footer_text(pending_count: int) -> str:
 
 
 def build_memory_embed(
-    page_text: str, page_index: int, page_count: int, pending_count: int
+    page_text: str, page_index: int, page_count: int, footer_text: str, title: str
 ) -> Embed:
     """Builds one /memory show embed page with the shared footer."""
-    embed = Embed(title="🧠 我對你的記憶", description=page_text, color=MEMORY_EMBED_COLOR)
-    footer = memory_footer_text(pending_count=pending_count)
+    embed = Embed(title=title, description=page_text, color=MEMORY_EMBED_COLOR)
+    footer = footer_text
     if page_count > 1:
         footer = f"第 {page_index + 1}/{page_count} 頁 | {footer}"
     embed.set_footer(text=footer)
@@ -74,15 +74,17 @@ class MemoryPagesView(View):
 
     Attributes:
         pages: Pre-split page texts, each within one embed description.
-        pending_count: Raw observations still waiting for consolidation.
+        footer_text: Footer line shared by every page.
+        title: Embed title shared by every page.
         page_index: The currently displayed page.
     """
 
-    def __init__(self, pages: list[str], pending_count: int) -> None:
+    def __init__(self, pages: list[str], footer_text: str, title: str) -> None:
         """Initializes the view on the first page."""
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.pages = pages
-        self.pending_count = pending_count
+        self.footer_text = footer_text
+        self.title = title
         self.page_index = 0
         self._origin: Interaction | None = None
         self._sync_buttons()
@@ -97,7 +99,8 @@ class MemoryPagesView(View):
             page_text=self.pages[self.page_index],
             page_index=self.page_index,
             page_count=len(self.pages),
-            pending_count=self.pending_count,
+            footer_text=self.footer_text,
+            title=self.title,
         )
 
     def _sync_buttons(self) -> None:
