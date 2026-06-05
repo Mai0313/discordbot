@@ -982,6 +982,11 @@ def test_paginate_on_lines_hard_splits_oversized_line() -> None:
     assert [len(page) for page in pages] == [100, 100, 50]
 
 
+def test_paginate_on_lines_rejects_non_positive_limit() -> None:
+    with pytest.raises(ValueError, match="limit must be positive"):
+        paginate_on_lines(text="x", limit=0)
+
+
 class EditResponseStub:
     """Records edit_message payloads from view button callbacks."""
 

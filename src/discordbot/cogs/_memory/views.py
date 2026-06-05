@@ -22,7 +22,13 @@ def paginate_on_lines(text: str, limit: int) -> list[str]:
 
     A single line longer than the limit is hard-split as a fallback so every
     page honors the limit.
+
+    Raises:
+        ValueError: The limit is not positive (the hard-split fallback would
+            otherwise never shrink an oversized line).
     """
+    if limit <= 0:
+        raise ValueError(f"limit must be positive, got {limit}")
     pages: list[str] = []
     current = ""
     for raw_line in text.splitlines():

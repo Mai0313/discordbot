@@ -6,8 +6,9 @@ accumulates phase-1 raw extraction entries until consolidation rewrites the
 main file, ``main.bak.md`` keeps the previous main generation as a manual
 recovery point against a bad consolidation rewrite, and ``archive.md`` retains
 consumed and evicted raw entries verbatim as cold storage that no LLM or
-command path ever reads back. Files stay tens of KB at most, so IO is
-synchronous; cross-task safety comes from the per-user asyncio locks.
+command path ever reads back. The live files stay tens of KB at most and the
+uncapped archive is only ever appended to in O(1), so IO is synchronous;
+cross-task safety comes from the per-user asyncio locks.
 """
 
 import os
@@ -157,15 +158,17 @@ def append_archive(user_id: int, text: str) -> None:
     The archive is append-only and uncapped by design (the operator accepts
     the growth); it preserves raw entries verbatim, including the identity
     header suffixes, and is never read back by any LLM or command path.
+    Append-mode IO keeps the write O(1) in the archive size so an old, large
+    archive never slows consolidation down or pins the user lock.
     """
     block = text.strip()
     if not block:
         return
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
-    archive_path = _archive_path(user_id=user_id)
-    existing = _read_text(path=archive_path)
-    combined = f"{existing.rstrip()}\n\n{block}" if existing.strip() else block
-    archive_path.write_text(data=combined + "\n", encoding="utf-8")
+    with _archive_path(user_id=user_id).open(mode="a", encoding="utf-8") as handle:
+        if handle.tell() > 0:
+            handle.write("\n")
+        handle.write(block + "\n")
 
 
 def count_raw_entries(user_id: int) -> int:
