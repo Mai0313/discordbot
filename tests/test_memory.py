@@ -835,14 +835,14 @@ async def test_pipeline_drops_pending_replay_after_clear(
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="二", extractor=extractor
     )
-    assert USER_ID in pipeline._pending_updates  # noqa: SLF001 -- second turn queued
+    assert USER_ID in pipeline._pending_updates
     clear_user_memory(user_id=USER_ID)
     release.set()
-    first_task = pipeline._inflight_tasks.get(USER_ID)  # noqa: SLF001
+    first_task = pipeline._inflight_tasks.get(USER_ID)
     if first_task is not None:
         await first_task
     # The pre-clear pending turn must not be replayed back into storage.
-    assert pipeline._inflight_tasks.get(USER_ID) is None  # noqa: SLF001
+    assert pipeline._inflight_tasks.get(USER_ID) is None
     assert count_raw_entries(user_id=USER_ID) == 0
 
 
