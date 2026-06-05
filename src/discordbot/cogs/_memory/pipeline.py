@@ -11,10 +11,11 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.cogs._memory.store import (
     clear_raw,
     user_lock,
+    append_detail,
     cleared_since,
-    append_archive,
     raw_file_bytes,
     append_raw_entry,
+    read_detail_tail,
     read_main_memory,
     read_raw_entries,
     read_raw_on_disk,
@@ -22,9 +23,12 @@ from discordbot.cogs._memory.store import (
     write_main_memory,
 )
 from discordbot.cogs._memory.constants import (
+    MEMORY_GLOBAL_CONCURRENCY,
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
     MAIN_COMPACTION_TRIGGER_CHARS,
+    MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+    MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, transcript_from_messages
 
@@ -58,6 +62,25 @@ class _PendingMemoryUpdate(BaseModel):
 _inflight_tasks: dict[int, asyncio.Task[None]] = {}
 _pending_updates: dict[int, _PendingMemoryUpdate] = {}
 _inflight_loop: asyncio.AbstractEventLoop | None = None
+
+# Per-user consolidation attempt times for the cooldown; monotonic, so it does
+# not need a loop-change reset. Tests clear it through the conftest fixture.
+_last_consolidation: dict[int, float] = {}
+
+# Loop-keyed process-wide semaphore capping concurrent background memory
+# updates so a busy server cannot fan out unbounded LLM work.
+_memory_semaphore_obj: asyncio.Semaphore | None = None
+_memory_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _memory_semaphore() -> asyncio.Semaphore:
+    """Returns the process-wide semaphore, rebuilt when the event loop changes."""
+    global _memory_semaphore_obj, _memory_semaphore_loop  # noqa: PLW0603 -- loop-keyed singleton
+    loop = asyncio.get_running_loop()
+    if _memory_semaphore_loop is not loop or _memory_semaphore_obj is None:
+        _memory_semaphore_obj = asyncio.Semaphore(MEMORY_GLOBAL_CONCURRENCY)
+        _memory_semaphore_loop = loop
+    return _memory_semaphore_obj
 
 
 def schedule_memory_update(
@@ -136,7 +159,7 @@ async def _run_memory_update(
     """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation."""
     started_at = time.monotonic()
     transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
-    async with user_lock(user_id=user_id):
+    async with user_lock(user_id=user_id), _memory_semaphore():
         draft = await extractor.extract(target_user_id=user_id, transcript=transcript)
         if draft is None or not draft.has_signal or not draft.memory_markdown:
             return
@@ -145,14 +168,29 @@ async def _run_memory_update(
             # dropping the write beats resurrecting deleted memory.
             return
         append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown, identity=identity)
-        if (
-            count_raw_entries(user_id=user_id) < RAW_CONSOLIDATION_THRESHOLD
-            and raw_file_bytes(user_id=user_id) < RAW_CONSOLIDATION_MAX_BYTES
-        ):
+        if not _should_consolidate(user_id=user_id):
             return
+        # Recorded at attempt time, not success time, so repeated LLM failures
+        # are rate-limited by the same cooldown instead of retrying every turn.
+        _last_consolidation[user_id] = time.monotonic()
         await _consolidate_locked(
             user_id=user_id, started_at=started_at, extractor=extractor, identity=identity
         )
+
+
+def _should_consolidate(user_id: int) -> bool:
+    """Whether the raw backlog warrants a consolidation right now."""
+    if raw_file_bytes(user_id=user_id) >= RAW_CONSOLIDATION_MAX_BYTES:
+        # A verbose burst consolidates regardless of the cooldown so the raw
+        # file cannot sit large until the timer expires.
+        return True
+    if count_raw_entries(user_id=user_id) < RAW_CONSOLIDATION_THRESHOLD:
+        return False
+    last_attempt = _last_consolidation.get(user_id)
+    return (
+        last_attempt is None
+        or time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
+    )
 
 
 async def _consolidate_locked(
@@ -160,11 +198,13 @@ async def _consolidate_locked(
 ) -> None:
     """Consolidates accumulated raw entries into the main memory file."""
     existing_main = read_main_memory(user_id=user_id)
+    compact = len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS
     result = await extractor.consolidate(
         existing_main=existing_main,
         raw_entries=read_raw_entries(user_id=user_id),
+        recent_detail=read_detail_tail(user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
         today=datetime.now(UTC).date().isoformat(),
-        compact=len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS,
+        compact=compact,
     )
     if result is None:
         # LLM path failed; keep the raw entries so the next update retries.
@@ -178,6 +218,20 @@ async def _consolidate_locked(
         # `v1: ...`): keep the raw batch for retry regardless of `changed`,
         # instead of discarding the accumulated signal.
         return
+    if is_well_formed and _rewrite_shrank_too_much(
+        existing_main=existing_main, rewritten=result.memory_markdown, compact=compact
+    ):
+        # A drastic surprise shrink is almost always a lossy LLM failure, not
+        # a merge; refusing it keeps raw for retry and protects main.bak.md
+        # (one generation deep) from being overwritten by the bad rewrite.
+        logfire.warn(
+            "Memory consolidation shrank too much; keeping previous memory",
+            user_id=user_id,
+            existing_chars=len(existing_main),
+            rewritten_chars=len(result.memory_markdown),
+            compact=compact,
+        )
+        return
     if is_well_formed:
         # Accept any well-formed `v1` rewrite, even one the model flagged
         # `changed=false`, so a single contradictory boolean cannot silently
@@ -186,7 +240,20 @@ async def _consolidate_locked(
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
-    # The consumed batch is preserved verbatim in the cold-storage archive; the
-    # failure paths above keep raw for retry and therefore must not archive.
-    append_archive(user_id=user_id, text=read_raw_on_disk(user_id=user_id))
+    # The consumed batch is preserved verbatim in the cold-tier detail file; the
+    # failure paths above keep raw for retry and therefore must not retire it.
+    append_detail(user_id=user_id, text=read_raw_on_disk(user_id=user_id))
     clear_raw(user_id=user_id)
+
+
+def _rewrite_shrank_too_much(existing_main: str, rewritten: str, compact: bool) -> bool:
+    """Whether a well-formed rewrite lost so much text it reads as a lossy failure."""
+    if compact:
+        # Compaction legitimately shrinks toward roughly half the trigger;
+        # collapsing below a tenth of the input reads as dropped content
+        # rather than summarization.
+        return len(rewritten) < len(existing_main) // 10
+    # Consolidation merges and dedupes, so mild shrinkage is normal; losing
+    # over half of a non-trivial file is not. Small files are exempt because
+    # legitimate restructuring dominates at that scale.
+    return len(existing_main) > 2_000 and len(rewritten) < len(existing_main) // 2

@@ -22,17 +22,23 @@ from discordbot.cogs._memory.store import (
     clear_raw,
     user_lock,
     mark_cleared,
+    append_detail,
     cleared_since,
-    append_archive,
     raw_file_bytes,
     append_raw_entry,
+    read_detail_tail,
     read_main_memory,
     read_raw_entries,
     clear_user_memory,
     count_raw_entries,
     write_main_memory,
 )
-from discordbot.cogs._memory.views import MEMORY_PAGE_MAX_CHARS, MemoryPagesView, paginate_on_lines
+from discordbot.cogs._memory.views import (
+    MEMORY_PAGE_MAX_CHARS,
+    MemoryPagesView,
+    paginate_on_lines,
+    memory_footer_text,
+)
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
@@ -40,7 +46,11 @@ from discordbot.cogs._memory.prompts import (
     render_memory_injection,
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
-from discordbot.cogs._memory.constants import MAIN_COMPACTION_TARGET_CHARS
+from discordbot.cogs._memory.constants import (
+    MEMORY_MAX_OUTPUT_TOKENS,
+    MAIN_COMPACTION_TARGET_CHARS,
+    MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
+)
 from discordbot.cogs._memory.extraction import (
     RawMemoryDraft,
     MemoryExtractorAI,
@@ -69,7 +79,9 @@ class FakeMemoryResponses:
         self.parse_models: list[str] = []
         self.parse_instructions: list[str] = []
         self.parse_inputs: list[list[dict[str, str]]] = []
+        self.parse_max_output_tokens: list[int] = []
         self.output_parsed: BaseModel | None = None
+        self.status: str = "completed"
         self.raises: Exception | None = None
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
@@ -79,6 +91,7 @@ class FakeMemoryResponses:
         input: list[dict[str, str]],  # noqa: A002 -- SDK parameter
         text_format: type[BaseModel],
         reasoning: dict[str, str],
+        max_output_tokens: int,
         service_tier: str,
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
@@ -88,9 +101,12 @@ class FakeMemoryResponses:
         self.parse_models.append(model)
         self.parse_instructions.append(instructions)
         self.parse_inputs.append(input)
+        self.parse_max_output_tokens.append(max_output_tokens)
         if self.raises is not None:
             raise self.raises
-        return SimpleNamespace(output_parsed=self.output_parsed)
+        return SimpleNamespace(
+            output_parsed=self.output_parsed, status=self.status, incomplete_details=None
+        )
 
 
 class FakeMemoryClient:
@@ -110,6 +126,11 @@ def _extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
         consolidate_model=TEST_MEMORY_MODEL,
     )
     return extractor, fake_client
+
+
+def _parsed(output: BaseModel | None) -> SimpleNamespace:
+    """Builds a completed fake parse response envelope."""
+    return SimpleNamespace(output_parsed=output, status="completed", incomplete_details=None)
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +239,10 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
     assert count_raw_entries(user_id=USER_ID) == 1
-    # The evicted entry is preserved verbatim (identity included) in the archive.
-    archive_text = (memory_isolated_dir / str(USER_ID) / "archive.md").read_text(encoding="utf-8")
-    assert "first entry" in archive_text
-    assert f"| {IDENTITY}" in archive_text
+    # The evicted entry is preserved verbatim (identity included) in the detail file.
+    detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
+    assert "first entry" in detail_text
+    assert f"| {IDENTITY}" in detail_text
 
 
 def test_append_raw_entry_truncates_single_oversized_entry(
@@ -252,12 +273,12 @@ def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path
     write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
     write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
     append_raw_entry(user_id=USER_ID, entry_text="raw entry", identity=IDENTITY)
-    append_archive(user_id=USER_ID, text="## 2026-01-01T00:00:00 | x\n舊證據")
+    append_detail(user_id=USER_ID, text="## 2026-01-01T00:00:00 | x\n舊證據")
     assert clear_user_memory(user_id=USER_ID) is True
     assert read_main_memory(user_id=USER_ID) == ""
     assert count_raw_entries(user_id=USER_ID) == 0
-    # main, raw, the backup generation, and the archive are all gone, then the
-    # empty per-user directory itself is removed.
+    # main, raw, the backup generation, and the detail file are all gone, then
+    # the empty per-user directory itself is removed.
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     assert clear_user_memory(user_id=USER_ID) is False
 
@@ -322,7 +343,7 @@ async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) 
 
     async def hang(**kwargs: object) -> SimpleNamespace:
         await asyncio.sleep(10)
-        return SimpleNamespace(output_parsed=None)
+        return _parsed(output=None)
 
     monkeypatch.setattr(fake_client.responses, "parse", hang)
     assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
@@ -357,6 +378,7 @@ async def test_consolidate_marks_empty_existing_memory() -> None:
     result = await extractor.consolidate(
         existing_main="",
         raw_entries="## 2026-01-01T00:00:00\nx",
+        recent_detail="",
         today="2026-06-06",
         compact=False,
     )
@@ -366,13 +388,19 @@ async def test_consolidate_marks_empty_existing_memory() -> None:
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
     assert user_text.startswith("today: 2026-06-06")
     assert "(empty)" in user_text
+    # The empty detail window still renders its labeled block for the prompt.
+    assert "<recent_detail>" in user_text
 
 
 async def test_consolidate_unchanged_result_passthrough() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     result = await extractor.consolidate(
-        existing_main="v1\n\nold", raw_entries="## t\nx", today="2026-06-06", compact=False
+        existing_main="v1\n\nold",
+        raw_entries="## t\nx",
+        recent_detail="",
+        today="2026-06-06",
+        compact=False,
     )
     assert result is not None
     assert result.changed is False
@@ -382,10 +410,18 @@ async def test_consolidate_compact_appends_compaction_block() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
-        existing_main="v1\n\nold", raw_entries="## t\nx", today="2026-06-06", compact=True
+        existing_main="v1\n\nold",
+        raw_entries="## t\nx",
+        recent_detail="",
+        today="2026-06-06",
+        compact=True,
     )
     await extractor.consolidate(
-        existing_main="v1\n\nold", raw_entries="## t\nx", today="2026-06-06", compact=False
+        existing_main="v1\n\nold",
+        raw_entries="## t\nx",
+        recent_detail="",
+        today="2026-06-06",
+        compact=False,
     )
     assert "COMPACTION" in fake_client.responses.parse_instructions[0]
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
@@ -402,7 +438,7 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
     await extractor.extract(target_user_id=USER_ID, transcript="hi")
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
-        existing_main="", raw_entries="x", today="2026-06-06", compact=False
+        existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
     )
     assert fake_client.responses.parse_models == ["extract-model", "consolidate-model"]
 
@@ -574,7 +610,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         started.set()
         if not release.is_set():
             await release.wait()
-        return SimpleNamespace(output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="x"))
+        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="x"))
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
@@ -637,7 +673,7 @@ async def test_pipeline_consolidates_at_threshold(
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -651,11 +687,11 @@ async def test_pipeline_consolidates_at_threshold(
     assert read_main_memory(user_id=USER_ID).startswith("v1")
     assert "合併後" in read_main_memory(user_id=USER_ID)
     assert count_raw_entries(user_id=USER_ID) == 0
-    # The consumed raw batch lands verbatim (identity included) in the archive.
-    archive_text = (memory_isolated_dir / str(USER_ID) / "archive.md").read_text(encoding="utf-8")
-    assert "第一筆" in archive_text
-    assert "第二筆" in archive_text
-    assert f"| {IDENTITY}" in archive_text
+    # The consumed raw batch lands verbatim (identity included) in the detail file.
+    detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
+    assert "第一筆" in detail_text
+    assert "第二筆" in detail_text
+    assert f"| {IDENTITY}" in detail_text
 
 
 async def test_pipeline_keeps_raw_when_consolidation_fails(
@@ -665,9 +701,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     extractor, fake_client = _extractor()
 
     parse_results: list[SimpleNamespace | None] = [
-        SimpleNamespace(
-            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號")
-        ),
+        _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號")),
         None,
     ]
 
@@ -688,8 +722,8 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     await _wait_for_inflight()
     assert count_raw_entries(user_id=USER_ID) == 1
     assert read_main_memory(user_id=USER_ID) == ""
-    # Failure paths keep raw for retry and must not archive it as consumed.
-    assert not (memory_isolated_dir / str(USER_ID) / "archive.md").exists()
+    # Failure paths keep raw for retry and must not retire it as consumed.
+    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
 
 
 async def test_pipeline_unchanged_consolidation_still_clears_raw(
@@ -705,7 +739,7 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -718,9 +752,9 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     await _wait_for_inflight()
     assert "既有內容" in read_main_memory(user_id=USER_ID)
     assert count_raw_entries(user_id=USER_ID) == 0
-    # A genuine no-op still consumes the batch, so it is archived too.
-    archive_text = (memory_isolated_dir / str(USER_ID) / "archive.md").read_text(encoding="utf-8")
-    assert "已知資訊" in archive_text
+    # A genuine no-op still consumes the batch, so it lands in the detail file too.
+    detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
+    assert "已知資訊" in detail_text
 
 
 async def test_pipeline_compaction_triggers_past_main_size(
@@ -737,7 +771,12 @@ async def test_pipeline_compaction_triggers_past_main_size(
 
     parsed_outputs: list[BaseModel] = [
         RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
-        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n壓縮後"),
+        # Long enough to clear the compaction shrink guard for the tiny
+        # monkeypatched trigger used by this test.
+        ConsolidatedMemory(
+            changed=True,
+            memory_markdown="v1\n\n## 使用者輪廓\n壓縮後保留所有耐久偏好與事實的精簡版本",
+        ),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -745,7 +784,7 @@ async def test_pipeline_compaction_triggers_past_main_size(
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
         seen_inputs.append(str(inputs[0]["content"]))
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -778,7 +817,7 @@ async def test_pipeline_small_main_skips_compaction(
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         seen_instructions.append(str(kwargs["instructions"]))
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -802,9 +841,7 @@ async def test_pipeline_aborts_write_after_clear(
     async def slow_parse(**kwargs: object) -> SimpleNamespace:
         parse_started.set()
         await release.wait()
-        return SimpleNamespace(
-            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入")
-        )
+        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
@@ -875,7 +912,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -891,7 +928,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     )
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     sent = interaction.response.sent
     assert sent["ephemeral"] is True
     view = sent["view"]
@@ -908,7 +945,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
 async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1000,7 +1037,11 @@ class EditResponseStub:
 
 
 async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
-    view = MemoryPagesView(pages=["第一頁", "第二頁", "第三頁"], pending_count=1)
+    view = MemoryPagesView(
+        pages=["第一頁", "第二頁", "第三頁"],
+        footer_text=memory_footer_text(pending_count=1),
+        title="🧠 我對你的記憶",
+    )
     prev_button = cast("Button", view.previous_page)
     next_button = cast("Button", view.next_page)
     assert prev_button.disabled is True
@@ -1028,7 +1069,11 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
 
 
 async def test_memory_pages_view_timeout_disables_buttons() -> None:
-    view = MemoryPagesView(pages=["第一頁", "第二頁"], pending_count=0)
+    view = MemoryPagesView(
+        pages=["第一頁", "第二頁"],
+        footer_text=memory_footer_text(pending_count=0),
+        title="🧠 我對你的記憶",
+    )
     # Without a bound origin the timeout is a silent no-op.
     await view.on_timeout()
 
@@ -1080,7 +1125,7 @@ async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -1113,7 +1158,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
@@ -1128,7 +1173,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 使用者輪廓")
@@ -1142,7 +1187,7 @@ async def test_memory_show_does_not_corrupt_malformed_version_token(
     write_main_memory(user_id=USER_ID, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     # Only an exact `v1\n` header is stripped; `v10...` must survive intact.
@@ -1199,7 +1244,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
     async def hang(**kwargs: object) -> SimpleNamespace:
         started.set()
         await asyncio.sleep(100)
-        return SimpleNamespace(output_parsed=None)
+        return _parsed(output=None)
 
     monkeypatch.setattr(fake_client.responses, "parse", hang)
     pipeline.schedule_memory_update(
@@ -1242,9 +1287,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         if parse_calls == 1:
             first_started.set()
             await release.wait()
-        return SimpleNamespace(
-            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入")
-        )
+        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -1288,7 +1331,7 @@ async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -1317,7 +1360,7 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+        return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -1330,3 +1373,343 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
     await _wait_for_inflight()
     assert read_main_memory(user_id=USER_ID) == ""
     assert count_raw_entries(user_id=USER_ID) == 1
+
+
+# ---------------------------------------------------------------------------
+# two-tier detail store
+# ---------------------------------------------------------------------------
+
+
+def test_read_detail_tail_missing_file_is_empty(memory_isolated_dir: Path) -> None:
+    assert read_detail_tail(user_id=USER_ID, max_chars=100) == ""
+
+
+def test_read_detail_tail_window_aligns_and_strips_identity(memory_isolated_dir: Path) -> None:
+    entry_one = f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n第一筆細節"
+    entry_two = f"## 2026-02-01T00:00:00+00:00 | {IDENTITY}\n第二筆細節"
+    append_detail(user_id=USER_ID, text=entry_one)
+    append_detail(user_id=USER_ID, text=entry_two)
+    full = read_detail_tail(user_id=USER_ID, max_chars=10_000)
+    # Identity header suffixes are disk-only metadata and never leave the store.
+    assert IDENTITY not in full
+    assert "第一筆細節" in full
+    assert "第二筆細節" in full
+    # A window cutting into entry one drops the partial entry and starts at the
+    # next header.
+    windowed = read_detail_tail(user_id=USER_ID, max_chars=len(entry_two) + 4)
+    assert windowed.startswith("## 2026-02-01")
+    assert "第一筆細節" not in windowed
+
+
+# ---------------------------------------------------------------------------
+# output guards
+# ---------------------------------------------------------------------------
+
+
+async def test_extract_returns_none_on_incomplete_response() -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True, memory_markdown="被截斷前的部分內容"
+    )
+    fake_client.responses.status = "incomplete"
+    # A response that hit the output-token budget must be refused even when the
+    # parsed payload looks usable.
+    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+
+
+async def test_memory_calls_set_max_output_tokens() -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
+    await extractor.consolidate(
+        existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
+    )
+    assert fake_client.responses.parse_max_output_tokens == [
+        MEMORY_MAX_OUTPUT_TOKENS,
+        MEMORY_MAX_OUTPUT_TOKENS,
+    ]
+
+
+async def test_pipeline_rejects_drastically_shrunken_rewrite(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    existing = "v1\n\n## 使用者輪廓\n" + "穩" * 5_000
+    write_main_memory(user_id=USER_ID, content=existing, identity=IDENTITY)
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        # Well-formed v1 output that silently lost almost the whole file.
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n幾乎全沒了"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    # The lossy rewrite is refused: previous memory survives, raw is kept for
+    # retry, and nothing is retired into the detail file.
+    assert "穩穩穩" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 1
+    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
+
+
+async def test_pipeline_compaction_accepts_legitimate_shrink(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
+    write_main_memory(
+        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
+    )
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        # Roughly half-size: a legitimate compaction result.
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n" + "縮" * 2_000),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    assert "縮縮縮" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0
+
+
+async def test_pipeline_compaction_rejects_collapsed_rewrite(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
+    write_main_memory(
+        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
+    )
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        # Far below a tenth of the input: a collapse, not a summarization.
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全部蒸發"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    assert "長長長" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 1
+
+
+# ---------------------------------------------------------------------------
+# consolidation cooldown and concurrency
+# ---------------------------------------------------------------------------
+
+
+async def test_pipeline_cooldown_defers_entry_count_consolidation(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True, memory_markdown="偏好訊號:\n- 訊號"
+    )
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    # Threshold is met but the cooldown has not elapsed: only the phase-1
+    # extract call ran and raw stays queued.
+    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
+
+
+async def test_pipeline_cooldown_elapsed_allows_consolidation(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    pipeline._last_consolidation[USER_ID] = (
+        time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
+    )
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    assert "合併後" in read_main_memory(user_id=USER_ID)
+    # The attempt refreshed the per-user cooldown timestamp.
+    assert pipeline._last_consolidation[USER_ID] > time.monotonic() - 5
+
+
+async def test_pipeline_byte_trigger_bypasses_cooldown(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
+    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 超過位元組門檻的長訊號"),
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n爆量合併"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    # The raw byte burst escape hatch consolidates despite the active cooldown.
+    assert "爆量合併" in read_main_memory(user_id=USER_ID)
+
+
+async def test_pipeline_passes_recent_detail_to_consolidation(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊的詳細證據")
+    extractor, fake_client = _extractor()
+    seen_inputs: list[str] = []
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        seen_inputs.append(str(inputs[0]["content"]))
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    consolidation_input = seen_inputs[1]
+    assert "<recent_detail>" in consolidation_input
+    assert "舊的詳細證據" in consolidation_input
+    # Identity header suffixes never reach the consolidation LLM.
+    assert IDENTITY not in consolidation_input
+
+
+async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Path) -> None:
+    assert pipeline._memory_semaphore() is pipeline._memory_semaphore()
+
+
+async def test_memory_semaphore_caps_concurrent_updates(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
+    extractor, fake_client = _extractor()
+    in_flight = 0
+    max_in_flight = 0
+
+    async def tracking_parse(**kwargs: object) -> SimpleNamespace:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return _parsed(output=RawMemoryDraft(has_signal=False, memory_markdown=""))
+
+    monkeypatch.setattr(fake_client.responses, "parse", tracking_parse)
+    for offset in range(3):
+        pipeline.schedule_memory_update(
+            user_id=USER_ID + offset,
+            message_list=_user_message(),
+            full_reply="回覆",
+            extractor=extractor,
+            identity=IDENTITY,
+        )
+    tasks = list(pipeline._inflight_tasks.values())
+    await asyncio.gather(*tasks)
+    # Three users started concurrently but the patched semaphore allows one
+    # LLM call at a time.
+    assert max_in_flight == 1
+
+
+# ---------------------------------------------------------------------------
+# /memory show detail layer
+# ---------------------------------------------------------------------------
+
+
+async def test_memory_show_detail_displays_detail_window(memory_isolated_dir: Path) -> None:
+    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n詳細觀察內容")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=True)
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "詳細觀察內容" in (embed.description or "")
+    assert IDENTITY not in (embed.description or "")
+    assert "詳細" in (embed.title or "")
+
+
+async def test_memory_show_detail_empty_notice(memory_isolated_dir: Path) -> None:
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=True)
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "還沒有任何詳細記錄" in (embed.description or "")
