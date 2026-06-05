@@ -18,15 +18,15 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs._memory import store as memory_store
-from discordbot.cogs._memory import pipeline as memory_pipeline
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
+from discordbot.cogs._memory.store import read_main_memory
 from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import MessageInputBuilder, sanitize_identity
+from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -325,9 +325,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # already-stored memory (self-feeding).
         llm_input: list[EasyInputMessageParam] = message_list
         memory_enabled = self.memory_config.enabled
-        if memory_enabled and (
-            memory_text := memory_store.read_main_memory(user_id=message.author.id)
-        ):
+        if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
             memory_message = _system_separator_message(
                 text=render_memory_injection(memory=memory_text).strip()
             )
@@ -348,7 +346,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         full_reply = await ResponseStreamer(message=message, responses=responses).stream()
         if memory_enabled:
-            memory_pipeline.schedule_memory_update(
+            schedule_memory_update(
                 user_id=message.author.id,
                 message_list=message_list,
                 full_reply=full_reply,

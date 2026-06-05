@@ -797,7 +797,7 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
         })
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
@@ -853,7 +853,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         scheduled.append(user_id)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
@@ -890,7 +890,7 @@ async def test_handle_message_reply_disabled_memory_skips_pipeline(
         scheduled.append(user_id)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
