@@ -26,6 +26,7 @@ from discordbot.cogs._memory.constants import (
     MEMORY_GLOBAL_CONCURRENCY,
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
+    MAIN_COMPACTION_TARGET_CHARS,
     MAIN_COMPACTION_TRIGGER_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
@@ -249,10 +250,12 @@ async def _consolidate_locked(
 def _rewrite_shrank_too_much(existing_main: str, rewritten: str, compact: bool) -> bool:
     """Whether a well-formed rewrite lost so much text it reads as a lossy failure."""
     if compact:
-        # Compaction legitimately shrinks toward roughly half the trigger;
-        # collapsing below a tenth of the input reads as dropped content
-        # rather than summarization.
-        return len(rewritten) < len(existing_main) // 10
+        # Compaction legitimately shrinks toward the target; collapsing below
+        # a tenth of the input reads as dropped content rather than
+        # summarization. The target-based floor keeps a main file that grew
+        # far past ten times the target compactable instead of stuck retrying.
+        floor = min(len(existing_main) // 10, MAIN_COMPACTION_TARGET_CHARS // 3)
+        return len(rewritten) < floor
     # Consolidation merges and dedupes, so mild shrinkage is normal; losing
     # over half of a non-trivial file is not. Small files are exempt because
     # legitimate restructuring dominates at that scale.

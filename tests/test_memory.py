@@ -1713,3 +1713,23 @@ async def test_memory_show_detail_empty_notice(memory_isolated_dir: Path) -> Non
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有任何詳細記錄" in (embed.description or "")
+
+
+def test_rewrite_shrink_guard_lets_huge_main_compact_to_target() -> None:
+    # A main file that grew far past ten times the target must still be able
+    # to compact down to the documented target size.
+    existing = "長" * 160_000
+    target_sized = "v1\n\n## 使用者輪廓\n" + "縮" * MAIN_COMPACTION_TARGET_CHARS
+    assert (
+        pipeline._rewrite_shrank_too_much(
+            existing_main=existing, rewritten=target_sized, compact=True
+        )
+        is False
+    )
+    # A genuine collapse still trips the guard.
+    assert (
+        pipeline._rewrite_shrank_too_much(
+            existing_main=existing, rewritten="v1\n\n塌縮", compact=True
+        )
+        is True
+    )
