@@ -844,3 +844,28 @@ async def test_pipeline_drops_pending_replay_after_clear(
     # The pre-clear pending turn must not be replayed back into storage.
     assert pipeline._inflight_tasks.get(USER_ID) is None  # noqa: SLF001
     assert count_raw_entries(user_id=USER_ID) == 0
+
+
+async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        # Contradictory: a full v1 rewrite but changed=false. The batch must
+        # still be written, not silently discarded.
+        ConsolidatedMemory(changed=False, memory_markdown="v1\n\n## 使用者輪廓\n合併結果"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(output_parsed=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+    )
+    await _wait_for_inflight()
+    assert "合併結果" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0
