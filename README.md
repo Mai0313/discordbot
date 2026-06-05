@@ -115,15 +115,16 @@ Per-user long-term memory is on by default; set `MEMORY_ENABLED=false` to disabl
 
 ## Data And Privacy
 
-This bot stores runtime data locally under `data/`.
+This bot stores runtime data locally under `data/`; SQLite databases live in `data/database/`.
 
-- `messages.db`: human messages and this bot's replies, used for chat history and summaries.
-- `economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, and casino daily counters.
-- `stock.db`: DB-managed simulated stock profiles, float supply, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
-- `global_state.db`: bot-wide shared state such as jackpot pools.
-- `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public expiring responses such as game, economy, and stock messages that should be cleaned up after restart.
-- `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.
-- `downloads/` and `threads/`: temporary media scratch folders.
+- `database/messages.db`: human messages and this bot's replies, used for chat history and summaries.
+- `database/economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, and casino daily counters.
+- `database/stock.db`: DB-managed simulated stock profiles, float supply, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
+- `database/global_state.db`: bot-wide shared state such as jackpot pools.
+- `database/game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public expiring responses such as game, economy, and stock messages that should be cleaned up after restart.
+- `database/games.db`: per-player Blackjack round history.
+- `database/fishing.db`: fishing catalog plus per-user gear, bait, and catch history.
+- Temporary media downloads use the project-root `tmp/` scratch folder (not under `data/`) and are deleted after sending.
 - `memories/`: per-user long-term memory as plaintext markdown files in one folder per Discord user id, built in the background from your conversations and injected into future AI replies.
 
 When the bot responds with AI, relevant text, supported attachments, embedded media, and participant identity from the active context are sent to the configured LLM endpoint. Data is not sent to any other service by this project.

@@ -1,7 +1,7 @@
 """Pure rules for 射龍門 (In-Between / Acey Deucey).
 
 The pot is no longer round-local: a single jackpot row in
-`data/economy.db` is shared across every table of this game, so this
+`data/database/economy.db` is shared across every table of this game, so this
 module limits itself to rotation / pillar / direction state and emits a
 signed `delta` per turn. The view layer applies the delta atomically
 against the player row and the jackpot pool, then passes the updated

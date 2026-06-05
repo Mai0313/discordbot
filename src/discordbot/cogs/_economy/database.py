@@ -37,7 +37,7 @@ Long-term lending lives in `loan_proposal` and `loan_contract`. Personal
 loan requests debit the lender on acceptance, and central-bank loans mint
 borrower balance on approval.
 
-Shared jackpot pools live in `data/global_state.db` because they are bot-wide
+Shared jackpot pools live in `data/database/global_state.db` because they are bot-wide
 state, not per-user economy rows. Runtime jackpot settlement coordinates writes
 across the economy and global-state DB sessions and rolls both back on ordinary
 errors before either commit; SQLite still cannot make a hard crash between two
@@ -138,9 +138,9 @@ _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/economy.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
 _global_state_engine: AsyncEngine = create_async_engine(
-    url="sqlite+aiosqlite:///data/global_state.db"
+    url="sqlite+aiosqlite:///data/database/global_state.db"
 )
 
 
@@ -579,7 +579,7 @@ def _current_loan_accept_lock() -> asyncio.Lock:
 
 
 async def _ensure_global_state_schema() -> None:
-    """Bootstraps bot-wide state in `data/global_state.db`."""
+    """Bootstraps bot-wide state in `data/database/global_state.db`."""
     global _global_state_schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     _ensure_sqlite_hooks(engine=_global_state_engine)
     if _global_state_schema_ready_for is _global_state_engine:
@@ -1380,8 +1380,9 @@ async def apply_round_settlement(
     Positive player deltas go through the shared income path. Negative player
     deltas clamp at zero; when a loss cannot be fully collected, the casino
     ledger only records the actual collected debit. The player write lives in
-    `data/economy.db` and the casino mirror lives in `data/global_state.db`;
-    ordinary exceptions before the final commits roll both sessions back. The
+    `data/database/economy.db` and the casino mirror lives in
+    `data/database/global_state.db`; ordinary exceptions before the final
+    commits roll both sessions back. The
     player wallet commits before the casino mirror so player-facing balance is
     preferred if only one final commit succeeds. As with jackpot settlement, a
     hard crash between the two database-file commits is not cross-file atomic.

@@ -6,6 +6,7 @@ Usage::
 """
 
 import asyncio
+from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
@@ -20,7 +21,7 @@ console = Console()
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Inspect non-final stock operations stored in data/stock.db."
+        description="Inspect non-final stock operations stored in data/database/stock.db."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(name="list", help="List stock operations requiring manual review.")
@@ -48,6 +49,9 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the stock reconciliation CLI."""
+    # data/ is gitignored and may not exist on a fresh checkout seeded before the
+    # bot's first run, so create it here like cli.py does before any DB write.
+    Path("./data/database").mkdir(parents=True, exist_ok=True)
     asyncio.run(_async_main(argv=argv))
 
 

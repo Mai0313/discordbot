@@ -59,7 +59,7 @@ class VideoDownloader(BaseModel):
         share_resolve_timeout: Timeout in seconds for resolving Facebook share URLs.
     """
 
-    output_folder: str = Field(default="./data/downloads", description="Download folder")
+    output_folder: str = Field(default="./tmp", description="Download folder")
     max_retries: int = Field(
         default=5, description="Configured maximum retry count.", examples=[5, 3]
     )

@@ -46,7 +46,8 @@ make gen-docs
 - `src/discordbot/utils/`: downloader, image, Threads, and LiteLLM pricing helpers.
 - `tests/`: pytest suite.
 - `scripts/`: local maintenance and development tools.
-- `data/`: runtime SQLite databases, logs, cached prices, downloads, and scratch files. Do not commit generated runtime data.
+- `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
+- `tmp/`: temporary media download scratch folder; files are deleted after delivery.
 - `docker/` and `docker-compose.yaml`: container build and runtime setup.
 - `.github/workflows/`: CI, code quality, docs deploy, release, and image publishing workflows.
 
@@ -109,7 +110,7 @@ def setup(bot: commands.Bot) -> None:
 
 ## Economy And Games
 
-- `data/economy.db`, `data/global_state.db`, and `data/messages.db` are separate SQLite databases. Keep `economy.db` tables user-scoped with `user_id` and `name`; put bot-wide shared state such as jackpot pools in `global_state.db`.
+- `data/database/economy.db`, `data/database/global_state.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` tables user-scoped with `user_id` and `name`; put bot-wide shared state such as jackpot pools in `global_state.db`.
 - Economy helpers use a module-level SQLAlchemy engine so tests can monkeypatch the engine object.
 - 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account model.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths should pass `guild_avatar_url(...)` with guild context so guild avatars are stored when available, then fall back to the global `display_avatar`. Existing rows are not backfilled; they refresh naturally on later writes.

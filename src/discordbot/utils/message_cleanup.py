@@ -13,7 +13,7 @@ from nextcord.ext import commands
 from sqlalchemy.engine import Connection
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
-_PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/game_cleanup.db")
+_PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/game_cleanup.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None
 _CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """

@@ -1,6 +1,6 @@
 """Persistent store and settlement service for the fishing mini-game.
 
-State lives in `data/fishing.db`; wallet cash stays in the economy database.
+State lives in `data/database/fishing.db`; wallet cash stays in the economy database.
 Catalog rows (grades, species, gear) are the source of truth and are seeded
 offline through `scripts/manage_fishing.py`; runtime never seeds them.
 
@@ -68,7 +68,7 @@ from discordbot.cogs._economy.database import (
     apply_ordered_wallet_deltas,
 )
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/fishing.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/fishing.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None

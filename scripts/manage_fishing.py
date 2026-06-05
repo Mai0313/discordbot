@@ -1,4 +1,4 @@
-"""Manage fishing catalog rows in data/fishing.db.
+"""Manage fishing catalog rows in data/database/fishing.db.
 
 The bot never seeds fishing catalog rows at runtime; this script is the only way
 to create or tune grades, species, and gear. Run it while the bot is stopped.
@@ -50,7 +50,7 @@ def _hex_or_int(value: str) -> int:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Create, update, and list fishing catalog rows in data/fishing.db."
+        description="Create, update, and list fishing catalog rows in data/database/fishing.db."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(name="seed-defaults", help="Seed or update the default catalog.")
@@ -234,7 +234,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Runs the fishing catalog maintenance CLI."""
     # data/ is gitignored and may not exist on a fresh checkout seeded before the
     # bot's first run, so create it here like cli.py does before any DB write.
-    Path("./data").mkdir(parents=True, exist_ok=True)
+    Path("./data/database").mkdir(parents=True, exist_ok=True)
     asyncio.run(main=_async_main(argv=argv))
 
 

@@ -115,15 +115,16 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 ## 数据与隐私
 
-这个 bot 会把 runtime data 存在本地 `data/` 底下。
+这个 bot 会把 runtime data 存在本地 `data/` 底下；SQLite 数据库集中在 `data/database/`。
 
-- `messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
-- `economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约，以及赌场每日统计。
-- `stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
-- `global_state.db`：bot-wide shared state，例如 jackpot pool。
-- `game_cleanup.db`：公开 expiring response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，例如 game、economy 与 stock messages，用于 bot 重启后的清理。
-- `model_prices.json`：缓存的 LiteLLM pricing metadata，用于 AI 回复费用估算。
-- `downloads/` 与 `threads/`：临时 media scratch folders。
+- `database/messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
+- `database/economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约，以及赌场每日统计。
+- `database/stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
+- `database/global_state.db`：bot-wide shared state，例如 jackpot pool。
+- `database/game_cleanup.db`：公开 expiring response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，例如 game、economy 与 stock messages，用于 bot 重启后的清理。
+- `database/games.db`：每位玩家的 Blackjack 对局历史。
+- `database/fishing.db`：钓鱼目录与每位用户的装备、鱼饵与渔获记录。
+- 临时 media 下载使用项目根目录的 `tmp/` scratch folder（不在 `data/` 底下），发送完成后即删除。
 - `memories/`：每个 Discord user id 一个文件夹的纯文本 markdown 个人长期记忆，由你的对话在后台积累，并在后续 AI 回复时注入。
 
 当 bot 需要用 AI 回复时，当前上下文中的相关文字、支持的附件、embedded media 与参与者身份会送到你配置的 LLM endpoint。本项目不会把这些资料送到其他服务。

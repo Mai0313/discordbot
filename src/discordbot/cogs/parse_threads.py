@@ -32,7 +32,7 @@ class ThreadsCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.output_folder = Path("./data/downloads")
+        self.output_folder = Path("./tmp")
         self.output_folder.mkdir(parents=True, exist_ok=True)
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
