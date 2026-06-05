@@ -68,6 +68,7 @@ HOW TO MERGE:
 
 SIZE AND FORMAT:
 * There is no hard length target. Never sacrifice durable preferences or facts for brevity — summarize and merge, never silently drop a durable item.
+* Distill on every rewrite, not only when the file grows large: deduplicate aggressively, merge overlapping bullets, and condense stale episodic content each pass so the file always reads like a dense profile, not a growing ledger.
 * Every consumed raw entry is retained verbatim in cold storage outside this file, so condensing detail here never destroys evidence: keep this file the distilled, actionable form. Tightening the phrasing of a durable item is fine; dropping the item is not.
 * The output must start exactly with:
 v1
