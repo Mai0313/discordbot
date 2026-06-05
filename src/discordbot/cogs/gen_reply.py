@@ -311,7 +311,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return "QA"
 
     async def _handle_message_reply(
-        self, message: Message, system_prompt: str, history_limit: int
+        self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
         message_list: list[EasyInputMessageParam] = []
@@ -333,7 +333,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # list so the phase-1 extraction `message_list` never re-ingests
         # already-stored memory (self-feeding).
         llm_input: list[EasyInputMessageParam] = message_list
-        memory_enabled = self.memory_config.enabled
+        memory_enabled = memory_enabled and self.memory_config.enabled
         if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
             memory_message = _system_separator_message(
                 text=render_memory_injection(memory=memory_text).strip()
@@ -414,8 +414,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 current_emoji = await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="📖", previous=current_emoji
                 )
+                # Summaries digest ~100 channel messages: skip per-user memory
+                # so it neither biases the digest nor floods extraction.
                 await self._handle_message_reply(
-                    message=message, system_prompt=SUMMARY_PROMPT, history_limit=100
+                    message=message,
+                    system_prompt=SUMMARY_PROMPT,
+                    history_limit=100,
+                    memory_enabled=False,
                 )
             else:
                 current_emoji = await update_reaction(
