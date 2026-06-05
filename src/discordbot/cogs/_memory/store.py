@@ -15,7 +15,11 @@ from pathlib import Path
 from datetime import UTC, datetime
 import itertools
 
-from discordbot.cogs._memory.constants import RAW_FILE_MAX_BYTES, MEMORY_INJECTION_MAX_CHARS
+from discordbot.cogs._memory.constants import (
+    RAW_FILE_MAX_BYTES,
+    MAIN_FILE_MAX_CHARS,
+    MEMORY_INJECTION_MAX_CHARS,
+)
 
 _MEMORY_DIR = Path("./data/memories")
 
@@ -79,11 +83,18 @@ def read_main_memory_full(user_id: int) -> str:
 
 
 def write_main_memory(user_id: int, content: str) -> None:
-    """Atomically replaces the consolidated main memory file."""
+    """Atomically replaces the consolidated main memory file.
+
+    The content is clamped to `MAIN_FILE_MAX_CHARS` so an over-budget
+    consolidation rewrite cannot push the on-disk file past what the read
+    paths inject and `/memory show` displays. The file is ordered by
+    priority (profile first), so head-truncation keeps the highest-value
+    content.
+    """
     _MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     main_path = _main_path(user_id=user_id)
     tmp_path = main_path.with_suffix(".md.tmp")
-    tmp_path.write_text(data=content.strip() + "\n", encoding="utf-8")
+    tmp_path.write_text(data=content.strip()[:MAIN_FILE_MAX_CHARS] + "\n", encoding="utf-8")
     os.replace(src=tmp_path, dst=main_path)
 
 

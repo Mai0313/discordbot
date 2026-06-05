@@ -15,7 +15,7 @@ from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory import store, pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import render_memory_injection
-from discordbot.cogs._memory.constants import MEMORY_INJECTION_MAX_CHARS
+from discordbot.cogs._memory.constants import MAIN_FILE_MAX_CHARS, MEMORY_INJECTION_MAX_CHARS
 from discordbot.cogs._memory.extraction import (
     RawMemoryDraft,
     MemoryExtractorAI,
@@ -98,10 +98,18 @@ def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> No
     assert leftovers == []
 
 
-def test_read_main_memory_truncates_to_injection_limit(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="x" * (MEMORY_INJECTION_MAX_CHARS + 500))
+def test_write_main_memory_clamps_to_size_cap(memory_isolated_dir: Path) -> None:
+    store.write_main_memory(user_id=USER_ID, content="x" * (MAIN_FILE_MAX_CHARS + 500))
+    assert len(store.read_main_memory_full(user_id=USER_ID)) == MAIN_FILE_MAX_CHARS
+
+
+def test_read_main_memory_truncates_hand_edited_oversized_files(
+    memory_isolated_dir: Path,
+) -> None:
+    memory_isolated_dir.mkdir(parents=True, exist_ok=True)
+    oversized = memory_isolated_dir / f"{USER_ID}.md"
+    oversized.write_text(data="y" * (MEMORY_INJECTION_MAX_CHARS + 500), encoding="utf-8")
     assert len(store.read_main_memory(user_id=USER_ID)) == MEMORY_INJECTION_MAX_CHARS
-    assert len(store.read_main_memory_full(user_id=USER_ID)) == MEMORY_INJECTION_MAX_CHARS + 500
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
