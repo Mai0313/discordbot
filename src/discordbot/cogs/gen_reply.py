@@ -25,7 +25,11 @@ from discordbot.utils.reactions import update_reaction
 from discordbot.cogs._memory.store import read_main_memory
 from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._gen_reply.input import MessageInputBuilder, sanitize_identity
+from discordbot.cogs._gen_reply.input import (
+    MessageInputBuilder,
+    sanitize_identity,
+    render_author_identity,
+)
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
@@ -351,6 +355,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 message_list=message_list,
                 full_reply=full_reply,
                 extractor=self.memory_extractor,
+                identity=render_author_identity(
+                    display_name=message.author.display_name,
+                    username=message.author.name,
+                    user_id=message.author.id,
+                ),
             )
 
     @commands.Cog.listener()

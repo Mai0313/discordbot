@@ -32,6 +32,8 @@ class _PendingMemoryUpdate(BaseModel):
         message_list: Reply-pipeline input messages captured for the skipped turn.
         full_reply: The streamed reply text for the skipped turn.
         extractor: The extraction service to run the replayed update with.
+        identity: Single-line author identity stamped into memory files as
+            human-inspection metadata.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
     """
@@ -41,6 +43,7 @@ class _PendingMemoryUpdate(BaseModel):
     message_list: SkipValidation[list[EasyInputMessageParam]]
     full_reply: str
     extractor: SkipValidation[MemoryExtractorAI]
+    identity: str
     captured_at: float
 
 
@@ -58,6 +61,7 @@ def schedule_memory_update(
     message_list: list[EasyInputMessageParam],
     full_reply: str,
     extractor: MemoryExtractorAI,
+    identity: str,
 ) -> None:
     """Starts a background memory update without delaying the reply path."""
     global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
@@ -72,12 +76,17 @@ def schedule_memory_update(
             message_list=message_list,
             full_reply=full_reply,
             extractor=extractor,
+            identity=identity,
             captured_at=time.monotonic(),
         )
         return
     task = asyncio.create_task(
         _run_memory_update(
-            user_id=user_id, message_list=message_list, full_reply=full_reply, extractor=extractor
+            user_id=user_id,
+            message_list=message_list,
+            full_reply=full_reply,
+            extractor=extractor,
+            identity=identity,
         )
     )
     _inflight_tasks[user_id] = task
@@ -109,6 +118,7 @@ def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
         message_list=pending.message_list,
         full_reply=pending.full_reply,
         extractor=pending.extractor,
+        identity=pending.identity,
     )
 
 
@@ -117,6 +127,7 @@ async def _run_memory_update(
     message_list: list[EasyInputMessageParam],
     full_reply: str,
     extractor: MemoryExtractorAI,
+    identity: str,
 ) -> None:
     """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation."""
     started_at = time.monotonic()
@@ -129,17 +140,19 @@ async def _run_memory_update(
             # The user cleared their memory while this update was in flight;
             # dropping the write beats resurrecting deleted memory.
             return
-        append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown)
+        append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown, identity=identity)
         if (
             count_raw_entries(user_id=user_id) < RAW_CONSOLIDATION_THRESHOLD
             and raw_file_bytes(user_id=user_id) < RAW_CONSOLIDATION_MAX_BYTES
         ):
             return
-        await _consolidate_locked(user_id=user_id, started_at=started_at, extractor=extractor)
+        await _consolidate_locked(
+            user_id=user_id, started_at=started_at, extractor=extractor, identity=identity
+        )
 
 
 async def _consolidate_locked(
-    user_id: int, started_at: float, extractor: MemoryExtractorAI
+    user_id: int, started_at: float, extractor: MemoryExtractorAI, identity: str
 ) -> None:
     """Consolidates accumulated raw entries into the main memory file."""
     result = await extractor.consolidate(
@@ -162,7 +175,7 @@ async def _consolidate_locked(
         # Accept any well-formed `v1` rewrite, even one the model flagged
         # `changed=false`, so a single contradictory boolean cannot silently
         # discard the whole raw batch.
-        write_main_memory(user_id=user_id, content=result.memory_markdown)
+        write_main_memory(user_id=user_id, content=result.memory_markdown, identity=identity)
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
