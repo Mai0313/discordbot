@@ -52,6 +52,16 @@ MEMORY_DETAIL_CONTEXT_MAX_CHARS = 500_000
 # stays on disk only.
 MEMORY_DETAIL_VIEW_MAX_CHARS = 100_000
 
+# Hard cap for the cold-tier detail file. Content past the consolidation read
+# window (MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4 bytes) is unreachable by every
+# consumer, so trimming the oldest entries once the file outgrows the cap
+# costs nothing functionally and keeps disk bounded. The gap between cap and
+# trim target amortizes the O(file) rewrite to roughly once per megabyte of
+# new evidence; the cap must stay above the read window so a trim can never
+# cut into reachable content.
+DETAIL_FILE_MAX_BYTES = 4_194_304
+DETAIL_FILE_TRIM_TARGET_BYTES = 3_145_728
+
 # Phase-1 transcript truncation (keeps head and tail, drops the middle). Large
 # on purpose: the reply history window should reach extraction whole, and the
 # memory models accept 1M-token inputs.

@@ -8,9 +8,9 @@ recovery point against a bad consolidation rewrite, and ``detail.md`` is the
 readable cold tier retaining consumed and evicted raw entries verbatim:
 consolidation reads its tail window as provenance and ``/memory show`` can
 page through it, but it is never injected into reply prompts. The live files
-stay tens of KB at most and the uncapped detail file is only ever appended to
-in O(1) (reads are tail-windowed), so IO is synchronous; cross-task safety
-comes from the per-user asyncio locks.
+stay tens of KB at most and the detail file is appended in O(1), tail-window
+read, and trimmed back to a hard byte cap, so IO is synchronous; cross-task
+safety comes from the per-user asyncio locks.
 """
 
 import os
@@ -22,7 +22,11 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
-from discordbot.cogs._memory.constants import RAW_FILE_MAX_BYTES
+from discordbot.cogs._memory.constants import (
+    RAW_FILE_MAX_BYTES,
+    DETAIL_FILE_MAX_BYTES,
+    DETAIL_FILE_TRIM_TARGET_BYTES,
+)
 
 _MEMORY_DIR = Path("./data/memories")
 
@@ -157,20 +161,42 @@ def append_raw_entry(user_id: int, entry_text: str, identity: str) -> None:
 def append_detail(user_id: int, text: str) -> None:
     """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
-    The detail file is append-only and uncapped by design (the operator
-    accepts the growth); it preserves raw entries verbatim, including the
-    identity header suffixes, which every read path strips back out.
-    Append-mode IO keeps the write O(1) in the file size so an old, large
-    detail file never slows consolidation down or pins the user lock.
+    The detail file preserves raw entries verbatim, including the identity
+    header suffixes, which every read path strips back out. Append-mode IO
+    keeps the common write O(1) in the file size; once the file outgrows
+    `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed away, which is
+    safe because content past the consolidation read window is unreachable
+    by every consumer anyway.
     """
     block = text.strip()
     if not block:
         return
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
-    with _detail_path(user_id=user_id).open(mode="a", encoding="utf-8") as handle:
+    detail_path = _detail_path(user_id=user_id)
+    with detail_path.open(mode="a", encoding="utf-8") as handle:
         if handle.tell() > 0:
             handle.write("\n")
         handle.write(block + "\n")
+    if detail_path.stat().st_size > DETAIL_FILE_MAX_BYTES:
+        _trim_detail(path=detail_path)
+
+
+def _trim_detail(path: Path) -> None:
+    """Drops the oldest detail entries until the file fits the trim target.
+
+    The dropped entries are deleted permanently instead of cascading into yet
+    another unbounded file: nothing can read past the consolidation window, so
+    they carry no functional value. The headroom between the cap and the trim
+    target amortizes this O(file) rewrite to roughly once per megabyte of
+    appended evidence; the write goes through tmp + os.replace so a crash
+    cannot leave a half-trimmed file.
+    """
+    entries = _split_raw_entries(text=_read_text(path=path))
+    while len(entries) > 1 and _entries_bytes(entries=entries) > DETAIL_FILE_TRIM_TARGET_BYTES:
+        entries.pop(0)
+    tmp_path = path.with_suffix(".md.tmp")
+    tmp_path.write_text(data="\n\n".join(entries) + "\n", encoding="utf-8")
+    os.replace(src=tmp_path, dst=path)
 
 
 def read_detail_tail(user_id: int, max_chars: int) -> str:
@@ -260,9 +286,11 @@ def clear_user_memory(user_id: int) -> bool:
             # Already gone (e.g. offline maintenance); deletion stays idempotent
             # without the exists()-then-unlink() race.
             continue
-    # A crash between the tmp write and os.replace can leave the tmp file
-    # behind; drop it so the directory removal below does not fail.
+    # A crash between a tmp write and os.replace (main rewrite or detail trim)
+    # can leave a tmp file behind; drop them so the directory removal below
+    # does not fail.
     main_path.with_suffix(".md.tmp").unlink(missing_ok=True)
+    _detail_path(user_id=user_id).with_suffix(".md.tmp").unlink(missing_ok=True)
     # A missing or unexpectedly non-empty directory is left for offline
     # maintenance instead of failing the clear.
     with contextlib.suppress(OSError):

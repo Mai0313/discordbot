@@ -1733,3 +1733,23 @@ def test_rewrite_shrink_guard_lets_huge_main_compact_to_target() -> None:
         )
         is True
     )
+
+
+def test_append_detail_trims_oldest_past_cap(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.store.DETAIL_FILE_MAX_BYTES", 300)
+    monkeypatch.setattr("discordbot.cogs._memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 200)
+    for index in range(6):
+        append_detail(
+            user_id=USER_ID,
+            text=f"## 2026-01-0{index + 1}T00:00:00+00:00 | x\nentry {index} " + "a" * 80,
+        )
+    detail_path = memory_isolated_dir / str(USER_ID) / "detail.md"
+    text = detail_path.read_text(encoding="utf-8")
+    # The newest entry always survives, the oldest entries are gone for good,
+    # and the file honors the cap.
+    assert "entry 5" in text
+    assert "entry 0" not in text
+    assert len(text.encode("utf-8")) <= 300 + 1
+    assert not detail_path.with_suffix(".md.tmp").exists()
