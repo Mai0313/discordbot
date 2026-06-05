@@ -82,6 +82,11 @@ def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
     """Clears the in-flight slot, logs failures, and replays a pending update."""
     if _inflight_tasks.get(user_id) is task:
         _inflight_tasks.pop(user_id, None)
+    if task.cancelled():
+        # Cancelled (e.g. bot shutdown): reading result() would raise
+        # CancelledError (a BaseException on 3.11+) out of this callback, and a
+        # pre-shutdown turn is not worth replaying.
+        return
     try:
         task.result()
     except Exception:

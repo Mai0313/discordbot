@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import contextlib
 
 import pytest
 from nextcord import Embed, Locale
@@ -775,3 +776,33 @@ def test_memory_config_tolerates_blank_env_value(monkeypatch: pytest.MonkeyPatch
     assert MemoryConfig().enabled is True
     monkeypatch.setenv("MEMORY_ENABLED", "false")
     assert MemoryConfig().enabled is False
+
+
+async def test_pipeline_cancelled_task_does_not_raise_or_replay(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extractor, fake_client = _extractor()
+    started = asyncio.Event()
+
+    async def hang(**kwargs: object) -> SimpleNamespace:
+        started.set()
+        await asyncio.sleep(100)
+        return SimpleNamespace(output_parsed=None)
+
+    monkeypatch.setattr(fake_client.responses, "parse", hang)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="一", extractor=extractor
+    )
+    await started.wait()
+    task = pipeline._inflight_tasks[USER_ID]
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="二", extractor=extractor
+    )
+    assert USER_ID in pipeline._pending_updates
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    # The callback must not raise, must clear the slot, and must not replay.
+    assert pipeline._inflight_tasks.get(USER_ID) is None
+    assert USER_ID in pipeline._pending_updates
