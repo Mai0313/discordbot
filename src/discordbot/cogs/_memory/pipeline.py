@@ -92,8 +92,9 @@ async def _consolidate_locked(
         return
     if store.cleared_since(user_id=user_id, started_at=started_at):
         return
-    if result.changed and not result.memory_markdown.startswith("v1"):
-        # Malformed rewrite (changed but missing the v1 header): keep the raw
+    if result.changed and not result.memory_markdown.startswith("v1\n"):
+        # Malformed rewrite (changed but missing the exact `v1` header line, so
+        # near-misses like `v10...` or `v1: ...` are rejected too): keep the raw
         # batch so the next consolidation retries instead of losing the signal.
         return
     if result.changed:

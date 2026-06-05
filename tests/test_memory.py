@@ -624,15 +624,23 @@ def test_memory_commands_have_localizations() -> None:
         assert Locale.ja in command.description_localizations
 
 
+@pytest.mark.parametrize(
+    argnames="malformed_markdown",
+    argvalues=[
+        "沒有 v1 開頭的壞輸出",
+        "v10\n\n## 使用者輪廓\n版本號相似但錯誤",
+        "v1: 同行接續而不是獨立的 header 行",
+    ],
+)
 async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, malformed_markdown: str
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
         RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
-        ConsolidatedMemory(changed=True, memory_markdown="沒有 v1 開頭的壞輸出"),
+        ConsolidatedMemory(changed=True, memory_markdown=malformed_markdown),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
