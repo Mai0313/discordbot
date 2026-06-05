@@ -10,7 +10,7 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationErr
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._memory.prompts import PHASE1_PROMPT, PHASE2_PROMPT
+from discordbot.cogs._memory.prompts import PHASE1_PROMPT, PHASE2_PROMPT, PHASE2_COMPACTION_BLOCK
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
@@ -72,12 +72,14 @@ class MemoryExtractorAI(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     client: SkipValidation[AsyncOpenAI]
-    model: ModelSettings
+    extract_model: ModelSettings
+    consolidate_model: ModelSettings
 
     async def extract(self, target_user_id: int, transcript: str) -> RawMemoryDraft | None:
         """Returns the phase-1 raw memory draft, or None when the LLM path fails."""
         user_text = f"target_user_id: {target_user_id}\n\nConversation transcript:\n{transcript}"
         draft = await self._parse(
+            model=self.extract_model,
             instructions=PHASE1_PROMPT,
             user_text=user_text,
             text_format=RawMemoryDraft,
@@ -91,14 +93,19 @@ class MemoryExtractorAI(BaseModel):
             memory_markdown=redact_secrets(text=draft.memory_markdown).strip(),
         )
 
-    async def consolidate(self, existing_main: str, raw_entries: str) -> ConsolidatedMemory | None:
+    async def consolidate(
+        self, existing_main: str, raw_entries: str, today: str, compact: bool
+    ) -> ConsolidatedMemory | None:
         """Returns the phase-2 consolidation result, or None when the LLM path fails."""
         user_text = (
+            f"today: {today}\n\n"
             f"<existing_memory>\n{existing_main.strip() or '(empty)'}\n</existing_memory>\n\n"
             f"<raw_entries>\n{raw_entries.strip()}\n</raw_entries>"
         )
+        instructions = PHASE2_PROMPT + PHASE2_COMPACTION_BLOCK if compact else PHASE2_PROMPT
         result = await self._parse(
-            instructions=PHASE2_PROMPT,
+            model=self.consolidate_model,
+            instructions=instructions,
             user_text=user_text,
             text_format=ConsolidatedMemory,
             timeout_seconds=MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
@@ -111,8 +118,9 @@ class MemoryExtractorAI(BaseModel):
             memory_markdown=redact_secrets(text=result.memory_markdown).strip(),
         )
 
-    async def _parse(
+    async def _parse(  # noqa: PLR0913 -- one shared Responses call surface for both phases
         self,
+        model: ModelSettings,
         instructions: str,
         user_text: str,
         text_format: type[_OutputT],
@@ -123,14 +131,14 @@ class MemoryExtractorAI(BaseModel):
         try:
             async with asyncio.timeout(delay=timeout_seconds):
                 responses = await self.client.responses.parse(
-                    model=self.model.name,
+                    model=model.name,
                     instructions=instructions,
                     input=cast(
                         "ResponseInputParam",
                         [EasyInputMessageParam(role="user", content=user_text)],
                     ),
                     text_format=text_format,
-                    reasoning=self.model.reasoning,
+                    reasoning=model.reasoning,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": end_user_label},
                     extra_body={"mock_testing_fallbacks": False},

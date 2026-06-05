@@ -3,10 +3,12 @@
 Memory lives as plain markdown under ``data/memories/<user_id>/``: ``main.md``
 is the consolidated main memory injected into reply prompts, ``raw.md``
 accumulates phase-1 raw extraction entries until consolidation rewrites the
-main file, and ``main.bak.md`` keeps the previous main generation as a manual
-recovery point against a bad consolidation rewrite. Files stay small (a few
-KB), so IO is synchronous; cross-task safety comes from the per-user asyncio
-locks.
+main file, ``main.bak.md`` keeps the previous main generation as a manual
+recovery point against a bad consolidation rewrite, and ``archive.md`` retains
+consumed and evicted raw entries verbatim as cold storage that no LLM or
+command path ever reads back. The live files stay tens of KB at most and the
+uncapped archive is only ever appended to in O(1), so IO is synchronous;
+cross-task safety comes from the per-user asyncio locks.
 """
 
 import os
@@ -18,11 +20,7 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
-from discordbot.cogs._memory.constants import (
-    RAW_FILE_MAX_BYTES,
-    MAIN_FILE_MAX_CHARS,
-    MEMORY_INJECTION_MAX_CHARS,
-)
+from discordbot.cogs._memory.constants import RAW_FILE_MAX_BYTES
 
 _MEMORY_DIR = Path("./data/memories")
 
@@ -68,6 +66,11 @@ def _bak_path(user_id: int) -> Path:
     return _user_dir(user_id=user_id) / "main.bak.md"
 
 
+def _archive_path(user_id: int) -> Path:
+    """Returns the cold-storage archive path for consumed and evicted raw entries."""
+    return _user_dir(user_id=user_id) / "archive.md"
+
+
 def _read_text(path: Path) -> str:
     """Reads a memory file, treating a missing file as empty."""
     try:
@@ -98,33 +101,25 @@ def cleared_since(user_id: int, started_at: float) -> bool:
 
 
 def read_main_memory(user_id: int) -> str:
-    """Returns the consolidated memory for prompt injection, stripped and truncated."""
-    text = _strip_identity(text=_read_text(path=_main_path(user_id=user_id)))
-    return text.strip()[:MEMORY_INJECTION_MAX_CHARS]
-
-
-def read_main_memory_full(user_id: int) -> str:
-    """Returns the consolidated memory without the injection truncation."""
+    """Returns the consolidated memory, stripped of identity metadata."""
     return _strip_identity(text=_read_text(path=_main_path(user_id=user_id))).strip()
 
 
 def write_main_memory(user_id: int, content: str, identity: str) -> None:
     """Atomically replaces the consolidated main memory file.
 
-    The content is clamped to `MAIN_FILE_MAX_CHARS` so an over-budget
-    consolidation rewrite cannot push the on-disk file past what the read
-    paths inject and `/memory show` displays. The file is ordered by
-    priority (profile first), so head-truncation keeps the highest-value
-    content. The previous main generation is copied to `main.bak.md` first as
-    a manual recovery point, and `identity` is inserted after the `v1` header
-    as human-inspection metadata that every read path strips back out.
+    There is no size clamp: growth is bounded by the consolidation compaction
+    pass, never by code-side truncation. The previous main generation is
+    copied to `main.bak.md` first as a manual recovery point, and `identity`
+    is inserted after the `v1` header as human-inspection metadata that every
+    read path strips back out.
     """
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
     main_path = _main_path(user_id=user_id)
     previous = _read_text(path=main_path)
     if previous:
         _bak_path(user_id=user_id).write_text(data=previous, encoding="utf-8")
-    rendered = content.strip()[:MAIN_FILE_MAX_CHARS]
+    rendered = content.strip()
     if rendered.startswith("v1\n"):
         body = rendered.removeprefix("v1\n")
         rendered = f"v1\n{identity}\n{body}"
@@ -134,21 +129,46 @@ def write_main_memory(user_id: int, content: str, identity: str) -> None:
 
 
 def append_raw_entry(user_id: int, entry_text: str, identity: str) -> None:
-    """Appends one timestamped raw entry, evicting the oldest entries on overflow."""
+    """Appends one timestamped raw entry, archiving the oldest entries on overflow."""
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
     raw_path = _raw_path(user_id=user_id)
     combined = f"{_read_text(path=raw_path)}\n\n## {timestamp} | {identity}\n{entry_text.strip()}"
     entries = _split_raw_entries(text=combined)
+    evicted: list[str] = []
     while len(entries) > 1 and _entries_bytes(entries=entries) > RAW_FILE_MAX_BYTES:
-        entries.pop(0)
+        evicted.append(entries.pop(0))
     rendered = "\n\n".join(entries)
     encoded = rendered.encode("utf-8")
     if len(encoded) > RAW_FILE_MAX_BYTES:
         # A single oversized entry cannot be evicted; truncate it so the raw
-        # file still honors the advertised hard cap (memory is best-effort).
+        # file still honors the advertised hard cap (memory is best-effort,
+        # and the truncated tail is the only loss not preserved in the archive).
         rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
     raw_path.write_text(data=rendered + "\n", encoding="utf-8")
+    if evicted:
+        # Archive only after the raw write succeeded so a failed write cannot
+        # archive entries that still live in the raw file.
+        append_archive(user_id=user_id, text="\n\n".join(evicted))
+
+
+def append_archive(user_id: int, text: str) -> None:
+    """Appends consumed or evicted raw evidence to the cold-storage archive.
+
+    The archive is append-only and uncapped by design (the operator accepts
+    the growth); it preserves raw entries verbatim, including the identity
+    header suffixes, and is never read back by any LLM or command path.
+    Append-mode IO keeps the write O(1) in the archive size so an old, large
+    archive never slows consolidation down or pins the user lock.
+    """
+    block = text.strip()
+    if not block:
+        return
+    _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
+    with _archive_path(user_id=user_id).open(mode="a", encoding="utf-8") as handle:
+        if handle.tell() > 0:
+            handle.write("\n")
+        handle.write(block + "\n")
 
 
 def count_raw_entries(user_id: int) -> int:
@@ -172,6 +192,15 @@ def read_raw_entries(user_id: int) -> str:
     return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
 
 
+def read_raw_on_disk(user_id: int) -> str:
+    """Returns the raw file's verbatim on-disk text for archiving.
+
+    Unlike `read_raw_entries`, the identity header suffixes are kept: the
+    archive is a human-inspection record, never LLM input.
+    """
+    return _read_text(path=_raw_path(user_id=user_id)).strip()
+
+
 def clear_raw(user_id: int) -> None:
     """Deletes the raw file after a consolidation consumed it."""
     _raw_path(user_id=user_id).unlink(missing_ok=True)
@@ -186,7 +215,12 @@ def clear_user_memory(user_id: int) -> bool:
     mark_cleared(user_id=user_id)
     removed = False
     main_path = _main_path(user_id=user_id)
-    for path in (main_path, _raw_path(user_id=user_id), _bak_path(user_id=user_id)):
+    for path in (
+        main_path,
+        _raw_path(user_id=user_id),
+        _bak_path(user_id=user_id),
+        _archive_path(user_id=user_id),
+    ):
         try:
             path.unlink()
             removed = True

@@ -2,6 +2,7 @@
 
 import time
 import asyncio
+from datetime import UTC, datetime
 
 import logfire
 from pydantic import BaseModel, ConfigDict, SkipValidation
@@ -11,16 +12,19 @@ from discordbot.cogs._memory.store import (
     clear_raw,
     user_lock,
     cleared_since,
+    append_archive,
     raw_file_bytes,
     append_raw_entry,
+    read_main_memory,
     read_raw_entries,
+    read_raw_on_disk,
     count_raw_entries,
     write_main_memory,
-    read_main_memory_full,
 )
 from discordbot.cogs._memory.constants import (
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
+    MAIN_COMPACTION_TRIGGER_CHARS,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, transcript_from_messages
 
@@ -155,9 +159,12 @@ async def _consolidate_locked(
     user_id: int, started_at: float, extractor: MemoryExtractorAI, identity: str
 ) -> None:
     """Consolidates accumulated raw entries into the main memory file."""
+    existing_main = read_main_memory(user_id=user_id)
     result = await extractor.consolidate(
-        existing_main=read_main_memory_full(user_id=user_id),
+        existing_main=existing_main,
         raw_entries=read_raw_entries(user_id=user_id),
+        today=datetime.now(UTC).date().isoformat(),
+        compact=len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS,
     )
     if result is None:
         # LLM path failed; keep the raw entries so the next update retries.
@@ -179,4 +186,7 @@ async def _consolidate_locked(
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
+    # The consumed batch is preserved verbatim in the cold-storage archive; the
+    # failure paths above keep raw for retry and therefore must not archive.
+    append_archive(user_id=user_id, text=read_raw_on_disk(user_id=user_id))
     clear_raw(user_id=user_id)
