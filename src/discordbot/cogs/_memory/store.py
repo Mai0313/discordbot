@@ -192,10 +192,18 @@ def _trim_detail(path: Path) -> None:
     cannot leave a half-trimmed file.
     """
     entries = _split_raw_entries(text=_read_text(path=path))
-    while len(entries) > 1 and _entries_bytes(entries=entries) > DETAIL_FILE_TRIM_TARGET_BYTES:
-        entries.pop(0)
+    # Track the rendered size incrementally; recomputing the joined size per
+    # dropped entry would be O(n^2) on a megabyte-scale file and stall the
+    # event loop, since store IO is synchronous by design.
+    sizes = [len(entry.encode("utf-8")) for entry in entries]
+    total = sum(sizes) + 2 * max(len(entries) - 1, 0)
+    start = 0
+    while len(entries) - start > 1 and total > DETAIL_FILE_TRIM_TARGET_BYTES:
+        # Dropping an entry also drops one "\n\n" separator (2 bytes).
+        total -= sizes[start] + 2
+        start += 1
     tmp_path = path.with_suffix(".md.tmp")
-    tmp_path.write_text(data="\n\n".join(entries) + "\n", encoding="utf-8")
+    tmp_path.write_text(data="\n\n".join(entries[start:]) + "\n", encoding="utf-8")
     os.replace(src=tmp_path, dst=path)
 
 
