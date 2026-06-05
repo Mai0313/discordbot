@@ -26,6 +26,12 @@ MEMORY_INJECTION_MAX_CHARS = 3_500
 # Phase-1 transcript truncation (keeps head and tail, drops the middle).
 MEMORY_TRANSCRIPT_MAX_CHARS = 12_000
 
+# Cap for the bot's own reply inside the transcript. The reply is secondary
+# evidence and is appended last, so without this cap a long (e.g. SUMMARY)
+# reply fills the entire kept tail and the middle-truncation drops the current
+# user message right before it.
+MEMORY_REPLY_MAX_CHARS = 2_000
+
 # Background LLM call timeouts. `memories_model` runs with high reasoning
 # effort, so these are looser than interactive paths but still bounded so a
 # stuck call cannot pin the in-flight de-dupe slot forever.

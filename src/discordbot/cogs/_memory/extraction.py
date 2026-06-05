@@ -13,6 +13,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import PHASE1_PROMPT, PHASE2_PROMPT
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._memory.constants import (
+    MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
     MEMORY_EXTRACT_TIMEOUT_SECONDS,
     MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
@@ -170,6 +171,10 @@ def transcript_from_messages(message_list: list[EasyInputMessageParam], full_rep
         marker = f"[message {len(blocks) + 1} | {message['role']}]"
         blocks.append(f"{marker}\n{_indent_block(text=text)}")
     reply = USAGE_FOOTER_RE.sub("", full_reply).strip()
+    if len(reply) > MEMORY_REPLY_MAX_CHARS:
+        # The reply is secondary evidence; capping it keeps the tail of the
+        # middle-truncation budget free for the current user message.
+        reply = f"{reply[:MEMORY_REPLY_MAX_CHARS]}\n[... reply truncated ...]"
     blocks.append(
         f"[message {len(blocks) + 1} | assistant reply (this turn)]\n{_indent_block(text=reply)}"
     )
