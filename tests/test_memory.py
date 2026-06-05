@@ -1753,3 +1753,34 @@ def test_append_detail_trims_oldest_past_cap(
     assert "entry 0" not in text
     assert len(text.encode("utf-8")) <= 300 + 1
     assert not detail_path.with_suffix(".md.tmp").exists()
+
+
+async def test_pipeline_clear_resets_consolidation_cooldown(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    # The clear lands after the recorded attempt, so the cooldown belonged to
+    # the wiped memory and must not delay the fresh state's first consolidation.
+    mark_cleared(user_id=USER_ID)
+    extractor, fake_client = _extractor()
+
+    parsed_outputs: list[BaseModel] = [
+        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 清除後的新訊號"),
+        ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全新整理"),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    assert "全新整理" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0

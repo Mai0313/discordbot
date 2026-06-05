@@ -188,10 +188,12 @@ def _should_consolidate(user_id: int) -> bool:
     if count_raw_entries(user_id=user_id) < RAW_CONSOLIDATION_THRESHOLD:
         return False
     last_attempt = _last_consolidation.get(user_id)
-    return (
-        last_attempt is None
-        or time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
-    )
+    if last_attempt is None or cleared_since(user_id=user_id, started_at=last_attempt):
+        # No prior attempt, or the memory was cleared since it: the fresh
+        # post-clear state deserves a prompt first consolidation instead of
+        # waiting out a cooldown that belonged to the wiped memory.
+        return True
+    return time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
 
 
 async def _consolidate_locked(
