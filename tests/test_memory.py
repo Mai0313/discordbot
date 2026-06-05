@@ -738,6 +738,19 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     assert "1 筆" in (embed.footer.text or "")
 
 
+async def test_memory_show_does_not_corrupt_malformed_version_token(
+    memory_isolated_dir: Path,
+) -> None:
+    write_main_memory(user_id=USER_ID, content="v10 是一段被手動編輯的內容")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    # Only an exact `v1\n` header is stripped; `v10...` must survive intact.
+    assert (embed.description or "").startswith("v10 是一段")
+
+
 def test_transcript_caps_reply_so_current_message_survives_truncation() -> None:
     message_list = [
         EasyInputMessageParam(

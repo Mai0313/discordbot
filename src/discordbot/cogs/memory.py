@@ -54,8 +54,9 @@ class MemoryCogs(commands.Cog):
         memory_text = read_main_memory(user_id=interaction.user.id)
         pending_count = count_raw_entries(user_id=interaction.user.id)
         if memory_text:
-            # The `v1` first line is the pipeline's format marker, not content.
-            display_text = memory_text.removeprefix("v1").strip()
+            # Strip only the exact `v1` header line, never a `v1`-prefixed first
+            # token of a malformed/hand-edited file (e.g. `v10...`, `v1: ...`).
+            display_text = memory_text.removeprefix("v1\n").strip()
             embed = Embed(
                 title="🧠 我對你的記憶", description=display_text, color=_MEMORY_EMBED_COLOR
             )
