@@ -764,10 +764,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert {peak_start[0].effort, after_peak[0].effort} == {"high"}
 
 
-async def test_handle_message_reply_injects_memory_and_schedules_update(
+async def test_handle_message_reply_injects_memory_as_trailing_system_message(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies stored memory lands in instructions and the pipeline is scheduled."""
+    """Verifies stored memory rides as a trailing role=system input, not in instructions."""
     cog = _cog(memory_enabled=True)
     memory_store.write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆")
 
@@ -802,11 +802,25 @@ async def test_handle_message_reply_injects_memory_and_schedules_update(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
+    # Top-level instructions must stay the clean developer-controlled persona.
     instructions = cog.client.responses.create_instructions[-1]
-    assert instructions.startswith("SYS")
-    assert "喜歡簡短回覆" in instructions
-    assert "Long-term memory" in instructions
-    assert scheduled[0]["user_id"] == 1
+    assert instructions == "SYS"
+    assert "喜歡簡短回覆" not in instructions
+
+    # Memory rides as the LAST input item, role=system, carrying the wrapper.
+    llm_input = cog.client.responses.create_inputs[-1]
+    memory_item = llm_input[-1]
+    assert memory_item["role"] == "system"
+    memory_text = memory_item["content"][0]["text"]
+    assert "喜歡簡短回覆" in memory_text
+    assert "Long-term memory" in memory_text
+
+    # The extraction message_list must NOT contain the memory block (no self-feeding).
+    scheduled_list = scheduled[0]["message_list"]
+    assert isinstance(scheduled_list, list)
+    assert "Long-term memory" not in str(scheduled_list)
+    assert "喜歡簡短回覆" not in str(scheduled_list)
+    assert len(scheduled_list) == len(llm_input) - 1
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert cog.memory_extractor.model.name == cog.runtime_models.memories_model.name

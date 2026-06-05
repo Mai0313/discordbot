@@ -316,18 +316,28 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
-        instructions = system_prompt
+        # The user's long-term memory is attacker-influenceable (it is distilled
+        # from their own messages), so it rides as a low-trust role=system
+        # separator at the END of the conversation rather than in the top-level
+        # `instructions`, where it would carry persona-level authority and be a
+        # prime prompt-injection target. It is appended to a separate LLM-input
+        # list so the phase-1 extraction `message_list` never re-ingests
+        # already-stored memory (self-feeding).
+        llm_input: list[EasyInputMessageParam] = message_list
         memory_enabled = self.memory_config.enabled
         if memory_enabled and (
             memory_text := memory_store.read_main_memory(user_id=message.author.id)
         ):
-            instructions = system_prompt + render_memory_injection(memory=memory_text)
+            memory_message = _system_separator_message(
+                text=render_memory_injection(memory=memory_text).strip()
+            )
+            llm_input = [*message_list, memory_message]
 
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
             model=slow_model.name,
-            instructions=instructions,
-            input=cast("ResponseInputParam", message_list),
+            instructions=system_prompt,
+            input=cast("ResponseInputParam", llm_input),
             reasoning=slow_model.reasoning,
             tools=slow_model.tools,
             stream=True,
