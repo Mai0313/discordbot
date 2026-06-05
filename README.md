@@ -23,7 +23,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Features
 
-- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, viewable with `/memory show` and erasable with `/memory clear`.
+- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, viewable with `/memory show` (`/memory clear` is temporarily paused).
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
@@ -57,7 +57,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                             |
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | Search NPCs, quests, and maps.                                                                                         |
 | `/maplestory item`, `/maplestory stats`                          | Search item drop sources and database stats.                                                                           |
-| `/memory show\|clear`                                            | Privately shows or wipes what the bot remembers about you.                                                             |
+| `/memory show\|clear`                                            | Privately shows or wipes what the bot remembers about you; clear is temporarily paused.                                |
 | `/help`                                                          | Shows the in-Discord guide.                                                                                            |
 | `/ping`                                                          | Checks bot latency.                                                                                                    |
 
@@ -111,7 +111,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 
-Per-user long-term memory is on by default; set `MEMORY_ENABLED=false` to disable both memory injection and background extraction.
+Per-user long-term memory is on by default; set `MEMORY_ENABLED=false` to disable both memory injection and background extraction. `/memory clear` is paused by default; set `MEMORY_CLEAR_ENABLED=true` to let users actually wipe their memory.
 
 ## Data And Privacy
 
@@ -124,7 +124,7 @@ This bot stores runtime data locally under `data/`.
 - `game_cleanup.db`: Discord guild/channel names, user names, channel IDs, and message IDs for public expiring responses such as game, economy, and stock messages that should be cleaned up after restart.
 - `model_prices.json`: cached LiteLLM pricing metadata used for AI reply cost estimates.
 - `downloads/` and `threads/`: temporary media scratch folders.
-- `memories/`: per-user long-term memory as plaintext markdown files keyed by Discord user id, built in the background from your conversations and injected into future AI replies; clear yours any time with `/memory clear`.
+- `memories/`: per-user long-term memory as plaintext markdown files in one folder per Discord user id, built in the background from your conversations and injected into future AI replies.
 
 When the bot responds with AI, relevant text, supported attachments, embedded media, and participant identity from the active context are sent to the configured LLM endpoint. Data is not sent to any other service by this project.
 

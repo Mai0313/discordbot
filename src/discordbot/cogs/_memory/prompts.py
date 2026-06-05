@@ -50,7 +50,7 @@ Your job: merge a batch of timestamped raw memory entries into the user's single
 
 INPUT (in the user message):
 * `<existing_memory>`: the current consolidated file. `(empty)` means this is the first consolidation; build the file from the raw entries alone.
-* `<raw_entries>`: new raw entries, each under a `## <ISO timestamp>` header, oldest first.
+* `<raw_entries>`: new raw entries, each under a `## <ISO timestamp> | <author identity>` header, oldest first. The identity suffix is bookkeeping metadata for human file inspection only; never copy it into the memory content.
 
 HOW TO MERGE:
 * Deduplicate. Merge near-duplicate preferences into the sharper phrasing, but keep genuinely distinct preferences as separate bullets; do not collapse them into one vague umbrella statement.

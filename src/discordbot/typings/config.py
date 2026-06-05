@@ -23,6 +23,7 @@ class DiscordConfig(BaseSettings):
 
 
 _MEMORY_ENABLED_DEFAULT = True
+_MEMORY_CLEAR_ENABLED_DEFAULT = False
 
 
 class MemoryConfig(BaseSettings):
@@ -36,6 +37,14 @@ class MemoryConfig(BaseSettings):
         frozen=False,
         deprecated=False,
     )
+    clear_enabled: bool = Field(
+        _MEMORY_CLEAR_ENABLED_DEFAULT,
+        description="Whether `/memory clear` actually deletes memory; off keeps the command visible but paused.",
+        examples=[False],
+        validation_alias=AliasChoices("MEMORY_CLEAR_ENABLED"),
+        frozen=False,
+        deprecated=False,
+    )
 
     @field_validator("enabled", mode="before")
     @classmethod
@@ -43,6 +52,14 @@ class MemoryConfig(BaseSettings):
         """Treats a blank `MEMORY_ENABLED=` env line as the default instead of failing cog load."""
         if isinstance(value, str) and not value.strip():
             return _MEMORY_ENABLED_DEFAULT
+        return value
+
+    @field_validator("clear_enabled", mode="before")
+    @classmethod
+    def _blank_clear_env_means_default(cls, value: object) -> object:
+        """Treats a blank `MEMORY_CLEAR_ENABLED=` env line as the default instead of failing cog load."""
+        if isinstance(value, str) and not value.strip():
+            return _MEMORY_CLEAR_ENABLED_DEFAULT
         return value
 
 

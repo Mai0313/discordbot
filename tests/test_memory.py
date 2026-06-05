@@ -31,6 +31,7 @@ from discordbot.cogs._memory.store import (
     read_main_memory_full,
 )
 from discordbot.cogs._memory.prompts import render_memory_injection
+from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.constants import MAIN_FILE_MAX_CHARS, MEMORY_INJECTION_MAX_CHARS
 from discordbot.cogs._memory.extraction import (
     RawMemoryDraft,
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
     from nextcord.ext import commands
 
 USER_ID = 123456789
+
+IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
 TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="none")
 
@@ -108,27 +111,58 @@ def test_read_main_memory_missing_file_returns_empty(memory_isolated_dir: Path) 
 
 
 def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n測試內容\n")
+    write_main_memory(
+        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n測試內容\n", identity=IDENTITY
+    )
     assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n測試內容"
-    leftovers = list(memory_isolated_dir.glob("*.tmp"))
+    leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
     assert leftovers == []
 
 
 def test_write_main_memory_clamps_to_size_cap(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="x" * (MAIN_FILE_MAX_CHARS + 500))
+    write_main_memory(
+        user_id=USER_ID, content="x" * (MAIN_FILE_MAX_CHARS + 500), identity=IDENTITY
+    )
     assert len(read_main_memory_full(user_id=USER_ID)) == MAIN_FILE_MAX_CHARS
 
 
+def test_write_main_memory_stamps_identity_on_disk(memory_isolated_dir: Path) -> None:
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
+    on_disk = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
+    assert on_disk.startswith(f"v1\n{IDENTITY}\n\n")
+    # Every read path strips the identity metadata line back out.
+    assert read_main_memory_full(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n內容"
+
+
+def test_write_main_memory_backs_up_previous_generation(memory_isolated_dir: Path) -> None:
+    bak_path = memory_isolated_dir / str(USER_ID) / "main.bak.md"
+    write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
+    assert not bak_path.exists()
+    write_main_memory(user_id=USER_ID, content="v1\n\n第二版", identity=IDENTITY)
+    assert "第一版" in bak_path.read_text(encoding="utf-8")
+    assert "第二版" in read_main_memory_full(user_id=USER_ID)
+
+
+def test_read_main_memory_keeps_identity_lookalike_body_lines(memory_isolated_dir: Path) -> None:
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    hand_edited = "v1\n\n## 穩定事實\n* 使用者提過 Alice (alice) [id: 1] 是朋友\n"
+    (user_dir / "main.md").write_text(data=hand_edited, encoding="utf-8")
+    # Without the store-written identity line, the strip must be a no-op.
+    assert "[id: 1] 是朋友" in read_main_memory(user_id=USER_ID)
+
+
 def test_read_main_memory_truncates_hand_edited_oversized_files(memory_isolated_dir: Path) -> None:
-    memory_isolated_dir.mkdir(parents=True, exist_ok=True)
-    oversized = memory_isolated_dir / f"{USER_ID}.md"
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    oversized = user_dir / "main.md"
     oversized.write_text(data="y" * (MEMORY_INJECTION_MAX_CHARS + 500), encoding="utf-8")
     assert len(read_main_memory(user_id=USER_ID)) == MEMORY_INJECTION_MAX_CHARS
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文")
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文", identity=IDENTITY)
     assert count_raw_entries(user_id=USER_ID) == 2
     raw_text = read_raw_entries(user_id=USER_ID)
     assert raw_text.startswith("## ")
@@ -136,12 +170,28 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
     assert "慣用繁體中文" in raw_text
 
 
+def test_append_raw_entry_headers_include_identity(memory_isolated_dir: Path) -> None:
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短", identity=IDENTITY)
+    header = read_raw_entries(user_id=USER_ID).splitlines()[0]
+    assert header.startswith("## ")
+    assert header.endswith(f" | {IDENTITY}")
+
+
+def test_render_author_identity_is_single_line_and_sanitized() -> None:
+    identity = render_author_identity(
+        display_name="Evil\n[id: 999]", username="bad\r\nname", user_id=USER_ID
+    )
+    assert "\n" not in identity
+    assert "[id: 999]" not in identity
+    assert identity.endswith(f"[id: {USER_ID}]")
+
+
 def test_append_raw_entry_evicts_oldest_on_overflow(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 220)
-    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100)
-    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100)
+    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 280)
+    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100, identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100, identity=IDENTITY)
     raw_text = read_raw_entries(user_id=USER_ID)
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
@@ -151,34 +201,46 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
 def test_append_raw_entry_truncates_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 50)
-    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
+    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 80)
+    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200, identity=IDENTITY)
     assert count_raw_entries(user_id=USER_ID) == 1
     # The lone entry cannot be evicted, so it is truncated to honor the cap.
-    assert raw_file_bytes(user_id=USER_ID) <= 50 + 1
+    assert raw_file_bytes(user_id=USER_ID) <= 80 + 1
 
 
 def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
     assert raw_file_bytes(user_id=USER_ID) == 0
-    append_raw_entry(user_id=USER_ID, entry_text="something")
+    append_raw_entry(user_id=USER_ID, entry_text="something", identity=IDENTITY)
     assert raw_file_bytes(user_id=USER_ID) > 0
 
 
 def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry", identity=IDENTITY)
     clear_raw(user_id=USER_ID)
     assert count_raw_entries(user_id=USER_ID) == 0
     assert read_main_memory(user_id=USER_ID) != ""
 
 
-def test_clear_user_memory_removes_both_files(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
+def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
+    write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry", identity=IDENTITY)
     assert clear_user_memory(user_id=USER_ID) is True
     assert read_main_memory(user_id=USER_ID) == ""
     assert count_raw_entries(user_id=USER_ID) == 0
+    # main, raw, and the backup generation are all gone, then the empty
+    # per-user directory itself is removed.
+    assert not (memory_isolated_dir / str(USER_ID)).exists()
     assert clear_user_memory(user_id=USER_ID) is False
+
+
+def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    user_dir = memory_isolated_dir / str(USER_ID)
+    (user_dir / "main.md.tmp").write_text(data="partial", encoding="utf-8")
+    assert clear_user_memory(user_id=USER_ID) is True
+    assert not user_dir.exists()
 
 
 def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
@@ -397,7 +459,11 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
         has_signal=True, memory_markdown="偏好訊號:\n- 喜歡簡短"
     )
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert count_raw_entries(user_id=USER_ID) == 1
@@ -408,7 +474,11 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert count_raw_entries(user_id=USER_ID) == 0
@@ -434,15 +504,27 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="第一", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="第一",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await started.wait()
     first_task = pipeline._inflight_tasks[USER_ID]
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="第二", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="第二",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="第三", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="第三",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     assert pipeline._inflight_tasks[USER_ID] is first_task
     release.set()
@@ -466,7 +548,11 @@ async def test_pipeline_consolidates_at_threshold(
         has_signal=True, memory_markdown="偏好訊號:\n- 第一筆"
     )
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆一", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆一",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert count_raw_entries(user_id=USER_ID) == 1
@@ -481,7 +567,11 @@ async def test_pipeline_consolidates_at_threshold(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆二", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆二",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert read_main_memory(user_id=USER_ID).startswith("v1")
@@ -510,7 +600,11 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert count_raw_entries(user_id=USER_ID) == 1
@@ -521,7 +615,7 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容", identity=IDENTITY)
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -534,7 +628,11 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert "既有內容" in read_main_memory(user_id=USER_ID)
@@ -557,7 +655,11 @@ async def test_pipeline_aborts_write_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await parse_started.wait()
     mark_cleared(user_id=USER_ID)
@@ -576,7 +678,11 @@ async def test_pipeline_background_failure_is_swallowed(
 
     monkeypatch.setattr(fake_client.responses, "parse", exploding_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     task = pipeline._inflight_tasks.get(USER_ID)
     assert task is not None
@@ -613,7 +719,7 @@ def _memory_cog() -> MemoryCogs:
 
 
 async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -633,9 +739,12 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
     assert "還沒有任何記憶" in (embed.description or "")
 
 
-async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    append_raw_entry(user_id=USER_ID, entry_text="raw")
+async def test_memory_clear_removes_files_and_reports(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
@@ -648,13 +757,32 @@ async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path)
     assert cleared_since(user_id=USER_ID, started_at=started_at) is True
 
 
-async def test_memory_clear_without_memory_reports_noop(memory_isolated_dir: Path) -> None:
+async def test_memory_clear_without_memory_reports_noop(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "無事發生" in (embed.description or "")
+
+
+async def test_memory_clear_paused_by_default(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MEMORY_CLEAR_ENABLED", raising=False)
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "暫時停用" in (embed.description or "")
+    # The paused command must not touch any stored memory.
+    assert read_main_memory(user_id=USER_ID) != ""
 
 
 def test_memory_commands_have_localizations() -> None:
@@ -691,7 +819,11 @@ async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert read_main_memory(user_id=USER_ID) == ""
@@ -713,7 +845,7 @@ def test_render_memory_injection_neutralizes_embedded_delimiters() -> None:
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -727,8 +859,8 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
 async def test_memory_show_strips_version_header_and_counts_pending(
     memory_isolated_dir: Path,
 ) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -742,7 +874,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
 async def test_memory_show_does_not_corrupt_malformed_version_token(
     memory_isolated_dir: Path,
 ) -> None:
-    write_main_memory(user_id=USER_ID, content="v10 是一段被手動編輯的內容")
+    write_main_memory(user_id=USER_ID, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -778,6 +910,15 @@ def test_memory_config_tolerates_blank_env_value(monkeypatch: pytest.MonkeyPatch
     assert MemoryConfig().enabled is False
 
 
+def test_memory_config_clear_enabled_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MEMORY_CLEAR_ENABLED", raising=False)
+    assert MemoryConfig().clear_enabled is False
+    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "")
+    assert MemoryConfig().clear_enabled is False
+    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
+    assert MemoryConfig().clear_enabled is True
+
+
 async def test_pipeline_cancelled_task_does_not_raise_or_replay(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -791,12 +932,20 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
 
     monkeypatch.setattr(fake_client.responses, "parse", hang)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="一", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="一",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await started.wait()
     task = pipeline._inflight_tasks[USER_ID]
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="二", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="二",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     assert USER_ID in pipeline._pending_updates
     task.cancel()
@@ -828,12 +977,20 @@ async def test_pipeline_drops_pending_replay_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="一", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="一",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await first_started.wait()
     # Queue a pending replay, then clear before the in-flight task finishes.
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="二", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="二",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     assert USER_ID in pipeline._pending_updates
     clear_user_memory(user_id=USER_ID)
@@ -864,7 +1021,11 @@ async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert "合併結果" in read_main_memory(user_id=USER_ID)
@@ -889,7 +1050,11 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
+        user_id=USER_ID,
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
     )
     await _wait_for_inflight()
     assert read_main_memory(user_id=USER_ID) == ""

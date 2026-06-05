@@ -4,10 +4,12 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
+from discordbot.typings.config import MemoryConfig
 from discordbot.cogs._memory.store import read_main_memory, clear_user_memory, count_raw_entries
 
 _MEMORY_EMBED_COLOR = 0x5865F2
 _CLEAR_EMBED_COLOR = 0x57F287
+_CLEAR_DISABLED_EMBED_COLOR = 0xFEE75C
 
 
 class MemoryCogs(commands.Cog):
@@ -15,6 +17,7 @@ class MemoryCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
+        memory_config: Env-backed memory settings, including the clear kill switch.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -24,6 +27,7 @@ class MemoryCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+        self.memory_config = MemoryConfig()
 
     @nextcord.slash_command(
         name="memory",
@@ -103,6 +107,14 @@ class MemoryCogs(commands.Cog):
         cannot be resurrected by a slower background task.
         """
         if interaction.user is None:
+            return
+        if not self.memory_config.clear_enabled:
+            embed = Embed(
+                title="🧹 記憶清除",
+                description="記憶清除功能暫時停用，你仍然可以用 `/memory show` 查看我對你的記憶。",
+                color=_CLEAR_DISABLED_EMBED_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         removed = clear_user_memory(user_id=interaction.user.id)
         description = "已清除我對你的所有記憶。" if removed else "本來就沒有任何記憶，無事發生。"

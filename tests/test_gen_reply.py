@@ -769,7 +769,9 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
 ) -> None:
     """Verifies stored memory rides as a trailing role=system input, not in instructions."""
     cog = _cog(memory_enabled=True)
-    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆")
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
+    )
 
     class FakeResponder:
         """Returns a fixed completed reply."""
@@ -786,7 +788,7 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
     scheduled: list[dict[str, object]] = []
 
     def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object
+        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
     ) -> None:
         """Records the scheduled memory update arguments."""
         scheduled.append({
@@ -794,6 +796,7 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
             "message_list": message_list,
             "full_reply": full_reply,
             "extractor": extractor,
+            "identity": identity,
         })
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
@@ -823,6 +826,7 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
     assert len(scheduled_list) == len(llm_input) - 1
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
+    assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
     assert cog.memory_extractor.model.name == cog.runtime_models.memories_model.name
 
 
@@ -847,7 +851,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     scheduled: list[int] = []
 
     def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object
+        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
     ) -> None:
         """Records that a memory update was scheduled."""
         scheduled.append(user_id)
@@ -867,7 +871,9 @@ async def test_handle_message_reply_disabled_memory_skips_pipeline(
 ) -> None:
     """Verifies the kill switch bypasses injection and extraction entirely."""
     cog = _cog(memory_enabled=False)
-    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入")
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入", identity="Tester (tester) [id: 1]"
+    )
 
     class FakeResponder:
         """Returns a fixed completed reply."""
@@ -884,7 +890,7 @@ async def test_handle_message_reply_disabled_memory_skips_pipeline(
     scheduled: list[int] = []
 
     def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object
+        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
     ) -> None:
         """Records that a memory update was scheduled."""
         scheduled.append(user_id)

@@ -39,6 +39,18 @@ def sanitize_identity(value: str) -> str:
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
 
 
+def render_author_identity(display_name: str, username: str, user_id: int) -> str:
+    """Renders the single-line author identity stamped into memory files.
+
+    Whitespace runs (including any newline that slips past Discord's name
+    rules) collapse to single spaces so the identity can never break the
+    one-line header formats the memory store relies on.
+    """
+    safe_display = " ".join(sanitize_identity(value=display_name).split())
+    safe_username = " ".join(sanitize_identity(value=username).split())
+    return f"{safe_display} ({safe_username}) [id: {user_id}]"
+
+
 class MessageInputBuilder(BaseModel):
     """Converts Discord messages into Responses API input parts.
 
