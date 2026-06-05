@@ -40,9 +40,7 @@ _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 # The ` | <identity>` suffix on raw entry headers. `read_raw_entries` strips it
 # so the consolidation LLM never sees author identity either; headers written
 # before the suffix existed pass through unchanged.
-_RAW_HEADER_IDENTITY_RE = re.compile(
-    r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE
-)
+_RAW_HEADER_IDENTITY_RE = re.compile(r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE)
 
 # Process-local registries; tests reset them through the conftest fixture.
 _user_locks: dict[int, asyncio.Lock] = {}
