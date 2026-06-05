@@ -22,11 +22,14 @@ class DiscordConfig(BaseSettings):
     )
 
 
+_MEMORY_ENABLED_DEFAULT = True
+
+
 class MemoryConfig(BaseSettings):
     """Per-user long-term memory settings loaded from environment variables."""
 
     enabled: bool = Field(
-        True,
+        _MEMORY_ENABLED_DEFAULT,
         description="Master switch for per-user memory injection and background extraction.",
         examples=[True],
         validation_alias=AliasChoices("MEMORY_ENABLED"),
@@ -39,7 +42,7 @@ class MemoryConfig(BaseSettings):
     def _blank_env_means_default(cls, value: object) -> object:
         """Treats a blank `MEMORY_ENABLED=` env line as the default instead of failing cog load."""
         if isinstance(value, str) and not value.strip():
-            return True
+            return _MEMORY_ENABLED_DEFAULT
         return value
 
 
