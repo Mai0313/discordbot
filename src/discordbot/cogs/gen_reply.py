@@ -26,7 +26,7 @@ from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
 from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._gen_reply.input import MessageInputBuilder
+from discordbot.cogs._gen_reply.input import MessageInputBuilder, sanitize_identity
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -149,8 +149,8 @@ class ReplyGeneratorCogs(commands.Cog):
             messages.append(
                 _system_separator_message(
                     text=(
-                        f"==== Reference Message from {ref.author.display_name} "
-                        f"({ref.author.name}) [id: {ref.author.id}] that might be helpful "
+                        f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
+                        f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}] that might be helpful "
                         "for answering. ===="
                     )
                 )
@@ -162,7 +162,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Processes the current message that needs to be answered."""
         messages: list[EasyInputMessageParam] = [
             _system_separator_message(
-                text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ===="
+                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}]. ===="
             )
         ]
         current_msg = await self.input_builder.process_single_message(message=message)
