@@ -48,15 +48,33 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_show(self, interaction: Interaction) -> None:
-        """Shows the caller's consolidated memory as an ephemeral embed."""
+        """Shows the caller's consolidated memory and pending observations."""
         if interaction.user is None:
             return
         memory_text = store.read_main_memory(user_id=interaction.user.id)
+        pending_count = store.count_raw_entries(user_id=interaction.user.id)
         if memory_text:
+            # The `v1` first line is the pipeline's format marker, not content.
+            display_text = memory_text.removeprefix("v1").strip()
             embed = Embed(
-                title="🧠 我對你的記憶", description=memory_text, color=_MEMORY_EMBED_COLOR
+                title="🧠 我對你的記憶", description=display_text, color=_MEMORY_EMBED_COLOR
             )
-            embed.set_footer(text="記憶會在你與我對話後於背景慢慢更新")
+            if pending_count:
+                embed.set_footer(text=f"另有 {pending_count} 筆新觀察待整理，會在背景慢慢併入")
+            else:
+                embed.set_footer(text="記憶會在你與我對話後於背景慢慢更新")
+        elif pending_count:
+            # Extraction has produced raw observations but the first
+            # consolidation has not run yet; saying "no memory" here would
+            # contradict what the user just experienced in chat.
+            embed = Embed(
+                title="🧠 我對你的記憶",
+                description=(
+                    f"我已經記下 {pending_count} 筆對你的觀察，正在整理成長期記憶，"
+                    "再多聊幾次就會在這裡看到完整內容。"
+                ),
+                color=_MEMORY_EMBED_COLOR,
+            )
         else:
             embed = Embed(
                 title="🧠 我對你的記憶",
