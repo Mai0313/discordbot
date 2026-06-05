@@ -64,6 +64,12 @@ nav:
                   - models: Reference/discordbot/cogs/_maplestory/models.md
                   - service: Reference/discordbot/cogs/_maplestory/service.md
                   - views: Reference/discordbot/cogs/_maplestory/views.md
+              - _memory:
+                  - constants: Reference/discordbot/cogs/_memory/constants.md
+                  - extraction: Reference/discordbot/cogs/_memory/extraction.md
+                  - pipeline: Reference/discordbot/cogs/_memory/pipeline.md
+                  - prompts: Reference/discordbot/cogs/_memory/prompts.md
+                  - store: Reference/discordbot/cogs/_memory/store.md
               - _stock:
                   - chart: Reference/discordbot/cogs/_stock/chart.md
                   - database: Reference/discordbot/cogs/_stock/database.md
@@ -79,6 +85,7 @@ nav:
               - help: Reference/discordbot/cogs/help.md
               - log_msg: Reference/discordbot/cogs/log_msg.md
               - maplestory: Reference/discordbot/cogs/maplestory.md
+              - memory: Reference/discordbot/cogs/memory.md
               - parse_threads: Reference/discordbot/cogs/parse_threads.md
               - stock: Reference/discordbot/cogs/stock.md
               - template: Reference/discordbot/cogs/template.md
@@ -112,6 +119,7 @@ nav:
   - Scripts:
       - agents_dev: Scripts/agents_dev.md
       - artale_data: Scripts/artale_data.md
+      - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md

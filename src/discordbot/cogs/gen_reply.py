@@ -19,16 +19,21 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
+from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
+from discordbot.cogs._memory.store import read_main_memory
+from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._gen_reply.input import MessageInputBuilder
+from discordbot.cogs._gen_reply.input import MessageInputBuilder, sanitize_identity
+from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
 )
+from discordbot.cogs._memory.extraction import MemoryExtractorAI
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -60,6 +65,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self.memory_config = MemoryConfig()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -69,6 +75,15 @@ class ReplyGeneratorCogs(commands.Cog):
             A configured AsyncOpenAI client reused across reply requests.
         """
         return create_litellm_client(config=self.config)
+
+    @cached_property
+    def memory_extractor(self) -> MemoryExtractorAI:
+        """The cached per-user memory extraction service.
+
+        Returns:
+            An extractor bound to this cog's client and the memories model.
+        """
+        return MemoryExtractorAI(client=self.client, model=self.runtime_models.memories_model)
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
@@ -134,8 +149,8 @@ class ReplyGeneratorCogs(commands.Cog):
             messages.append(
                 _system_separator_message(
                     text=(
-                        f"==== Reference Message from {ref.author.display_name} "
-                        f"({ref.author.name}) [id: {ref.author.id}] that might be helpful "
+                        f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
+                        f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}] that might be helpful "
                         "for answering. ===="
                     )
                 )
@@ -147,7 +162,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Processes the current message that needs to be answered."""
         messages: list[EasyInputMessageParam] = [
             _system_separator_message(
-                text=f"==== Current Message that needs to be answered from {message.author.display_name} ({message.author.name}) [id: {message.author.id}]. ===="
+                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}]. ===="
             )
         ]
         current_msg = await self.input_builder.process_single_message(message=message)
@@ -301,11 +316,26 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list.extend(reference_messages)
         message_list.extend(current_message)
 
+        # The user's long-term memory is attacker-influenceable (it is distilled
+        # from their own messages), so it rides as a low-trust role=system
+        # separator at the END of the conversation rather than in the top-level
+        # `instructions`, where it would carry persona-level authority and be a
+        # prime prompt-injection target. It is appended to a separate LLM-input
+        # list so the phase-1 extraction `message_list` never re-ingests
+        # already-stored memory (self-feeding).
+        llm_input: list[EasyInputMessageParam] = message_list
+        memory_enabled = self.memory_config.enabled
+        if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
+            memory_message = _system_separator_message(
+                text=render_memory_injection(memory=memory_text).strip()
+            )
+            llm_input = [*message_list, memory_message]
+
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
             model=slow_model.name,
             instructions=system_prompt,
-            input=cast("ResponseInputParam", message_list),
+            input=cast("ResponseInputParam", llm_input),
             reasoning=slow_model.reasoning,
             tools=slow_model.tools,
             stream=True,
@@ -314,7 +344,14 @@ class ReplyGeneratorCogs(commands.Cog):
             extra_body={"mock_testing_fallbacks": False},
         )
 
-        await ResponseStreamer(message=message, responses=responses).stream()
+        full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+        if memory_enabled:
+            schedule_memory_update(
+                user_id=message.author.id,
+                message_list=message_list,
+                full_reply=full_reply,
+                extractor=self.memory_extractor,
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:

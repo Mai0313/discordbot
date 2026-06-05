@@ -27,6 +27,17 @@ from discordbot.utils.model_pricing import get_supported_modalities
 # icons, which never appear together in user-authored content.
 USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
 
+# A display name (or legacy username) containing an `[id: ...]`-shaped string
+# could forge the sender-identity prefix this module prepends, which the reply
+# persona prompt and the memory extraction prompt both treat as the trusted
+# authorship signal. Neutralize the lookalike before rendering.
+_ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
+
+
+def sanitize_identity(value: str) -> str:
+    """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
+    return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
+
 
 class MessageInputBuilder(BaseModel):
     """Converts Discord messages into Responses API input parts.
@@ -214,7 +225,8 @@ class MessageInputBuilder(BaseModel):
                 return EasyInputMessageParam(role="assistant", content=content)
 
             prefixed = (
-                f"{message.author.display_name} ({message.author.name}) "
+                f"{sanitize_identity(value=message.author.display_name)} "
+                f"({sanitize_identity(value=message.author.name)}) "
                 f"[id: {message.author.id}]: {content}"
             )
 

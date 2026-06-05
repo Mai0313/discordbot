@@ -23,7 +23,7 @@
 
 ## 功能
 
-- **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、生成或編輯圖片、生成短影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。
+- **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、生成或編輯圖片、生成短影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（跨伺服器、僅自己可見），可用 `/memory show` 查看、用 `/memory clear` 清除。
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片，檔案太大時會自動 retry 低畫質。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息與 AI 回覆獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
@@ -57,6 +57,7 @@
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查詢 MapleStory Artale 怪物、裝備與卷軸。                               |
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查詢 NPC、任務與地圖。                                                  |
 | `/maplestory item`, `/maplestory stats`                          | 查詢物品掉落來源與資料庫統計。                                          |
+| `/memory show\|clear`                                            | 私密查看或清除 bot 對你記住的內容。                                     |
 | `/help`                                                          | 顯示 Discord 內的使用指南。                                             |
 | `/ping`                                                          | 檢查 bot latency。                                                      |
 
@@ -110,6 +111,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
 
+個人長期記憶預設開啟；設定 `MEMORY_ENABLED=false` 可同時停用記憶注入與背景抽取。
+
 ## 資料與隱私
 
 這個 bot 會把 runtime data 存在本機 `data/` 底下。
@@ -121,6 +124,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 - `game_cleanup.db`：公開 expiring response 的 Discord guild/channel 名稱、user name、channel ID 與 message ID，例如 game、economy 與 stock messages，用於 bot 重啟後的清理。
 - `model_prices.json`：快取的 LiteLLM pricing metadata，用於 AI 回覆費用估算。
 - `downloads/` 與 `threads/`：臨時 media scratch folders。
+- `memories/`：以 Discord user id 為檔名的純文字 markdown 個人長期記憶，由你的對話在背景累積，並在後續 AI 回覆時注入；可隨時用 `/memory clear` 清除。
 
 當 bot 需要用 AI 回覆時，當前上下文中的相關文字、支援的附件、embedded media 與參與者身份會送到你設定的 LLM endpoint。本專案不會把這些資料送到其他服務。
 
