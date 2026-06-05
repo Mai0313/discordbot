@@ -152,17 +152,18 @@ async def _consolidate_locked(
     if cleared_since(user_id=user_id, started_at=started_at):
         return
     is_well_formed = result.memory_markdown.startswith("v1\n")
-    if result.changed and not is_well_formed:
-        # Malformed rewrite (changed but missing the exact `v1` header line, so
-        # near-misses like `v10...` or `v1: ...` are rejected too): keep the raw
-        # batch so the next consolidation retries instead of losing the signal.
+    if result.memory_markdown and not is_well_formed:
+        # Any non-empty output that is not a well-formed `v1` rewrite is
+        # malformed (missing the exact header line, near-misses like `v10...` /
+        # `v1: ...`): keep the raw batch for retry regardless of `changed`,
+        # instead of discarding the accumulated signal.
         return
     if is_well_formed:
         # Accept any well-formed `v1` rewrite, even one the model flagged
         # `changed=false`, so a single contradictory boolean cannot silently
         # discard the whole raw batch.
         write_main_memory(user_id=user_id, content=result.memory_markdown)
-    # Written or a genuine empty no-op: the batch is consumed either way, since
-    # an unchanged verdict on the same raw entries would just re-burn a
-    # consolidation call on every following extraction.
+    # Reached only by a well-formed write or a genuine empty no-op: the batch is
+    # consumed either way, since an unchanged verdict on the same raw entries
+    # would just re-burn a consolidation call on every following extraction.
     clear_raw(user_id=user_id)
