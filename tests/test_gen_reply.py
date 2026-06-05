@@ -666,11 +666,14 @@ async def test_gen_reply_on_message_dispatches_routes(
         """Records video handler dispatch."""
         calls.append("_handle_video_reply")
 
+    memory_flags: list[bool] = []
+
     async def fake_message_handler(
-        message: FakeMessage, system_prompt: str, history_limit: int
+        message: FakeMessage, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
+        memory_flags.append(memory_enabled)
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
     monkeypatch.setattr("discordbot.cogs.gen_reply.update_reaction", fake_reaction)
@@ -682,6 +685,11 @@ async def test_gen_reply_on_message_dispatches_routes(
     await cog.on_message(message=message)
     assert expected_call in calls
     assert calls[-1] == "reaction:🆗"
+    # Summaries opt out of per-user memory; QA keeps the default.
+    if route == "SUMMARY":
+        assert memory_flags == [False]
+    elif route == "QA":
+        assert memory_flags == [True]
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
@@ -904,6 +912,47 @@ async def test_handle_message_reply_disabled_memory_skips_pipeline(
 
     assert cog.client.responses.create_instructions[-1] == "SYS"
     assert "不該被注入" not in cog.client.responses.create_instructions[-1]
+    assert scheduled == []
+
+
+async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies memory_enabled=False (summary route) bypasses injection and extraction."""
+    cog = _cog(memory_enabled=True)
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入", identity="Tester (tester) [id: 1]"
+    )
+
+    class FakeResponder:
+        """Returns a fixed completed reply."""
+
+        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
+            """Stores the streaming inputs."""
+            self.message = message
+            self.responses = responses
+
+        async def stream(self) -> str:
+            """Returns placeholder reply content."""
+            return "回覆"
+
+    scheduled: list[int] = []
+
+    def fake_schedule(
+        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
+    ) -> None:
+        """Records that a memory update was scheduled."""
+        scheduled.append(user_id)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message, system_prompt="SYS", history_limit=2, memory_enabled=False
+    )
+
+    assert "不該被注入" not in str(cog.client.responses.create_inputs[-1])
     assert scheduled == []
 
 
