@@ -12,9 +12,23 @@ from pydantic import BaseModel, ValidationError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.memory import MemoryCogs
-from discordbot.cogs._memory import store, pipeline
+from discordbot.cogs._memory import pipeline
 from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings
+from discordbot.cogs._memory.store import (
+    clear_raw,
+    user_lock,
+    mark_cleared,
+    cleared_since,
+    raw_file_bytes,
+    append_raw_entry,
+    read_main_memory,
+    read_raw_entries,
+    clear_user_memory,
+    count_raw_entries,
+    write_main_memory,
+    read_main_memory_full,
+)
 from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.cogs._memory.constants import MAIN_FILE_MAX_CHARS, MEMORY_INJECTION_MAX_CHARS
 from discordbot.cogs._memory.extraction import (
@@ -88,34 +102,34 @@ def _extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
 
 
 def test_read_main_memory_missing_file_returns_empty(memory_isolated_dir: Path) -> None:
-    assert store.read_main_memory(user_id=USER_ID) == ""
-    assert store.read_main_memory_full(user_id=USER_ID) == ""
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert read_main_memory_full(user_id=USER_ID) == ""
 
 
 def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n測試內容\n")
-    assert store.read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n測試內容"
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n測試內容\n")
+    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n測試內容"
     leftovers = list(memory_isolated_dir.glob("*.tmp"))
     assert leftovers == []
 
 
 def test_write_main_memory_clamps_to_size_cap(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="x" * (MAIN_FILE_MAX_CHARS + 500))
-    assert len(store.read_main_memory_full(user_id=USER_ID)) == MAIN_FILE_MAX_CHARS
+    write_main_memory(user_id=USER_ID, content="x" * (MAIN_FILE_MAX_CHARS + 500))
+    assert len(read_main_memory_full(user_id=USER_ID)) == MAIN_FILE_MAX_CHARS
 
 
 def test_read_main_memory_truncates_hand_edited_oversized_files(memory_isolated_dir: Path) -> None:
     memory_isolated_dir.mkdir(parents=True, exist_ok=True)
     oversized = memory_isolated_dir / f"{USER_ID}.md"
     oversized.write_text(data="y" * (MEMORY_INJECTION_MAX_CHARS + 500), encoding="utf-8")
-    assert len(store.read_main_memory(user_id=USER_ID)) == MEMORY_INJECTION_MAX_CHARS
+    assert len(read_main_memory(user_id=USER_ID)) == MEMORY_INJECTION_MAX_CHARS
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
-    store.append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    store.append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文")
-    assert store.count_raw_entries(user_id=USER_ID) == 2
-    raw_text = store.read_raw_entries(user_id=USER_ID)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文")
+    assert count_raw_entries(user_id=USER_ID) == 2
+    raw_text = read_raw_entries(user_id=USER_ID)
     assert raw_text.startswith("## ")
     assert "喜歡簡短回覆" in raw_text
     assert "慣用繁體中文" in raw_text
@@ -125,58 +139,58 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 220)
-    store.append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100)
-    store.append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100)
-    raw_text = store.read_raw_entries(user_id=USER_ID)
+    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100)
+    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100)
+    raw_text = read_raw_entries(user_id=USER_ID)
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
-    assert store.count_raw_entries(user_id=USER_ID) == 1
+    assert count_raw_entries(user_id=USER_ID) == 1
 
 
 def test_append_raw_entry_keeps_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 50)
-    store.append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
-    assert store.count_raw_entries(user_id=USER_ID) == 1
+    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
+    assert count_raw_entries(user_id=USER_ID) == 1
 
 
 def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
-    assert store.raw_file_bytes(user_id=USER_ID) == 0
-    store.append_raw_entry(user_id=USER_ID, entry_text="something")
-    assert store.raw_file_bytes(user_id=USER_ID) > 0
+    assert raw_file_bytes(user_id=USER_ID) == 0
+    append_raw_entry(user_id=USER_ID, entry_text="something")
+    assert raw_file_bytes(user_id=USER_ID) > 0
 
 
 def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    store.append_raw_entry(user_id=USER_ID, entry_text="raw entry")
-    store.clear_raw(user_id=USER_ID)
-    assert store.count_raw_entries(user_id=USER_ID) == 0
-    assert store.read_main_memory(user_id=USER_ID) != ""
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
+    clear_raw(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0
+    assert read_main_memory(user_id=USER_ID) != ""
 
 
 def test_clear_user_memory_removes_both_files(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    store.append_raw_entry(user_id=USER_ID, entry_text="raw entry")
-    assert store.clear_user_memory(user_id=USER_ID) is True
-    assert store.read_main_memory(user_id=USER_ID) == ""
-    assert store.count_raw_entries(user_id=USER_ID) == 0
-    assert store.clear_user_memory(user_id=USER_ID) is False
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
+    assert clear_user_memory(user_id=USER_ID) is True
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 0
+    assert clear_user_memory(user_id=USER_ID) is False
 
 
 def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
     started_at = time.monotonic()
-    assert store.cleared_since(user_id=USER_ID, started_at=started_at) is False
-    store.clear_user_memory(user_id=USER_ID)
-    assert store.cleared_since(user_id=USER_ID, started_at=started_at) is True
+    assert cleared_since(user_id=USER_ID, started_at=started_at) is False
+    clear_user_memory(user_id=USER_ID)
+    assert cleared_since(user_id=USER_ID, started_at=started_at) is True
     later = time.monotonic()
-    assert store.cleared_since(user_id=USER_ID, started_at=later) is False
+    assert cleared_since(user_id=USER_ID, started_at=later) is False
 
 
 async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
-    lock_a = store.user_lock(user_id=USER_ID)
-    lock_b = store.user_lock(user_id=USER_ID)
-    lock_other = store.user_lock(user_id=USER_ID + 1)
+    lock_a = user_lock(user_id=USER_ID)
+    lock_b = user_lock(user_id=USER_ID)
+    lock_other = user_lock(user_id=USER_ID + 1)
     assert lock_a is lock_b
     assert lock_a is not lock_other
 
@@ -381,8 +395,8 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.count_raw_entries(user_id=USER_ID) == 1
-    assert store.read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(user_id=USER_ID) == ""
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
@@ -392,8 +406,8 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.count_raw_entries(user_id=USER_ID) == 0
-    assert store.raw_file_bytes(user_id=USER_ID) == 0
+    assert count_raw_entries(user_id=USER_ID) == 0
+    assert raw_file_bytes(user_id=USER_ID) == 0
 
 
 async def test_pipeline_defers_and_replays_newest_update_in_flight(
@@ -433,7 +447,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     replay_task = pipeline._inflight_tasks.get(USER_ID)
     assert replay_task is not None
     await replay_task
-    assert store.count_raw_entries(user_id=USER_ID) == 2
+    assert count_raw_entries(user_id=USER_ID) == 2
     assert any("第三" in reply for reply in seen_replies)
     assert not any("第二" in reply for reply in seen_replies)
 
@@ -450,7 +464,7 @@ async def test_pipeline_consolidates_at_threshold(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆一", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.count_raw_entries(user_id=USER_ID) == 1
+    assert count_raw_entries(user_id=USER_ID) == 1
 
     parsed_outputs = [
         RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 第二筆"),
@@ -465,9 +479,9 @@ async def test_pipeline_consolidates_at_threshold(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆二", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.read_main_memory(user_id=USER_ID).startswith("v1")
-    assert "合併後" in store.read_main_memory(user_id=USER_ID)
-    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert read_main_memory(user_id=USER_ID).startswith("v1")
+    assert "合併後" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0
 
 
 async def test_pipeline_keeps_raw_when_consolidation_fails(
@@ -494,15 +508,15 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.count_raw_entries(user_id=USER_ID) == 1
-    assert store.read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(user_id=USER_ID) == ""
 
 
 async def test_pipeline_unchanged_consolidation_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容")
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -518,8 +532,8 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await _wait_for_inflight()
-    assert "既有內容" in store.read_main_memory(user_id=USER_ID)
-    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert "既有內容" in read_main_memory(user_id=USER_ID)
+    assert count_raw_entries(user_id=USER_ID) == 0
 
 
 async def test_pipeline_aborts_write_after_clear(
@@ -541,10 +555,10 @@ async def test_pipeline_aborts_write_after_clear(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await parse_started.wait()
-    store.mark_cleared(user_id=USER_ID)
+    mark_cleared(user_id=USER_ID)
     release.set()
     await _wait_for_inflight()
-    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert count_raw_entries(user_id=USER_ID) == 0
 
 
 async def test_pipeline_background_failure_is_swallowed(
@@ -563,7 +577,7 @@ async def test_pipeline_background_failure_is_swallowed(
     assert task is not None
     await asyncio.wait([task])
     assert pipeline._inflight_tasks.get(USER_ID) is None
-    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert count_raw_entries(user_id=USER_ID) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -594,7 +608,7 @@ def _memory_cog() -> MemoryCogs:
 
 
 async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -615,18 +629,18 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
 
 
 async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\nmain")
-    store.append_raw_entry(user_id=USER_ID, entry_text="raw")
+    write_main_memory(user_id=USER_ID, content="v1\n\nmain")
+    append_raw_entry(user_id=USER_ID, entry_text="raw")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "已清除" in (embed.description or "")
-    assert store.read_main_memory(user_id=USER_ID) == ""
-    assert store.count_raw_entries(user_id=USER_ID) == 0
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 0
     started_at = 0.0
-    assert store.cleared_since(user_id=USER_ID, started_at=started_at) is True
+    assert cleared_since(user_id=USER_ID, started_at=started_at) is True
 
 
 async def test_memory_clear_without_memory_reports_noop(memory_isolated_dir: Path) -> None:
@@ -675,8 +689,8 @@ async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
         user_id=USER_ID, message_list=_user_message(), full_reply="回覆", extractor=extractor
     )
     await _wait_for_inflight()
-    assert store.read_main_memory(user_id=USER_ID) == ""
-    assert store.count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 1
 
 
 def test_render_memory_injection_neutralizes_embedded_delimiters() -> None:
@@ -694,7 +708,7 @@ def test_render_memory_injection_neutralizes_embedded_delimiters() -> None:
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
-    store.append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
@@ -708,8 +722,8 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
 async def test_memory_show_strips_version_header_and_counts_pending(
     memory_isolated_dir: Path,
 ) -> None:
-    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
-    store.append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))

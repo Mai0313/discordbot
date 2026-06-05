@@ -12,10 +12,10 @@ from PIL import Image
 import pytest
 from nextcord import File, Embed
 
-from discordbot.cogs._memory import store as memory_store
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -769,7 +769,7 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
 ) -> None:
     """Verifies stored memory rides as a trailing role=system input, not in instructions."""
     cog = _cog(memory_enabled=True)
-    memory_store.write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆")
+    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆")
 
     class FakeResponder:
         """Returns a fixed completed reply."""
@@ -867,7 +867,7 @@ async def test_handle_message_reply_disabled_memory_skips_pipeline(
 ) -> None:
     """Verifies the kill switch bypasses injection and extraction entirely."""
     cog = _cog(memory_enabled=False)
-    memory_store.write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入")
+    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入")
 
     class FakeResponder:
         """Returns a fixed completed reply."""

@@ -4,7 +4,7 @@ import nextcord
 from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
-from discordbot.cogs._memory import store
+from discordbot.cogs._memory.store import read_main_memory, clear_user_memory, count_raw_entries
 
 _MEMORY_EMBED_COLOR = 0x5865F2
 _CLEAR_EMBED_COLOR = 0x57F287
@@ -51,8 +51,8 @@ class MemoryCogs(commands.Cog):
         """Shows the caller's consolidated memory and pending observations."""
         if interaction.user is None:
             return
-        memory_text = store.read_main_memory(user_id=interaction.user.id)
-        pending_count = store.count_raw_entries(user_id=interaction.user.id)
+        memory_text = read_main_memory(user_id=interaction.user.id)
+        pending_count = count_raw_entries(user_id=interaction.user.id)
         if memory_text:
             # The `v1` first line is the pipeline's format marker, not content.
             display_text = memory_text.removeprefix("v1").strip()
@@ -103,7 +103,7 @@ class MemoryCogs(commands.Cog):
         """
         if interaction.user is None:
             return
-        removed = store.clear_user_memory(user_id=interaction.user.id)
+        removed = clear_user_memory(user_id=interaction.user.id)
         description = "已清除我對你的所有記憶。" if removed else "本來就沒有任何記憶，無事發生。"
         embed = Embed(title="🧹 記憶清除", description=description, color=_CLEAR_EMBED_COLOR)
         await interaction.response.send_message(embed=embed, ephemeral=True)
