@@ -172,9 +172,28 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
 
 def test_append_raw_entry_headers_include_identity(memory_isolated_dir: Path) -> None:
     append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短", identity=IDENTITY)
-    header = read_raw_entries(user_id=USER_ID).splitlines()[0]
+    on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
+    header = on_disk.splitlines()[0]
     assert header.startswith("## ")
     assert header.endswith(f" | {IDENTITY}")
+
+
+def test_read_raw_entries_strips_identity_for_consolidation(memory_isolated_dir: Path) -> None:
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短", identity=IDENTITY)
+    raw_text = read_raw_entries(user_id=USER_ID)
+    # The consolidation input must not leak author identity from the headers.
+    assert IDENTITY not in raw_text
+    assert raw_text.splitlines()[0].startswith("## ")
+    assert "喜歡簡短" in raw_text
+    assert count_raw_entries(user_id=USER_ID) == 1
+
+
+def test_read_raw_entries_passes_through_legacy_headers(memory_isolated_dir: Path) -> None:
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    legacy = "## 2026-06-05T02:23:02+00:00\n- 舊格式沒有 identity 後綴\n"
+    (user_dir / "raw.md").write_text(data=legacy, encoding="utf-8")
+    assert read_raw_entries(user_id=USER_ID) == legacy.strip()
 
 
 def test_render_author_identity_is_single_line_and_sanitized() -> None:

@@ -37,6 +37,13 @@ _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 # can never echo it back; files without the line pass through unchanged.
 _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 
+# The ` | <identity>` suffix on raw entry headers. `read_raw_entries` strips it
+# so the consolidation LLM never sees author identity either; headers written
+# before the suffix existed pass through unchanged.
+_RAW_HEADER_IDENTITY_RE = re.compile(
+    r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE
+)
+
 # Process-local registries; tests reset them through the conftest fixture.
 _user_locks: dict[int, asyncio.Lock] = {}
 _user_locks_loop: asyncio.AbstractEventLoop | None = None
@@ -157,8 +164,14 @@ def raw_file_bytes(user_id: int) -> int:
 
 
 def read_raw_entries(user_id: int) -> str:
-    """Returns the full raw file text for consolidation input."""
-    return _read_text(path=_raw_path(user_id=user_id)).strip()
+    """Returns the raw file text for consolidation input, minus identity metadata.
+
+    The ` | <identity>` header suffix is disk-only inspection metadata; it is
+    stripped here so the consolidation LLM cannot copy author identity into
+    the consolidated memory content.
+    """
+    text = _read_text(path=_raw_path(user_id=user_id))
+    return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
 
 
 def clear_raw(user_id: int) -> None:
