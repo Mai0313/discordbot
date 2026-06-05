@@ -284,11 +284,12 @@ def test_redact_secrets_masks_token_shapes() -> None:
     # Joined at runtime so secret scanners do not flag the test fixture itself.
     jwt_like = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "x" * 30])
     fine_grained_pat = "github_pat_" + "A" * 60
+    mfa_token = "mfa." + "Z" * 84
     text = (
         "my key is sk-abcdefghijklmnop123 and AIzaSyA1234567890abcdefghijklmnopqrstu "
         "plus Bearer abcdefghijklmnopqrstuvwxyz and xoxb-1234567890-abcdefghij "
         "and ghp_abcdefghijklmnopqrstuvwxyz1234567890 and AKIAIOSFODNN7EXAMPLE "
-        f"and {jwt_like} and {fine_grained_pat}"
+        f"and {jwt_like} and {fine_grained_pat} and {mfa_token}"
     )
     redacted = redact_secrets(text=text)
     assert "sk-abcdefghijklmnop123" not in redacted
@@ -298,7 +299,8 @@ def test_redact_secrets_masks_token_shapes() -> None:
     assert "AKIAIOSFODNN7EXAMPLE" not in redacted
     assert jwt_like not in redacted
     assert fine_grained_pat not in redacted
-    assert redacted.count("[REDACTED_SECRET]") >= 7
+    assert mfa_token not in redacted
+    assert redacted.count("[REDACTED_SECRET]") >= 8
 
 
 def test_redact_secrets_leaves_git_shas_alone() -> None:

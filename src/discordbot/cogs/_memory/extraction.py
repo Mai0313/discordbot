@@ -31,6 +31,7 @@ _SECRET_PATTERNS = (
     re.compile(r"AIza[A-Za-z0-9_-]{30,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"mfa\.[A-Za-z0-9_-]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
