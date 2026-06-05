@@ -32,6 +32,8 @@ class _PendingMemoryUpdate(BaseModel):
         message_list: Reply-pipeline input messages captured for the skipped turn.
         full_reply: The streamed reply text for the skipped turn.
         extractor: The extraction service to run the replayed update with.
+        captured_at: `time.monotonic()` when the turn was captured, so a clear
+            that lands before the replay can abort it via `cleared_since`.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -39,6 +41,7 @@ class _PendingMemoryUpdate(BaseModel):
     message_list: SkipValidation[list[EasyInputMessageParam]]
     full_reply: str
     extractor: SkipValidation[MemoryExtractorAI]
+    captured_at: float
 
 
 # Process-level per-user in-flight de-dupe; while one extraction runs, only the
@@ -66,7 +69,10 @@ def schedule_memory_update(
     running = _inflight_tasks.get(user_id)
     if running is not None and not running.done():
         _pending_updates[user_id] = _PendingMemoryUpdate(
-            message_list=message_list, full_reply=full_reply, extractor=extractor
+            message_list=message_list,
+            full_reply=full_reply,
+            extractor=extractor,
+            captured_at=time.monotonic(),
         )
         return
     task = asyncio.create_task(
@@ -92,13 +98,18 @@ def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
     except Exception:
         logfire.warn("Background memory update failed", user_id=user_id, _exc_info=True)
     pending = _pending_updates.pop(user_id, None)
-    if pending is not None:
-        schedule_memory_update(
-            user_id=user_id,
-            message_list=pending.message_list,
-            full_reply=pending.full_reply,
-            extractor=pending.extractor,
-        )
+    if pending is None:
+        return
+    if cleared_since(user_id=user_id, started_at=pending.captured_at):
+        # The user cleared their memory after this turn was captured; replaying
+        # it would write the pre-clear conversation back into storage.
+        return
+    schedule_memory_update(
+        user_id=user_id,
+        message_list=pending.message_list,
+        full_reply=pending.full_reply,
+        extractor=pending.extractor,
+    )
 
 
 async def _run_memory_update(

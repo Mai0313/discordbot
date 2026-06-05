@@ -806,3 +806,41 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
     # The callback must not raise, must clear the slot, and must not replay.
     assert pipeline._inflight_tasks.get(USER_ID) is None
     assert USER_ID in pipeline._pending_updates
+
+
+async def test_pipeline_drops_pending_replay_after_clear(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extractor, fake_client = _extractor()
+    first_started = asyncio.Event()
+    release = asyncio.Event()
+    parse_calls = 0
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            first_started.set()
+            await release.wait()
+        return SimpleNamespace(
+            output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入")
+        )
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="一", extractor=extractor
+    )
+    await first_started.wait()
+    # Queue a pending replay, then clear before the in-flight task finishes.
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="二", extractor=extractor
+    )
+    assert USER_ID in pipeline._pending_updates  # noqa: SLF001 -- second turn queued
+    clear_user_memory(user_id=USER_ID)
+    release.set()
+    first_task = pipeline._inflight_tasks.get(USER_ID)  # noqa: SLF001
+    if first_task is not None:
+        await first_task
+    # The pre-clear pending turn must not be replayed back into storage.
+    assert pipeline._inflight_tasks.get(USER_ID) is None  # noqa: SLF001
+    assert count_raw_entries(user_id=USER_ID) == 0
