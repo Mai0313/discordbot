@@ -4,6 +4,7 @@ import time
 import asyncio
 
 import logfire
+from pydantic import BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs._memory import store
@@ -13,9 +14,29 @@ from discordbot.cogs._memory.constants import (
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, transcript_from_messages
 
-# Process-level per-user in-flight de-dupe; a user's rapid-fire replies only
-# get one extraction at a time, the rest are skipped (not queued).
+
+class _PendingMemoryUpdate(BaseModel):
+    """The newest skipped update request, replayed once the in-flight task ends.
+
+    Attributes:
+        message_list: Reply-pipeline input messages captured for the skipped turn.
+        full_reply: The streamed reply text for the skipped turn.
+        extractor: The extraction service to run the replayed update with.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    message_list: SkipValidation[list[EasyInputMessageParam]]
+    full_reply: str
+    extractor: SkipValidation[MemoryExtractorAI]
+
+
+# Process-level per-user in-flight de-dupe; while one extraction runs, only the
+# NEWEST skipped turn is kept and replayed afterwards. Its history window
+# already contains the earlier skipped turns, so one replay recovers the
+# dropped signal without a real queue.
 _inflight_tasks: dict[int, asyncio.Task[None]] = {}
+_pending_updates: dict[int, _PendingMemoryUpdate] = {}
 _inflight_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -30,9 +51,13 @@ def schedule_memory_update(
     loop = asyncio.get_running_loop()
     if _inflight_loop is not loop:
         _inflight_tasks.clear()
+        _pending_updates.clear()
         _inflight_loop = loop
     running = _inflight_tasks.get(user_id)
     if running is not None and not running.done():
+        _pending_updates[user_id] = _PendingMemoryUpdate(
+            message_list=message_list, full_reply=full_reply, extractor=extractor
+        )
         return
     task = asyncio.create_task(
         _run_memory_update(
@@ -44,13 +69,21 @@ def schedule_memory_update(
 
 
 def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
-    """Clears the in-flight slot and logs unexpected background failures."""
+    """Clears the in-flight slot, logs failures, and replays a pending update."""
     if _inflight_tasks.get(user_id) is task:
         _inflight_tasks.pop(user_id, None)
     try:
         task.result()
     except Exception:
         logfire.warn("Background memory update failed", user_id=user_id, _exc_info=True)
+    pending = _pending_updates.pop(user_id, None)
+    if pending is not None:
+        schedule_memory_update(
+            user_id=user_id,
+            message_list=pending.message_list,
+            full_reply=pending.full_reply,
+            extractor=pending.extractor,
+        )
 
 
 async def _run_memory_update(

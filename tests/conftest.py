@@ -45,6 +45,7 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.cogs._memory.store._user_locks_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
     return memories_dir
 
