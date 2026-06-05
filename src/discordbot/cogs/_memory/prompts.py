@@ -57,7 +57,7 @@ INPUT (in the user message):
 * `today: <ISO date>`: the current date, for dating and aging the 近期脈絡 section.
 * `<existing_memory>`: the current consolidated file. `(empty)` means this is the first consolidation; build the file from the raw entries alone.
 * `<raw_entries>`: new raw entries, each under a `## <ISO timestamp>` header, oldest first.
-* `<recent_detail>`: the newest window of previously consumed raw evidence, kept in cold storage. It is reference only, NOT new input: use it to verify durable items, recover context for ambiguous raw entries, and promote patterns that recur across entries. Do not resurrect content the existing memory already aged out or dropped.
+* `<recent_detail>`: previously consumed raw evidence kept in cold storage, oldest first (the full log for most users; an oversized log is windowed to the newest portion). It is reference, NOT new input: ground the consolidated file in this evidence base, verify durable items against it, recover context for ambiguous raw entries, and promote patterns that recur across entries. Do not resurrect content the existing memory already aged out or dropped.
 
 HOW TO MERGE:
 * Deduplicate. Merge near-duplicate preferences into the sharper phrasing, but keep genuinely distinct preferences as separate bullets; do not collapse them into one vague umbrella statement.

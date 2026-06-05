@@ -39,9 +39,14 @@ MAIN_COMPACTION_TARGET_CHARS = 15_000
 # `incomplete` status instead of silently exhausting the provider limit.
 MEMORY_MAX_OUTPUT_TOKENS = 32_768
 
-# Tail window of the detail file fed to consolidation as low-trust provenance
-# so it can verify durable items and promote recurring patterns.
-MEMORY_DETAIL_CONTEXT_MAX_CHARS = 20_000
+# Tail window of the detail file fed to consolidation as low-trust provenance.
+# Effectively the whole evidence log for any realistic user: this bot injects
+# memory exactly once per reply with no on-demand retrieval (unlike codex), so
+# main.md must be distilled from the full evidence base in the background. The
+# bound only keeps a pathological log inside the consolidation input window
+# (~500k zh-TW chars stays well under the 1M-token window with the main file
+# and raw batch on top).
+MEMORY_DETAIL_CONTEXT_MAX_CHARS = 500_000
 
 # Tail window of the detail file shown by `/memory show detail`; older content
 # stays on disk only.
