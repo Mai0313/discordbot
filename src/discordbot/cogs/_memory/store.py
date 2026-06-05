@@ -107,7 +107,13 @@ def append_raw_entry(user_id: int, entry_text: str) -> None:
     entries = _split_raw_entries(text=combined)
     while len(entries) > 1 and _entries_bytes(entries=entries) > RAW_FILE_MAX_BYTES:
         entries.pop(0)
-    raw_path.write_text(data="\n\n".join(entries) + "\n", encoding="utf-8")
+    rendered = "\n\n".join(entries)
+    encoded = rendered.encode("utf-8")
+    if len(encoded) > RAW_FILE_MAX_BYTES:
+        # A single oversized entry cannot be evicted; truncate it so the raw
+        # file still honors the advertised hard cap (memory is best-effort).
+        rendered = encoded[:RAW_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
+    raw_path.write_text(data=rendered + "\n", encoding="utf-8")
 
 
 def count_raw_entries(user_id: int) -> int:

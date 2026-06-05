@@ -147,12 +147,14 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     assert count_raw_entries(user_id=USER_ID) == 1
 
 
-def test_append_raw_entry_keeps_single_oversized_entry(
+def test_append_raw_entry_truncates_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 50)
     append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
     assert count_raw_entries(user_id=USER_ID) == 1
+    # The lone entry cannot be evicted, so it is truncated to honor the cap.
+    assert raw_file_bytes(user_id=USER_ID) <= 50 + 1
 
 
 def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
