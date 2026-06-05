@@ -176,13 +176,27 @@ def append_detail(user_id: int, text: str) -> None:
 def read_detail_tail(user_id: int, max_chars: int) -> str:
     """Returns the newest detail-file window, minus identity metadata.
 
-    The window is aligned to the first raw-entry header inside the tail so a
-    partial entry never leads the result; when no header lands inside the
-    window (e.g. one giant entry) the raw tail is returned as a best effort.
+    Only a bounded byte window is read from the end of the file so the call
+    stays O(window) as the uncapped detail file grows. The window is aligned
+    to the first raw-entry header inside the tail so a partial entry never
+    leads the result; when no header lands inside the window (e.g. one giant
+    entry) the raw tail is returned as a best effort.
     """
-    text = _read_text(path=_detail_path(user_id=user_id))
-    if len(text) > max_chars:
-        tail = text[len(text) - max_chars :]
+    try:
+        with _detail_path(user_id=user_id).open(mode="rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            # UTF-8 spends at most 4 bytes per character, so this window can
+            # never decode to fewer than max_chars characters.
+            window_bytes = max_chars * 4
+            handle.seek(max(0, size - window_bytes))
+            data = handle.read()
+    except FileNotFoundError:
+        return ""
+    # A window starting mid-file can cut into a multi-byte character; ignoring
+    # the partial leading bytes keeps the decode safe.
+    text = data.decode(encoding="utf-8", errors="ignore")
+    if size > len(data) or len(text) > max_chars:
+        tail = text[max(0, len(text) - max_chars) :]
         match = _RAW_ENTRY_HEADER_RE.search(tail)
         text = tail[match.start() :] if match else tail
     return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
