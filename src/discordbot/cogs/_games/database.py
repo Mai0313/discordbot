@@ -1,7 +1,7 @@
 """Persistent Blackjack round history for the games cog.
 
 Every settled Blackjack round writes one row per seated player (the bot
-player included) into `data/games.db`. The query side reads the most recent
+player included) into `data/database/games.db`. The query side reads the most recent
 rounds for a single player so `/games blackjack_history` can show someone's
 recent hands, bets, dealer hands, and results.
 
@@ -40,7 +40,7 @@ from discordbot.utils.sqlite_config import configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.cogs._games.blackjack import hand_value
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/games.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None

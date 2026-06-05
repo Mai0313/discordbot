@@ -70,7 +70,7 @@ class VideoCogs(commands.Cog):
         await interaction.edit_original_message(content="-# 正在下載影片...")
 
         try:
-            downloader = VideoDownloader(output_folder="./data/downloads")
+            downloader = VideoDownloader(output_folder="./tmp")
             result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
             with result:
                 size_bytes = result.filename.stat().st_size

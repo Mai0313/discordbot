@@ -73,7 +73,7 @@ from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/stock.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/stock.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None

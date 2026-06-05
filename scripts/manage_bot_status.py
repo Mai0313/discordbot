@@ -1,4 +1,4 @@
-"""Manage the bot presence rotation stored in data/global_state.db.
+"""Manage the bot presence rotation stored in data/database/global_state.db.
 
 The status task picks a random enabled line every minute; an empty table falls
 back to the built-in default. Run while the bot is stopped.
@@ -11,6 +11,7 @@ Usage::
 """
 
 import asyncio
+from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
@@ -29,7 +30,7 @@ console = Console()
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Add, remove, or list bot presence lines stored in data/global_state.db."
+        description="Add, remove, or list bot presence lines stored in data/database/global_state.db."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -82,6 +83,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
+    # data/ is gitignored and may not exist on a fresh checkout seeded before the
+    # bot's first run, so create it here like cli.py does before any DB write.
+    Path("./data/database").mkdir(parents=True, exist_ok=True)
     asyncio.run(main=_async_main(argv=argv))
 
 

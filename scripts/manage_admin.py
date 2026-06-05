@@ -9,6 +9,7 @@ Usage::
 
 from typing import Literal
 import asyncio
+from pathlib import Path
 import argparse
 from collections.abc import Sequence
 
@@ -38,7 +39,7 @@ class AdminChange(BaseModel):
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Grant, revoke, or list economy admins stored in data/economy.db."
+        description="Grant, revoke, or list economy admins stored in data/database/economy.db."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -152,6 +153,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
+    # data/ is gitignored and may not exist on a fresh checkout seeded before the
+    # bot's first run, so create it here like cli.py does before any DB write.
+    Path("./data/database").mkdir(parents=True, exist_ok=True)
     asyncio.run(main=_async_main(argv=argv))
 
 

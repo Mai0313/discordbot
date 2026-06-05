@@ -16,7 +16,7 @@ CONTROL_CHARS_RE = re.compile(pattern=r"\x00")
 # Single shared engine — putting create_engine() on a per-message
 # cached_property leaked the connection pool, dialect cache and inspector
 # cache for every Discord message.
-_sql_engine: Engine = create_engine(url="sqlite:///data/messages.db")
+_sql_engine: Engine = create_engine(url="sqlite:///data/database/messages.db")
 
 
 @event.listens_for(_sql_engine, "connect")

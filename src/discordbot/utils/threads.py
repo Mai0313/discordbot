@@ -499,7 +499,7 @@ class ThreadsDownloader(BaseModel):
         output_folder: Directory where downloaded media files are written.
     """
 
-    output_folder: str = Field(default="./data/downloads")
+    output_folder: str = Field(default="./tmp")
 
     # -- HTTP -----------------------------------------------------------------
 

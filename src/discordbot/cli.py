@@ -43,7 +43,7 @@ class DiscordBot(commands.Bot):
         self.logger = logging.getLogger("nextcord.state")
         self.logger.setLevel(logging.WARNING)
         self.logger.addHandler(LogfireLoggingHandler())
-        Path("./data").mkdir(parents=True, exist_ok=True)
+        Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
         # Cogs are loaded synchronously so application_commands is populated
         # before the gateway connects. Each cog's setup() must also be sync:
