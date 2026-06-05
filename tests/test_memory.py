@@ -13,6 +13,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory import store, pipeline
+from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.cogs._memory.constants import MAIN_FILE_MAX_CHARS, MEMORY_INJECTION_MAX_CHARS
@@ -103,9 +104,7 @@ def test_write_main_memory_clamps_to_size_cap(memory_isolated_dir: Path) -> None
     assert len(store.read_main_memory_full(user_id=USER_ID)) == MAIN_FILE_MAX_CHARS
 
 
-def test_read_main_memory_truncates_hand_edited_oversized_files(
-    memory_isolated_dir: Path,
-) -> None:
+def test_read_main_memory_truncates_hand_edited_oversized_files(memory_isolated_dir: Path) -> None:
     memory_isolated_dir.mkdir(parents=True, exist_ok=True)
     oversized = memory_isolated_dir / f"{USER_ID}.md"
     oversized.write_text(data="y" * (MEMORY_INJECTION_MAX_CHARS + 500), encoding="utf-8")
@@ -397,16 +396,21 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
     assert store.raw_file_bytes(user_id=USER_ID) == 0
 
 
-async def test_pipeline_skips_when_update_already_in_flight(
+async def test_pipeline_defers_and_replays_newest_update_in_flight(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     extractor, fake_client = _extractor()
     started = asyncio.Event()
     release = asyncio.Event()
+    seen_replies: list[str] = []
 
     async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        seen_replies.append(str(inputs[0]["content"]))
         started.set()
-        await release.wait()
+        if not release.is_set():
+            await release.wait()
         return SimpleNamespace(output_parsed=RawMemoryDraft(has_signal=True, memory_markdown="x"))
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
@@ -418,10 +422,20 @@ async def test_pipeline_skips_when_update_already_in_flight(
     pipeline.schedule_memory_update(
         user_id=USER_ID, message_list=_user_message(), full_reply="第二", extractor=extractor
     )
+    pipeline.schedule_memory_update(
+        user_id=USER_ID, message_list=_user_message(), full_reply="第三", extractor=extractor
+    )
     assert pipeline._inflight_tasks[USER_ID] is first_task
     release.set()
     await first_task
-    assert store.count_raw_entries(user_id=USER_ID) == 1
+    # Only the newest skipped turn is replayed; its history already covers the
+    # earlier skipped one.
+    replay_task = pipeline._inflight_tasks.get(USER_ID)
+    assert replay_task is not None
+    await replay_task
+    assert store.count_raw_entries(user_id=USER_ID) == 2
+    assert any("第三" in reply for reply in seen_replies)
+    assert not any("第二" in reply for reply in seen_replies)
 
 
 async def test_pipeline_consolidates_at_threshold(
@@ -675,3 +689,58 @@ def test_render_memory_injection_neutralizes_embedded_delimiters() -> None:
     assert rendered.count("========= End of long-term memory =========") == 1
     assert rendered.count("========= Long-term memory about the current user") == 1
     assert "正常內容" in rendered
+
+
+async def test_memory_show_reports_pending_observations_before_first_consolidation(
+    memory_isolated_dir: Path,
+) -> None:
+    store.append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "1 筆" in (embed.description or "")
+    assert "整理" in (embed.description or "")
+    assert "還沒有任何記憶" not in (embed.description or "")
+
+
+async def test_memory_show_strips_version_header_and_counts_pending(
+    memory_isolated_dir: Path,
+) -> None:
+    store.write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑")
+    store.append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert (embed.description or "").startswith("## 使用者輪廓")
+    assert embed.footer is not None
+    assert "1 筆" in (embed.footer.text or "")
+
+
+def test_transcript_caps_reply_so_current_message_survives_truncation() -> None:
+    message_list = [
+        EasyInputMessageParam(
+            role="user", content=f"路人 (mob{index}) [id: {index}]: 閒聊 " + "x" * 80
+        )
+        for index in range(100)
+    ]
+    message_list.append(
+        EasyInputMessageParam(
+            role="user", content=f"Target (target) [id: {USER_ID}]: 請記住我喜歡條列式"
+        )
+    )
+    transcript = transcript_from_messages(
+        message_list=message_list, full_reply="超長摘要回覆 " + "y" * 6000
+    )
+    assert f"[id: {USER_ID}]: 請記住我喜歡條列式" in transcript
+    assert "[... reply truncated ...]" in transcript
+
+
+def test_memory_config_tolerates_blank_env_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MEMORY_ENABLED", "")
+    assert MemoryConfig().enabled is True
+    monkeypatch.setenv("MEMORY_ENABLED", "false")
+    assert MemoryConfig().enabled is False
