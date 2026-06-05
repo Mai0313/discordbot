@@ -6,8 +6,14 @@ from nextcord.ext import commands
 
 from discordbot.typings.config import MemoryConfig
 from discordbot.cogs._memory.store import read_main_memory, clear_user_memory, count_raw_entries
+from discordbot.cogs._memory.views import (
+    MEMORY_EMBED_COLOR,
+    MEMORY_PAGE_MAX_CHARS,
+    MemoryPagesView,
+    paginate_on_lines,
+    build_memory_embed,
+)
 
-_MEMORY_EMBED_COLOR = 0x5865F2
 _CLEAR_EMBED_COLOR = 0x57F287
 _CLEAR_DISABLED_EMBED_COLOR = 0xFEE75C
 
@@ -52,7 +58,7 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_show(self, interaction: Interaction) -> None:
-        """Shows the caller's consolidated memory and pending observations."""
+        """Shows the caller's consolidated memory, paginated when oversized."""
         if interaction.user is None:
             return
         memory_text = read_main_memory(user_id=interaction.user.id)
@@ -61,14 +67,21 @@ class MemoryCogs(commands.Cog):
             # Strip only the exact `v1` header line, never a `v1`-prefixed first
             # token of a malformed/hand-edited file (e.g. `v10...`, `v1: ...`).
             display_text = memory_text.removeprefix("v1\n").strip()
-            embed = Embed(
-                title="🧠 我對你的記憶", description=display_text, color=_MEMORY_EMBED_COLOR
+            pages = paginate_on_lines(text=display_text, limit=MEMORY_PAGE_MAX_CHARS)
+            embed = build_memory_embed(
+                page_text=pages[0],
+                page_index=0,
+                page_count=len(pages),
+                pending_count=pending_count,
             )
-            if pending_count:
-                embed.set_footer(text=f"另有 {pending_count} 筆新觀察待整理，會在背景慢慢併入")
-            else:
-                embed.set_footer(text="記憶會在你與我對話後於背景慢慢更新")
-        elif pending_count:
+            if len(pages) == 1:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            view = MemoryPagesView(pages=pages, pending_count=pending_count)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            view.bind_origin(interaction=interaction)
+            return
+        if pending_count:
             # Extraction has produced raw observations but the first
             # consolidation has not run yet; saying "no memory" here would
             # contradict what the user just experienced in chat.
@@ -78,13 +91,13 @@ class MemoryCogs(commands.Cog):
                     f"我已經記下 {pending_count} 筆對你的觀察，正在整理成長期記憶，"
                     "再多聊幾次就會在這裡看到完整內容。"
                 ),
-                color=_MEMORY_EMBED_COLOR,
+                color=MEMORY_EMBED_COLOR,
             )
         else:
             embed = Embed(
                 title="🧠 我對你的記憶",
                 description="目前還沒有任何記憶，多跟我聊聊，我會慢慢認識你。",
-                color=_MEMORY_EMBED_COLOR,
+                color=MEMORY_EMBED_COLOR,
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

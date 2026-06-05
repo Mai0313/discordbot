@@ -85,9 +85,14 @@ class ReplyGeneratorCogs(commands.Cog):
         """The cached per-user memory extraction service.
 
         Returns:
-            An extractor bound to this cog's client and the memories model.
+            An extractor bound to this cog's client and the phase-1/phase-2
+            memory models.
         """
-        return MemoryExtractorAI(client=self.client, model=self.runtime_models.memories_model)
+        return MemoryExtractorAI(
+            client=self.client,
+            extract_model=self.runtime_models.extract_model,
+            consolidate_model=self.runtime_models.memories_model,
+        )
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:

@@ -827,7 +827,8 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    assert cog.memory_extractor.model.name == cog.runtime_models.memories_model.name
+    assert cog.memory_extractor.extract_model.name == cog.runtime_models.extract_model.name
+    assert cog.memory_extractor.consolidate_model.name == cog.runtime_models.memories_model.name
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(
