@@ -42,6 +42,7 @@ make gen-docs                    # regenerate docs/ from sources
 ### Responses API Gotchas
 
 - Strict role and content part pairing: `user` / `system` / `developer` use `input_*` parts; `assistant` uses `output_text` or `refusal`. Messages with attachments therefore fall back to `role=user`. Use `EasyInputMessageParam` plus concrete part types and cast only at the SDK boundary; prefer string-content shorthand when there are no attachments.
+- Instruction hierarchy (OpenAI model spec): `developer` > `user` > `assistant`. `developer` carries the app's rules like a function definition; `user` carries end-user input like its arguments; `assistant` is model output. The top-level `instructions` parameter is equivalent to a `developer` message and outranks everything in `input`, but does not persist across turns under conversation state.
 - Separator messages use `role=system`, not `developer`, for Gemini and Claude compatibility through LiteLLM.
 - Gemini may prepend leading newlines to streamed reasoning output; `_handle_streaming` strips them on the first content delta. Gemini thought summaries only flow through the Responses API.
 - `client.images.edit(image=...)` needs raw `bytes`, not image-reference dicts.
