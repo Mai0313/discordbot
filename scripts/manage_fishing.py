@@ -1,4 +1,4 @@
-"""Manage fishing catalog rows in data/database/fishing.db.
+"""Manage fishing catalog rows in data/database/games.db.
 
 The bot never seeds fishing catalog rows at runtime; this script is the only way
 to create or tune grades, species, and gear. Run it while the bot is stopped.
@@ -50,7 +50,7 @@ def _hex_or_int(value: str) -> int:
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Create, update, and list fishing catalog rows in data/database/fishing.db."
+        description="Create, update, and list fishing catalog rows in data/database/games.db."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(name="seed-defaults", help="Seed or update the default catalog.")

@@ -114,17 +114,6 @@ class CentralBankerAccount(BaseModel):
     name: str = Field(description="Last-seen Discord account name.")
 
 
-class BotStatusEntry(BaseModel):
-    """One bot presence rotation row for maintenance display."""
-
-    model_config = ConfigDict(frozen=True)
-
-    status_id: int = Field(description="Row ID of the bot status entry.")
-    status_text: str = Field(description="Presence text rotated by the status task.")
-    enabled: bool = Field(description="Whether this status entry is active in the rotation.")
-    order_index: int = Field(description="Sort order position within the rotation.")
-
-
 class LeaderboardEntry(BaseModel):
     """One account row in the balance leaderboard."""
 

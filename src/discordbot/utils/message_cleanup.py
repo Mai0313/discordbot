@@ -13,7 +13,7 @@ from nextcord.ext import commands
 from sqlalchemy.engine import Connection
 
 PUBLIC_MESSAGE_TTL_SECONDS = 180
-_PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/game_cleanup.db")
+_PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None
 _CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
@@ -25,18 +25,6 @@ CREATE TABLE IF NOT EXISTS pending_game_message (
     user_name TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 )
-"""
-_LIST_PENDING_PUBLIC_MESSAGE_COLUMNS_SQL: Final[str] = """
-PRAGMA table_info(pending_game_message)
-"""
-_ADD_PENDING_PUBLIC_MESSAGE_GUILD_NAME_SQL: Final[str] = """
-ALTER TABLE pending_game_message ADD COLUMN guild_name TEXT
-"""
-_ADD_PENDING_PUBLIC_MESSAGE_CHANNEL_NAME_SQL: Final[str] = """
-ALTER TABLE pending_game_message ADD COLUMN channel_name TEXT
-"""
-_ADD_PENDING_PUBLIC_MESSAGE_USER_NAME_SQL: Final[str] = """
-ALTER TABLE pending_game_message ADD COLUMN user_name TEXT
 """
 _UPSERT_PENDING_PUBLIC_MESSAGE_SQL: Final[str] = """
 INSERT INTO pending_game_message (message_id, channel_id, guild_name, channel_name, user_name)
@@ -96,16 +84,6 @@ def _pending_db_engine() -> Engine:
 def _ensure_pending_table(conn: Connection) -> None:
     """Ensures the cleanup table exists before a read or write."""
     conn.execute(statement=text(text=_CREATE_PENDING_PUBLIC_MESSAGES_SQL))
-    columns = {
-        str(row[1])
-        for row in conn.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGE_COLUMNS_SQL))
-    }
-    if "guild_name" not in columns:
-        conn.execute(statement=text(text=_ADD_PENDING_PUBLIC_MESSAGE_GUILD_NAME_SQL))
-    if "channel_name" not in columns:
-        conn.execute(statement=text(text=_ADD_PENDING_PUBLIC_MESSAGE_CHANNEL_NAME_SQL))
-    if "user_name" not in columns:
-        conn.execute(statement=text(text=_ADD_PENDING_PUBLIC_MESSAGE_USER_NAME_SQL))
 
 
 def _message_record(message: Message, user_name: str | None = None) -> PendingPublicMessage | None:

@@ -1,16 +1,16 @@
 """Persistent store and settlement service for the fishing mini-game.
 
-State lives in `data/database/fishing.db`; wallet cash stays in the economy database.
-Catalog rows (grades, species, gear) are the source of truth and are seeded
-offline through `scripts/manage_fishing.py`; runtime never seeds them.
+State lives in `data/database/games.db` (shared file, fishing-owned engine and
+tables); wallet cash stays in the economy database. Catalog rows (grades,
+species, gear) are the source of truth and are seeded offline through
+`scripts/manage_fishing.py`; runtime never seeds them.
 
 Two operations cross databases. A purchase debits (burns) the wallet first, then
-grants gear in fishing.db, refunding on a grant failure. A cast consumes bait and
-durability and logs the catch in fishing.db first, then credits the payout in the
+grants gear in games.db, refunding on a grant failure. A cast consumes bait and
+durability and logs the catch in games.db first, then credits the payout in the
 economy database; a payout that fails after the catch is logged is reported as
 deferred rather than rolled back, which only ever deflates further. Hard crashes
-between the two file commits share the accepted non-atomicity of casino and
-jackpot settlement.
+between the two file commits are an accepted non-atomicity.
 """
 
 from random import Random, SystemRandom
@@ -68,7 +68,7 @@ from discordbot.cogs._economy.database import (
     apply_ordered_wallet_deltas,
 )
 
-_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/fishing.db")
+_engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None
@@ -648,7 +648,7 @@ async def _grant_gear_in_session(  # noqa: PLR0913 -- gear grant needs identity,
 async def purchase_gear(
     user_id: int, name: str, gear_id: str, quantity: int = 1, avatar_url: str = ""
 ) -> PurchaseResult:
-    """Buys a rod or bait, burning the wallet first then granting in fishing.db.
+    """Buys a rod or bait, burning the wallet first then granting in games.db.
 
     Rods are bought exactly one at a time and replace any current rod. Bait stacks
     by the requested quantity, which must be positive and within
@@ -772,7 +772,7 @@ async def settle_cast(  # noqa: PLR0913 -- a cast needs identity, bait, avatar, 
 ) -> CastResult:
     """Consumes bait and durability, rolls a catch, then credits the payout.
 
-    The bait, durability, and catch log commit to fishing.db first; the payout is
+    The bait, durability, and catch log commit to games.db first; the payout is
     then credited to the economy wallet. A payout credit that fails after the
     catch is logged returns `PAYOUT_DEFERRED` rather than rolling back.
     """

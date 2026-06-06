@@ -124,7 +124,6 @@ nav:
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
       - manage_admin: Scripts/manage_admin.md
-      - manage_bot_status: Scripts/manage_bot_status.md
       - manage_central_banker: Scripts/manage_central_banker.md
       - manage_fishing: Scripts/manage_fishing.md
       - manage_stock_company: Scripts/manage_stock_company.md
