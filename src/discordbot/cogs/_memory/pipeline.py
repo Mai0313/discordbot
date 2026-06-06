@@ -242,8 +242,9 @@ async def _consolidate_locked(
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
-    # The consumed batch is preserved verbatim in the cold-tier detail file; the
-    # failure paths above keep raw for retry and therefore must not retire it.
+    # The consumed batch's content is preserved in the cold-tier detail file,
+    # minus legacy identity header suffixes; the failure paths above keep raw
+    # for retry and therefore must not retire it.
     append_detail(user_id=user_id, text=read_raw_entries(user_id=user_id))
     clear_raw(user_id=user_id)
 
