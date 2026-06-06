@@ -41,7 +41,7 @@ class DiscordBot(commands.Bot):
         )
         self.discord_config = DiscordConfig()
         self.logger = logging.getLogger("nextcord.state")
-        self.logger.setLevel(logging.WARNING)
+        self.logger.setLevel(logging.INFO)
         self.logger.addHandler(LogfireLoggingHandler())
         Path("./data/database").mkdir(parents=True, exist_ok=True)
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
