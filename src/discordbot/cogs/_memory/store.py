@@ -30,9 +30,8 @@ from discordbot.cogs._memory.constants import (
 
 _MEMORY_DIR = Path("./data/memories")
 
-# Raw entries start with a `## <ISO-8601 timestamp> | <identity>` header line.
-# Extraction output is bullet-style prose, so the date prefix doubles as the
-# split marker.
+# Raw entries start with a `## <ISO-8601 timestamp>` header line. Extraction
+# output is bullet-style prose, so the date prefix doubles as the split marker.
 _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 
 # The identity metadata line `write_main_memory` inserts after the `v1` header
@@ -41,9 +40,10 @@ _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 # can never echo it back; files without the line pass through unchanged.
 _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 
-# The ` | <identity>` suffix on raw entry headers. `read_raw_entries` strips it
-# so the consolidation LLM never sees author identity either; headers written
-# before the suffix existed pass through unchanged.
+# The ` | <identity>` suffix that raw entry headers carried before identity
+# was confined to the main file. New headers are timestamp-only; the strip
+# remains so raw / detail files written before the removal never leak author
+# identity to the consolidation LLM or `/memory show`.
 _RAW_HEADER_IDENTITY_RE = re.compile(r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE)
 
 # Process-local registries; tests reset them through the conftest fixture.
@@ -134,12 +134,16 @@ def write_main_memory(user_id: int, content: str, identity: str) -> None:
     os.replace(src=tmp_path, dst=main_path)
 
 
-def append_raw_entry(user_id: int, entry_text: str, identity: str) -> None:
-    """Appends one timestamped raw entry, archiving the oldest entries on overflow."""
+def append_raw_entry(user_id: int, entry_text: str) -> None:
+    """Appends one timestamped raw entry, archiving the oldest entries on overflow.
+
+    Headers carry only the timestamp: raw entries flow verbatim into the
+    detail file, and author identity must stay confined to the main file.
+    """
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
     raw_path = _raw_path(user_id=user_id)
-    combined = f"{_read_text(path=raw_path)}\n\n## {timestamp} | {identity}\n{entry_text.strip()}"
+    combined = f"{_read_text(path=raw_path)}\n\n## {timestamp}\n{entry_text.strip()}"
     entries = _split_raw_entries(text=combined)
     evicted: list[str] = []
     while len(entries) > 1 and _entries_bytes(entries=entries) > RAW_FILE_MAX_BYTES:
@@ -161,14 +165,15 @@ def append_raw_entry(user_id: int, entry_text: str, identity: str) -> None:
 def append_detail(user_id: int, text: str) -> None:
     """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
-    The detail file preserves raw entries verbatim, including the identity
-    header suffixes, which every read path strips back out. Append-mode IO
-    keeps the common write O(1) in the file size; once the file outgrows
-    `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed away, which is
-    safe because content past the consolidation read window is unreachable
-    by every consumer anyway.
+    The detail file preserves raw entry content verbatim; author identity
+    stays confined to the main file, so legacy ` | <identity>` header
+    suffixes from a pre-removal raw file are stripped before the write.
+    Append-mode IO keeps the common write O(1) in the file size; once the
+    file outgrows `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed
+    away, which is safe because content past the consolidation read window
+    is unreachable by every consumer anyway.
     """
-    block = text.strip()
+    block = _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
     if not block:
         return
     _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
@@ -208,7 +213,7 @@ def _trim_detail(path: Path) -> None:
 
 
 def read_detail_tail(user_id: int, max_chars: int) -> str:
-    """Returns the newest detail-file window, minus identity metadata.
+    """Returns the newest detail-file window, minus legacy identity metadata.
 
     Only a bounded byte window is read from the end of the file so the call
     stays O(window) as the uncapped detail file grows. The window is aligned
@@ -247,24 +252,14 @@ def raw_file_bytes(user_id: int) -> int:
 
 
 def read_raw_entries(user_id: int) -> str:
-    """Returns the raw file text for consolidation input, minus identity metadata.
+    """Returns the raw file text for consolidation input, minus legacy identity metadata.
 
-    The ` | <identity>` header suffix is disk-only inspection metadata; it is
-    stripped here so the consolidation LLM cannot copy author identity into
-    the consolidated memory content.
+    New headers are timestamp-only; the ` | <identity>` strip remains so a raw
+    file written before the suffix was removed cannot leak author identity
+    into the consolidated memory content.
     """
     text = _read_text(path=_raw_path(user_id=user_id))
     return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
-
-
-def read_raw_on_disk(user_id: int) -> str:
-    """Returns the raw file's verbatim on-disk text for the detail file.
-
-    Unlike `read_raw_entries`, the identity header suffixes are kept: they are
-    disk-only human-inspection metadata, and every detail read path strips
-    them before the text reaches an LLM or a command response.
-    """
-    return _read_text(path=_raw_path(user_id=user_id)).strip()
 
 
 def clear_raw(user_id: int) -> None:
