@@ -185,8 +185,8 @@ def test_read_main_memory_keeps_identity_lookalike_body_lines(memory_isolated_di
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文")
     assert count_raw_entries(user_id=USER_ID) == 2
     raw_text = read_raw_entries(user_id=USER_ID)
     assert raw_text.startswith("## ")
@@ -194,30 +194,28 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
     assert "慣用繁體中文" in raw_text
 
 
-def test_append_raw_entry_headers_include_identity(memory_isolated_dir: Path) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短", identity=IDENTITY)
+def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> None:
+    # Raw entries flow verbatim into the detail file, so author identity stays
+    # confined to the main file and headers carry only the timestamp.
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短")
     on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
     header = on_disk.splitlines()[0]
     assert header.startswith("## ")
-    assert header.endswith(f" | {IDENTITY}")
+    assert IDENTITY not in on_disk
 
 
-def test_read_raw_entries_strips_identity_for_consolidation(memory_isolated_dir: Path) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短", identity=IDENTITY)
+def test_read_raw_entries_strips_legacy_identity_suffix(memory_isolated_dir: Path) -> None:
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    legacy = f"## 2026-06-05T02:23:02+00:00 | {IDENTITY}\n偏好訊號:\n- 喜歡簡短\n"
+    (user_dir / "raw.md").write_text(data=legacy, encoding="utf-8")
     raw_text = read_raw_entries(user_id=USER_ID)
-    # The consolidation input must not leak author identity from the headers.
+    # A raw file written before the suffix removal must not leak author
+    # identity into the consolidation input.
     assert IDENTITY not in raw_text
     assert raw_text.splitlines()[0].startswith("## ")
     assert "喜歡簡短" in raw_text
     assert count_raw_entries(user_id=USER_ID) == 1
-
-
-def test_read_raw_entries_passes_through_legacy_headers(memory_isolated_dir: Path) -> None:
-    user_dir = memory_isolated_dir / str(USER_ID)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    legacy = "## 2026-06-05T02:23:02+00:00\n- 舊格式沒有 identity 後綴\n"
-    (user_dir / "raw.md").write_text(data=legacy, encoding="utf-8")
-    assert read_raw_entries(user_id=USER_ID) == legacy.strip()
 
 
 def test_render_author_identity_is_single_line_and_sanitized() -> None:
@@ -233,23 +231,23 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 280)
-    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100, identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100, identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100)
+    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100)
     raw_text = read_raw_entries(user_id=USER_ID)
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
     assert count_raw_entries(user_id=USER_ID) == 1
-    # The evicted entry is preserved verbatim (identity included) in the detail file.
+    # The evicted entry is preserved in the detail file, without author identity.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "first entry" in detail_text
-    assert f"| {IDENTITY}" in detail_text
+    assert IDENTITY not in detail_text
 
 
 def test_append_raw_entry_truncates_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 80)
-    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200, identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
     assert count_raw_entries(user_id=USER_ID) == 1
     # The lone entry cannot be evicted, so it is truncated to honor the cap.
     assert raw_file_bytes(user_id=USER_ID) <= 80 + 1
@@ -257,13 +255,13 @@ def test_append_raw_entry_truncates_single_oversized_entry(
 
 def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
     assert raw_file_bytes(user_id=USER_ID) == 0
-    append_raw_entry(user_id=USER_ID, entry_text="something", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="something")
     assert raw_file_bytes(user_id=USER_ID) > 0
 
 
 def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
     write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
     clear_raw(user_id=USER_ID)
     assert count_raw_entries(user_id=USER_ID) == 0
     assert read_main_memory(user_id=USER_ID) != ""
@@ -272,7 +270,7 @@ def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
 def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
     write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
     write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
     append_detail(user_id=USER_ID, text="## 2026-01-01T00:00:00 | x\n舊證據")
     assert clear_user_memory(user_id=USER_ID) is True
     assert read_main_memory(user_id=USER_ID) == ""
@@ -687,11 +685,11 @@ async def test_pipeline_consolidates_at_threshold(
     assert read_main_memory(user_id=USER_ID).startswith("v1")
     assert "合併後" in read_main_memory(user_id=USER_ID)
     assert count_raw_entries(user_id=USER_ID) == 0
-    # The consumed raw batch lands verbatim (identity included) in the detail file.
+    # The consumed raw batch lands in the detail file, without author identity.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "第一筆" in detail_text
     assert "第二筆" in detail_text
-    assert f"| {IDENTITY}" in detail_text
+    assert IDENTITY not in detail_text
 
 
 async def test_pipeline_keeps_raw_when_consolidation_fails(
@@ -957,7 +955,7 @@ async def test_memory_clear_removes_files_and_reports(
 ) -> None:
     monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
     write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="raw")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
@@ -1155,7 +1153,7 @@ def test_render_memory_injection_neutralizes_embedded_delimiters() -> None:
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1170,7 +1168,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     memory_isolated_dir: Path,
 ) -> None:
     write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察", identity=IDENTITY)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1384,13 +1382,24 @@ def test_read_detail_tail_missing_file_is_empty(memory_isolated_dir: Path) -> No
     assert read_detail_tail(user_id=USER_ID, max_chars=100) == ""
 
 
+def test_append_detail_strips_legacy_identity_suffix(memory_isolated_dir: Path) -> None:
+    # A raw file written before the suffix removal can still retire entries
+    # into the detail file; the write chokepoint keeps identity out of it.
+    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊證據")
+    detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
+    assert IDENTITY not in detail_text
+    assert "舊證據" in detail_text
+
+
 def test_read_detail_tail_window_aligns_and_strips_identity(memory_isolated_dir: Path) -> None:
     entry_one = f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n第一筆細節"
     entry_two = f"## 2026-02-01T00:00:00+00:00 | {IDENTITY}\n第二筆細節"
-    append_detail(user_id=USER_ID, text=entry_one)
-    append_detail(user_id=USER_ID, text=entry_two)
+    user_dir = memory_isolated_dir / str(USER_ID)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    # Written directly to simulate a detail file from before the suffix removal.
+    (user_dir / "detail.md").write_text(data=f"{entry_one}\n\n{entry_two}\n", encoding="utf-8")
     full = read_detail_tail(user_id=USER_ID, max_chars=10_000)
-    # Identity header suffixes are disk-only metadata and never leave the store.
+    # Legacy identity header suffixes never leave the store.
     assert IDENTITY not in full
     assert "第一筆細節" in full
     assert "第二筆細節" in full

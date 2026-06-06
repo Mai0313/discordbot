@@ -18,7 +18,6 @@ from discordbot.cogs._memory.store import (
     read_detail_tail,
     read_main_memory,
     read_raw_entries,
-    read_raw_on_disk,
     count_raw_entries,
     write_main_memory,
 )
@@ -41,8 +40,8 @@ class _PendingMemoryUpdate(BaseModel):
         message_list: Reply-pipeline input messages captured for the skipped turn.
         full_reply: The streamed reply text for the skipped turn.
         extractor: The extraction service to run the replayed update with.
-        identity: Single-line author identity stamped into memory files as
-            human-inspection metadata.
+        identity: Single-line author identity stamped into the main memory
+            file as human-inspection metadata.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
     """
@@ -168,7 +167,7 @@ async def _run_memory_update(
             # The user cleared their memory while this update was in flight;
             # dropping the write beats resurrecting deleted memory.
             return
-        append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown, identity=identity)
+        append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown)
         if not _should_consolidate(user_id=user_id):
             return
         # Recorded at attempt time, not success time, so repeated LLM failures
@@ -245,7 +244,7 @@ async def _consolidate_locked(
     # would just re-burn a consolidation call on every following extraction.
     # The consumed batch is preserved verbatim in the cold-tier detail file; the
     # failure paths above keep raw for retry and therefore must not retire it.
-    append_detail(user_id=user_id, text=read_raw_on_disk(user_id=user_id))
+    append_detail(user_id=user_id, text=read_raw_entries(user_id=user_id))
     clear_raw(user_id=user_id)
 
 
