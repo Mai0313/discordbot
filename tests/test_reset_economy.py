@@ -26,7 +26,6 @@ from discordbot.cogs._economy.database import (
     apply_round_settlement,
     forgive_loan_contracts,
     get_casino_daily_stats,
-    open_global_state_session,
     reset_casino_daily_counters,
     create_personal_loan_request,
     count_wallet_invariant_violations,
@@ -227,7 +226,7 @@ async def test_reset_casino_daily_counters_removes_rows() -> None:
 
 async def test_reset_jackpot_pools_restores_seed() -> None:
     """Resetting jackpot pools restores the seed balance and generation 0."""
-    async with open_global_state_session() as session:
+    async with open_session() as session:
         session.add(
             JackpotPool(
                 game_id="dragon_gate",

@@ -50,22 +50,17 @@ from discordbot.cogs._economy.database import (
     open_session,
     _database_now,
     _ensure_schema,
-    add_bot_status,
     adjust_balance,
     checkin_reward,
     _taipei_midnight,
-    get_bot_statuses,
     get_jackpot_pool,
     get_casino_ledger,
-    remove_bot_status,
     _stored_int_to_int,
     get_jackpot_snapshot,
-    list_bot_status_rows,
     credit_with_repayment,
     apply_round_settlement,
     get_casino_daily_stats,
     apply_jackpot_settlement,
-    open_global_state_session,
     apply_jackpot_settlement_batch,
     _apply_jackpot_delta_in_session,
     _apply_daily_casino_delta_in_session,
@@ -315,17 +310,9 @@ async def _economy_schema_details() -> tuple[
     )
 
 
-async def _global_state_schema_details() -> tuple[
-    set[str], tuple[int, int, int, int, int], dict[str, str]
-]:
-    """Reads current global-state schema metadata."""
-    async with open_global_state_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            )
-        )
-        global_state_tables = {row[0] for row in result.all()}
+async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dict[str, str]]:
+    """Reads the seeded jackpot row and its column types from the economy DB."""
+    async with open_session() as session:
         result = await session.execute(
             statement=select(
                 JackpotPool.pool_balance,
@@ -338,11 +325,7 @@ async def _global_state_schema_details() -> tuple[
         jackpot_row = result.one()
         result = await session.execute(statement=text(text="PRAGMA table_info(jackpot_pool)"))
         jackpot_column_types = {row[1]: row[2] for row in result.all()}
-    return (
-        global_state_tables,
-        cast("tuple[int, int, int, int, int]", tuple(jackpot_row)),
-        jackpot_column_types,
-    )
+    return (cast("tuple[int, int, int, int, int]", tuple(jackpot_row)), jackpot_column_types)
 
 
 def _assert_money_columns_are_text(
@@ -515,17 +498,11 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
 async def test_ensure_schema_bootstraps_current_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A clean startup creates only the current economy and global-state tables."""
+    """A clean startup creates only the current economy tables."""
     db_path = tmp_path / "current-economy.db"
-    global_state_db_path = tmp_path / "current-global-state.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr(
-        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
-    )
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
-    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
 
     await _ensure_schema()
 
@@ -536,15 +513,17 @@ async def test_ensure_schema_bootstraps_current_databases(
         table_columns,
         table_column_types,
     ) = await _economy_schema_details()
-    global_state_tables, jackpot_row, jackpot_column_types = await _global_state_schema_details()
+    jackpot_row, jackpot_column_types = await _jackpot_schema_details()
     assert economy_tables == {
         "user_account",
         "user_wallet",
         "loan_proposal",
         "loan_contract",
         "casino_account",
+        "jackpot_pool",
+        "casino_ledger",
     }
-    assert global_state_tables == {"jackpot_pool", "casino_ledger", "bot_status"}
+    assert "bot_status" not in economy_tables
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"
@@ -569,7 +548,6 @@ async def test_ensure_schema_bootstraps_current_databases(
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
     await engine.dispose()
-    await global_state_engine.dispose()
 
 
 async def test_ensure_schema_serializes_concurrent_first_use(
@@ -577,15 +555,9 @@ async def test_ensure_schema_serializes_concurrent_first_use(
 ) -> None:
     """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
     db_path = tmp_path / "concurrent-economy.db"
-    global_state_db_path = tmp_path / "concurrent-global-state.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr(
-        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
-    )
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
-    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
 
     await asyncio.gather(*(_ensure_schema() for _ in range(20)))
 
@@ -596,13 +568,11 @@ async def test_ensure_schema_serializes_concurrent_first_use(
             )
         )
         assert result.scalar_one_or_none() == "loan_proposal"
-    async with open_global_state_session() as session:
         result = await session.execute(
             statement=select(JackpotPool.pool_balance).where(JackpotPool.game_id == "dragon_gate")
         )
         assert result.scalar_one() == 1_000
     await engine.dispose()
-    await global_state_engine.dispose()
 
 
 async def test_get_balance_unknown_user_returns_zero() -> None:
@@ -1566,7 +1536,6 @@ async def test_wallet_and_jackpot_store_large_values_as_text() -> None:
             )
         )
         wallet_row = wallet_result.one()
-    async with open_global_state_session() as session:
         jackpot_result = await session.execute(
             statement=text(
                 text="""
@@ -2415,7 +2384,7 @@ async def test_apply_jackpot_settlement_replenishes_drained_seed_pool() -> None:
     assert settlement.applied_player_delta == 1_000
     assert settlement.jackpot_depleted is True
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
-    async with open_global_state_session() as session:
+    async with open_session() as session:
         result = await session.execute(
             statement=select(JackpotPool.seeded_amount, JackpotPool.total_claimed).where(
                 JackpotPool.game_id == "dragon_gate"
@@ -2626,7 +2595,7 @@ async def test_get_jackpot_pool_returns_zero_for_missing_game() -> None:
 async def test_get_jackpot_pool_replenishes_drained_seed_pool() -> None:
     """Reading a seeded jackpot replenishes a zero-balance row."""
     await _ensure_schema()
-    async with open_global_state_session() as session:
+    async with open_session() as session:
         await session.execute(
             statement=update(JackpotPool)
             .where(JackpotPool.game_id == "dragon_gate")
@@ -2644,15 +2613,9 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 ) -> None:
     """_ensure_schema seeds the dragon_gate pool exactly once across calls."""
     db_path = tmp_path / "seed-economy.db"
-    global_state_db_path = tmp_path / "seed-global-state.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    global_state_engine = create_async_engine(url=f"sqlite+aiosqlite:///{global_state_db_path}")
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr(
-        "discordbot.cogs._economy.database._global_state_engine", global_state_engine
-    )
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
-    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
 
     await _ensure_schema()
     first_balance = await get_jackpot_pool(game_id="dragon_gate")
@@ -2660,41 +2623,7 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
 
     # Calling again is idempotent: the seed must not pile on top of itself.
     monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
-    monkeypatch.setattr("discordbot.cogs._economy.database._global_state_schema_ready_for", None)
     await _ensure_schema()
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
-    async with open_session() as session:
-        result = await session.execute(
-            statement=text(
-                text="SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jackpot_pool'"
-            )
-        )
-        assert result.scalar_one_or_none() is None
 
     await engine.dispose()
-    await global_state_engine.dispose()
-
-
-async def test_get_bot_statuses_empty_returns_empty_list() -> None:
-    """A fresh database has no presence lines, so callers fall back to a default."""
-    assert await get_bot_statuses() == []
-
-
-async def test_bot_status_rotation_orders_enabled_lines() -> None:
-    """Enabled lines are returned ordered by order_index then id; disabled excluded."""
-    second_id = await add_bot_status(status_text="second", order_index=2)
-    await add_bot_status(status_text="first", order_index=1)
-    await add_bot_status(status_text="hidden", order_index=0, enabled=False)
-
-    assert await get_bot_statuses() == ["first", "second"]
-
-    rows = await list_bot_status_rows()
-    assert [(row.status_text, row.enabled) for row in rows] == [
-        ("hidden", False),
-        ("first", True),
-        ("second", True),
-    ]
-
-    assert await remove_bot_status(status_id=second_id) is True
-    assert await get_bot_statuses() == ["first"]
-    assert await remove_bot_status(status_id=second_id) is False

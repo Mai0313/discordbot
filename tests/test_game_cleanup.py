@@ -3,7 +3,6 @@
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
-import sqlite3
 
 import pytest
 import nextcord
@@ -245,37 +244,6 @@ async def test_track_public_message_persists_message_identity() -> None:
     assert await list_pending_public_messages() == [expected]
     await track_public_message(message=cast("Message", message))
     assert await list_pending_public_messages() == [expected]
-
-
-async def test_track_public_message_migrates_existing_cleanup_table(tmp_path: Path) -> None:
-    """Existing cleanup databases gain readable metadata columns on first write."""
-    db_path = tmp_path / "game_cleanup.db"
-    with sqlite3.connect(database=db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE pending_game_message (
-                message_id INTEGER PRIMARY KEY,
-                channel_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-    message = _DeletableMessageStub(
-        message_id=30, channel_id=40, guild_name="Mai Server", channel_name="casino"
-    )
-
-    await track_public_message(message=cast("Message", message), user_name="alice")
-
-    with sqlite3.connect(database=db_path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_game_message)")}
-        rows = conn.execute(
-            """
-            SELECT message_id, channel_id, guild_name, channel_name, user_name
-            FROM pending_game_message
-            """
-        ).fetchall()
-    assert {"guild_name", "channel_name", "user_name"} <= columns
-    assert rows == [(30, 40, "Mai Server", "casino", "alice")]
 
 
 async def test_delete_public_message_after_forgets_successful_cleanup() -> None:

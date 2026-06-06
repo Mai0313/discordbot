@@ -118,12 +118,9 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 这个 bot 会把 runtime data 存在本地 `data/` 底下；SQLite 数据库集中在 `data/database/`。
 
 - `database/messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
-- `database/economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约，以及赌场每日统计。
+- `database/economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约、赌场每日统计，以及 bot-wide jackpot pool 与 casino ledger。
 - `database/stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
-- `database/global_state.db`：bot-wide shared state，例如 jackpot pool。
-- `database/game_cleanup.db`：公开 expiring response 的 Discord guild/channel 名称、user name、channel ID 与 message ID，例如 game、economy 与 stock messages，用于 bot 重启后的清理。
-- `database/games.db`：每位玩家的 Blackjack 对局历史。
-- `database/fishing.db`：钓鱼目录与每位用户的装备、鱼饵与渔获记录。
+- `database/games.db`：每位玩家的 Blackjack 对局历史、钓鱼目录与每位用户的装备、鱼饵与渔获记录，以及公开 expiring response 的清理追踪（guild/channel 名称、user name、channel ID 与 message ID），用于 bot 重启后的清理。
 - 临时 media 下载使用项目根目录的 `tmp/` scratch folder（不在 `data/` 底下），发送完成后即删除。
 - `memories/`：每个 Discord user id 一个文件夹的纯文本 markdown 个人长期记忆，由你的对话在后台积累，并在后续 AI 回复时注入。
 

@@ -18,7 +18,7 @@ make gen-docs                    # regenerate docs/ from sources
 - `src/discordbot/cli.py` defines `DiscordBot(commands.Bot)`. Intents are `Intents.all()` minus `members` and `presences`.
 - Cog loading is synchronous inside `DiscordBot.__init__` before gateway connection. Every cog module must expose sync `def setup(bot): ...` and add cogs with `override=True`; `async def setup` breaks the first command sync because nextcord schedules it without awaiting.
 - Helper packages live in sibling `_<cog>/` directories so they are not auto-loaded as cogs.
-- Bot presence lines rotate from the `bot_status` table in `data/database/global_state.db`, managed offline via `scripts/manage_bot_status.py`.
+- Bot presence lines are a hardcoded list inside `cli.py`'s `status_task`; there is no DB-backed presence rotation.
 - Add common command errors in `DiscordBot.on_command_error` instead of catching them in each cog.
 
 ## Cog Rules
@@ -51,8 +51,8 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Economy
 
-- SQLite files are separate and all live under `data/database/`: `messages.db` (message logs), `economy.db` (per-user 虛擬歡樂豆), `global_state.db` (jackpot pools, casino ledger, presence rotation), `game_cleanup.db` (cleanup targets).
-- `cogs/_economy/database.py` owns the module-level async engines `_engine` and `_global_state_engine`; do not move them to `cached_property` because tests monkeypatch them.
+- SQLite files all live under `data/database/`: `messages.db` (message logs), `economy.db` (per-user 虛擬歡樂豆, jackpot pools, casino ledger), `games.db` (Blackjack history, fishing state, cleanup targets), `stock.db`. Several modules keep their own engine pointed at the shared `games.db` file; that is intentional.
+- `cogs/_economy/database.py` owns the module-level async engine `_engine`; do not move it to `cached_property` because tests monkeypatch it.
 - `UserAccount` has no `guild_id`; identity, VIP, check-ins, and flags are cross-server by design. Balances live in `user_wallet`, loans in `loan_proposal` / `loan_contract`, daily casino counters in `casino_account`. Economy money columns are decimal strings parsed to Python `int` so they avoid SQLite's 64-bit integer ceiling.
 - Money inputs are string `SlashOption`s parsed by the bot (`_parse_positive_amount`, `_parse_collect_amount`), not integer options; malformed text returns `build_invalid_amount_embed` ephemerally before any mutation. Prefer this pattern for any new numeric input that can exceed Discord limits.
 - `UserAccount.avatar_url` is a last-seen cache written via `utils.avatars.guild_avatar_url(...)` with guild context; do not backfill existing URLs.
@@ -63,7 +63,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Admin adjustments use `adjust_balance(..., allow_negative=...)`, not casino settlement helpers.
 - `/leaderboard` keeps DB-side integer-aware ordering over `StoredInteger` text with `LIMIT` before rows reach Python; write paths invalidate caches via `invalidate_economy_leaderboard_cache()`. `hide_from_leaderboard` accounts are omitted.
 - Daily casino counters on `casino_account` update only from player-side Blackjack and Dragon Gate settlement deltas; `/loss_leaderboard` reads gross `daily_loss`, so wins do not offset it. The bot is just another player here.
-- Cumulative casino-system P&L lives in the `casino_ledger` row in `data/database/global_state.db`. `/casino` reads the ledger; `/pocat` reads the bot's wallet; do not reuse the bot's `user_wallet` as the house ledger. On settlement the player wallet commits before the casino ledger so user balance wins if only one commit succeeds.
+- Cumulative casino-system P&L lives in the `casino_ledger` row in `data/database/economy.db`. `/casino` reads the ledger; `/pocat` reads the bot's wallet; do not reuse the bot's `user_wallet` as the house ledger. Player wallet and casino ledger commit in one atomic transaction.
 - Visibility boundary: shared social / market / settlement events are public embeds with scheduled cleanup (e.g. `/give`, leaderboards, `/casino`, loan flows); personal state and validation / permission failures are ephemeral (e.g. `/balance`, `/checkin`, insufficient balance).
 - Rewards: `cli.py` grants the cooldown-gated per-message reward; `gen_reply.py` adds the token-based chat reward after streamed replies. Other cogs must not invent action rewards.
 - Anti-inflation constants live in `typings/economy.py`: `transfer()` burns `TRANSFER_TAX_BPS` of every `/give` as a permanent sink, every casino wager caps at `MAX_SINGLE_BET` at the shared chokepoints, and the VIP casino multiplier is 1.2x.
@@ -104,7 +104,7 @@ make gen-docs                    # regenerate docs/ from sources
 - Peek runs as a two-stage animation (`_animate_peek_reveal_bj_locked` / `_animate_peek_no_bj_locked`); do not collapse it into a single edit.
 - `BlackjackView._finalize_locked` disables buttons and calls `self.stop()` before settlement; the final edit removes controls with `view=None`.
 - Player losses clamp at balance 0; `apply_round_settlement` mirrors only the actual collected debit into `casino_ledger`.
-- Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"` in `data/database/global_state.db`, not the casino ledger. Ante, losses, wins, and refunds settle through jackpot helpers; losses clamp at 0; on leave or timeout, positive running delta refunds into the pool unless the whole-pool win already cleared it.
+- Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"` in `data/database/economy.db`, not the casino ledger. Ante, losses, wins, and refunds settle through jackpot helpers; losses clamp at 0; on leave or timeout, positive running delta refunds into the pool unless the whole-pool win already cleared it.
 - Interactive views use 180-second idle timeouts; terminal public messages schedule deletion through `utils.message_cleanup`. No cog-local delete loops.
 - Game messages send one embed per seat: `[talk, dealer_seat, *player_seat_embeds]` via `build_in_progress_embeds` / `build_final_embeds`. Markdown headings render reliably only inside `embed.description`. Player seats set the avatar thumbnail; the dealer seat omits it. Dealer seat color follows the casino-vs-table outcome: any player win red, all-loss green, all-push yellow.
 - The "dealer" is a label, not a Discord identity. `SystemNarrator` produces neutral broadcast lines sent by the bot account so `log_msg.py` records the speaker correctly.
@@ -112,12 +112,12 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Fishing
 
-- `/games fishing` is a single-player, LLM-free money sink under `cogs/_fishing/`; state lives in `data/database/fishing.db`, wallet cash stays in economy.
+- `/games fishing` is a single-player, LLM-free money sink under `cogs/_fishing/`; state lives in `data/database/games.db` through the fishing-owned engine, wallet cash stays in economy.
 - One public message edited in place, opener-only, self-deletes after 180s idle. Mirror `_stock/views.py`: `FishingPublicView` plus the central `edit_fishing_message(...)`.
 - `fish_grade_config`, `fish_species`, and `fishing_gear` are the tunable source of truth; seed offline with `uv run python scripts/manage_fishing.py seed-defaults`. `_fishing/defaults.py::build_default_catalog` is the one catalog definition.
 - `_fishing/catch.py` is pure and RNG-injected. Luck is the additive rod+bait `rarity_shift_bps`, clamped, never moving the most common grade.
 - Net-deflationary by design: every cast's EV is below bait + amortized rod cost, and catches cap at `FISHING_MAX_SINGLE_CATCH`. Re-measure with `uv run python scripts/simulate_fishing.py`; every rod+bait combo must stay a sink. Purchases burn via `apply_ordered_wallet_deltas`; payouts credit via `credit_with_repayment`.
-- Cross-DB ordering: `purchase_gear` debits the wallet first, then grants gear (refund on grant failure); `settle_cast` writes fishing.db first, then credits economy.db, returning `CastStatus.PAYOUT_DEFERRED` on payout failure (never rolled back).
+- Cross-DB ordering: `purchase_gear` debits the wallet first, then grants gear (refund on grant failure); `settle_cast` writes games.db first, then credits economy.db, returning `CastStatus.PAYOUT_DEFERRED` on payout failure (never rolled back).
 - Settlement only via `settle_cast` / `purchase_gear`; views never import ORM models. `catch_log` denormalizes species fields so catalog retuning never rewrites history.
 
 ## Memory

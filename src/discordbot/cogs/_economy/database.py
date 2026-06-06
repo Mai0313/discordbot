@@ -37,11 +37,9 @@ Long-term lending lives in `loan_proposal` and `loan_contract`. Personal
 loan requests debit the lender on acceptance, and central-bank loans mint
 borrower balance on approval.
 
-Shared jackpot pools live in `data/database/global_state.db` because they are bot-wide
-state, not per-user economy rows. Runtime jackpot settlement coordinates writes
-across the economy and global-state DB sessions and rolls both back on ordinary
-errors before either commit; SQLite still cannot make a hard crash between two
-database-file commits fully atomic.
+Shared jackpot pools and the casino ledger live in the same `economy.db` file
+as the per-user rows, so runtime casino and jackpot settlement applies the
+player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
 import math
@@ -88,7 +86,6 @@ from discordbot.typings.economy import (
     CreditResult,
     CheckinResult,
     PortfolioView,
-    BotStatusEntry,
     LoanLenderType,
     TransferResult,
     WalletDeltaLeg,
@@ -139,9 +136,6 @@ _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
-_global_state_engine: AsyncEngine = create_async_engine(
-    url="sqlite+aiosqlite:///data/database/global_state.db"
-)
 
 
 def _taipei_midnight(now: datetime) -> datetime:
@@ -151,7 +145,7 @@ def _taipei_midnight(now: datetime) -> datetime:
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures a newly opened economy/global-state SQLite connection.
+    """Configures a newly opened economy SQLite connection.
 
     Foreign keys are enabled defensively for any future FK constraint.
     """
@@ -159,7 +153,6 @@ def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401
 
 
 @event.listens_for(_engine.sync_engine, "connect")
-@event.listens_for(_global_state_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
     """Configures a newly opened SQLite connection."""
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
@@ -186,12 +179,6 @@ def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
 
 class Base(DeclarativeBase):
     """Base class for economy ORM models."""
-
-    pass
-
-
-class GlobalStateBase(DeclarativeBase):
-    """Base class for bot-wide global state ORM models."""
 
     pass
 
@@ -369,7 +356,7 @@ class LoanContract(Base):
     )
 
 
-class JackpotPool(GlobalStateBase):
+class JackpotPool(Base):
     """Per-game cumulative jackpot shared across every table of that game.
 
     One row per game (keyed by `game_id`). Wager flows update
@@ -405,7 +392,7 @@ class JackpotPool(GlobalStateBase):
     )
 
 
-class CasinoLedger(GlobalStateBase):
+class CasinoLedger(Base):
     """Cumulative profit and loss for the casino system (cross-server).
 
     The casino is the dealer in Blackjack. Player wins flow out of this row,
@@ -429,35 +416,6 @@ class CasinoLedger(GlobalStateBase):
     balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     total_earned: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     total_spent: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_database_now, onupdate=_database_now
-    )
-
-
-class BotStatus(GlobalStateBase):
-    """Operator-tunable presence lines rotated by the status task.
-
-    Rows are managed out-of-band via offline DB maintenance; an empty table lets
-    the status task fall back to its built-in default, so a fresh database still
-    shows a presence. Read once per status tick and never written at runtime, so
-    there is no write amplification.
-
-    Attributes:
-        status_id: Autoincrement primary key.
-        status_text: Presence text shown via `change_presence`.
-        enabled: Whether this line is eligible for rotation.
-        order_index: Ascending rotation/display order hint.
-        updated_at: Taiwan-local timestamp of the last write.
-    """
-
-    __tablename__ = "bot_status"
-
-    status_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    status_text: Mapped[str] = mapped_column(String(length=128), nullable=False)
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, default=True, server_default="1", nullable=False
-    )
-    order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
@@ -488,11 +446,8 @@ def _jackpot_seed_amount(game_id: str) -> int:
 # race under concurrent first use, so schema creation is serialized with
 # loop-local locks.
 _schema_ready_for: AsyncEngine | None = None
-_global_state_schema_ready_for: AsyncEngine | None = None
 _schema_lock: asyncio.Lock | None = None
 _schema_lock_loop: asyncio.AbstractEventLoop | None = None
-_global_state_schema_lock: asyncio.Lock | None = None
-_global_state_schema_lock_loop: asyncio.AbstractEventLoop | None = None
 _loan_accept_lock: asyncio.Lock | None = None
 _loan_accept_lock_loop: asyncio.AbstractEventLoop | None = None
 type _TopNCacheKey = tuple[int, int | None, tuple[int, ...], bool]
@@ -558,16 +513,6 @@ def _current_schema_lock() -> asyncio.Lock:
     return _schema_lock
 
 
-def _current_global_state_schema_lock() -> asyncio.Lock:
-    """Returns a global-state schema bootstrap lock bound to the current event loop."""
-    global _global_state_schema_lock, _global_state_schema_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
-    loop = asyncio.get_running_loop()
-    if _global_state_schema_lock is None or _global_state_schema_lock_loop is not loop:
-        _global_state_schema_lock = asyncio.Lock()
-        _global_state_schema_lock_loop = loop
-    return _global_state_schema_lock
-
-
 def _current_loan_accept_lock() -> asyncio.Lock:
     """Serializes loan approval so central-bank capacity is consumed once."""
     global _loan_accept_lock, _loan_accept_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
@@ -578,17 +523,17 @@ def _current_loan_accept_lock() -> asyncio.Lock:
     return _loan_accept_lock
 
 
-async def _ensure_global_state_schema() -> None:
-    """Bootstraps bot-wide state in `data/database/global_state.db`."""
-    global _global_state_schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    _ensure_sqlite_hooks(engine=_global_state_engine)
-    if _global_state_schema_ready_for is _global_state_engine:
+async def _ensure_schema() -> None:
+    """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine."""
+    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
+    _ensure_sqlite_hooks(engine=_engine)
+    if _schema_ready_for is _engine:
         return
-    async with _current_global_state_schema_lock():
-        if _global_state_schema_ready_for is _global_state_engine:
+    async with _current_schema_lock():
+        if _schema_ready_for is _engine:
             return
-        async with _global_state_engine.begin() as conn:
-            await conn.run_sync(GlobalStateBase.metadata.create_all)
+        async with _engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
             for seed_game_id, seed_amount in _JACKPOT_SEEDS:
                 await conn.execute(
                     statement=insert(JackpotPool)
@@ -614,21 +559,6 @@ async def _ensure_global_state_schema() -> None:
                 )
                 .on_conflict_do_nothing(index_elements=["ledger_id"])
             )
-        _global_state_schema_ready_for = _global_state_engine
-
-
-async def _ensure_schema() -> None:
-    """Bootstraps current economy and bot-wide state schemas once per engine."""
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    _ensure_sqlite_hooks(engine=_engine)
-    if _schema_ready_for is _engine:
-        return
-    async with _current_schema_lock():
-        if _schema_ready_for is _engine:
-            return
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        await _ensure_global_state_schema()
         _schema_ready_for = _engine
 
 
@@ -640,12 +570,6 @@ def open_session() -> AsyncSession:
     """
     _ensure_sqlite_hooks(engine=_engine)
     return AsyncSession(bind=_engine, expire_on_commit=False)
-
-
-def open_global_state_session() -> AsyncSession:
-    """Creates an async session bound to the bot-wide global state DB."""
-    _ensure_sqlite_hooks(engine=_global_state_engine)
-    return AsyncSession(bind=_global_state_engine, expire_on_commit=False)
 
 
 def checkin_reward(streak: int, is_vip: bool) -> int:
@@ -1008,7 +932,7 @@ async def _apply_casino_ledger_delta_in_session(
     take-in. `total_earned` / `total_spent` accumulate gross flows.
 
     Args:
-        session: Active SQLAlchemy session bound to `_global_state_engine`.
+        session: Active SQLAlchemy session bound to `_engine`.
         delta: Signed change to apply to the casino balance.
         now: `_database_now()` value pinned for this transaction.
 
@@ -1060,8 +984,8 @@ async def _rollback_sessions(*sessions: AsyncSession) -> None:
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
     """Returns the cumulative casino system ledger snapshot."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
+    await _ensure_schema()
+    async with open_session() as session:
         result = await session.execute(
             statement=select(
                 CasinoLedger.balance,
@@ -1379,13 +1303,9 @@ async def apply_round_settlement(
 
     Positive player deltas go through the shared income path. Negative player
     deltas clamp at zero; when a loss cannot be fully collected, the casino
-    ledger only records the actual collected debit. The player write lives in
-    `data/database/economy.db` and the casino mirror lives in
-    `data/database/global_state.db`; ordinary exceptions before the final
-    commits roll both sessions back. The
-    player wallet commits before the casino mirror so player-facing balance is
-    preferred if only one final commit succeeds. As with jackpot settlement, a
-    hard crash between the two database-file commits is not cross-file atomic.
+    ledger only records the actual collected debit. The player write and the
+    casino mirror live in the same `data/database/economy.db` file and commit
+    as one atomic transaction.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1399,12 +1319,11 @@ async def apply_round_settlement(
         A `RoundSettlementResult` with the post-write player and casino balances.
     """
     await _ensure_schema()
-    await _ensure_global_state_schema()
     now = _database_now()
-    async with open_session() as economy_session, open_global_state_session() as global_session:
+    async with open_session() as session:
         try:
             player_balance, applied_player_delta = await _apply_player_delta_in_session(
-                session=economy_session,
+                session=session,
                 user_id=player_id,
                 name=player_account_name,
                 avatar_url=player_avatar_url,
@@ -1417,17 +1336,14 @@ async def apply_round_settlement(
                 casino_delta_to_apply = min(casino_delta, max(-applied_player_delta, 0))
 
             if casino_delta_to_apply == 0:
-                casino_balance = await _read_casino_ledger_balance_in_session(
-                    session=global_session
-                )
+                casino_balance = await _read_casino_ledger_balance_in_session(session=session)
             else:
                 casino_balance = await _apply_casino_ledger_delta_in_session(
-                    session=global_session, delta=casino_delta_to_apply, now=now
+                    session=session, delta=casino_delta_to_apply, now=now
                 )
-            await economy_session.commit()
-            await global_session.commit()
+            await session.commit()
         except Exception:
-            await _rollback_sessions(economy_session, global_session)
+            await _rollback_sessions(session)
             raise
     invalidate_economy_leaderboard_cache()
     return RoundSettlementResult(player_balance=player_balance, casino_balance=casino_balance)
@@ -1477,8 +1393,8 @@ async def get_jackpot_pool(game_id: str) -> int:
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
     """Returns the current jackpot balance and generation for a shared pool."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
+    await _ensure_schema()
+    async with open_session() as session:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=_database_now()
         )
@@ -1525,7 +1441,7 @@ async def _apply_jackpot_delta_in_session(
     the returned balance is always ready for the next table.
 
     Args:
-        session: Active SQLAlchemy session bound to `_global_state_engine`.
+        session: Active SQLAlchemy session bound to `_engine`.
         game_id: Game identifier (jackpot row primary key).
         delta: Signed point adjustment to apply to `pool_balance`.
         now: `_database_now()` value pinned for this transaction.
@@ -1722,10 +1638,9 @@ async def apply_jackpot_settlement_batch(
     this transaction, then credited through the shared income path. Negative
     deltas normally clamp at zero and feed the pool with the actual debit.
     Required-full-debit settlements reject the whole batch instead. If a seeded
-    pool is drained, the same global-state transaction restores its
-    on-the-house seed. Economy and jackpot writes now live in separate SQLite
-    files, so ordinary exceptions roll both sessions back before either commit,
-    but a hard crash between the two final commits is not cross-file atomic.
+    pool is drained, the same transaction restores its on-the-house seed.
+    Player and jackpot rows live in the same `data/database/economy.db` file,
+    so the whole batch commits as one atomic transaction.
 
     Args:
         game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
@@ -1736,9 +1651,8 @@ async def apply_jackpot_settlement_batch(
         and the final jackpot balance after the final settlement and any reseed.
     """
     await _ensure_schema()
-    await _ensure_global_state_schema()
     now = _database_now()
-    async with open_session() as economy_session, open_global_state_session() as global_session:
+    async with open_session() as session:
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
         jackpot_snapshot: JackpotSnapshot | None = None
@@ -1746,14 +1660,13 @@ async def apply_jackpot_settlement_batch(
 
         try:
             rejected_player_ids = await _full_debit_rejections_in_session(
-                session=economy_session, settlements=settlements
+                session=session, settlements=settlements
             )
             if rejected_player_ids:
                 jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                    session=global_session, game_id=game_id, now=now
+                    session=session, game_id=game_id, now=now
                 )
-                await global_session.commit()
-                await economy_session.commit()
+                await session.commit()
                 return JackpotSettlementBatchResult(
                     player_balances={},
                     applied_player_deltas={},
@@ -1766,7 +1679,7 @@ async def apply_jackpot_settlement_batch(
                 effective_player_delta = settlement.player_delta
                 if effective_player_delta > 0:
                     claim, jackpot_snapshot, depleted = await _claim_jackpot_payout_in_session(
-                        session=global_session,
+                        session=session,
                         game_id=game_id,
                         amount=effective_player_delta,
                         expected_generation=settlement.expected_jackpot_generation,
@@ -1779,7 +1692,7 @@ async def apply_jackpot_settlement_batch(
                     player_balance,
                     applied_player_delta,
                 ) = await _apply_jackpot_player_delta_in_session(
-                    session=economy_session,
+                    session=session,
                     user_id=settlement.player_id,
                     name=settlement.player_account_name,
                     avatar_url=settlement.player_avatar_url,
@@ -1790,12 +1703,13 @@ async def apply_jackpot_settlement_batch(
                     settlement.require_full_debit
                     and applied_player_delta != effective_player_delta
                 ):
-                    await economy_session.rollback()
-                    await global_session.rollback()
+                    # Nothing in the batch is committed yet, so one rollback
+                    # discards every player and jackpot write so far.
+                    await session.rollback()
                     jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                        session=global_session, game_id=game_id, now=now
+                        session=session, game_id=game_id, now=now
                     )
-                    await global_session.commit()
+                    await session.commit()
                     return JackpotSettlementBatchResult(
                         player_balances={},
                         applied_player_deltas={},
@@ -1808,26 +1722,22 @@ async def apply_jackpot_settlement_batch(
 
                 if applied_player_delta == 0:
                     jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                        session=global_session, game_id=game_id, now=now
+                        session=session, game_id=game_id, now=now
                     )
                     continue
 
                 if applied_player_delta < 0:
                     jackpot_snapshot, depleted = await _apply_jackpot_delta_in_session(
-                        session=global_session,
-                        game_id=game_id,
-                        delta=-applied_player_delta,
-                        now=now,
+                        session=session, game_id=game_id, delta=-applied_player_delta, now=now
                     )
                     jackpot_depleted = jackpot_depleted or depleted
 
             if jackpot_snapshot is None:
                 jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                    session=global_session, game_id=game_id, now=now
+                    session=session, game_id=game_id, now=now
                 )
 
-            await global_session.commit()
-            await economy_session.commit()
+            await session.commit()
             if any(delta != 0 for delta in applied_player_deltas.values()):
                 invalidate_economy_leaderboard_cache()
             return JackpotSettlementBatchResult(
@@ -1838,8 +1748,7 @@ async def apply_jackpot_settlement_batch(
                 jackpot_depleted=jackpot_depleted,
             )
         except Exception:
-            await economy_session.rollback()
-            await global_session.rollback()
+            await session.rollback()
             raise
 
 
@@ -3433,57 +3342,6 @@ async def get_portfolio(user_id: int) -> PortfolioView:
         return portfolio
 
 
-async def get_bot_statuses() -> list[str]:
-    """Returns enabled presence lines ordered for rotation; empty when unset."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
-        result = await session.execute(
-            statement=select(BotStatus.status_text)
-            .where(BotStatus.enabled.is_(True))
-            .order_by(BotStatus.order_index, BotStatus.status_id)
-        )
-        return list(result.scalars().all())
-
-
-async def list_bot_status_rows() -> list[BotStatusEntry]:
-    """Returns every presence rotation row for maintenance display."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
-        result = await session.execute(
-            statement=select(BotStatus).order_by(BotStatus.order_index, BotStatus.status_id)
-        )
-        return [
-            BotStatusEntry(
-                status_id=row.status_id,
-                status_text=row.status_text,
-                enabled=row.enabled,
-                order_index=row.order_index,
-            )
-            for row in result.scalars().all()
-        ]
-
-
-async def add_bot_status(status_text: str, order_index: int = 0, enabled: bool = True) -> int:
-    """Adds a presence rotation line and returns its new id."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
-        row = BotStatus(status_text=status_text, order_index=order_index, enabled=enabled)
-        session.add(row)
-        await session.commit()
-        return row.status_id
-
-
-async def remove_bot_status(status_id: int) -> bool:
-    """Removes a presence rotation line; returns True when a row was deleted."""
-    await _ensure_global_state_schema()
-    async with open_global_state_session() as session:
-        result = await session.execute(
-            statement=delete(BotStatus).where(BotStatus.status_id == status_id)
-        )
-        await session.commit()
-        return bool(result.rowcount)
-
-
 # --- Offline economy reset helpers ----------------------------------------
 # One-time maintenance used by scripts/reset_economy.py to deflate balances
 # accumulated under the pre-reset faucets. All writes go through the ORM so the
@@ -3698,9 +3556,9 @@ async def expire_loan_proposals() -> int:
 
 async def reset_casino_ledger() -> None:
     """Zeroes the cumulative casino system ledger (balance/earned/spent)."""
-    await _ensure_global_state_schema()
+    await _ensure_schema()
     now = _database_now()
-    async with open_global_state_session() as session:
+    async with open_session() as session:
         await session.execute(
             statement=update(CasinoLedger)
             .where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
@@ -3711,9 +3569,9 @@ async def reset_casino_ledger() -> None:
 
 async def reset_jackpot_pools() -> None:
     """Resets every seeded jackpot pool back to its seed with a fresh generation."""
-    await _ensure_global_state_schema()
+    await _ensure_schema()
     now = _database_now()
-    async with open_global_state_session() as session:
+    async with open_session() as session:
         for game_id, seed_amount in _JACKPOT_SEEDS:
             seed_values: dict[str, Any] = {
                 "pool_balance": seed_amount,

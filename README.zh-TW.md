@@ -118,12 +118,9 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 這個 bot 會把 runtime data 存在本機 `data/` 底下；SQLite 資料庫集中在 `data/database/`。
 
 - `database/messages.db`：human messages 與 bot 自己的回覆，用於聊天歷史與摘要。
-- `database/economy.db`：`user_wallet` 存每位使用者的可用餘額與 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成員、簽到與 leaderboard flags，另存長期信貸申請與契約，以及賭場每日統計。
+- `database/economy.db`：`user_wallet` 存每位使用者的可用餘額與 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成員、簽到與 leaderboard flags，另存長期信貸申請與契約、賭場每日統計，以及 bot-wide jackpot pool 與 casino ledger。
 - `database/stock.db`：DB-managed 模擬 stock profile、float supply、price tick、position、trade operation、ordered trade leg 與 AI-or-fallback stock news。
-- `database/global_state.db`：bot-wide shared state，例如 jackpot pool。
-- `database/game_cleanup.db`：公開 expiring response 的 Discord guild/channel 名稱、user name、channel ID 與 message ID，例如 game、economy 與 stock messages，用於 bot 重啟後的清理。
-- `database/games.db`：每位玩家的 Blackjack 對局歷史。
-- `database/fishing.db`：釣魚目錄與每位使用者的裝備、魚餌與漁獲紀錄。
+- `database/games.db`：每位玩家的 Blackjack 對局歷史、釣魚目錄與每位使用者的裝備、魚餌與漁獲紀錄，以及公開 expiring response 的清理追蹤（guild/channel 名稱、user name、channel ID 與 message ID），用於 bot 重啟後的清理。
 - 臨時 media 下載使用專案根目錄的 `tmp/` scratch folder（不在 `data/` 底下），傳送完成後即刪除。
 - `memories/`：每個 Discord user id 一個資料夾的純文字 markdown 個人長期記憶，由你的對話在背景累積，並在後續 AI 回覆時注入。
 

@@ -20,7 +20,7 @@ from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import warm_pricing_cache
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._economy.database import get_bot_statuses, credit_with_repayment
+from discordbot.cogs._economy.database import credit_with_repayment
 
 
 class DiscordBot(commands.Bot):
@@ -120,7 +120,7 @@ class DiscordBot(commands.Bot):
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
         """Periodically updates the bot's game status."""
-        statuses = await get_bot_statuses() or ["your mama"]
+        statuses = ["your mama"]
         random_status = secrets.choice(statuses)
         await self.change_presence(activity=Game(random_status))
         logfire.info("Status Changed", new_status=self.activity.name)
