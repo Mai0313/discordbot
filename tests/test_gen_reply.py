@@ -772,10 +772,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert {peak_start[0].effort, after_peak[0].effort} == {"high"}
 
 
-async def test_handle_message_reply_injects_memory_as_trailing_system_message(
+async def test_handle_message_reply_injects_memory_as_assistant_note_before_current(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies stored memory rides as a trailing role=system input, not in instructions."""
+    """Verifies stored memory rides as a role=assistant note before the current block."""
     cog = _cog(memory_enabled=True)
     write_main_memory(
         user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
@@ -818,13 +818,17 @@ async def test_handle_message_reply_injects_memory_as_trailing_system_message(
     assert instructions == "SYS"
     assert "喜歡簡短回覆" not in instructions
 
-    # Memory rides as the LAST input item, role=system, carrying the wrapper.
+    # Memory rides right before the current-message block as a lowest-authority
+    # role=assistant self-note with string content; never trailing, because a
+    # trailing assistant message is Claude prefill semantics through LiteLLM.
     llm_input = cog.client.responses.create_inputs[-1]
-    memory_item = llm_input[-1]
-    assert memory_item["role"] == "system"
-    memory_text = memory_item["content"][0]["text"]
+    memory_item = llm_input[-3]
+    assert memory_item["role"] == "assistant"
+    memory_text = memory_item["content"]
+    assert isinstance(memory_text, str)
     assert "喜歡簡短回覆" in memory_text
     assert "Long-term memory" in memory_text
+    assert "Long-term memory" not in str(llm_input[-1])
 
     # The extraction message_list must NOT contain the memory block (no self-feeding).
     scheduled_list = scheduled[0]["message_list"]

@@ -325,36 +325,28 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
-        message_list: list[EasyInputMessageParam] = []
-
         hist_messages, reference_messages, current_message = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
         )
-        message_list.extend(hist_messages)
-        message_list.extend(reference_messages)
-        message_list.extend(current_message)
+        message_list: list[EasyInputMessageParam] = [
+            *hist_messages,
+            *reference_messages,
+            *current_message,
+        ]
 
-        # The user's long-term memory is attacker-influenceable (it is distilled
-        # from their own messages), so it rides as a low-trust role=system
-        # separator at the END of the conversation rather than in the top-level
-        # `instructions`, where it would carry persona-level authority and be a
-        # prime prompt-injection target. It is appended to a separate LLM-input
-        # list so the phase-1 extraction `message_list` never re-ingests
-        # already-stored memory (self-feeding).
+        # User-influenceable memory rides as a lowest-authority role=assistant
+        # self-note with string content (assistant rejects input_text parts),
+        # never trailing (Claude prefill through LiteLLM); `message_list` stays
+        # memory-free for phase-1 extraction.
         llm_input: list[EasyInputMessageParam] = message_list
         memory_enabled = memory_enabled and self.memory_config.enabled
         if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
             memory_message = EasyInputMessageParam(
-                role="system",
-                content=[
-                    ResponseInputTextParam(
-                        text=render_memory_injection(memory=memory_text).strip(), type="input_text"
-                    )
-                ],
+                role="assistant", content=render_memory_injection(memory=memory_text).strip()
             )
-            llm_input = [*message_list, memory_message]
+            llm_input = [*hist_messages, *reference_messages, memory_message, *current_message]
 
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
@@ -394,11 +386,9 @@ class ReplyGeneratorCogs(commands.Cog):
         if message.author.bot:
             return
 
-        # In DMs, always respond. In guilds, only respond when explicitly mentioned.
-        # A Discord reply-notification puts the bot in message.mentions without
-        # writing <@ID> into the content, so we check content to avoid
-        # triggering on messages that merely reply to a functional bot post
-        # (e.g. a Threads embed or a video download result).
+        # Match <@ID> in content, not message.mentions: reply notifications add
+        # the bot to mentions and would trigger on replies to functional bot
+        # posts (e.g. Threads embeds, video downloads).
         is_dm = message.guild is None
         if not is_dm and (not self.bot.user or f"<@{self.bot.user.id}>" not in message.content):
             return
