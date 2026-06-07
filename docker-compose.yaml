@@ -17,7 +17,12 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      # Fail fast instead of letting compose create a root-owned ./data on first run.
+      - type: bind
+        source: ./data
+        target: /app/data
+        bind:
+          create_host_path: false
     network_mode: host
     restart: always
     pull_policy: always
