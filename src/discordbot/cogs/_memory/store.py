@@ -40,6 +40,9 @@ _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 # can never echo it back; files without the line pass through unchanged.
 _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 
+# Capturing variant used by `read_main_identity` to recover the stored line.
+_IDENTITY_CAPTURE_RE = re.compile(r"^v1\n([^\n]*\[id: \d+\][^\n]*)\n")
+
 # The ` | <identity>` suffix that raw entry headers carried before identity
 # was confined to the main file. New headers are timestamp-only; the strip
 # remains so raw / detail files written before the removal never leak author
@@ -109,6 +112,16 @@ def cleared_since(user_id: int, started_at: float) -> bool:
 def read_main_memory(user_id: int) -> str:
     """Returns the consolidated memory, stripped of identity metadata."""
     return _strip_identity(text=_read_text(path=_main_path(user_id=user_id))).strip()
+
+
+def read_main_identity(user_id: int) -> str:
+    """Returns the identity metadata line stored in the main file, or empty.
+
+    Offline regeneration has no Discord context to rebuild the identity from,
+    so it preserves the line the last online write stamped into the file.
+    """
+    match = _IDENTITY_CAPTURE_RE.match(_read_text(path=_main_path(user_id=user_id)))
+    return match.group(1) if match else ""
 
 
 def write_main_memory(user_id: int, content: str, identity: str) -> None:

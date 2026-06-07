@@ -13,7 +13,6 @@ import pytest
 from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs
-from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
@@ -286,12 +285,11 @@ def _png_b64() -> str:
     return base64.b64encode(s=buffer.getvalue()).decode(encoding="utf-8")
 
 
-def _cog(bot_user_id: int = 999, memory_enabled: bool = False) -> ReplyGeneratorCogs:
+def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
-    cog.memory_config = MemoryConfig(MEMORY_ENABLED=memory_enabled)
     cog.__dict__["client"] = FakeClient()
     return cog
 
@@ -626,7 +624,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             return "done"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    await cog._handle_message_reply(message=message, system_prompt="system", history_limit=2)
+    # memory_enabled=False keeps this routing test off the real memory path,
+    # which is not isolated here.
+    await cog._handle_message_reply(
+        message=message, system_prompt="system", history_limit=2, memory_enabled=False
+    )
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
 
@@ -776,7 +778,7 @@ async def test_handle_message_reply_injects_memory_as_assistant_note_before_curr
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies stored memory rides as a role=assistant note before the current block."""
-    cog = _cog(memory_enabled=True)
+    cog = _cog()
     write_main_memory(
         user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
     )
@@ -847,7 +849,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
-    cog = _cog(memory_enabled=True)
+    cog = _cog()
 
     class FakeResponder:
         """Returns a fixed completed reply."""
@@ -879,51 +881,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert scheduled == [1]
 
 
-async def test_handle_message_reply_disabled_memory_skips_pipeline(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verifies the kill switch bypasses injection and extraction entirely."""
-    cog = _cog(memory_enabled=False)
-    write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入", identity="Tester (tester) [id: 1]"
-    )
-
-    class FakeResponder:
-        """Returns a fixed completed reply."""
-
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
-            self.message = message
-            self.responses = responses
-
-        async def stream(self) -> str:
-            """Returns placeholder reply content."""
-            return "回覆"
-
-    scheduled: list[int] = []
-
-    def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
-    ) -> None:
-        """Records that a memory update was scheduled."""
-        scheduled.append(user_id)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
-
-    assert cog.client.responses.create_instructions[-1] == "SYS"
-    assert "不該被注入" not in cog.client.responses.create_instructions[-1]
-    assert scheduled == []
-
-
 async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies memory_enabled=False (summary route) bypasses injection and extraction."""
-    cog = _cog(memory_enabled=True)
+    cog = _cog()
     write_main_memory(
         user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入", identity="Tester (tester) [id: 1]"
     )

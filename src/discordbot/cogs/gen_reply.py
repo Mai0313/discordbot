@@ -19,7 +19,6 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
-from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
 from discordbot.cogs._memory.store import read_main_memory
@@ -62,7 +61,6 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
-        self.memory_config = MemoryConfig()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -341,7 +339,6 @@ class ReplyGeneratorCogs(commands.Cog):
         # never trailing (Claude prefill through LiteLLM); `message_list` stays
         # memory-free for phase-1 extraction.
         llm_input: list[EasyInputMessageParam] = message_list
-        memory_enabled = memory_enabled and self.memory_config.enabled
         if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
             memory_message = EasyInputMessageParam(
                 role="assistant", content=render_memory_injection(memory=memory_text).strip()

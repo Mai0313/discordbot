@@ -23,7 +23,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Features
 
-- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, viewable with `/memory show` (`/memory clear` is temporarily paused).
+- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, manageable with `/memory show`, `/memory clear`, and `/memory regenerate`.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages and AI replies, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
@@ -34,32 +34,32 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Commands
 
-| Command                                                          | What it does                                                                                                                                 |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@bot <message>`                                                 | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                                    |
-| _Threads URL_                                                    | Automatically expands Threads posts and media.                                                                                               |
-| `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord.                                                                                              |
-| `/balance [member]`                                              | Privately shows a member's 虛擬歡樂豆 balance, debt, stock holdings, net worth, and VIP status.                                              |
-| `/checkin`                                                       | Claims the daily check-in reward.                                                                                                            |
-| `/vip`                                                           | Buys permanent VIP perks.                                                                                                                    |
-| `/leaderboard`                                                   | Shows the global top balances.                                                                                                               |
-| `/loss_leaderboard`                                              | Shows today's accumulated casino losses.                                                                                                     |
-| `/credit status\|borrow\|call\|repay`                            | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.                           |
-| `/central_bank status\|borrow\|call\|repay`                      | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity.                       |
-| `/stock`                                                         | Opens one public stock market message that edits in place for details, trading, news, and history.                                           |
-| `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member or bot.                                                                                               |
-| `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments for members or bots.                                                                                   |
-| `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                                            |
-| `/games dragon_gate`                                             | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                                          |
-| `/games fishing`                                                 | Opens your personal fishing panel to buy gear and cast for graded fish; a currency sink.                                                     |
-| `/casino`                                                        | Shows the casino system's cumulative profit and loss.                                                                                        |
-| `/pocat`                                                         | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                                            |
-| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                                                   |
-| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | Search NPCs, quests, and maps.                                                                                                               |
-| `/maplestory item`, `/maplestory stats`                          | Search item drop sources and database stats.                                                                                                 |
-| `/memory show\|clear`                                            | Privately shows or wipes what the bot remembers about you; show has a `detail` option for the fine-grained log, clear is temporarily paused. |
-| `/help`                                                          | Shows the in-Discord guide.                                                                                                                  |
-| `/ping`                                                          | Checks bot latency.                                                                                                                          |
+| Command                                                          | What it does                                                                                                               |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `@bot <message>`                                                 | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                  |
+| _Threads URL_                                                    | Automatically expands Threads posts and media.                                                                             |
+| `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord.                                                                            |
+| `/balance [member]`                                              | Privately shows a member's 虛擬歡樂豆 balance, debt, stock holdings, net worth, and VIP status.                            |
+| `/checkin`                                                       | Claims the daily check-in reward.                                                                                          |
+| `/vip`                                                           | Buys permanent VIP perks.                                                                                                  |
+| `/leaderboard`                                                   | Shows the global top balances.                                                                                             |
+| `/loss_leaderboard`                                              | Shows today's accumulated casino losses.                                                                                   |
+| `/credit status\|borrow\|call\|repay`                            | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.         |
+| `/central_bank status\|borrow\|call\|repay`                      | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity.     |
+| `/stock`                                                         | Opens one public stock market message that edits in place for details, trading, news, and history.                         |
+| `/give <member> <amount>`                                        | Transfers 虛擬歡樂豆 to another member or bot.                                                                             |
+| `/admin refund_tax\|collect_tax`                                 | Admin-only manual balance adjustments for members or bots.                                                                 |
+| `/games blackjack <bet>`                                         | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                          |
+| `/games dragon_gate`                                             | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                        |
+| `/games fishing`                                                 | Opens your personal fishing panel to buy gear and cast for graded fish; a currency sink.                                   |
+| `/casino`                                                        | Shows the casino system's cumulative profit and loss.                                                                      |
+| `/pocat`                                                         | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                          |
+| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                                 |
+| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | Search NPCs, quests, and maps.                                                                                             |
+| `/maplestory item`, `/maplestory stats`                          | Search item drop sources and database stats.                                                                               |
+| `/memory show\|clear\|regenerate`                                | Privately shows, wipes, or rebuilds what the bot remembers about you; show has a `detail` option for the fine-grained log. |
+| `/help`                                                          | Shows the in-Discord guide.                                                                                                |
+| `/ping`                                                          | Checks bot latency.                                                                                                        |
 
 ## Self-Hosting
 
@@ -111,7 +111,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 
-Per-user long-term memory is on by default; set `MEMORY_ENABLED=false` to disable both memory injection and background extraction. `/memory clear` is paused by default; set `MEMORY_CLEAR_ENABLED=true` to let users actually wipe their memory.
+Per-user long-term memory is always on; users manage their own memory with `/memory show`, `/memory clear`, and `/memory regenerate`.
 
 ## Data And Privacy
 

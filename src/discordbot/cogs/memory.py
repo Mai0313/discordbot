@@ -1,10 +1,15 @@
-"""Slash commands for viewing and clearing per-user long-term memory."""
+"""Slash commands for viewing, clearing, and regenerating per-user long-term memory."""
 
+from functools import cached_property
+
+from openai import AsyncOpenAI
 import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from discordbot.typings.config import MemoryConfig
+from discordbot.utils.llm import create_litellm_client
+from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._memory.store import (
     read_detail_tail,
     read_main_memory,
@@ -19,13 +24,18 @@ from discordbot.cogs._memory.views import (
     build_memory_embed,
     memory_footer_text,
 )
+from discordbot.cogs._gen_reply.input import render_author_identity
+from discordbot.cogs._memory.pipeline import regenerate_main_memory, regeneration_on_cooldown
 from discordbot.cogs._memory.constants import MEMORY_DETAIL_VIEW_MAX_CHARS
+from discordbot.cogs._memory.extraction import MemoryExtractorAI
 
-_CLEAR_EMBED_COLOR = 0x57F287
-_CLEAR_DISABLED_EMBED_COLOR = 0xFEE75C
+_SUCCESS_EMBED_COLOR = 0x57F287
+_WARN_EMBED_COLOR = 0xFEE75C
+_ERROR_EMBED_COLOR = 0xED4245
 
 _MEMORY_TITLE = "🧠 我對你的記憶"
 _DETAIL_TITLE = "🧠 詳細記憶記錄"
+_REGEN_TITLE = "🔄 記憶重建"
 
 
 class MemoryCogs(commands.Cog):
@@ -33,7 +43,8 @@ class MemoryCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        memory_config: Env-backed memory settings, including the clear kill switch.
+        config: The LLM client configuration used for memory regeneration.
+        runtime_models: Catalog providing the memory model settings.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -43,7 +54,30 @@ class MemoryCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.memory_config = MemoryConfig()
+        self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
+
+    @cached_property
+    def client(self) -> AsyncOpenAI:
+        """The cached AsyncOpenAI client instance.
+
+        Returns:
+            A configured AsyncOpenAI client reused across regeneration requests.
+        """
+        return create_litellm_client(config=self.config)
+
+    @cached_property
+    def memory_extractor(self) -> MemoryExtractorAI:
+        """The cached memory extraction service used for regeneration.
+
+        Returns:
+            An extractor bound to this cog's client and the memory models.
+        """
+        return MemoryExtractorAI(
+            client=self.client,
+            extract_model=self.runtime_models.extract_model,
+            consolidate_model=self.runtime_models.memories_model,
+        )
 
     @nextcord.slash_command(
         name="memory",
@@ -182,18 +216,58 @@ class MemoryCogs(commands.Cog):
         """
         if interaction.user is None:
             return
-        if not self.memory_config.clear_enabled:
+        removed = clear_user_memory(user_id=interaction.user.id)
+        description = "已清除我對你的所有記憶。" if removed else "本來就沒有任何記憶，無事發生。"
+        embed = Embed(title="🧹 記憶清除", description=description, color=_SUCCESS_EMBED_COLOR)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @memory.subcommand(
+        name="regenerate",
+        description="Rebuild what the bot remembers about you from its observation log.",
+        name_localizations={Locale.zh_TW: "重建", Locale.ja: "再生成"},
+        description_localizations={
+            Locale.zh_TW: "只根據觀察記錄，從頭重建 bot 對你的長期記憶",
+            Locale.ja: "観察ログだけを使って、あなたに関する記憶を一から作り直します。",
+        },
+    )
+    async def memory_regenerate(self, interaction: Interaction) -> None:
+        """Rebuilds the caller's consolidated memory from cold-tier evidence alone."""
+        if interaction.user is None:
+            return
+        if regeneration_on_cooldown(user_id=interaction.user.id):
             embed = Embed(
-                title="🧹 記憶清除",
-                description="記憶清除功能暫時停用，你仍然可以用 `/memory show` 查看我對你的記憶。",
-                color=_CLEAR_DISABLED_EMBED_COLOR,
+                title=_REGEN_TITLE,
+                description="記憶重建剛執行過，請稍後再試。",
+                color=_WARN_EMBED_COLOR,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        removed = clear_user_memory(user_id=interaction.user.id)
-        description = "已清除我對你的所有記憶。" if removed else "本來就沒有任何記憶，無事發生。"
-        embed = Embed(title="🧹 記憶清除", description=description, color=_CLEAR_EMBED_COLOR)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # The rebuild is one whole-file LLM rewrite that can run far past
+        # Discord's 3-second ack window; defer keeps the interaction alive.
+        await interaction.response.defer(ephemeral=True)
+        result = await regenerate_main_memory(
+            user_id=interaction.user.id,
+            extractor=self.memory_extractor,
+            identity=render_author_identity(
+                display_name=interaction.user.display_name,
+                username=interaction.user.name,
+                user_id=interaction.user.id,
+            ),
+        )
+        outcomes = {
+            "regenerated": (
+                "已根據觀察記錄重新整理我對你的長期記憶，可以用 `/memory show` 查看。",
+                _SUCCESS_EMBED_COLOR,
+            ),
+            "no_evidence": (
+                "目前還沒有足夠的觀察記錄可以重建記憶，多跟我聊聊吧。",
+                _WARN_EMBED_COLOR,
+            ),
+            "failed": ("重建失敗，已保留原本的記憶，請稍後再試。", _ERROR_EMBED_COLOR),
+        }
+        description, color = outcomes[result]
+        embed = Embed(title=_REGEN_TITLE, description=description, color=color)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def setup(bot: commands.Bot) -> None:

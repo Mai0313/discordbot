@@ -80,7 +80,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• Generate images and short videos on request\n"
                     "• I slowly build a long-term memory of your preferences from our chats\n\n"
                     "**`/memory show`** — see what I remember about you (private, paged when long; the `detail` option shows the recent fine-grained log)\n"
-                    "**`/memory clear`** — wipe everything I remember about you (temporarily paused)"
+                    "**`/memory clear`** — wipe everything I remember about you\n"
+                    "**`/memory regenerate`** — rebuild what I remember about you from scratch using only my observation log"
                 ),
             ),
             "games": HelpSection(
@@ -160,7 +161,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• 依需求生成圖片或短影片\n"
                     "• 我會從對話中慢慢累積對你偏好的長期記憶\n\n"
                     "**`/memory show`** — 查看我對你記住了什麼（僅自己可見，過長會分頁；加上「詳細」選項可查看最近的詳細觀察記錄）\n"
-                    "**`/memory clear`** — 清除我對你的所有記憶（暫時停用）"
+                    "**`/memory clear`** — 清除我對你的所有記憶\n"
+                    "**`/memory regenerate`** — 只根據觀察記錄，從頭重建我對你的長期記憶"
                 ),
             ),
             "games": HelpSection(
@@ -240,7 +242,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• リクエストに応じた画像・短い動画の生成\n"
                     "• 会話からあなたの好みを長期記憶として少しずつ蓄積します\n\n"
                     "**`/memory show`** — 記憶している内容を表示（本人のみ閲覧可、長い場合はページ表示。「詳細」オプションで最近の詳細ログを表示）\n"
-                    "**`/memory clear`** — あなたに関する記憶をすべて消去（一時停止中）"
+                    "**`/memory clear`** — あなたに関する記憶をすべて消去\n"
+                    "**`/memory regenerate`** — 観察ログだけを使って、あなたに関する記憶を一から作り直します"
                 ),
             ),
             "games": HelpSection(

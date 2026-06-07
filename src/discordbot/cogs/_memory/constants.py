@@ -18,6 +18,11 @@ RAW_FILE_MAX_BYTES = 65_536
 # trigger above ignores the cooldown so a burst still consolidates.
 MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 600.0
 
+# Minimum gap between user-requested main-file regenerations. Recorded at
+# attempt time like the consolidation cooldown, and tracked separately so a
+# manual regeneration never delays the automatic consolidation or vice versa.
+MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
+
 # Process-wide cap on concurrent background memory updates so a busy server
 # cannot fan out unbounded whole-file rewrites against the shared LiteLLM
 # proxy and starve the reply path (mirrors codex's stage-1 concurrency limit).

@@ -16,7 +16,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory import pipeline
-from discordbot.typings.config import MemoryConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
     clear_raw,
@@ -32,6 +31,7 @@ from discordbot.cogs._memory.store import (
     clear_user_memory,
     count_raw_entries,
     write_main_memory,
+    read_main_identity,
 )
 from discordbot.cogs._memory.views import (
     MEMORY_PAGE_MAX_CHARS,
@@ -950,10 +950,7 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
     assert "還沒有任何記憶" in (embed.description or "")
 
 
-async def test_memory_clear_removes_files_and_reports(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
+async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path) -> None:
     write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
     append_raw_entry(user_id=USER_ID, entry_text="raw")
     cog = _memory_cog()
@@ -968,10 +965,7 @@ async def test_memory_clear_removes_files_and_reports(
     assert cleared_since(user_id=USER_ID, started_at=started_at) is True
 
 
-async def test_memory_clear_without_memory_reports_noop(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
+async def test_memory_clear_without_memory_reports_noop(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
@@ -980,20 +974,211 @@ async def test_memory_clear_without_memory_reports_noop(
     assert "無事發生" in (embed.description or "")
 
 
-async def test_memory_clear_paused_by_default(
+# ---------------------------------------------------------------------------
+# Memory regeneration
+# ---------------------------------------------------------------------------
+
+DETAIL_EVIDENCE = "## 2026-06-01T00:00:00+00:00\n偏好訊號:\n- 喜歡條列式"
+
+
+async def test_regenerate_main_memory_rebuilds_from_evidence_only(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶"
+    )
+
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "regenerated"
+    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n重建後的記憶"
+    # The previous main survives as the backup generation with its identity line.
+    bak_text = (memory_isolated_dir / str(USER_ID) / "main.bak.md").read_text(encoding="utf-8")
+    assert "舊的整理" in bak_text
+    main_text = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
+    assert IDENTITY in main_text
+    # The consumed raw batch retires into the cold tier like a consolidation.
+    assert count_raw_entries(user_id=USER_ID) == 0
+    assert "喜歡簡短回覆" in read_detail_tail(user_id=USER_ID, max_chars=10_000)
+    # Pure-evidence rebuild: empty existing memory, compaction always applied.
+    assert "COMPACTION" in fake_client.responses.parse_instructions[-1]
+    user_text = fake_client.responses.parse_inputs[-1][0]["content"]
+    assert "<existing_memory>\n(empty)\n</existing_memory>" in user_text
+    assert "舊的整理" not in user_text
+    assert "喜歡條列式" in user_text
+    assert "喜歡簡短回覆" in user_text
+
+
+async def test_regenerate_main_memory_without_evidence_skips_llm(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    # An existing main alone is not evidence: the rebuild never reads it.
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "no_evidence"
+    assert fake_client.responses.parse_models == []
+    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n舊的整理"
+    # No LLM attempt happened, so the cooldown must stay untouched.
+    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is False
+
+
+async def test_regenerate_main_memory_failure_keeps_existing_state(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    fake_client.responses.raises = TimeoutError()
+
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "failed"
+    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n舊的整理"
+    assert count_raw_entries(user_id=USER_ID) == 1
+    # Attempt-time cooldown: repeated failures are rate-limited too.
+    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is True
+
+
+async def test_regenerate_main_memory_rejects_malformed_rewrite(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        changed=True, memory_markdown="沒有 v1 開頭的壞輸出"
+    )
+
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "failed"
+    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(user_id=USER_ID) == 1
+
+
+async def test_regenerate_main_memory_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("MEMORY_CLEAR_ENABLED", raising=False)
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    extractor, fake_client = _extractor()
+    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+
+    async def clearing_parse(**kwargs: object) -> SimpleNamespace:
+        mark_cleared(user_id=USER_ID)
+        return _parsed(
+            output=ConsolidatedMemory(
+                changed=True, memory_markdown="v1\n\n## 使用者輪廓\n不該被寫入"
+            )
+        )
+
+    monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "failed"
+    assert read_main_memory(user_id=USER_ID) == ""
+
+
+def test_read_main_identity_returns_stored_line(memory_isolated_dir: Path) -> None:
+    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
+    assert read_main_identity(user_id=USER_ID) == IDENTITY
+    assert read_main_identity(user_id=987654321) == ""
+
+
+class RegenResponseStub(ResponseStub):
+    """Records defer calls in addition to direct responses."""
+
+    def __init__(self) -> None:
+        """Initializes the recorded defer payload."""
+        super().__init__()
+        self.deferred: dict[str, object] | None = None
+
+    async def defer(self, **kwargs: object) -> None:
+        """Records the defer payload."""
+        self.deferred = kwargs
+
+
+class FollowupStub:
+    """Records followup payloads sent after a deferred response."""
+
+    def __init__(self) -> None:
+        """Initializes the recorded payload."""
+        self.sent: dict[str, object] = {}
+
+    async def send(self, **kwargs: object) -> None:
+        """Records the followup payload."""
+        self.sent = kwargs
+
+
+def _regen_interaction(user_id: int = USER_ID) -> SimpleNamespace:
+    """Builds an interaction stub with defer and followup support."""
+    return SimpleNamespace(
+        user=SimpleNamespace(id=user_id, display_name="Alice", name="alice"),
+        response=RegenResponseStub(),
+        followup=FollowupStub(),
+    )
+
+
+@pytest.mark.parametrize(
+    argnames=("result", "expected_text"),
+    argvalues=[
+        ("regenerated", "重新整理"),
+        ("no_evidence", "還沒有足夠的觀察記錄"),
+        ("failed", "重建失敗"),
+    ],
+)
+async def test_memory_regenerate_command_reports_each_outcome(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, result: str, expected_text: str
+) -> None:
     cog = _memory_cog()
-    interaction = _interaction()
-    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
+    calls: dict[str, object] = {}
+
+    async def fake_regen(user_id: int, extractor: object, identity: str) -> str:
+        calls["user_id"] = user_id
+        calls["identity"] = identity
+        return result
+
+    monkeypatch.setattr("discordbot.cogs.memory.regenerate_main_memory", fake_regen)
+    interaction = _regen_interaction()
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+
+    # The rebuild runs past Discord's ack window, so the response is deferred.
+    assert interaction.response.deferred == {"ephemeral": True}
+    assert interaction.followup.sent["ephemeral"] is True
+    embed = interaction.followup.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert expected_text in (embed.description or "")
+    assert calls["user_id"] == USER_ID
+    assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
+
+
+async def test_memory_regenerate_command_blocked_by_cooldown(memory_isolated_dir: Path) -> None:
+    cog = _memory_cog()
+    pipeline._last_regeneration[USER_ID] = time.monotonic()
+    interaction = _regen_interaction()
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+
+    # Rejected up front: no defer, no LLM work, just the ephemeral notice.
+    assert interaction.response.deferred is None
+    assert interaction.followup.sent == {}
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
-    assert "暫時停用" in (embed.description or "")
-    # The paused command must not touch any stored memory.
-    assert read_main_memory(user_id=USER_ID) != ""
+    assert "請稍後再試" in (embed.description or "")
 
 
 def test_paginate_on_lines_single_page_passthrough() -> None:
@@ -1094,7 +1279,12 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
 
 
 def test_memory_commands_have_localizations() -> None:
-    for command in (MemoryCogs.memory, MemoryCogs.memory_show, MemoryCogs.memory_clear):
+    for command in (
+        MemoryCogs.memory,
+        MemoryCogs.memory_show,
+        MemoryCogs.memory_clear,
+        MemoryCogs.memory_regenerate,
+    ):
         assert command.name_localizations is not None
         assert Locale.zh_TW in command.name_localizations
         assert Locale.ja in command.name_localizations
@@ -1215,22 +1405,6 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
     )
     assert f"[id: {USER_ID}]: 請記住我喜歡條列式" in transcript
     assert "[... reply truncated ...]" in transcript
-
-
-def test_memory_config_tolerates_blank_env_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MEMORY_ENABLED", "")
-    assert MemoryConfig().enabled is True
-    monkeypatch.setenv("MEMORY_ENABLED", "false")
-    assert MemoryConfig().enabled is False
-
-
-def test_memory_config_clear_enabled_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MEMORY_CLEAR_ENABLED", raising=False)
-    assert MemoryConfig().clear_enabled is False
-    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "")
-    assert MemoryConfig().clear_enabled is False
-    monkeypatch.setenv("MEMORY_CLEAR_ENABLED", "true")
-    assert MemoryConfig().clear_enabled is True
 
 
 async def test_pipeline_cancelled_task_does_not_raise_or_replay(
