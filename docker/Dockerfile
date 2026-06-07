@@ -30,5 +30,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Run as a non-root user so bind-mounted data/ files are not root-owned on the host.
 RUN groupadd --gid 1000 app \
     && useradd --create-home --uid 1000 --gid 1000 app
-ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONDONTWRITEBYTECODE=1 UV_NO_SYNC=1
 USER app
