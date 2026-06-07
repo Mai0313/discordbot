@@ -36,8 +36,30 @@ def _resolve_user_ids(folder: Path) -> list[int]:
     )
 
 
+async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
+    """Regenerates one user's main memory file and prints the outcome.
+
+    Args:
+        extractor: Memory extractor whose consolidate model performs the rewrite.
+        user_id: Discord user id whose memory directory is rebuilt.
+    """
+    identity = read_main_identity(user_id=user_id) or f"[id: {user_id}]"
+    try:
+        result = await regenerate_main_memory(
+            user_id=user_id, extractor=extractor, identity=identity
+        )
+    except Exception as error:
+        console.print(f"[red]{user_id}: error ({error})[/red]")
+        return
+    styles = {"regenerated": "green", "no_evidence": "yellow", "failed": "red"}
+    console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
+
+
 async def _regen_all(model: ModelSettings, folder: str) -> None:
-    """Regenerates the main memory file for every resolved user sequentially.
+    """Regenerates the main memory file for every resolved user concurrently.
+
+    Concurrency is bounded by the pipeline's global memory semaphore
+    (`MEMORY_GLOBAL_CONCURRENCY`), not by this script.
 
     Args:
         model: Model settings (LiteLLM model string plus reasoning effort)
@@ -54,17 +76,10 @@ async def _regen_all(model: ModelSettings, folder: str) -> None:
         f"Regenerating {len(user_ids)} user(s) with [bold]{model.name}[/bold] "
         f"(effort: {model.effort})"
     )
+    tasks = []
     for user_id in user_ids:
-        identity = read_main_identity(user_id=user_id) or f"[id: {user_id}]"
-        try:
-            result = await regenerate_main_memory(
-                user_id=user_id, extractor=extractor, identity=identity
-            )
-        except Exception as error:
-            console.print(f"[red]{user_id}: error ({error})[/red]")
-            continue
-        styles = {"regenerated": "green", "no_evidence": "yellow", "failed": "red"}
-        console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
+        tasks.append(_regen_one(extractor=extractor, user_id=user_id))
+    await asyncio.gather(*tasks)
 
 
 def regen_memories(model: ModelSettings, folder: str) -> None:
