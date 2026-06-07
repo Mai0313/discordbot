@@ -211,8 +211,8 @@ class MemoryCogs(commands.Cog):
         Deliberately lock-free: a background memory update can hold the
         per-user lock across LLM calls far past Discord's interaction ack
         window. `clear_user_memory` flags `mark_cleared`, and in-flight
-        updates re-check `cleared_since` before every write, so the clear
-        cannot be resurrected by a slower background task.
+        updates re-check `cleared_since` before rewriting memory state, so
+        a slower background task cannot resurrect the cleared memory.
         """
         if interaction.user is None:
             return
