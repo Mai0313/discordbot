@@ -80,12 +80,5 @@ def regen_memories(model: ModelSettings, folder: str) -> None:
 
 
 if __name__ == "__main__":
-    regen_memories(
-        model=ModelSettings(name="azure/gpt-5.5", effort="high"),
-        folder="./data/memories/1010833712956592200",
-    )
-    # or regenerate everyone:
-    # regen_memories(
-    #     model=ModelSettings(name="azure/gpt-5.5", effort="high"),
-    #     folder="./data/memories",
-    # )
+    model_settings = ModelSettings(name="azure/gpt-5.5", effort="xhigh")
+    regen_memories(model=model_settings, folder="./data/memories")
