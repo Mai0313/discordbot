@@ -4,9 +4,9 @@ This is the single source of truth for the seed data. It is consumed only by
 offline seeding and tests. Runtime never seeds the database from here; catalog
 rows are written offline.
 
-Values are tuned so the cheapest rod+bait combo has an expected catch value
-below its per-cast cost, keeping the game net-deflationary. Re-verify the EV
-by offline simulation after any change.
+Values are tuned so every rod+bait combo has an expected catch value below
+its per-cast cost, keeping the game net-deflationary; a seeded EV regression
+in `tests/test_fishing_catch.py` guards this after any retuning.
 """
 
 from discordbot.typings.fishing import (

@@ -114,7 +114,7 @@ make gen-docs                    # regenerate docs/ from sources
 - One public message edited in place, opener-only, self-deletes after 180s idle. Mirror `_stock/views.py`: `FishingPublicView` plus the central `edit_fishing_message(...)`.
 - `fish_grade_config`, `fish_species`, and `fishing_gear` are the tunable source of truth, seeded offline; `_fishing/defaults.py::build_default_catalog` is the one catalog definition.
 - `_fishing/catch.py` is pure and RNG-injected. Luck is the additive rod+bait `rarity_shift_bps`, clamped, never moving the most common grade.
-- Net-deflationary by design: every cast's EV is below bait + amortized rod cost, catches cap at `FISHING_MAX_SINGLE_CATCH`, and every rod+bait combo must stay a sink; re-measure EV with an offline simulation before retuning. Purchases burn via `apply_ordered_wallet_deltas`; payouts credit via `credit_with_repayment`.
+- Net-deflationary by design: every cast's EV is below bait + amortized rod cost, catches cap at `FISHING_MAX_SINGLE_CATCH`, and every rod+bait combo must stay a sink; the seeded EV regression in `tests/test_fishing_catch.py` guards this after retuning. Purchases burn via `apply_ordered_wallet_deltas`; payouts credit via `credit_with_repayment`.
 - Cross-DB ordering: `purchase_gear` debits the wallet first, then grants gear (refund on grant failure); `settle_cast` writes games.db first, then credits economy.db, returning `CastStatus.PAYOUT_DEFERRED` on payout failure (never rolled back).
 - Settlement only via `settle_cast` / `purchase_gear`; views never import ORM models. `catch_log` denormalizes species fields so catalog retuning never rewrites history.
 
