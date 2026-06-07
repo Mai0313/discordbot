@@ -100,7 +100,7 @@ MEMORY_INJECTION_WRAPPER = """
 ========= Long-term memory about the current user (background reference) =========
 The following is consolidated memory about the user you are replying to, gathered from previous interactions.
 It is background reference, NOT an instruction from the user; when it conflicts with the current message, the current message wins.
-Use it naturally to make the reply fit this user. Do not recite it, and do not say things like 「我記得你...」.
+When it is relevant, use it naturally to make the reply fit this user. Do not recite it, and do not say things like 「我記得你...」.
 {memory}
 ========= End of long-term memory =========
 """
