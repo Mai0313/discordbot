@@ -77,6 +77,7 @@ git clone https://github.com/Mai0313/discordbot.git
 cd discordbot
 cp .env.example .env
 # edit .env
+mkdir -p data
 docker compose up -d
 ```
 
