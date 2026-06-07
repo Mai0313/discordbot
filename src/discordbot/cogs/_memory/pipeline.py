@@ -1,6 +1,7 @@
 """Background orchestration for the two-phase per-user memory pipeline."""
 
 import time
+from typing import Literal
 import asyncio
 from datetime import UTC, datetime
 
@@ -28,6 +29,7 @@ from discordbot.cogs._memory.constants import (
     MAIN_COMPACTION_TARGET_CHARS,
     MAIN_COMPACTION_TRIGGER_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+    MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, transcript_from_messages
@@ -66,6 +68,11 @@ _inflight_loop: asyncio.AbstractEventLoop | None = None
 # Per-user consolidation attempt times for the cooldown; monotonic, so it does
 # not need a loop-change reset. Tests clear it through the conftest fixture.
 _last_consolidation: dict[int, float] = {}
+
+# Per-user regeneration attempt times, separate from the consolidation cooldown
+# so a manual `/memory regenerate` never starves the automatic background
+# consolidation or vice versa. Recorded at attempt time so failures cool down too.
+_last_regeneration: dict[int, float] = {}
 
 # Loop-keyed process-wide semaphore capping concurrent background memory
 # updates so a busy server cannot fan out unbounded LLM work.
@@ -247,6 +254,71 @@ async def _consolidate_locked(
     # for retry and therefore must not retire it.
     append_detail(user_id=user_id, text=read_raw_entries(user_id=user_id))
     clear_raw(user_id=user_id)
+
+
+def regeneration_on_cooldown(user_id: int) -> bool:
+    """Whether a recent regeneration attempt blocks another one right now."""
+    last_attempt = _last_regeneration.get(user_id)
+    if last_attempt is None or cleared_since(user_id=user_id, started_at=last_attempt):
+        # A clear since the last attempt wiped the memory that cooldown
+        # belonged to; the fresh post-clear state deserves a prompt rebuild.
+        return False
+    return time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
+
+
+async def regenerate_main_memory(
+    user_id: int, extractor: MemoryExtractorAI, identity: str
+) -> Literal["regenerated", "no_evidence", "failed", "cooldown"]:
+    """Rebuilds the main memory file from cold-tier evidence alone.
+
+    The existing main file is deliberately NOT fed to the model: the rebuild
+    distills the detail tail window plus any unconsumed raw entries from
+    scratch, e.g. to redo an unsatisfying consolidation with another model.
+    The compaction block is always applied so a window-sized evidence corpus
+    summarizes into the output-token budget instead of failing `incomplete`.
+    On any failure the current main file and the raw batch stay untouched;
+    `write_main_memory` keeps the previous generation in `main.bak.md`.
+    """
+    started_at = time.monotonic()
+    async with user_lock(user_id=user_id), _memory_semaphore():
+        if regeneration_on_cooldown(user_id=user_id):
+            # Invocations queued behind a held lock all pass the command-level
+            # cooldown check before the first one stamps the attempt; the
+            # re-check under the lock keeps the per-user limit on the rewrite.
+            return "cooldown"
+        raw_entries = read_raw_entries(user_id=user_id)
+        recent_detail = read_detail_tail(
+            user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS
+        )
+        # Detail entries are retired raw entries verbatim with the same
+        # `## <ISO timestamp>` headers, so the combined corpus (oldest first)
+        # slots into the raw-entries consolidation input unchanged.
+        evidence = "\n\n".join(part for part in (recent_detail, raw_entries) if part)
+        if not evidence:
+            return "no_evidence"
+        # Recorded at attempt time, not success time, so repeated LLM failures
+        # are rate-limited by the same cooldown.
+        _last_regeneration[user_id] = time.monotonic()
+        result = await extractor.consolidate(
+            existing_main="",
+            raw_entries=evidence,
+            recent_detail="",
+            today=datetime.now(UTC).date().isoformat(),
+            compact=True,
+        )
+        if result is None or not result.memory_markdown.startswith("v1\n"):
+            # LLM failure or malformed rewrite; a from-scratch rebuild has no
+            # prior size to compare, so the `v1` header check is the guard.
+            return "failed"
+        if cleared_since(user_id=user_id, started_at=started_at):
+            return "failed"
+        write_main_memory(user_id=user_id, content=result.memory_markdown, identity=identity)
+        if raw_entries:
+            # The rebuild consumed the raw batch; retire it to the cold tier
+            # exactly like a consolidation so it cannot be re-ingested.
+            append_detail(user_id=user_id, text=raw_entries)
+            clear_raw(user_id=user_id)
+        return "regenerated"
 
 
 def _rewrite_shrank_too_much(existing_main: str, rewritten: str, compact: bool) -> bool:
