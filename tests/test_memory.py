@@ -1053,6 +1053,15 @@ async def test_regenerate_main_memory_failure_keeps_existing_state(
     assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is True
 
 
+def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
+    pipeline._last_regeneration[USER_ID] = time.monotonic()
+    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is True
+    # A clear wipes the memory the cooldown belonged to; the fresh post-clear
+    # state deserves a prompt rebuild, mirroring the consolidation cooldown.
+    mark_cleared(user_id=USER_ID)
+    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is False
+
+
 async def test_regenerate_main_memory_rejects_malformed_rewrite(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)

@@ -259,10 +259,11 @@ async def _consolidate_locked(
 def regeneration_on_cooldown(user_id: int) -> bool:
     """Whether a recent regeneration attempt blocks another one right now."""
     last_attempt = _last_regeneration.get(user_id)
-    return (
-        last_attempt is not None
-        and time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
-    )
+    if last_attempt is None or cleared_since(user_id=user_id, started_at=last_attempt):
+        # A clear since the last attempt wiped the memory that cooldown
+        # belonged to; the fresh post-clear state deserves a prompt rebuild.
+        return False
+    return time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
 
 
 async def regenerate_main_memory(
