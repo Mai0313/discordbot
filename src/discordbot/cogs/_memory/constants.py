@@ -79,8 +79,8 @@ MEMORY_TRANSCRIPT_MAX_CHARS = 100_000
 MEMORY_REPLY_MAX_CHARS = 8_000
 
 # Background LLM call timeouts. The memory models run with high reasoning
-# effort and consolidation rewrites the whole main file, so these are looser
-# than interactive paths but still bounded so a stuck call cannot pin the
-# in-flight de-dupe slot forever.
-MEMORY_EXTRACT_TIMEOUT_SECONDS = 60.0
+# effort (possibly on a Pro tier) and consolidation rewrites the whole main
+# file, so these are looser than interactive paths but still bounded so a
+# stuck call cannot pin the in-flight de-dupe slot forever.
+MEMORY_EXTRACT_TIMEOUT_SECONDS = 180.0
 MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 180.0
