@@ -36,21 +36,24 @@ def _resolve_user_ids(folder: Path) -> list[int]:
     )
 
 
-async def _regen_all(model: str, folder: str) -> None:
+async def _regen_all(model: ModelSettings, folder: str) -> None:
     """Regenerates the main memory file for every resolved user sequentially.
 
     Args:
-        model: LiteLLM model string used for the consolidation rewrite.
+        model: Model settings (LiteLLM model string plus reasoning effort)
+            used for the consolidation rewrite.
         folder: Single-user memory directory or the memories root.
     """
-    settings = ModelSettings(name=model, effort="high")
     extractor = MemoryExtractorAI(
         client=create_litellm_client(config=LLMConfig()),
-        extract_model=settings,
-        consolidate_model=settings,
+        extract_model=model,
+        consolidate_model=model,
     )
     user_ids = _resolve_user_ids(folder=Path(folder))
-    console.print(f"Regenerating {len(user_ids)} user(s) with [bold]{model}[/bold]")
+    console.print(
+        f"Regenerating {len(user_ids)} user(s) with [bold]{model.name}[/bold] "
+        f"(effort: {model.effort})"
+    )
     for user_id in user_ids:
         identity = read_main_identity(user_id=user_id) or f"[id: {user_id}]"
         try:
@@ -64,11 +67,12 @@ async def _regen_all(model: str, folder: str) -> None:
         console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
 
 
-def regen_memories(model: str, folder: str) -> None:
+def regen_memories(model: ModelSettings, folder: str) -> None:
     """Regenerates `main.md` from evidence for one user or every user.
 
     Args:
-        model: LiteLLM model string used for the consolidation rewrite.
+        model: Model settings (LiteLLM model string plus reasoning effort)
+            used for the consolidation rewrite.
         folder: Single-user memory directory (e.g. `./data/memories/<id>`) or
             the memories root (`./data/memories`) for every user.
     """
@@ -76,6 +80,12 @@ def regen_memories(model: str, folder: str) -> None:
 
 
 if __name__ == "__main__":
-    regen_memories(model="azure/gpt-5.5", folder="./data/memories/1010833712956592200")
+    regen_memories(
+        model=ModelSettings(name="azure/gpt-5.5", effort="high"),
+        folder="./data/memories/1010833712956592200",
+    )
     # or regenerate everyone:
-    # regen_memories(model="azure/gpt-5.5", folder="./data/memories")
+    # regen_memories(
+    #     model=ModelSettings(name="azure/gpt-5.5", effort="high"),
+    #     folder="./data/memories",
+    # )
