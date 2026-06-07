@@ -766,12 +766,8 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    assert peak_start[0].name == "gemini-flash-latest"
-    assert after_peak[0].name == "gemini-pro-latest"
-    assert peak_start[0] == peak_end[0]
-    assert before_peak[0] == after_peak[0] == weekend[0]
-    assert peak_start[0] != after_peak[0]
-    assert {peak_start[0].effort, after_peak[0].effort} == {"high"}
+    assert peak_start[0] == ModelSettings(name="gemini-pro-latest", effort="high")
+    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
 async def test_handle_message_reply_injects_memory_as_assistant_note_before_current(

@@ -77,8 +77,11 @@ git clone https://github.com/Mai0313/discordbot.git
 cd discordbot
 cp .env.example .env
 # edit .env
+mkdir -p data
 docker compose up -d
 ```
+
+容器以 UID 1000 运行,让 `data/` 下的文件保持由你的主机用户拥有;如果你的主机用户 UID 不是 1000,请在 `docker-compose.yaml` 中覆写 `user:`。
 
 ### 本地
 

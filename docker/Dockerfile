@@ -26,3 +26,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-dev --frozen
+
+# Run as a non-root user so bind-mounted data/ files are not root-owned on the host.
+# Pre-create data/ owned by app so the container also starts without a mount.
+RUN groupadd --gid 1000 app \
+    && useradd --create-home --uid 1000 --gid 1000 app \
+    && mkdir --parents /app/data \
+    && chown app:app /app/data
+ENV PYTHONDONTWRITEBYTECODE=1 UV_NO_SYNC=1
+USER app

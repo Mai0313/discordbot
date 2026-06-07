@@ -5,6 +5,7 @@ services:
       context: .
       target: prod
       dockerfile: ./docker/Dockerfile
+    user: "1000:1000"
     command:
       - uv
       - run
@@ -12,10 +13,19 @@ services:
     environment:
       UV_NO_DEV: 1
       UV_FROZEN: 1
+      UV_NO_SYNC: 1
+      # uv still initializes its cache under $HOME at startup; images without a
+      # passwd entry for UID 1000 resolve HOME to "/", which is not writable.
+      UV_CACHE_DIR: /tmp/uv-cache
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      # Fail fast instead of letting compose create a root-owned ./data on first run.
+      - type: bind
+        source: ./data
+        target: /app/data
+        bind:
+          create_host_path: false
     network_mode: host
     restart: always
     pull_policy: always
