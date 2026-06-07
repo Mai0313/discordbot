@@ -3,6 +3,7 @@
 import re
 import asyncio
 from pathlib import Path
+import tempfile
 import contextlib
 
 import logfire
@@ -32,8 +33,7 @@ class ThreadsCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.output_folder = Path("./tmp")
-        self.output_folder.mkdir(parents=True, exist_ok=True)
+        self.output_folder = Path(tempfile.gettempdir())
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
 
     @staticmethod
