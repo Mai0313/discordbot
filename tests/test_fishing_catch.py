@@ -10,6 +10,7 @@ from discordbot.typings.fishing import (
     LUCK_FACTOR_MAX_BPS,
     LUCK_FACTOR_MIN_BPS,
     FISHING_BPS_DENOMINATOR,
+    FISHING_MAX_SINGLE_CATCH,
     GearType,
     GearView,
     FishGrade,
@@ -167,6 +168,38 @@ def test_roll_distribution_matches_theory() -> None:
         observed = counts[config.grade] / rolls
         expected = config.weight / total_weight
         assert observed == pytest.approx(expected, abs=0.01)
+
+
+def test_default_catalog_every_combo_is_net_deflationary() -> None:
+    """Monte Carlo EV of every default rod+bait combo stays below its per-cast cost.
+
+    Guards the net-deflationary invariant after catalog retuning: per-cast cost
+    is the bait price plus the rod price amortized over its durability. Seeded
+    per combo so adding gear never shifts another combo's draws.
+    """
+    catalog = build_default_catalog()
+    rods = [gear for gear in catalog.gear if gear.gear_type is GearType.ROD]
+    baits = [gear for gear in catalog.gear if gear.gear_type is GearType.BAIT]
+    casts = 30_000
+    for rod in rods:
+        for bait in baits:
+            rng = Random(f"fishing-ev:{rod.gear_id}:{bait.gear_id}")
+            total_value = 0
+            for _ in range(casts):
+                roll = roll_catch(
+                    rng=rng,
+                    grade_configs=catalog.grades,
+                    species=catalog.species,
+                    rod=rod,
+                    bait=bait,
+                    max_value=FISHING_MAX_SINGLE_CATCH,
+                )
+                total_value += roll.value
+            cost_per_cast = bait.price + rod.price / rod.durability
+            assert total_value / casts < cost_per_cast, (
+                f"{rod.gear_id}+{bait.gear_id} is a faucet: "
+                f"EV {total_value / casts:.2f} >= cost {cost_per_cast:.2f}"
+            )
 
 
 def test_roll_size_within_species_bounds() -> None:

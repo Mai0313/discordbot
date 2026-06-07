@@ -38,10 +38,9 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME
 BOT_ACTION_AI_TIMEOUT_SECONDS = 30.0
 BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
-# play, measured by scripts/simulate_bot_blackjack.py (neutral-count edge ~ +0.13,
-# sigma^2 ~ 1.34). The edge is large because the EV engine plays the dealer hole
-# card and this table's five-card rules are player-favorable; re-run that script
-# to re-measure if those rules change.
+# play, measured by offline simulation (neutral-count edge ~ +0.13, sigma^2 ~ 1.34).
+# The edge is large because the EV engine plays the dealer hole card and this
+# table's five-card rules are player-favorable; re-measure if those rules change.
 BOT_TABLE_EDGE: Final[float] = 0.13
 BOT_TABLE_VARIANCE: Final[float] = 1.34
 # Half-Kelly keeps drawdown variance down; the hard fraction cap protects the
@@ -49,10 +48,10 @@ BOT_TABLE_VARIANCE: Final[float] = 1.34
 BOT_KELLY_FRACTION: Final[float] = 0.5
 BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # Edge added per +1 Hi-Lo true count when the shoe persists across rounds, used for
-# count-based bet spreading. Measured at ~+0.0175 per true count by
-# scripts/simulate_bot_blackjack.py --persistent, well above the standard Hi-Lo
-# ~0.005 because this table's five-card rules amplify a ten-rich shoe. Re-measure
-# if the rules change.
+# count-based bet spreading. Measured at ~+0.0175 per true count by offline
+# simulation with a persistent shoe, well above the standard Hi-Lo ~0.005 because
+# this table's five-card rules amplify a ten-rich shoe. Re-measure if the rules
+# change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
 # Bot decisions are system-side LLM calls. ASCII labels per method let LiteLLM
 # telemetry split bet / action / insurance traffic, mirroring the

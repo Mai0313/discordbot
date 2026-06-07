@@ -116,7 +116,7 @@ def setup(bot: commands.Bot) -> None:
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths should pass `guild_avatar_url(...)` with guild context so guild avatars are stored when available, then fall back to the global `display_avatar`. Existing rows are not backfilled; they refresh naturally on later writes.
 - `credit_with_repayment` is the income path for message reward, chat reward, and casino payout. Long-term loans are repaid explicitly through loan helpers; passive income and gifts do not auto-repay debt.
 - Long-term loans live in `loan_proposal` and `loan_contract`. Personal credit requests are borrower-initiated and debit the lender on acceptance, and central-bank loans mint borrower balance through central-banker button approval.
-- Central banker access is stored on `UserAccount.is_central_banker` and managed out-of-band with `scripts/manage_central_banker.py`, separate from Discord-side economy admins.
+- Central banker access is stored on `UserAccount.is_central_banker` and managed out-of-band with direct DB updates, separate from Discord-side economy admins.
 - Casino settlement applies one signed result after play. Validate or clamp bets before play, then settle once through the settlement helpers. Player-side casino losses clamp at balance 0; the global casino ledger may still go negative.
 - Casino and jackpot settlements write the player wallet and the house-side rows in one `economy.db` transaction, so they commit or roll back atomically.
 - Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.

@@ -42,7 +42,6 @@ as the per-user rows, so runtime casino and jackpot settlement applies the
 player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
-import math
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
@@ -61,7 +60,6 @@ from sqlalchemy import (
     func,
     text,
     event,
-    delete,
     select,
     update,
 )
@@ -91,7 +89,6 @@ from discordbot.typings.economy import (
     WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
-    WalletResetMode,
     CasinoDailyStats,
     LeaderboardEntry,
     LoanContractView,
@@ -102,7 +99,6 @@ from discordbot.typings.economy import (
     VipPurchaseResult,
     LoanContractStatus,
     LoanProposalStatus,
-    WalletResetSummary,
     CasinoLedgerSnapshot,
     CentralBankerAccount,
     LossLeaderboardEntry,
@@ -3340,251 +3336,3 @@ async def get_portfolio(user_id: int) -> PortfolioView:
         portfolio = await _portfolio_in_session(session=session, user_id=user_id, now=now)
         await session.commit()
         return portfolio
-
-
-# --- Offline economy reset helpers ----------------------------------------
-# One-time maintenance used by scripts/reset_economy.py to deflate balances
-# accumulated under the pre-reset faucets. All writes go through the ORM so the
-# StoredInteger decimal-text encoding stays canonical, and every wallet write
-# sets the full (balance, total_earned, total_spent) triple so the
-# `balance == total_earned - total_spent` invariant holds by construction.
-
-
-def compute_reset_balance(
-    old_balance: int,
-    mode: WalletResetMode,
-    floor: int = 1_000,
-    scale: int = 1_000,
-    fixed_amount: int = 10_000,
-) -> int:
-    """Returns the post-reset balance for one account under `mode`.
-
-    LOG_COMPRESS applies a monotonic `floor + scale * log10(1 + balance)`
-    transform that preserves rank ordering while collapsing magnitude; empty
-    accounts stay at zero. FIXED returns `fixed_amount`; WIPE returns zero.
-
-    Args:
-        old_balance: Current balance for the account.
-        mode: Reset transform to apply.
-        floor: Baseline added to every positive balance in LOG_COMPRESS.
-        scale: Multiplier on the log10 term in LOG_COMPRESS.
-        fixed_amount: Flat balance assigned in FIXED mode.
-
-    Returns:
-        The new non-negative balance.
-    """
-    if mode is WalletResetMode.WIPE:
-        return 0
-    if mode is WalletResetMode.FIXED:
-        return max(fixed_amount, 0)
-    if old_balance <= 0:
-        return 0
-    # Clamp at zero so a mistyped negative --floor / --scale cannot write a
-    # negative balance, honoring the non-negative result this helper promises.
-    return max(0, round(floor + scale * math.log10(1 + old_balance)))
-
-
-async def count_wallet_invariant_violations() -> int:
-    """Counts wallets where `balance != total_earned - total_spent`.
-
-    Used to verify the wallet invariant after an offline reset. StoredInteger
-    decodes to Python `int`, so the comparison is exact at any magnitude.
-    """
-    await _ensure_schema()
-    async with open_session() as session:
-        rows = (
-            await session.execute(
-                statement=select(
-                    UserWallet.balance, UserWallet.total_earned, UserWallet.total_spent
-                )
-            )
-        ).all()
-        return sum(1 for balance, earned, spent in rows if balance != earned - spent)
-
-
-async def set_wallet_exact(
-    user_id: int, balance: int, total_earned: int, total_spent: int, name: str = ""
-) -> int:
-    """Sets an account's full wallet triple, creating the row if missing.
-
-    Unlike `adjust_balance`, this writes `balance`, `total_earned`, and
-    `total_spent` together, so callers can repair or reset a wallet without
-    leaving the `balance == total_earned - total_spent` invariant broken.
-
-    Returns:
-        The post-write balance.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        await _upsert_user_metadata_in_session(
-            session=session, user_id=user_id, name=name, avatar_url="", now=now
-        )
-        set_: dict[str, Any] = {
-            "balance": balance,
-            "total_earned": total_earned,
-            "total_spent": total_spent,
-            "updated_at": now,
-        }
-        if name:
-            set_["name"] = name
-        stmt = (
-            insert(UserWallet)
-            .values(
-                user_id=user_id,
-                name=name or str(user_id),
-                balance=balance,
-                total_earned=total_earned,
-                total_spent=total_spent,
-                updated_at=now,
-            )
-            .on_conflict_do_update(index_elements=["user_id"], set_=set_)
-            .returning(UserWallet.balance)
-        )
-        result = await session.execute(statement=stmt)
-        new_balance = result.scalar_one()
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return new_balance
-
-
-async def reset_all_wallets(
-    mode: WalletResetMode,
-    floor: int = 1_000,
-    scale: int = 1_000,
-    fixed_amount: int = 10_000,
-    dry_run: bool = False,
-) -> WalletResetSummary:
-    """Rewrites every wallet balance under `mode` in one transaction.
-
-    Each row is set to `(new_balance, new_balance, 0)` for
-    `(balance, total_earned, total_spent)`, which both deflates the balance and
-    resets the polluted lifetime gross totals while guaranteeing the wallet
-    invariant. A dry run computes the summary without writing.
-
-    Returns:
-        A summary of the accounts touched and the supply before/after.
-    """
-    await _ensure_schema()
-    async with open_session() as session:
-        rows = (await session.execute(statement=select(UserWallet))).scalars().all()
-        now = _database_now()
-        total_before = 0
-        total_after = 0
-        max_before = 0
-        max_after = 0
-        for row in rows:
-            old_balance = row.balance
-            new_balance = compute_reset_balance(
-                old_balance, mode, floor=floor, scale=scale, fixed_amount=fixed_amount
-            )
-            total_before += old_balance
-            total_after += new_balance
-            max_before = max(max_before, old_balance)
-            max_after = max(max_after, new_balance)
-            if not dry_run:
-                row.balance = new_balance
-                row.total_earned = new_balance
-                row.total_spent = 0
-                row.updated_at = now
-        if dry_run:
-            await session.rollback()
-        else:
-            await session.commit()
-            invalidate_economy_leaderboard_cache()
-        return WalletResetSummary(
-            mode=mode,
-            accounts=len(rows),
-            total_before=total_before,
-            total_after=total_after,
-            max_before=max_before,
-            max_after=max_after,
-            dry_run=dry_run,
-        )
-
-
-async def reset_casino_daily_counters() -> int:
-    """Deletes all per-user daily casino counters; returns rows removed.
-
-    The rows lazily recreate on the next casino settlement, so deletion is the
-    cleanest way to clear the loss-leaderboard state.
-    """
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(statement=delete(CasinoAccount))
-        await session.commit()
-        return int(result.rowcount or 0)
-
-
-async def forgive_loan_contracts() -> int:
-    """Closes every active loan contract with zero owed, moving no balance.
-
-    Returns:
-        The number of contracts closed.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=update(LoanContract)
-            .where(LoanContract.status == LoanContractStatus.ACTIVE.value)
-            .values(
-                principal_remaining=0,
-                interest_due=0,
-                status=LoanContractStatus.CLOSED.value,
-                closed_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
-        return int(result.rowcount or 0)
-
-
-async def expire_loan_proposals() -> int:
-    """Cancels every pending loan proposal; returns proposals canceled."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=update(LoanProposal)
-            .where(LoanProposal.status == LoanProposalStatus.PENDING.value)
-            .values(status=LoanProposalStatus.CANCELED.value, updated_at=now)
-        )
-        await session.commit()
-        return int(result.rowcount or 0)
-
-
-async def reset_casino_ledger() -> None:
-    """Zeroes the cumulative casino system ledger (balance/earned/spent)."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        await session.execute(
-            statement=update(CasinoLedger)
-            .where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
-            .values(balance=0, total_earned=0, total_spent=0, updated_at=now)
-        )
-        await session.commit()
-
-
-async def reset_jackpot_pools() -> None:
-    """Resets every seeded jackpot pool back to its seed with a fresh generation."""
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        for game_id, seed_amount in _JACKPOT_SEEDS:
-            seed_values: dict[str, Any] = {
-                "pool_balance": seed_amount,
-                "total_contributed": 0,
-                "total_claimed": 0,
-                "seeded_amount": seed_amount,
-                "generation": 0,
-                "updated_at": now,
-            }
-            stmt = (
-                insert(JackpotPool)
-                .values(game_id=game_id, **seed_values)
-                .on_conflict_do_update(index_elements=["game_id"], set_=seed_values)
-            )
-            await session.execute(statement=stmt)
-        await session.commit()

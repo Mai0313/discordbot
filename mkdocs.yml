@@ -123,19 +123,9 @@ nav:
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
-      - manage_admin: Scripts/manage_admin.md
-      - manage_central_banker: Scripts/manage_central_banker.md
-      - manage_fishing: Scripts/manage_fishing.md
-      - manage_stock_company: Scripts/manage_stock_company.md
-      - manage_stock_reconciliation: Scripts/manage_stock_reconciliation.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
-      - reset_economy: Scripts/reset_economy.md
       - route_dev: Scripts/route_dev.md
-      - simulate_bot_blackjack: Scripts/simulate_bot_blackjack.md
-      - simulate_fishing: Scripts/simulate_fishing.md
-      - simulate_memory_consolidation: Scripts/simulate_memory_consolidation.md
-      - simulate_stock_market: Scripts/simulate_stock_market.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md
   # <<< auto-generated nav end

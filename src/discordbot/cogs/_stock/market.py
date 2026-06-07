@@ -17,8 +17,8 @@ PRESSURE_LIMIT_BPS = 60
 # how aggressive the per-company knob is, and each Asia/Taipei trading day is bounded
 # to a Taiwan-style price limit measured against the previous close. Reducing per-tick
 # swing and capping the daily move shrinks the volatility-harvesting that mints money.
-# Calibrate MARKET_VOLATILITY_SCALE_BPS with scripts/simulate_stock_market.py: at 800 the
-# most aggressive production profile lands near 70% annualized volatility with the daily
+# MARKET_VOLATILITY_SCALE_BPS was calibrated by offline simulation: at 800 the most
+# aggressive production profile lands near 70% annualized volatility with the daily
 # limit binding only a few percent of days, and calmer profiles scale down from there.
 MARKET_VOLATILITY_SCALE_BPS = 800
 GLOBAL_MAX_TICK_CHANGE_BPS = 200
