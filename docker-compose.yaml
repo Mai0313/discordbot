@@ -14,6 +14,9 @@ services:
       UV_NO_DEV: 1
       UV_FROZEN: 1
       UV_NO_SYNC: 1
+      # uv still initializes its cache under $HOME at startup; images without a
+      # passwd entry for UID 1000 resolve HOME to "/", which is not writable.
+      UV_CACHE_DIR: /tmp/uv-cache
     env_file:
       - .env
     volumes:
