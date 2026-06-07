@@ -125,7 +125,6 @@ nav:
       - image_dev: Scripts/image_dev.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
-      - reset_economy: Scripts/reset_economy.md
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md

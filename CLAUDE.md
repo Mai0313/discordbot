@@ -67,7 +67,6 @@ make gen-docs                    # regenerate docs/ from sources
 - Visibility boundary: shared social / market / settlement events are public embeds with scheduled cleanup (e.g. `/give`, leaderboards, `/casino`, loan flows); personal state and validation / permission failures are ephemeral (e.g. `/balance`, `/checkin`, insufficient balance).
 - Rewards: `cli.py` grants the cooldown-gated per-message reward; `gen_reply.py` adds the token-based chat reward after streamed replies. Other cogs must not invent action rewards.
 - Anti-inflation constants live in `typings/economy.py`: `transfer()` burns `TRANSFER_TAX_BPS` of every `/give` as a permanent sink, every casino wager caps at `MAX_SINGLE_BET` at the shared chokepoints, and the VIP casino multiplier is 1.2x.
-- `scripts/reset_economy.py` is the offline reset (bot stopped, back up the `.db` files, always `--dry-run` against a copy first). It writes through `_economy/database.py` helpers so StoredInteger text stays canonical.
 
 ## Stocks
 

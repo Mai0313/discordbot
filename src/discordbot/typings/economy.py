@@ -64,20 +64,6 @@ class LoanContractStatus(StrEnum):
     CLOSED = "closed"
 
 
-class WalletResetMode(StrEnum):
-    """How an offline economy reset rewrites every wallet balance.
-
-    LOG_COMPRESS: monotonic log10 compression that preserves rank ordering
-        while collapsing absolute magnitude.
-    FIXED: set every account to the same starting balance.
-    WIPE: set every account to zero.
-    """
-
-    LOG_COMPRESS = "log_compress"
-    FIXED = "fixed"
-    WIPE = "wipe"
-
-
 class AccountSnapshot(BaseModel):
     """Read-only account totals for maintenance and house-ledger views.
 
@@ -174,32 +160,6 @@ class BalanceAdjustmentResult(BaseModel):
 
     new_balance: int = Field(description="User balance after the adjustment.")
     applied_delta: int = Field(description="Signed balance delta that was actually applied.")
-
-
-class WalletResetSummary(BaseModel):
-    """Outcome of a bulk offline wallet reset.
-
-    Attributes:
-        mode: Reset transform that was applied.
-        accounts: Number of wallet rows rewritten.
-        total_before: Sum of every balance before the reset.
-        total_after: Sum of every balance after the reset.
-        max_before: Largest single balance before the reset.
-        max_after: Largest single balance after the reset.
-        dry_run: Whether the reset only computed the summary without writing.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    mode: WalletResetMode = Field(description="Reset transform that was applied.")
-    accounts: int = Field(description="Number of wallet rows rewritten.")
-    total_before: int = Field(description="Sum of every balance before the reset.")
-    total_after: int = Field(description="Sum of every balance after the reset.")
-    max_before: int = Field(description="Largest single balance before the reset.")
-    max_after: int = Field(description="Largest single balance after the reset.")
-    dry_run: bool = Field(
-        default=False, description="Whether the reset only computed the summary without writing."
-    )
 
 
 class WalletDeltaLeg(BaseModel):
@@ -584,6 +544,4 @@ __all__ = [
     "TransferResult",
     "VipPurchaseResult",
     "WalletDeltaLeg",
-    "WalletResetMode",
-    "WalletResetSummary",
 ]
