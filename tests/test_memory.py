@@ -1062,6 +1062,24 @@ def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> 
     assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is False
 
 
+async def test_regenerate_main_memory_recheck_cooldown_under_lock(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    # An invocation queued behind a held lock passes the command-level check
+    # before the in-flight one stamps the attempt; the locked re-check is what
+    # keeps the per-user limit on the expensive rewrite.
+    pipeline._last_regeneration[USER_ID] = time.monotonic()
+
+    result = await pipeline.regenerate_main_memory(
+        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "cooldown"
+    assert fake_client.responses.parse_models == []
+
+
 async def test_regenerate_main_memory_rejects_malformed_rewrite(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
@@ -1148,6 +1166,7 @@ def _regen_interaction(user_id: int = USER_ID) -> SimpleNamespace:
         ("regenerated", "重新整理"),
         ("no_evidence", "還沒有足夠的觀察記錄"),
         ("failed", "重建失敗"),
+        ("cooldown", "請稍後再試"),
     ],
 )
 async def test_memory_regenerate_command_reports_each_outcome(

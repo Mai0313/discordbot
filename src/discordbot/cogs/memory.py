@@ -36,6 +36,7 @@ _ERROR_EMBED_COLOR = 0xED4245
 _MEMORY_TITLE = "🧠 我對你的記憶"
 _DETAIL_TITLE = "🧠 詳細記憶記錄"
 _REGEN_TITLE = "🔄 記憶重建"
+_REGEN_COOLDOWN_DESCRIPTION = "記憶重建剛執行過，請稍後再試。"
 
 
 class MemoryCogs(commands.Cog):
@@ -237,7 +238,7 @@ class MemoryCogs(commands.Cog):
         if regeneration_on_cooldown(user_id=interaction.user.id):
             embed = Embed(
                 title=_REGEN_TITLE,
-                description="記憶重建剛執行過，請稍後再試。",
+                description=_REGEN_COOLDOWN_DESCRIPTION,
                 color=_WARN_EMBED_COLOR,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -264,6 +265,7 @@ class MemoryCogs(commands.Cog):
                 _WARN_EMBED_COLOR,
             ),
             "failed": ("重建失敗，已保留原本的記憶，請稍後再試。", _ERROR_EMBED_COLOR),
+            "cooldown": (_REGEN_COOLDOWN_DESCRIPTION, _WARN_EMBED_COLOR),
         }
         description, color = outcomes[result]
         embed = Embed(title=_REGEN_TITLE, description=description, color=color)

@@ -268,7 +268,7 @@ def regeneration_on_cooldown(user_id: int) -> bool:
 
 async def regenerate_main_memory(
     user_id: int, extractor: MemoryExtractorAI, identity: str
-) -> Literal["regenerated", "no_evidence", "failed"]:
+) -> Literal["regenerated", "no_evidence", "failed", "cooldown"]:
     """Rebuilds the main memory file from cold-tier evidence alone.
 
     The existing main file is deliberately NOT fed to the model: the rebuild
@@ -281,6 +281,11 @@ async def regenerate_main_memory(
     """
     started_at = time.monotonic()
     async with user_lock(user_id=user_id), _memory_semaphore():
+        if regeneration_on_cooldown(user_id=user_id):
+            # Invocations queued behind a held lock all pass the command-level
+            # cooldown check before the first one stamps the attempt; the
+            # re-check under the lock keeps the per-user limit on the rewrite.
+            return "cooldown"
         raw_entries = read_raw_entries(user_id=user_id)
         recent_detail = read_detail_tail(
             user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS
