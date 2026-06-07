@@ -114,7 +114,7 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Callers: `_get_attachment_parts`, `_handle_message_reply`.
+        Callers: `_handle_message_reply`.
 
         Returns:
             Slow-path model settings for reply generation and summaries.
