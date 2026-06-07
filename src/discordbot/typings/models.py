@@ -100,8 +100,7 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`,
-        `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
 
         Returns:
             Fast model settings used for routing, image captions, short
@@ -115,8 +114,6 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Uses `gemini-flash-latest` during UTC weekday 08:00 to 17:00 peak hours and `gemini-3.5-flash` outside that peak window.
-
         Callers: `_get_attachment_parts`, `_handle_message_reply`.
 
         Returns:
@@ -124,7 +121,7 @@ class RuntimeModelCatalog(BaseModel):
         """
         if self.is_peak:
             return ModelSettings(name="gemini-flash-latest", effort="high")
-        return ModelSettings(name="gemini-3.5-flash", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def extract_model(self) -> ModelSettings:
