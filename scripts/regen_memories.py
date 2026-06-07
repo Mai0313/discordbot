@@ -31,7 +31,9 @@ def _resolve_user_ids(folder: Path) -> list[int]:
     """
     if folder.name.isdigit():
         return [int(folder.name)]
-    return sorted(int(path.name) for path in folder.iterdir() if path.is_dir() and path.name.isdigit())
+    return sorted(
+        int(path.name) for path in folder.iterdir() if path.is_dir() and path.name.isdigit()
+    )
 
 
 async def _regen_all(model: str, folder: str) -> None:
@@ -55,7 +57,7 @@ async def _regen_all(model: str, folder: str) -> None:
             result = await regenerate_main_memory(
                 user_id=user_id, extractor=extractor, identity=identity
             )
-        except Exception as error:  # noqa: BLE001 -- one bad user must not stop the batch
+        except Exception as error:
             console.print(f"[red]{user_id}: error ({error})[/red]")
             continue
         styles = {"regenerated": "green", "no_evidence": "yellow", "failed": "red"}
