@@ -80,6 +80,8 @@ cp .env.example .env
 docker compose up -d
 ```
 
+The container runs as UID 1000 so files under `data/` stay owned by your host user; if your host user has a different UID, override `user:` in `docker-compose.yaml`.
+
 ### Local
 
 ```bash
