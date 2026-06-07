@@ -120,7 +120,7 @@ class RuntimeModelCatalog(BaseModel):
             Slow-path model settings for reply generation and summaries.
         """
         if self.is_peak:
-            return ModelSettings(name="gemini-flash-latest", effort="high")
+            return ModelSettings(name="gemini-pro-latest", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
