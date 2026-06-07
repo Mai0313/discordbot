@@ -1,13 +1,12 @@
 """Default fishing catalog: grades, species, and gear.
 
 This is the single source of truth for the seed data. It is consumed only by
-`scripts/manage_fishing.py seed-defaults`, `scripts/simulate_fishing.py`, and
-tests. Runtime never seeds the database from here; catalog rows are written
-offline through the maintenance script.
+offline seeding and tests. Runtime never seeds the database from here; catalog
+rows are written offline.
 
 Values are tuned so the cheapest rod+bait combo has an expected catch value
-below its per-cast cost, keeping the game net-deflationary. Re-verify with
-`scripts/simulate_fishing.py` after any change.
+below its per-cast cost, keeping the game net-deflationary. Re-verify the EV
+by offline simulation after any change.
 """
 
 from discordbot.typings.fishing import (

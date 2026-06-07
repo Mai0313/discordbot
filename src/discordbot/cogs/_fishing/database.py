@@ -2,8 +2,8 @@
 
 State lives in `data/database/games.db` (shared file, fishing-owned engine and
 tables); wallet cash stays in the economy database. Catalog rows (grades,
-species, gear) are the source of truth and are seeded offline through
-`scripts/manage_fishing.py`; runtime never seeds them.
+species, gear) are the source of truth and are seeded offline; runtime never
+seeds them.
 
 Two operations cross databases. A purchase debits (burns) the wallet first, then
 grants gear in games.db, refunding on a grant failure. A cast consumes bait and
