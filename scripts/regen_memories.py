@@ -7,17 +7,29 @@ single-user versus all-users and enumerates user ids; reads and writes always
 go through the memory store rooted at `./data/memories`.
 """
 
+from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+import argparse
 
 from rich.console import Console
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._memory.store import read_main_identity
+from discordbot.cogs._memory.store import (
+    read_detail_tail,
+    read_main_memory,
+    read_raw_entries,
+    count_raw_entries,
+    read_main_identity,
+)
 from discordbot.cogs._memory.pipeline import regenerate_main_memory
-from discordbot.cogs._memory.extraction import MemoryExtractorAI
+from discordbot.cogs._memory.constants import MEMORY_DETAIL_CONTEXT_MAX_CHARS
+from discordbot.cogs._memory.extraction import MemoryExtractorAI, observation_keys_from_text
+
+if TYPE_CHECKING:
+    from openai.types.shared.reasoning_effort import ReasoningEffort
 
 console = Console()
 
@@ -33,6 +45,23 @@ def _resolve_user_ids(folder: Path) -> list[int]:
         return [int(folder.name)]
     return sorted(
         int(path.name) for path in folder.iterdir() if path.is_dir() and path.name.isdigit()
+    )
+
+
+def _preview_one(user_id: int) -> None:
+    """Prints privacy-preserving memory evidence statistics for one user."""
+    main_text = read_main_memory(user_id=user_id)
+    raw_text = read_raw_entries(user_id=user_id)
+    detail_text = read_detail_tail(user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+    raw_keys = observation_keys_from_text(text=raw_text)
+    detail_keys = observation_keys_from_text(text=detail_text)
+    duplicate_keys = raw_keys & detail_keys
+    console.print(
+        f"[cyan]{user_id}: dry-run[/cyan] "
+        f"main_chars={len(main_text)} "
+        f"raw_entries={count_raw_entries(user_id=user_id)} "
+        f"raw_keys={len(raw_keys)} detail_keys={len(detail_keys)} "
+        f"duplicate_keys={len(duplicate_keys)}"
     )
 
 
@@ -55,7 +84,7 @@ async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
     console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
 
 
-async def _regen_all(model: ModelSettings, folder: str) -> None:
+async def _regen_all(model: ModelSettings, folder: str, apply: bool) -> None:
     """Regenerates the main memory file for every resolved user concurrently.
 
     Concurrency is bounded by the pipeline's global memory semaphore
@@ -65,13 +94,22 @@ async def _regen_all(model: ModelSettings, folder: str) -> None:
         model: Model settings (LiteLLM model string plus reasoning effort)
             used for the consolidation rewrite.
         folder: Single-user memory directory or the memories root.
+        apply: Whether to rewrite memory files; false prints a dry-run preview.
     """
+    user_ids = _resolve_user_ids(folder=Path(folder))
+    if not apply:
+        console.print(
+            f"Dry-run preview for {len(user_ids)} user(s). Pass --apply to rewrite main.md."
+        )
+        for user_id in user_ids:
+            _preview_one(user_id=user_id)
+        return
     extractor = MemoryExtractorAI(
         client=create_litellm_client(config=LLMConfig()),
         extract_model=model,
+        evaluate_model=model,
         consolidate_model=model,
     )
-    user_ids = _resolve_user_ids(folder=Path(folder))
     console.print(
         f"Regenerating {len(user_ids)} user(s) with [bold]{model.name}[/bold] "
         f"(effort: {model.effort})"
@@ -82,7 +120,7 @@ async def _regen_all(model: ModelSettings, folder: str) -> None:
     await asyncio.gather(*tasks)
 
 
-def regen_memories(model: ModelSettings, folder: str) -> None:
+def regen_memories(model: ModelSettings, folder: str, apply: bool = False) -> None:
     """Regenerates `main.md` from evidence for one user or every user.
 
     Args:
@@ -90,10 +128,22 @@ def regen_memories(model: ModelSettings, folder: str) -> None:
             used for the consolidation rewrite.
         folder: Single-user memory directory (e.g. `./data/memories/<id>`) or
             the memories root (`./data/memories`) for every user.
+        apply: Whether to rewrite memory files; false prints a dry-run preview.
     """
-    asyncio.run(main=_regen_all(model=model, folder=folder))
+    asyncio.run(main=_regen_all(model=model, folder=folder, apply=apply))
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parses the offline regeneration CLI arguments."""
+    parser = argparse.ArgumentParser(description="Preview or regenerate file-backed memories.")
+    parser.add_argument("--folder", default="./data/memories")
+    parser.add_argument("--model", default="azure/gpt-5.5")
+    parser.add_argument("--effort", default="xhigh")
+    parser.add_argument("--apply", action="store_true")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    model_settings = ModelSettings(name="azure/gpt-5.5", effort="xhigh")
-    regen_memories(model=model_settings, folder="./data/memories")
+    args = _parse_args()
+    model_settings = ModelSettings(name=args.model, effort=cast("ReasoningEffort", args.effort))
+    regen_memories(model=model_settings, folder=args.folder, apply=args.apply)

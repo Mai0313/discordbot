@@ -132,7 +132,18 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory extraction call.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
+
+    @property
+    def memory_evaluator_model(self) -> ModelSettings:
+        """The model settings for strict phase-1 memory quality evaluation.
+
+        Callers: `MemoryExtractorAI.extract`.
+
+        Returns:
+            Model settings for the background memory evaluator call.
+        """
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def memories_model(self) -> ModelSettings:
@@ -143,7 +154,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory consolidation call.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def player_model(self) -> ModelSettings:

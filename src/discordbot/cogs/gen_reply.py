@@ -36,7 +36,7 @@ from discordbot.cogs._gen_reply.prompts import (
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
 )
-from discordbot.cogs._memory.extraction import MemoryExtractorAI
+from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -82,6 +82,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return MemoryExtractorAI(
             client=self.client,
             extract_model=self.runtime_models.extract_model,
+            evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
         )
 
@@ -360,9 +361,15 @@ class ReplyGeneratorCogs(commands.Cog):
 
         full_reply = await ResponseStreamer(message=message, responses=responses).stream()
         if memory_enabled:
+            memory_message_list = target_centered_memory_messages(
+                hist_messages=hist_messages,
+                reference_messages=reference_messages,
+                current_message=current_message,
+                target_user_id=message.author.id,
+            )
             schedule_memory_update(
                 user_id=message.author.id,
-                message_list=message_list,
+                message_list=memory_message_list,
                 full_reply=full_reply,
                 extractor=self.memory_extractor,
                 identity=render_author_identity(
