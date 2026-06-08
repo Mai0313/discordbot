@@ -77,6 +77,7 @@ class MemoryCogs(commands.Cog):
         return MemoryExtractorAI(
             client=self.client,
             extract_model=self.runtime_models.extract_model,
+            evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
         )
 

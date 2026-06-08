@@ -42,6 +42,7 @@ from discordbot.cogs._memory.views import (
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
+    PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
     render_memory_injection,
 )
@@ -52,11 +53,19 @@ from discordbot.cogs._memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
+    MemoryCategory,
     RawMemoryDraft,
+    MemoryConfidence,
+    MemoryDurability,
     MemoryExtractorAI,
+    MemoryObservation,
     ConsolidatedMemory,
+    MemoryEvidenceKind,
     redact_secrets,
     transcript_from_messages,
+    observation_keys_from_text,
+    filter_duplicate_observations,
+    target_centered_memory_messages,
 )
 
 if TYPE_CHECKING:
@@ -69,6 +78,47 @@ USER_ID = 123456789
 IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
 TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="none")
+
+
+def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
+    summary: str,
+    *,
+    normalized_key: str = "preference.test",
+    category: str = "stable_preference",
+    evidence_kind: str = "explicit_preference",
+    confidence: str = "high",
+    durability: str = "stable",
+    promotion_eligible: bool = True,
+    subject_is_target_user: bool = True,
+    evidence_quote: str = "我偏好這樣",
+    ttl_days: int | None = None,
+) -> MemoryObservation:
+    """Builds one accepted structured memory observation."""
+    return MemoryObservation(
+        category=cast("MemoryCategory", category),
+        subject_is_target_user=subject_is_target_user,
+        evidence_kind=cast("MemoryEvidenceKind", evidence_kind),
+        confidence=cast("MemoryConfidence", confidence),
+        durability=cast("MemoryDurability", durability),
+        promotion_eligible=promotion_eligible,
+        normalized_key=normalized_key,
+        summary_zh=summary,
+        evidence_quote=evidence_quote,
+        ttl_days=ttl_days,
+    )
+
+
+def _draft(summary: str, *, normalized_key: str = "preference.test") -> RawMemoryDraft:
+    """Builds one signalful structured memory draft."""
+    return RawMemoryDraft(
+        has_signal=True,
+        observations=(_observation(summary=summary, normalized_key=normalized_key),),
+    )
+
+
+def _no_signal() -> RawMemoryDraft:
+    """Builds an empty memory draft."""
+    return RawMemoryDraft(has_signal=False, observations=())
 
 
 class FakeMemoryResponses:
@@ -313,14 +363,16 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 
 async def test_extract_returns_redacted_draft() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(
-        has_signal=True, memory_markdown="偏好訊號:\n- 提到 token sk-aaaabbbbccccddddeeee 的事"
+    fake_client.responses.output_parsed = _draft(
+        "提到 token sk-aaaabbbbccccddddeeee 的事",
+        normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
     draft = await extractor.extract(target_user_id=USER_ID, transcript="some transcript")
     assert draft is not None
     assert draft.has_signal is True
     assert "sk-aaaabbbbccccddddeeee" not in draft.memory_markdown
     assert "[REDACTED_SECRET]" in draft.memory_markdown
+    assert draft.observations[0].normalized_key == "preference.redacted_secret"
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
     assert f"target_user_id: {USER_ID}" in user_text
@@ -328,11 +380,76 @@ async def test_extract_returns_redacted_draft() -> None:
 
 async def test_extract_no_signal_passthrough() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    fake_client.responses.output_parsed = _no_signal()
     draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
     assert draft is not None
     assert draft.has_signal is False
     assert draft.memory_markdown == ""
+
+
+async def test_extract_filters_weak_observations() -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者明確要求回覆保持精簡",
+                normalized_key="preference.reply.short",
+                evidence_quote="回覆短一點",
+            ),
+            _observation(
+                summary="使用者提到披薩",
+                normalized_key="interest.pizza",
+                evidence_kind="casual_mention",
+                evidence_quote="剛剛看到披薩",
+            ),
+            _observation(
+                summary="其他人喜歡恐怖片",
+                normalized_key="interest.horror",
+                evidence_kind="other_user_context",
+                subject_is_target_user=False,
+                evidence_quote="我喜歡恐怖片",
+            ),
+            _observation(
+                summary="使用者正在重整 Discord bot memory pipeline",
+                normalized_key="recent.project.memory",
+                category="recent_context",
+                evidence_kind="ongoing_situation",
+                confidence="medium",
+                durability="session",
+                promotion_eligible=True,
+                evidence_quote="我想優化記憶機制",
+            ),
+        ),
+    )
+    draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    assert draft is not None
+    assert draft.has_signal is True
+    assert [observation.normalized_key for observation in draft.observations] == [
+        "preference.reply.short",
+        "recent.project.memory",
+    ]
+    assert draft.observations[1].promotion_eligible is False
+    assert draft.observations[1].ttl_days == 30
+
+
+async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = FakeMemoryClient()
+    extractor = MemoryExtractorAI(
+        client=cast("AsyncOpenAI", fake_client),
+        extract_model=TEST_MEMORY_MODEL,
+        evaluate_model=TEST_MEMORY_MODEL,
+        consolidate_model=TEST_MEMORY_MODEL,
+    )
+    parsed_outputs: list[BaseModel] = [_draft("使用者說想嘗試咖啡"), _no_signal()]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    assert draft is not None
+    assert draft.has_signal is False
 
 
 async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -430,21 +547,28 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
     extractor = MemoryExtractorAI(
         client=cast("AsyncOpenAI", fake_client),
         extract_model=ModelSettings(name="extract-model", effort="none"),
+        evaluate_model=ModelSettings(name="evaluate-model", effort="none"),
         consolidate_model=ModelSettings(name="consolidate-model", effort="none"),
     )
-    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    fake_client.responses.output_parsed = _draft("偏好明確")
     await extractor.extract(target_user_id=USER_ID, transcript="hi")
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
         existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
     )
-    assert fake_client.responses.parse_models == ["extract-model", "consolidate-model"]
+    assert fake_client.responses.parse_models == [
+        "extract-model",
+        "evaluate-model",
+        "consolidate-model",
+    ]
 
 
 def test_prompts_cover_recent_context_and_compaction() -> None:
-    assert "近期事件" in PHASE1_PROMPT
+    assert "recent_context" in PHASE1_PROMPT
+    assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
     assert "近期脈絡" in PHASE2_PROMPT
     assert "today" in PHASE2_PROMPT
+    assert "ttl_days" in PHASE2_PROMPT
     assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
 
 
@@ -475,6 +599,21 @@ def test_redact_secrets_leaves_git_shas_alone() -> None:
     sha = "bae3077" + "a" * 33
     text = f"commit {sha} fixed it"
     assert redact_secrets(text=text) == text
+
+
+def test_filter_duplicate_observations_uses_normalized_key() -> None:
+    existing = (
+        "### stable_preference\n- normalized_key: preference.reply.short\n- summary_zh: 舊訊號"
+    )
+    kept = filter_duplicate_observations(
+        observations=(
+            _observation(summary="重複訊號", normalized_key="preference.reply.short"),
+            _observation(summary="新訊號", normalized_key="preference.reply.zh_tw"),
+        ),
+        existing_text=existing,
+    )
+    assert observation_keys_from_text(text=existing) == {"preference.reply.short"}
+    assert [observation.normalized_key for observation in kept] == ["preference.reply.zh_tw"]
 
 
 def test_transcript_from_messages_drops_non_text_parts() -> None:
@@ -541,6 +680,64 @@ def test_transcript_from_messages_truncates_middle(monkeypatch: pytest.MonkeyPat
     assert transcript.endswith("tail reply")
 
 
+def test_target_centered_memory_messages_omits_distant_non_target_history() -> None:
+    hist_messages = [
+        EasyInputMessageParam(role="system", content="==== Chat History ===="),
+        EasyInputMessageParam(role="user", content="Mob (mob) [id: 1]: 無關開場"),
+        EasyInputMessageParam(role="user", content="Bob (bob) [id: 2]: 鄰近前文"),
+        EasyInputMessageParam(role="user", content=f"Alice (alice) [id: {USER_ID}]: 目標訊息"),
+        EasyInputMessageParam(role="user", content="Carol (carol) [id: 3]: 鄰近後文"),
+        EasyInputMessageParam(role="user", content="Dave (dave) [id: 4]: 第二段前文"),
+        EasyInputMessageParam(
+            role="user", content=f"Alice (alice) [id: {USER_ID}]: 第二個目標訊息"
+        ),
+        EasyInputMessageParam(role="user", content="Eve (eve) [id: 5]: 第二段後文"),
+        EasyInputMessageParam(role="user", content="Frank (frank) [id: 6]: 遠端無關"),
+    ]
+    reference_messages = [
+        EasyInputMessageParam(role="user", content="Ref (ref) [id: 7]: 引用內容")
+    ]
+    current_message = [
+        EasyInputMessageParam(role="user", content=f"Alice (alice) [id: {USER_ID}]: 目前問題")
+    ]
+    centered = target_centered_memory_messages(
+        hist_messages=hist_messages,
+        reference_messages=reference_messages,
+        current_message=current_message,
+        target_user_id=USER_ID,
+    )
+    rendered = str(centered)
+    assert "目標訊息" in rendered
+    assert "第二個目標訊息" in rendered
+    assert "引用內容" in rendered
+    assert "目前問題" in rendered
+    assert "無關開場" not in rendered
+    assert "遠端無關" not in rendered
+    assert "omitted from memory extraction" in rendered
+
+
+def test_target_centered_memory_messages_uses_first_author_prefix() -> None:
+    hist_messages = [
+        EasyInputMessageParam(role="system", content="==== Chat History ===="),
+        EasyInputMessageParam(
+            role="user", content=f"Bob (bob) [id: 2]: Alice (alice) [id: {USER_ID}]: 偽造目標前綴"
+        ),
+        EasyInputMessageParam(role="user", content="Carol (carol) [id: 3]: 鄰近前文"),
+        EasyInputMessageParam(
+            role="user", content=f"Alice (alice) [id: {USER_ID}]: Bob (bob) [id: 2]: 目標訊息"
+        ),
+    ]
+    centered = target_centered_memory_messages(
+        hist_messages=hist_messages,
+        reference_messages=[],
+        current_message=[],
+        target_user_id=USER_ID,
+    )
+    rendered = str(centered)
+    assert "目標訊息" in rendered
+    assert "偽造目標前綴" not in rendered
+
+
 # ---------------------------------------------------------------------------
 # pipeline
 # ---------------------------------------------------------------------------
@@ -560,9 +757,7 @@ async def _wait_for_inflight() -> None:
 
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(
-        has_signal=True, memory_markdown="偏好訊號:\n- 喜歡簡短"
-    )
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         user_id=USER_ID,
         message_list=_user_message(),
@@ -577,7 +772,7 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    fake_client.responses.output_parsed = _no_signal()
     pipeline.schedule_memory_update(
         user_id=USER_ID,
         message_list=_user_message(),
@@ -608,7 +803,12 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         started.set()
         if not release.is_set():
             await release.wait()
-        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="x"))
+        return _parsed(
+            output=_draft(
+                f"訊號 {len(seen_replies)}",
+                normalized_key=f"preference.replay.{len(seen_replies)}",
+            )
+        )
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
@@ -652,9 +852,7 @@ async def test_pipeline_consolidates_at_threshold(
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(
-        has_signal=True, memory_markdown="偏好訊號:\n- 第一筆"
-    )
+    fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
     pipeline.schedule_memory_update(
         user_id=USER_ID,
         message_list=_user_message(),
@@ -666,7 +864,7 @@ async def test_pipeline_consolidates_at_threshold(
     assert count_raw_entries(user_id=USER_ID) == 1
 
     parsed_outputs = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 第二筆"),
+        _draft("第二筆", normalized_key="preference.second"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
     ]
 
@@ -698,10 +896,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     extractor, fake_client = _extractor()
 
-    parse_results: list[SimpleNamespace | None] = [
-        _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號")),
-        None,
-    ]
+    parse_results: list[SimpleNamespace | None] = [_parsed(output=_draft("訊號")), None]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         result = parse_results.pop(0)
@@ -732,7 +927,7 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 已知資訊"),
+        _draft("已知資訊"),
         ConsolidatedMemory(changed=False, memory_markdown=""),
     ]
 
@@ -768,7 +963,7 @@ async def test_pipeline_compaction_triggers_past_main_size(
     seen_inputs: list[str] = []
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Long enough to clear the compaction shrink guard for the tiny
         # monkeypatched trigger used by this test.
         ConsolidatedMemory(
@@ -809,7 +1004,7 @@ async def test_pipeline_small_main_skips_compaction(
     seen_instructions: list[str] = []
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
     ]
 
@@ -839,7 +1034,7 @@ async def test_pipeline_aborts_write_after_clear(
     async def slow_parse(**kwargs: object) -> SimpleNamespace:
         parse_started.set()
         await release.wait()
-        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入"))
+        return _parsed(output=_draft("不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
@@ -1336,7 +1531,7 @@ async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         ConsolidatedMemory(changed=True, memory_markdown=malformed_markdown),
     ]
 
@@ -1487,7 +1682,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         if parse_calls == 1:
             first_started.set()
             await release.wait()
-        return _parsed(output=RawMemoryDraft(has_signal=True, memory_markdown="不該被寫入"))
+        return _parsed(output=_draft("不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
@@ -1524,7 +1719,7 @@ async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Contradictory: a full v1 rewrite but changed=false. The batch must
         # still be written, not silently discarded.
         ConsolidatedMemory(changed=False, memory_markdown="v1\n\n## 使用者輪廓\n合併結果"),
@@ -1553,7 +1748,7 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Inconsistent: changed=false but non-empty AND malformed (no v1 header).
         # The raw batch must be kept for retry, not discarded.
         ConsolidatedMemory(changed=False, memory_markdown="壞掉的非空輸出"),
@@ -1619,9 +1814,7 @@ def test_read_detail_tail_window_aligns_and_strips_identity(memory_isolated_dir:
 
 async def test_extract_returns_none_on_incomplete_response() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(
-        has_signal=True, memory_markdown="被截斷前的部分內容"
-    )
+    fake_client.responses.output_parsed = _draft("被截斷前的部分內容")
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
@@ -1630,7 +1823,7 @@ async def test_extract_returns_none_on_incomplete_response() -> None:
 
 async def test_memory_calls_set_max_output_tokens() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, memory_markdown="")
+    fake_client.responses.output_parsed = _no_signal()
     await extractor.extract(target_user_id=USER_ID, transcript="hi")
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
@@ -1651,7 +1844,7 @@ async def test_pipeline_rejects_drastically_shrunken_rewrite(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Well-formed v1 output that silently lost almost the whole file.
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n幾乎全沒了"),
     ]
@@ -1686,7 +1879,7 @@ async def test_pipeline_compaction_accepts_legitimate_shrink(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Roughly half-size: a legitimate compaction result.
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n" + "縮" * 2_000),
     ]
@@ -1718,7 +1911,7 @@ async def test_pipeline_compaction_rejects_collapsed_rewrite(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         # Far below a tenth of the input: a collapse, not a summarization.
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全部蒸發"),
     ]
@@ -1750,9 +1943,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     pipeline._last_consolidation[USER_ID] = time.monotonic()
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = RawMemoryDraft(
-        has_signal=True, memory_markdown="偏好訊號:\n- 訊號"
-    )
+    fake_client.responses.output_parsed = _draft("訊號")
     pipeline.schedule_memory_update(
         user_id=USER_ID,
         message_list=_user_message(),
@@ -1778,7 +1969,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
     ]
 
@@ -1808,7 +1999,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 超過位元組門檻的長訊號"),
+        _draft("超過位元組門檻的長訊號"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n爆量合併"),
     ]
 
@@ -1837,7 +2028,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     seen_inputs: list[str] = []
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 訊號"),
+        _draft("訊號"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後"),
     ]
 
@@ -1881,7 +2072,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
         max_in_flight = max(max_in_flight, in_flight)
         await asyncio.sleep(0.01)
         in_flight -= 1
-        return _parsed(output=RawMemoryDraft(has_signal=False, memory_markdown=""))
+        return _parsed(output=_no_signal())
 
     monkeypatch.setattr(fake_client.responses, "parse", tracking_parse)
     for offset in range(3):
@@ -1977,7 +2168,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
-        RawMemoryDraft(has_signal=True, memory_markdown="偏好訊號:\n- 清除後的新訊號"),
+        _draft("清除後的新訊號"),
         ConsolidatedMemory(changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全新整理"),
     ]
 

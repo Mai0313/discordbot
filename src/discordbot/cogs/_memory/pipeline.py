@@ -32,7 +32,11 @@ from discordbot.cogs._memory.constants import (
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
-from discordbot.cogs._memory.extraction import MemoryExtractorAI, transcript_from_messages
+from discordbot.cogs._memory.extraction import (
+    MemoryExtractorAI,
+    transcript_from_messages,
+    filter_duplicate_observations,
+)
 
 
 class _PendingMemoryUpdate(BaseModel):
@@ -174,7 +178,21 @@ async def _run_memory_update(
             # The user cleared their memory while this update was in flight;
             # dropping the write beats resurrecting deleted memory.
             return
-        append_raw_entry(user_id=user_id, entry_text=draft.memory_markdown)
+        recent_detail = read_detail_tail(
+            user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS
+        )
+        deduped_observations = filter_duplicate_observations(
+            observations=draft.observations,
+            existing_text="\n\n".join((read_raw_entries(user_id=user_id), recent_detail)),
+        )
+        if not deduped_observations:
+            return
+        append_raw_entry(
+            user_id=user_id,
+            entry_text=draft.model_copy(
+                update={"observations": deduped_observations}
+            ).memory_markdown,
+        )
         if not _should_consolidate(user_id=user_id):
             return
         # Recorded at attempt time, not success time, so repeated LLM failures
