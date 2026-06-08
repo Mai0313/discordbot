@@ -80,7 +80,12 @@ async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
     except Exception as error:
         console.print(f"[red]{user_id}: error ({error})[/red]")
         return
-    styles = {"regenerated": "green", "no_evidence": "yellow", "failed": "red"}
+    styles = {
+        "regenerated": "green",
+        "no_evidence": "yellow",
+        "failed": "red",
+        "cooldown": "yellow",
+    }
     console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
 
 
