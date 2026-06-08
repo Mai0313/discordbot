@@ -65,7 +65,7 @@ _SECRET_PATTERNS = (
     re.compile(r"\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}\b"),
 )
 
-_AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*\[id: (?P<user_id>\d+)\]:")
+_AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
 _STRUCTURED_KEY_RE = re.compile(r"^\s*-\s*normalized_key:\s*(?P<key>\S+)\s*$", flags=re.MULTILINE)
 _REJECTED_EVIDENCE_KINDS = frozenset({
