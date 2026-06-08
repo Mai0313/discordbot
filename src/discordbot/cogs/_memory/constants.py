@@ -38,6 +38,15 @@ MEMORY_GLOBAL_CONCURRENCY = 8
 MAIN_COMPACTION_TRIGGER_CHARS = 30_000
 MAIN_COMPACTION_TARGET_CHARS = 15_000
 
+# Topical interests and likes must recur across at least this many distinct
+# conversations (distinct dated 近期脈絡 occurrences) before consolidation may
+# promote them from the dated accumulator into the stable sections. A single
+# off-hand mention stays dated and ages out, so a one-off topic is never
+# stored as a durable interest. Operating preferences the user repeatedly
+# enforces (tone, length, format, language, address) are exempt; this gate
+# governs topical interests and likes only.
+INTEREST_PROMOTION_MIN_OCCURRENCES = 2
+
 # Explicit output budget for both memory LLM calls. Far above any legitimate
 # memory rewrite (~15k zh-TW chars, roughly 10k tokens) plus reasoning room, but
 # below the provider ceiling so a runaway response fails as a detectable

@@ -49,6 +49,7 @@ from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.constants import (
     MEMORY_MAX_OUTPUT_TOKENS,
     MAIN_COMPACTION_TARGET_CHARS,
+    INTEREST_PROMOTION_MIN_OCCURRENCES,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
@@ -446,6 +447,26 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "近期脈絡" in PHASE2_PROMPT
     assert "today" in PHASE2_PROMPT
     assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
+
+
+def test_phase1_prompt_defers_interest_inference_to_consolidation() -> None:
+    # Phase-1 logs a single mention as a dated observation and leaves the
+    # durability call to phase-2 instead of asserting a stable interest.
+    assert "INTERESTS AND TOPICS" in PHASE1_PROMPT
+    assert "近期事件" in PHASE1_PROMPT
+
+
+def test_phase2_prompt_enforces_interest_promotion_threshold() -> None:
+    # The promotion gate surfaces the configured occurrence threshold.
+    assert "INTEREST PROMOTION GATE" in PHASE2_PROMPT
+    assert str(INTEREST_PROMOTION_MIN_OCCURRENCES) in PHASE2_PROMPT
+
+
+def test_memory_injection_carries_interest_calibration() -> None:
+    # The wrapper warns the reply model not to treat stored interests as the
+    # user's current intent.
+    rendered = render_memory_injection(memory="v1\n\n## 穩定事實\n* 範例")
+    assert "current intent" in rendered
 
 
 def test_redact_secrets_masks_token_shapes() -> None:
