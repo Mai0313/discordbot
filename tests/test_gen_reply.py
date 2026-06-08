@@ -211,6 +211,8 @@ class FakeImages:
         """Initializes image API call counters."""
         self.generate_calls = 0
         self.edit_calls = 0
+        self.generate_prompts: list[str] = []
+        self.edit_prompts: list[str] = []
 
     async def generate(  # noqa: PLR0913 -- mirrors Images API generate signature
         self,
@@ -223,7 +225,9 @@ class FakeImages:
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
         """Records an image generation call and returns a tiny PNG."""
+        del model, n, response_format, quality, size, extra_headers
         self.generate_calls += 1
+        self.generate_prompts.append(prompt)
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
     async def edit(  # noqa: PLR0913 -- mirrors Images API edit signature
@@ -238,7 +242,9 @@ class FakeImages:
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
         """Records an image edit call and returns a tiny PNG."""
+        del image, model, n, response_format, quality, size, extra_headers
         self.edit_calls += 1
+        self.edit_prompts.append(prompt)
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
 
@@ -248,11 +254,14 @@ class FakeVideos:
     def __init__(self) -> None:
         """Initializes video retrieve call count."""
         self.retrieve_calls = 0
+        self.create_prompts: list[str] = []
 
     async def create(
         self, model: str, prompt: str, extra_headers: dict[str, str]
     ) -> SimpleNamespace:
         """Returns an in-progress fake video job."""
+        del model, extra_headers
+        self.create_prompts.append(prompt)
         return SimpleNamespace(id="video-1", status="processing")
 
     async def retrieve(self, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
@@ -481,7 +490,15 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     embed.set_footer(text="Footer")
 
     assert await cog.input_builder.get_user_prompt(content="hi <@999>") == "hi"
+    assert await cog.input_builder.get_user_prompt(content="hi <@!999>") == "hi"
+    assert cog.input_builder.has_bot_mention(content="hi <@999>")
+    assert cog.input_builder.has_bot_mention(content="hi <@!999>")
     assert "Author" in cog.input_builder.extract_embed_text(embeds=[embed])
+
+    self_mention = FakeMessage(content="你的審美跟 <@999> 一樣", author=FakeAuthor(user_id=1))
+    assert (
+        await cog.input_builder.get_cleaned_content(message=self_mention) == self_mention.content
+    )
 
     bot_message = FakeMessage(
         content="answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
@@ -589,6 +606,20 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     assert len(await cog._get_current_message(message=current)) == 2
 
 
+async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
+    """Regression: self-mentions can be the subject of a normal QA message."""
+    cog = _cog()
+    message = FakeMessage(
+        content="你的審美跟 <@999> 一樣 這樣算誇獎嗎", author=FakeAuthor(user_id=1)
+    )
+
+    processed = await cog.input_builder.process_single_message(message=message)
+    rendered = processed["content"]
+
+    assert isinstance(rendered, str)
+    assert "你的審美跟 <@999> 一樣 這樣算誇獎嗎" in rendered
+
+
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
@@ -602,9 +633,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     await cog._handle_video_reply(message=message, user_prompt="video")
     assert len(message.replies) == 1
+    assert cog.client.videos.create_prompts == ["video"]
 
     await cog._handle_image_reply(message=message, user_prompt="image")
     assert cog.client.images.generate_calls
+    assert cog.client.images.generate_prompts == ["image"]
     assert isinstance(message.replies[-1].content, str)
     assert message.replies[-1].content.startswith("<@1> caption")
 
@@ -648,6 +681,7 @@ async def test_gen_reply_on_message_dispatches_routes(
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
     calls: list[str] = []
+    prompts: list[str] = []
 
     async def fake_route(message: FakeMessage) -> str:
         """Returns the parametrized route."""
@@ -662,10 +696,12 @@ async def test_gen_reply_on_message_dispatches_routes(
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records image handler dispatch."""
+        prompts.append(user_prompt)
         calls.append("_handle_image_reply")
 
     async def fake_video_handler(message: FakeMessage, user_prompt: str) -> None:
         """Records video handler dispatch."""
+        prompts.append(user_prompt)
         calls.append("_handle_video_reply")
 
     memory_flags: list[bool] = []
@@ -683,10 +719,12 @@ async def test_gen_reply_on_message_dispatches_routes(
     monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)
     monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
 
-    message = FakeMessage(content="<@999> hello", author=FakeAuthor(user_id=1))
+    message = FakeMessage(content="<@!999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
     assert expected_call in calls
     assert calls[-1] == "reaction:🆗"
+    if route in {"IMAGE", "VIDEO"}:
+        assert prompts == ["hello"]
     # Summaries opt out of per-user memory; QA keeps the default.
     if route == "SUMMARY":
         assert memory_flags == [False]

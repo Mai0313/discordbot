@@ -65,10 +65,18 @@ class MessageInputBuilder(BaseModel):
     runtime_models: RuntimeModelCatalog
 
     async def get_user_prompt(self, content: str) -> str:
-        """Removes the bot mention from the content and strips whitespace."""
+        """Removes bot mention syntax from image/video generation prompts."""
         if self.bot.user:
-            content = content.replace(f"<@{self.bot.user.id}>", "")
+            bot_id = re.escape(str(self.bot.user.id))
+            content = re.sub(rf"<@!?{bot_id}>", "", content)
         return content.strip()
+
+    def has_bot_mention(self, content: str) -> bool:
+        """Returns whether the content mentions the bot directly."""
+        if not self.bot.user:
+            return False
+        bot_id = re.escape(str(self.bot.user.id))
+        return re.search(rf"<@!?{bot_id}>", content) is not None
 
     @staticmethod
     def extract_embed_text(embeds: list[Embed]) -> str:
@@ -92,7 +100,7 @@ class MessageInputBuilder(BaseModel):
 
     async def get_cleaned_content(self, message: Message) -> str:
         """Returns the textual content of a message without the author prefix."""
-        content = await self.get_user_prompt(content=message.content)
+        content = message.content.strip()
         if content and self.bot.user and message.author.id == self.bot.user.id:
             content = USAGE_FOOTER_RE.sub("", content)
         if not content and message.embeds:
