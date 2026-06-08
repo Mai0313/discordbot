@@ -387,7 +387,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # the bot to mentions and would trigger on replies to functional bot
         # posts (e.g. Threads embeds, video downloads).
         is_dm = message.guild is None
-        if not is_dm and (not self.bot.user or f"<@{self.bot.user.id}>" not in message.content):
+        if not is_dm and not self.input_builder.has_bot_mention(content=message.content):
             return
 
         user_prompt = await self.input_builder.get_user_prompt(content=message.content)
