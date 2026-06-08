@@ -798,3 +798,14 @@ class ThreadsDownloader(BaseModel):
                 self._build_output(post=reply, url=self._post_url(post=reply), download=False)
             )
         return results
+
+
+if __name__ == "__main__":
+    from rich.console import Console
+
+    console = Console()
+
+    downloader = ThreadsDownloader(output_folder="./tmp")
+    url = "https://www.threads.com/@god.withme4ever/post/DZRDeFFmDiX?xmt=AQG0e9ucF6uRsl3Fw1Vomsphfm9UOxCuaETcG30CkZLD6w"
+    with downloader.parse(url=url) as outputs:
+        console.print(outputs)
