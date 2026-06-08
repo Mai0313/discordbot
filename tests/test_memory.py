@@ -363,12 +363,16 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 
 async def test_extract_returns_redacted_draft() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = _draft("提到 token sk-aaaabbbbccccddddeeee 的事")
+    fake_client.responses.output_parsed = _draft(
+        "提到 token sk-aaaabbbbccccddddeeee 的事",
+        normalized_key="preference.sk-aaaabbbbccccddddeeee",
+    )
     draft = await extractor.extract(target_user_id=USER_ID, transcript="some transcript")
     assert draft is not None
     assert draft.has_signal is True
     assert "sk-aaaabbbbccccddddeeee" not in draft.memory_markdown
     assert "[REDACTED_SECRET]" in draft.memory_markdown
+    assert draft.observations[0].normalized_key == "preference.redacted_secret"
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
     assert f"target_user_id: {USER_ID}" in user_text

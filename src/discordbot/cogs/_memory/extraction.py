@@ -443,7 +443,7 @@ def _is_accepted_observation(observation: MemoryObservation) -> bool:
 
 def _clean_normalized_key(value: str) -> str:
     """Normalizes a model-provided dedupe key into a compact safe token."""
-    key = _KEY_SAFE_RE.sub(".", value.strip().lower())
+    key = _KEY_SAFE_RE.sub(".", redact_secrets(text=value).strip().lower())
     key = re.sub(r"\.+", ".", key).strip(".")
     return key[:120]
 
