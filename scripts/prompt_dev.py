@@ -2,7 +2,6 @@
 
 import time
 from typing import TYPE_CHECKING, cast
-from pathlib import Path
 
 from google import genai
 from openai import OpenAI
@@ -34,7 +33,7 @@ config = LLMConfig()
 SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 
 
-def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
+def gen_reply(user_prompt: str) -> None:
     """Streams a dev reply through the LiteLLM Responses API.
 
     Mirrors `_handle_message_reply` in `cogs/gen_reply.py` by sending
@@ -44,23 +43,9 @@ def gen_reply(user_prompt: str, file_path: str | None = None) -> None:
 
     Args:
         user_prompt: User message to send as the single prompt input.
-        file_path: Optional path to a file to include as an input_file part in the prompt.
     """
     message_list = [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}]
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    if file_path:
-        path = Path(file_path)
-        file = client.files.create(
-            file=path.open("rb"),
-            purpose="user_data",
-            extra_headers={"x-litellm-end-user-id": "prompt_dev"},
-            extra_body={"target_model_names": SLOW_MODEL.name},
-        )
-        message_list.append({
-            "role": "user",
-            "content": [{"type": "input_file", "file_id": file.id}],
-        })
-        console.print(file.model_dump())
     start = time.time()
     responses = client.responses.create(
         model=SLOW_MODEL.name,
