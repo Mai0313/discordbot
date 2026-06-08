@@ -22,8 +22,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
-from discordbot.cogs._memory.store import read_main_memory
-from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -31,6 +29,12 @@ from discordbot.cogs._gen_reply.input import (
     render_author_identity,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
+from discordbot.cogs._memory.retrieval import (
+    READ_USER_MEMORY_TOOL_NAME,
+    build_read_user_memory_tool,
+    build_memory_tool_candidates,
+    execute_read_user_memory_tool_call,
+)
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -38,7 +42,11 @@ from discordbot.cogs._gen_reply.prompts import (
     SUMMARY_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
-from discordbot.cogs._gen_reply.streaming import ResponseStreamer
+from discordbot.cogs._gen_reply.streaming import (
+    ResponseStreamer,
+    ResponseToolCall,
+    stream_response_with_tool_loop,
+)
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
@@ -347,31 +355,55 @@ class ReplyGeneratorCogs(commands.Cog):
             *current_message,
         ]
 
-        # User-influenceable memory rides as a lowest-authority role=assistant
-        # self-note with string content (assistant rejects input_text parts),
-        # never trailing (Claude prefill through LiteLLM); `message_list` stays
-        # memory-free for phase-1 extraction.
-        llm_input: list[EasyInputMessageParam] = message_list
-        if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
-            memory_message = EasyInputMessageParam(
-                role="assistant", content=render_memory_injection(memory=memory_text).strip()
-            )
-            llm_input = [memory_message, *hist_messages, *reference_messages, *current_message]
-
         slow_model = self.runtime_models.slow_model
-        responses = await self.client.responses.create(
-            model=slow_model.name,
-            instructions=system_prompt,
-            input=cast("ResponseInputParam", llm_input),
-            reasoning=slow_model.reasoning,
-            tools=slow_model.tools,
-            stream=True,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
+        extra_headers = {"x-litellm-end-user-id": message.author.name}
+        extra_body = {"mock_testing_fallbacks": False}
+        bot_user_id = self.bot.user.id if self.bot.user else None
+        memory_candidates = build_memory_tool_candidates(
+            current_user_id=message.author.id, message_list=message_list, bot_user_id=bot_user_id
         )
+        memory_tool = build_read_user_memory_tool(candidates=memory_candidates)
 
-        full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+        if memory_enabled and memory_tool is not None:
+
+            def execute_memory_tool(*, call: ResponseToolCall) -> str:
+                """Executes the one local memory tool exposed to the model."""
+                if call.name != READ_USER_MEMORY_TOOL_NAME:
+                    return (
+                        '{"user_id":0,"allowed":false,"found":false,"memory":"",'
+                        '"message":"Denied. Unknown local function tool."}'
+                    )
+                return execute_read_user_memory_tool_call(
+                    arguments=call.arguments, candidates=memory_candidates
+                )
+
+            full_reply = await stream_response_with_tool_loop(
+                client=self.client,
+                message=message,
+                model=slow_model.name,
+                instructions=system_prompt,
+                input_items=cast("ResponseInputParam", message_list),
+                reasoning=slow_model.reasoning,
+                tool_loop_tools=[*slow_model.tools, memory_tool],
+                final_tools=slow_model.tools,
+                tool_executor=execute_memory_tool,
+                extra_headers=extra_headers,
+                extra_body=extra_body,
+            )
+        else:
+            responses = await self.client.responses.create(
+                model=slow_model.name,
+                instructions=system_prompt,
+                input=cast("ResponseInputParam", message_list),
+                reasoning=slow_model.reasoning,
+                tools=slow_model.tools,
+                stream=True,
+                service_tier="auto",
+                extra_headers=extra_headers,
+                extra_body=extra_body,
+            )
+            full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
                 hist_messages=hist_messages,

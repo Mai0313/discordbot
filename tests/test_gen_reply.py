@@ -5,7 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 from datetime import UTC, datetime
 
 from PIL import Image
@@ -16,6 +16,7 @@ from discordbot.cogs.gen_reply import ReplyGeneratorCogs
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._memory.retrieval import READ_USER_MEMORY_TOOL_NAME
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -164,6 +165,8 @@ class FakeResponses:
         self.create_models: list[str] = []
         self.create_instructions: list[str] = []
         self.create_inputs: list[ResponseInputParam | str] = []
+        self.create_tools: list[list[object] | None] = []
+        self.stream_event_batches: list[list[SimpleNamespace]] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
         self.output_parsed = SimpleNamespace(decision="SUMMARY")
@@ -178,14 +181,19 @@ class FakeResponses:
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
         stream: bool = False,
-        tools: list[dict[str, str | dict[str, str]]] | None = None,
-    ) -> SimpleNamespace:
+        tools: list[object] | None = None,
+    ) -> SimpleNamespace | AsyncIterator[SimpleNamespace]:
         """Records streaming mode and returns configured output text."""
-        del reasoning, service_tier, extra_headers, extra_body, tools
+        del reasoning, service_tier, extra_headers, extra_body
         self.create_models.append(model)
         self.create_instructions.append(instructions)
         self.create_inputs.append(input)
+        self.create_tools.append(tools)
         self.create_streams.append(stream)
+        if stream:
+            if self.stream_event_batches:
+                return _stream_events_from(events=self.stream_event_batches.pop(0))
+            return _stream_events()
         return SimpleNamespace(output_text=self.output_text)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
@@ -319,6 +327,37 @@ async def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[Si
     """Yields the provided fake streaming events in order."""
     for event in events:
         yield event
+
+
+def _completed_event(
+    *, input_tokens: int = 12, output_tokens: int = 34, model: str = TEST_LLM_MODEL
+) -> SimpleNamespace:
+    """Builds a minimal response.completed stream event."""
+    return SimpleNamespace(
+        type="response.completed",
+        response=SimpleNamespace(
+            model=model,
+            usage=SimpleNamespace(
+                input_tokens=input_tokens, output_tokens=output_tokens, output_tokens_details=None
+            ),
+        ),
+    )
+
+
+def _function_call_event(
+    *, arguments: str, call_id: str = "call-memory", item_id: str = "item-memory"
+) -> SimpleNamespace:
+    """Builds a completed read_user_memory function call stream event."""
+    return SimpleNamespace(
+        type="response.output_item.done",
+        item=SimpleNamespace(
+            type="function_call",
+            name=READ_USER_MEMORY_TOOL_NAME,
+            arguments=arguments,
+            call_id=call_id,
+            id=item_id,
+        ),
+    )
 
 
 async def test_handle_streaming_allows_missing_output_token_details(
@@ -824,26 +863,26 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
-async def test_handle_message_reply_injects_memory_as_assistant_note_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+async def test_handle_message_reply_exposes_memory_tool_without_auto_injection(
+    memory_isolated_dir: object, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies stored memory rides as a role=assistant note before the current block."""
+    """Verifies memory is retrieved by tool call instead of prompt injection."""
+    del economy_isolated_db
     cog = _cog()
     write_main_memory(
         user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
     )
-
-    class FakeResponder:
-        """Returns a fixed completed reply."""
-
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
-            self.message = message
-            self.responses = responses
-
-        async def stream(self) -> str:
-            """Returns placeholder reply content."""
-            return "完整回覆"
+    cog.client.responses.stream_event_batches = [
+        [
+            _function_call_event(arguments='{"user_id":1}'),
+            _completed_event(input_tokens=10, output_tokens=2),
+        ],
+        [_completed_event(input_tokens=4, output_tokens=1)],
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="完整回覆"),
+            _completed_event(input_tokens=20, output_tokens=5),
+        ],
+    ]
 
     scheduled: list[dict[str, object]] = []
 
@@ -859,36 +898,39 @@ async def test_handle_message_reply_injects_memory_as_assistant_note_before_curr
             "identity": identity,
         })
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    message = FakeMessage(content="<@999> 請參考 <@2>", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
-    # Top-level instructions must stay the clean developer-controlled persona.
     instructions = cog.client.responses.create_instructions[-1]
     assert instructions == "SYS"
     assert "喜歡簡短回覆" not in instructions
 
-    # Memory rides right before the current-message block as a lowest-authority
-    # role=assistant self-note with string content; never trailing, because a
-    # trailing assistant message is Claude prefill semantics through LiteLLM.
-    llm_input = cog.client.responses.create_inputs[-1]
-    memory_item = llm_input[-3]
-    assert memory_item["role"] == "assistant"
-    memory_text = memory_item["content"]
-    assert isinstance(memory_text, str)
-    assert "喜歡簡短回覆" in memory_text
-    assert "Long-term memory" in memory_text
-    assert "Long-term memory" not in str(llm_input[-1])
+    first_input = cog.client.responses.create_inputs[0]
+    assert "喜歡簡短回覆" not in str(first_input)
+    assert "Long-term memory" not in str(first_input)
 
-    # The extraction message_list must NOT contain the memory block (no self-feeding).
+    first_tools = cog.client.responses.create_tools[0]
+    assert first_tools is not None
+    memory_tools = [tool for tool in first_tools if tool.get("name") == READ_USER_MEMORY_TOOL_NAME]
+    assert len(memory_tools) == 1
+    user_id_schema = memory_tools[0]["parameters"]["properties"]["user_id"]
+    assert user_id_schema["enum"] == [1, 2]
+
+    final_tools = cog.client.responses.create_tools[-1]
+    assert final_tools is not None
+    assert all(tool.get("name") != READ_USER_MEMORY_TOOL_NAME for tool in final_tools)
+
+    final_input = cog.client.responses.create_inputs[-1]
+    assert "function_call_output" in str(final_input)
+    assert "喜歡簡短回覆" in str(final_input)
+
     scheduled_list = scheduled[0]["message_list"]
     assert isinstance(scheduled_list, list)
     assert "Long-term memory" not in str(scheduled_list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
-    assert len(scheduled_list) == len(llm_input) - 1
-    assert scheduled[0]["full_reply"] == "完整回覆"
+    assert "完整回覆" in str(scheduled[0]["full_reply"])
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
     assert cog.memory_extractor.extract_model.name == cog.runtime_models.extract_model.name
@@ -904,19 +946,15 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
 
-    class FakeResponder:
-        """Returns a fixed completed reply."""
-
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
-            self.message = message
-            self.responses = responses
-
-        async def stream(self) -> str:
-            """Returns placeholder reply content."""
-            return "回覆"
-
     scheduled: list[int] = []
+    streamed: list[FakeMessage] = []
+    tool_loop_kwargs: list[dict[str, object]] = []
+
+    async def fake_tool_loop(**kwargs: object) -> str:
+        """Records the tool-loop call and returns placeholder reply content."""
+        streamed.append(cast("FakeMessage", kwargs["message"]))
+        tool_loop_kwargs.append(kwargs)
+        return "回覆"
 
     def fake_schedule(
         user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
@@ -924,13 +962,14 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         """Records that a memory update was scheduled."""
         scheduled.append(user_id)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.stream_response_with_tool_loop", fake_tool_loop)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
-    assert cog.client.responses.create_instructions[-1] == "SYS"
+    assert streamed == [message]
+    assert tool_loop_kwargs[0]["instructions"] == "SYS"
     assert scheduled == [1]
 
 
