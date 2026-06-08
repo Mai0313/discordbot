@@ -343,7 +343,7 @@ class ReplyGeneratorCogs(commands.Cog):
             memory_message = EasyInputMessageParam(
                 role="assistant", content=render_memory_injection(memory=memory_text).strip()
             )
-            llm_input = [*hist_messages, *reference_messages, memory_message, *current_message]
+            llm_input = [memory_message, *hist_messages, *reference_messages, *current_message]
 
         slow_model = self.runtime_models.slow_model
         responses = await self.client.responses.create(
