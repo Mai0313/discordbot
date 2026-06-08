@@ -1,6 +1,7 @@
 """Cog that routes Discord messages through the AI reply pipeline."""
 
 from io import BytesIO
+import re
 import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
@@ -42,6 +43,14 @@ from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+
+
+_MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
+
+
+def _message_has_url(content: str) -> bool:
+    """Returns whether the current message carries an explicit URL."""
+    return _MESSAGE_URL_RE.search(string=content) is not None
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -313,7 +322,10 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             if responses.output_parsed is None:
                 return "QA"
-            return responses.output_parsed.decision
+            decision = responses.output_parsed.decision
+            if decision == "SUMMARY" and _message_has_url(content=message.content):
+                return "QA"
+            return decision
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.

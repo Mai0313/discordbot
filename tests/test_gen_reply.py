@@ -667,6 +667,22 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
 
 
 @pytest.mark.parametrize(
+    argnames="content",
+    argvalues=[
+        "整理懶人包 https://example.test/post",
+        "這裡面又在說啥 整理給我聽 https://example.test/post",
+    ],
+)
+async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None:
+    """Regression: URL summaries should use the normal QA route, not chat SUMMARY."""
+    cog = _cog()
+    message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
+
+    assert await cog._route_message(message=message) == "QA"
+    assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
+
+
+@pytest.mark.parametrize(
     argnames=("route", "expected_call"),
     argvalues=[
         ("IMAGE", "_handle_image_reply"),
