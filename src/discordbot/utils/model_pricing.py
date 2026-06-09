@@ -88,3 +88,17 @@ def get_supported_modalities(model_name: str) -> set[str]:
     model_info = load_model_info()
     info = model_info.get(model_name, ModelPriceEntry())
     return set(info.supported_modalities)
+
+
+if __name__ == "__main__":
+    from rich.console import Console
+
+    console = Console()
+
+    model_name = "gemini-pro-latest"
+    model_info = load_model_info()
+    console.print(model_info)
+    supported_modalities = get_supported_modalities(model_name=model_name)
+    console.print(supported_modalities)
+    token_rates = get_token_rates(model_name=model_name)
+    console.print(token_rates)
