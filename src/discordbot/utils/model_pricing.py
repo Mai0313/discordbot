@@ -45,10 +45,9 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
         return prices
 
     for name, entry in data.items():
-        if not isinstance(entry, Mapping):
-            continue
         try:
-            prices[name] = ModelPriceEntry.model_validate(obj=entry)
+            # Pydantic can handle passing this as dict since we converted data to json.
+            prices[name] = ModelPriceEntry(**entry)
         except ValidationError as exc:
             logfire.warn(f"Skipping malformed model price entry {name}: {exc!s}")
     return prices
