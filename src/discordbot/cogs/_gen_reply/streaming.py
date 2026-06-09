@@ -92,7 +92,7 @@ class HiddenStreamResult(BaseModel):
 class ToolExecutor(Protocol):
     """Callable that executes a captured Responses API function call."""
 
-    def __call__(self, *, call: ResponseToolCall) -> str:
+    def __call__(self, call: ResponseToolCall) -> str:
         """Returns the function_call_output string for a call."""
 
 

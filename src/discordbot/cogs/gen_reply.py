@@ -366,7 +366,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         if memory_enabled and memory_tool is not None:
 
-            def execute_memory_tool(*, call: ResponseToolCall) -> str:
+            def execute_memory_tool(call: ResponseToolCall) -> str:
                 """Executes the one local memory tool exposed to the model."""
                 if call.name != READ_USER_MEMORY_TOOL_NAME:
                     return (
