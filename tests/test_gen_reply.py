@@ -364,6 +364,14 @@ def _function_call_event(
     )
 
 
+def _reasoning_item_event(*, item_id: str = "rs-memory") -> SimpleNamespace:
+    """Builds a completed reasoning item stream event."""
+    return SimpleNamespace(
+        type="response.output_item.done",
+        item=SimpleNamespace(type="reasoning", id=item_id, summary=[], status="completed"),
+    )
+
+
 async def test_handle_streaming_allows_missing_output_token_details(
     economy_isolated_db: None,
 ) -> None:
@@ -908,6 +916,7 @@ async def test_handle_message_reply_exposes_memory_tool_without_auto_injection(
     )
     cog.client.responses.stream_event_batches = [
         [
+            _reasoning_item_event(),
             _function_call_event(arguments='{"user_id":1}'),
             _completed_event(input_tokens=10, output_tokens=2),
         ],
@@ -957,6 +966,7 @@ async def test_handle_message_reply_exposes_memory_tool_without_auto_injection(
     assert all(tool.get("name") != READ_USER_MEMORY_TOOL_NAME for tool in final_tools)
 
     final_input = cog.client.responses.create_inputs[-1]
+    assert "rs-memory" in str(final_input)
     assert "function_call_output" in str(final_input)
     assert "喜歡簡短回覆" in str(final_input)
 

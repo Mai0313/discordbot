@@ -1,7 +1,8 @@
 """Streams a Responses API reply onto a Discord message."""
 
 import re
-from typing import Protocol
+from typing import Protocol, cast
+from collections.abc import Mapping
 
 from openai import AsyncOpenAI, AsyncStream
 from nextcord import Message
@@ -10,7 +11,11 @@ from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response import Response
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared_params.reasoning import Reasoning
-from openai.types.responses.response_input_param import FunctionCallOutput, ResponseInputParam
+from openai.types.responses.response_input_param import (
+    FunctionCallOutput,
+    ResponseInputParam,
+    ResponseInputItemParam,
+)
 from openai.types.responses.response_function_tool_call_param import ResponseFunctionToolCallParam
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -93,6 +98,7 @@ class HiddenStreamResult(BaseModel):
     """Collected output from one non-visible streamed tool round."""
 
     usage: ResponseUsageSummary = Field(default_factory=ResponseUsageSummary)
+    output_items: list[ResponseInputItemParam] = Field(default_factory=list)
     function_calls: list[ResponseToolCall] = Field(default_factory=list)
 
 
@@ -265,6 +271,8 @@ async def collect_hidden_response_stream(
             result.usage.used_web_search = True
         elif response.type == "response.output_item.done":
             item = response.item
+            if input_item := _response_output_item_to_input_item(item=item):
+                result.output_items.append(input_item)
             if item.type != "function_call":
                 continue
             result.function_calls.append(
@@ -273,6 +281,41 @@ async def collect_hidden_response_stream(
                 )
             )
     return result
+
+
+def _response_output_item_to_input_item(item: object) -> ResponseInputItemParam | None:
+    """Converts one completed output item into a follow-up input item."""
+    item_dict: dict[str, object]
+    if isinstance(item, Mapping):
+        item_dict = {str(key): value for key, value in item.items() if value is not None}
+    else:
+        model_dump = getattr(item, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump(exclude_none=True)
+            if not isinstance(dumped, Mapping):
+                return None
+            item_dict = {str(key): value for key, value in dumped.items() if value is not None}
+        else:
+            item_dict = {key: value for key, value in vars(item).items() if value is not None}
+    if not isinstance(item_dict.get("type"), str):
+        return None
+    return cast("ResponseInputItemParam", item_dict)
+
+
+def _output_items_for_tool_calls(
+    output_items: list[ResponseInputItemParam], handled_call_ids: set[str]
+) -> list[ResponseInputItemParam]:
+    """Keeps completed output items that can be continued with provided tool outputs."""
+    selected: list[ResponseInputItemParam] = []
+    for item in output_items:
+        item_dict = cast("dict[str, object]", item)
+        if (
+            item_dict.get("type") == "function_call"
+            and item_dict.get("call_id") not in handled_call_ids
+        ):
+            continue
+        selected.append(item)
+    return selected
 
 
 async def stream_response_with_tool_loop(  # noqa: PLR0913 -- mirrors the Responses API request surface
@@ -310,10 +353,22 @@ async def stream_response_with_tool_loop(  # noqa: PLR0913 -- mirrors the Respon
         if not hidden.function_calls:
             break
 
-        for call in hidden.function_calls:
-            if tool_call_count >= MAX_TOOL_CALLS:
-                break
-            conversation.append(call.to_input_item())
+        remaining_tool_calls = MAX_TOOL_CALLS - tool_call_count
+        handled_calls = hidden.function_calls[:remaining_tool_calls]
+        handled_call_ids = {call.call_id for call in handled_calls}
+        output_items = _output_items_for_tool_calls(
+            output_items=hidden.output_items, handled_call_ids=handled_call_ids
+        )
+        conversation.extend(output_items)
+        output_call_ids = {
+            cast("str", item.get("call_id"))
+            for item in cast("list[dict[str, object]]", output_items)
+            if item.get("type") == "function_call" and isinstance(item.get("call_id"), str)
+        }
+
+        for call in handled_calls:
+            if call.call_id not in output_call_ids:
+                conversation.append(call.to_input_item())
             conversation.append(
                 FunctionCallOutput(
                     type="function_call_output",
