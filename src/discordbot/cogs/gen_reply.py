@@ -13,17 +13,20 @@ import logfire
 from nextcord import File, Embed, Message
 from pydantic import ValidationError
 from nextcord.ext import commands
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_param import (
+    FunctionCallOutput,
+    ResponseInputParam,
+    EasyInputMessageParam,
+)
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
+from openai.types.responses.response_function_tool_call_param import ResponseFunctionToolCallParam
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
-from discordbot.cogs._memory.store import read_main_memory
-from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -40,6 +43,14 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+from discordbot.cogs._gen_reply.memory_tool import (
+    GET_USER_MEMORY_TOOL,
+    dump_user_memories,
+    parse_user_id_list,
+    resolve_user_memories,
+    build_memory_allowlist,
+    render_callable_users_block,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -197,6 +208,37 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
+    async def _collect_participant_messages(
+        self, message: Message, history_limit: int
+    ) -> list[Message]:
+        """Collects the raw current, reference, and history messages for the memory allowlist.
+
+        The rendered Responses input drops the underlying `Message` objects, but the
+        allowlist needs each message's `.author` and `.mentions`. This re-walks the same
+        reference chain (depth 3) and channel history the `_get_*` helpers render.
+        """
+        messages: list[Message] = [message]
+
+        visited: set[int] = {message.id}
+        current = message
+        while (
+            len(messages) < 4
+            and current.reference
+            and isinstance(current.reference.resolved, Message)
+            and current.reference.resolved.id not in visited
+        ):
+            ref = current.reference.resolved
+            visited.add(ref.id)
+            messages.append(ref)
+            current = ref
+
+        async for hist_msg in message.channel.history(
+            limit=history_limit, before=message, oldest_first=True
+        ):
+            messages.append(hist_msg)
+
+        return messages
+
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
@@ -336,10 +378,16 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
-        hist_messages, reference_messages, current_message = await asyncio.gather(
+        (
+            hist_messages,
+            reference_messages,
+            current_message,
+            participant_messages,
+        ) = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
+            self._collect_participant_messages(message=message, history_limit=history_limit),
         )
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
@@ -347,31 +395,63 @@ class ReplyGeneratorCogs(commands.Cog):
             *current_message,
         ]
 
-        # User-influenceable memory rides as a lowest-authority role=assistant
-        # self-note with string content (assistant rejects input_text parts),
-        # never trailing (Claude prefill through LiteLLM); `message_list` stays
-        # memory-free for phase-1 extraction.
-        llm_input: list[EasyInputMessageParam] = message_list
-        if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
-            memory_message = EasyInputMessageParam(
-                role="assistant", content=render_memory_injection(memory=memory_text).strip()
-            )
-            llm_input = [memory_message, *hist_messages, *reference_messages, *current_message]
-
+        # Long-term memory is no longer injected: the slow model decides whether and
+        # whose memory to read by calling the get_user_memory tool. The allowlist
+        # (conversation authors + mentioned users, minus the bot) is the permission
+        # boundary; `message_list` stays memory-free for phase-1 extraction.
         slow_model = self.runtime_models.slow_model
-        responses = await self.client.responses.create(
-            model=slow_model.name,
-            instructions=system_prompt,
-            input=cast("ResponseInputParam", llm_input),
-            reasoning=slow_model.reasoning,
-            tools=slow_model.tools,
-            stream=True,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
-        )
+        base_tools = list(slow_model.tools)
+        tools = base_tools
+        running_input: ResponseInputParam = [*message_list]
+        allowed: dict[int, str] = {}
+        if memory_enabled and self.bot.user:
+            allowed = build_memory_allowlist(
+                messages=participant_messages, bot_user_id=self.bot.user.id
+            )
+            if allowed:
+                tools = [*base_tools, GET_USER_MEMORY_TOOL]
+                running_input.append(render_callable_users_block(allowed=allowed))
 
-        full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+        streamer = ResponseStreamer(message=message)
+        for turn in range(3):
+            # The final turn drops the memory tool so a tool-looping model is always
+            # forced to produce a text answer instead of exhausting the turn cap.
+            turn_tools = tools if turn < 2 else base_tools
+            responses = await self.client.responses.create(
+                model=slow_model.name,
+                instructions=system_prompt,
+                input=running_input,
+                reasoning=slow_model.reasoning,
+                tools=turn_tools,
+                stream=True,
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
+            )
+            function_calls = await streamer.consume_turn(responses=responses)
+            if not function_calls:
+                break
+            for call in function_calls:
+                memories = resolve_user_memories(
+                    user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
+                )
+                running_input.append(
+                    ResponseFunctionToolCallParam(
+                        type="function_call",
+                        call_id=call.call_id,
+                        name=call.name,
+                        arguments=call.arguments,
+                    )
+                )
+                running_input.append(
+                    FunctionCallOutput(
+                        type="function_call_output",
+                        call_id=call.call_id,
+                        output=dump_user_memories(memories=memories),
+                    )
+                )
+
+        full_reply = await streamer.finalize()
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
                 hist_messages=hist_messages,

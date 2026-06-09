@@ -18,6 +18,11 @@ from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+from discordbot.cogs._gen_reply.memory_tool import (
+    parse_user_id_list,
+    resolve_user_memories,
+    build_memory_allowlist,
+)
 
 TEST_LLM_MODEL = "test-llm-model"
 
@@ -93,6 +98,7 @@ class FakeMessage:
         self.reference: FakeReference | None = None
         self.guild: FakeGuild | None = FakeGuild()
         self.channel = SimpleNamespace(history=self._history)
+        self.mentions: list[FakeAuthor] = []
         self.id = 987
         self.system_content = ""
         self.added_reactions: list[str] = []
@@ -156,7 +162,7 @@ class FakeAttachment:
 
 
 class FakeResponses:
-    """Fake Responses API resource for routing and caption calls."""
+    """Fake Responses API resource for routing, caption, and streamed reply calls."""
 
     def __init__(self) -> None:
         """Initializes recorded calls and default outputs."""
@@ -164,9 +170,12 @@ class FakeResponses:
         self.create_models: list[str] = []
         self.create_instructions: list[str] = []
         self.create_inputs: list[ResponseInputParam | str] = []
+        self.create_tools: list[list[object] | None] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
         self.output_parsed = SimpleNamespace(decision="SUMMARY")
+        # Each entry is the event list for one streaming create(); popped in order.
+        self.stream_queue: list[list[SimpleNamespace]] = []
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
         self,
@@ -178,14 +187,20 @@ class FakeResponses:
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
         stream: bool = False,
-        tools: list[dict[str, str | dict[str, str]]] | None = None,
-    ) -> SimpleNamespace:
-        """Records streaming mode and returns configured output text."""
-        del reasoning, service_tier, extra_headers, extra_body, tools
+        tools: list[object] | None = None,
+    ) -> object:
+        """Records the call; returns a streamed event iterator or non-stream output."""
+        del reasoning, service_tier, extra_headers, extra_body
         self.create_models.append(model)
         self.create_instructions.append(instructions)
         self.create_inputs.append(input)
         self.create_streams.append(stream)
+        self.create_tools.append(tools)
+        if stream:
+            events = (
+                self.stream_queue.pop(0) if self.stream_queue else list(_default_turn_events())
+            )
+            return _stream_events_from(events=events)
         return SimpleNamespace(output_text=self.output_text)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
@@ -321,6 +336,39 @@ async def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[Si
         yield event
 
 
+def _text_event(delta: str) -> SimpleNamespace:
+    """Builds a fake text-delta streaming event."""
+    return SimpleNamespace(type="response.output_text.delta", delta=delta)
+
+
+def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
+    """Builds a fake response.completed event carrying token usage."""
+    return SimpleNamespace(
+        type="response.completed",
+        response=SimpleNamespace(
+            model=TEST_LLM_MODEL,
+            usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+        ),
+    )
+
+
+def _function_call_event(
+    call_id: str, arguments: str, name: str = "get_user_memory"
+) -> SimpleNamespace:
+    """Builds a fake output_item.done event carrying a function call."""
+    return SimpleNamespace(
+        type="response.output_item.done",
+        item=SimpleNamespace(
+            type="function_call", name=name, call_id=call_id, arguments=arguments
+        ),
+    )
+
+
+def _default_turn_events() -> list[SimpleNamespace]:
+    """A minimal single-turn stream: one text delta and a completed event."""
+    return [_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=1)]
+
+
 async def test_handle_streaming_allows_missing_output_token_details(
     economy_isolated_db: None,
 ) -> None:
@@ -328,7 +376,7 @@ async def test_handle_streaming_allows_missing_output_token_details(
     del economy_isolated_db
     message = FakeMessage()
 
-    result = await ResponseStreamer(message=message, responses=_stream_events()).stream()
+    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
 
     # 46 tokens // 100 divisor rounds down to a 0 chat reward.
     expected = (
@@ -356,9 +404,9 @@ async def test_handle_streaming_chat_reward_divided_and_capped(economy_isolated_
         ),
     ]
 
-    result = await ResponseStreamer(
-        message=message, responses=_stream_events_from(events=events)
-    ).stream()
+    result = await ResponseStreamer(message=message).stream(
+        responses=_stream_events_from(events=events)
+    )
 
     # 6,000 tokens // 100 = 60, capped at 50; the footer shows the credited amount.
     assert "⬆ 3,000 ⬇ 3,000" in result
@@ -374,8 +422,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
 
-    result = await ResponseStreamer(
-        message=message,
+    result = await ResponseStreamer(message=message).stream(
         responses=_stream_events_from(
             events=[
                 SimpleNamespace(type="response.output_text.delta", delta=body),
@@ -387,8 +434,8 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
                     ),
                 ),
             ]
-        ),
-    ).stream()
+        )
+    )
 
     # 3 tokens // 100 divisor rounds down to a 0 chat reward.
     usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 0 虛擬歡樂豆 (0 虛擬歡樂豆)"
@@ -416,8 +463,7 @@ async def test_handle_streaming_marks_web_search_from_call_event(
     del economy_isolated_db
     message = FakeMessage()
 
-    await ResponseStreamer(
-        message=message,
+    await ResponseStreamer(message=message).stream(
         responses=_stream_events_from(
             events=[
                 SimpleNamespace(type="response.output_text.delta", delta="answer"),
@@ -430,8 +476,8 @@ async def test_handle_streaming_marks_web_search_from_call_event(
                     ),
                 ),
             ]
-        ),
-    ).stream()
+        )
+    )
 
     assert message.added_reactions == ["🌐"]
 
@@ -448,8 +494,7 @@ async def test_handle_streaming_marks_web_search_from_annotation(
     del economy_isolated_db
     message = FakeMessage()
 
-    await ResponseStreamer(
-        message=message,
+    await ResponseStreamer(message=message).stream(
         responses=_stream_events_from(
             events=[
                 SimpleNamespace(type="response.output_text.delta", delta="grounded answer"),
@@ -465,8 +510,8 @@ async def test_handle_streaming_marks_web_search_from_annotation(
                     ),
                 ),
             ]
-        ),
-    ).stream()
+        )
+    )
 
     assert message.added_reactions == ["🌐"]
 
@@ -646,12 +691,16 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     class FakeResponder:
         """Records the message handed to the streaming responder."""
 
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
+        def __init__(self, message: FakeMessage) -> None:
+            """Stores the streaming target message."""
             self.message = message
-            self.responses = responses
 
-        async def stream(self) -> str:
+        async def consume_turn(self, *, responses: object) -> list[object]:
+            """Reports no tool calls so the cog finalizes after one turn."""
+            del responses
+            return []
+
+        async def finalize(self) -> str:
             """Records the message and returns placeholder content."""
             streamed.append(self.message)
             return "done"
@@ -824,24 +873,28 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
-async def test_handle_message_reply_injects_memory_as_assistant_note_before_current(
+async def test_handle_message_reply_exposes_memory_tool_and_callable_users(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies stored memory rides as a role=assistant note before the current block."""
+    """Verifies the QA path offers get_user_memory + a callable-users block, not injection."""
     cog = _cog()
     write_main_memory(
         user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
     )
 
     class FakeResponder:
-        """Returns a fixed completed reply."""
+        """Returns a fixed completed reply without making tool calls."""
 
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
+        def __init__(self, message: FakeMessage) -> None:
+            """Stores the streaming target message."""
             self.message = message
-            self.responses = responses
 
-        async def stream(self) -> str:
+        async def consume_turn(self, *, responses: object) -> list[object]:
+            """Reports no tool calls so the cog finalizes after one turn."""
+            del responses
+            return []
+
+        async def finalize(self) -> str:
             """Returns placeholder reply content."""
             return "完整回覆"
 
@@ -865,29 +918,28 @@ async def test_handle_message_reply_injects_memory_as_assistant_note_before_curr
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
-    # Top-level instructions must stay the clean developer-controlled persona.
-    instructions = cog.client.responses.create_instructions[-1]
-    assert instructions == "SYS"
-    assert "喜歡簡短回覆" not in instructions
-
-    # Memory rides right before the current-message block as a lowest-authority
-    # role=assistant self-note with string content; never trailing, because a
-    # trailing assistant message is Claude prefill semantics through LiteLLM.
+    # Instructions stay the clean persona; stored memory is never injected anymore.
+    assert cog.client.responses.create_instructions[-1] == "SYS"
     llm_input = cog.client.responses.create_inputs[-1]
-    memory_item = llm_input[-3]
-    assert memory_item["role"] == "assistant"
-    memory_text = memory_item["content"]
-    assert isinstance(memory_text, str)
-    assert "喜歡簡短回覆" in memory_text
-    assert "Long-term memory" in memory_text
-    assert "Long-term memory" not in str(llm_input[-1])
+    assert "喜歡簡短回覆" not in str(llm_input)
+    assert "Long-term memory" not in str(llm_input)
 
-    # The extraction message_list must NOT contain the memory block (no self-feeding).
+    # The get_user_memory tool is offered alongside the model's built-in tools.
+    tool_names = [tool.get("name") for tool in cog.client.responses.create_tools[-1]]
+    assert "get_user_memory" in tool_names
+
+    # A role=system block lists the callable users (here just the author).
+    block_text = str(llm_input[-1])
+    assert "get_user_memory" in block_text
+    assert "[id: 1]" in block_text
+    assert "Tester (tester)" in block_text
+
+    # Extraction still scheduled for the author with a memory-free, tool-free list.
     scheduled_list = scheduled[0]["message_list"]
     assert isinstance(scheduled_list, list)
-    assert "Long-term memory" not in str(scheduled_list)
+    assert "get_user_memory" not in str(scheduled_list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
-    assert len(scheduled_list) == len(llm_input) - 1
+    assert scheduled[0]["user_id"] == 1
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
@@ -905,14 +957,18 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     cog = _cog()
 
     class FakeResponder:
-        """Returns a fixed completed reply."""
+        """Returns a fixed completed reply without making tool calls."""
 
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
+        def __init__(self, message: FakeMessage) -> None:
+            """Stores the streaming target message."""
             self.message = message
-            self.responses = responses
 
-        async def stream(self) -> str:
+        async def consume_turn(self, *, responses: object) -> list[object]:
+            """Reports no tool calls so the cog finalizes after one turn."""
+            del responses
+            return []
+
+        async def finalize(self) -> str:
             """Returns placeholder reply content."""
             return "回覆"
 
@@ -931,6 +987,10 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
     assert cog.client.responses.create_instructions[-1] == "SYS"
+    # The tool is still offered even with no stored memory; the model just declines.
+    assert "get_user_memory" in [
+        tool.get("name") for tool in cog.client.responses.create_tools[-1]
+    ]
     assert scheduled == [1]
 
 
@@ -944,14 +1004,18 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     )
 
     class FakeResponder:
-        """Returns a fixed completed reply."""
+        """Returns a fixed completed reply without making tool calls."""
 
-        def __init__(self, message: FakeMessage, responses: SimpleNamespace) -> None:
-            """Stores the streaming inputs."""
+        def __init__(self, message: FakeMessage) -> None:
+            """Stores the streaming target message."""
             self.message = message
-            self.responses = responses
 
-        async def stream(self) -> str:
+        async def consume_turn(self, *, responses: object) -> list[object]:
+            """Reports no tool calls so the cog finalizes after one turn."""
+            del responses
+            return []
+
+        async def finalize(self) -> str:
             """Returns placeholder reply content."""
             return "回覆"
 
@@ -971,7 +1035,10 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
         message=message, system_prompt="SYS", history_limit=2, memory_enabled=False
     )
 
+    # memory_enabled=False offers no memory tool and no callable-users block.
     assert "不該被注入" not in str(cog.client.responses.create_inputs[-1])
+    assert "get_user_memory" not in str(cog.client.responses.create_tools[-1])
+    assert "get_user_memory" not in str(cog.client.responses.create_inputs[-1])
     assert scheduled == []
 
 
@@ -997,3 +1064,130 @@ async def test_process_single_message_neutralizes_spoofed_identity(
     separator = current_messages[0]["content"]
     assert isinstance(separator, list)
     assert "[id: 1]" not in separator[0]["text"]
+
+
+def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() -> None:
+    """Authors and mentioned users are collected, deduped, and the bot is excluded."""
+    author = FakeAuthor(user_id=1)
+    mentioned = FakeAuthor(user_id=2)
+    mentioned.name = "alice"
+    mentioned.display_name = "Alice"
+    bot = FakeAuthor(user_id=999)
+
+    msg_with_mentions = FakeMessage(author=author)
+    msg_with_mentions.mentions = [mentioned, bot]
+    duplicate_author = FakeMessage(author=author)
+    bot_authored = FakeMessage(author=bot)
+
+    allowed = build_memory_allowlist(
+        messages=[msg_with_mentions, duplicate_author, bot_authored], bot_user_id=999
+    )
+
+    # Insertion order preserved, bot (999) excluded from both author and mention slots.
+    assert list(allowed.keys()) == [1, 2]
+    assert allowed[1] == "Tester (tester)"
+    assert allowed[2] == "Alice (alice)"
+
+
+def test_parse_user_id_list_handles_valid_and_malformed() -> None:
+    """Valid payloads parse to string ids; malformed payloads degrade to an empty list."""
+    assert parse_user_id_list(arguments='{"user_id_list": ["1", "2"]}') == ["1", "2"]
+    assert parse_user_id_list(arguments='{"user_id_list": [1, 2]}') == ["1", "2"]
+    assert parse_user_id_list(arguments="not json") == []
+    assert parse_user_id_list(arguments='{"other": 1}') == []
+    assert parse_user_id_list(arguments='{"user_id_list": "nope"}') == []
+
+
+def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
+    """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
+    del memory_isolated_dir
+    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n甲的記憶", identity="A (a) [id: 1]")
+    allowed = {1: "A (a)", 2: "B (b)"}
+
+    memories = resolve_user_memories(user_id_list=["1", "<@1>", "3", "abc", "2"], allowed=allowed)
+
+    by_id = {memory.user_id: memory for memory in memories}
+    assert set(by_id) == {"1", "2"}
+    assert "甲的記憶" in by_id["1"].memory
+    assert by_id["1"].username == "A (a)"
+    assert by_id["2"].memory == "(no stored memory for this user)"
+
+
+async def test_handle_message_reply_runs_memory_tool_then_answers(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model calls get_user_memory, the cog feeds memory back, and the next turn answers."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n喜歡被叫阿狗", identity="Tester (tester) [id: 1]"
+    )
+
+    captured: list[str] = []
+
+    def fake_schedule(
+        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
+    ) -> None:
+        """Captures the finalized reply handed to extraction."""
+        captured.append(full_reply)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="cid-1", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=10, output_tokens=20),
+        ],
+        [_text_event(delta="嗨 阿狗"), _completed_event(input_tokens=5, output_tokens=6)],
+    ]
+
+    message = FakeMessage(content="<@999> 我是誰", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # Two model turns: the tool turn and the answer turn.
+    assert cog.client.responses.create_streams == [True, True]
+
+    # The second turn's input carries the echoed call plus its resolved memory output.
+    second_input = cog.client.responses.create_inputs[1]
+    calls = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call"]
+    outputs = [
+        i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"
+    ]
+    assert calls
+    assert calls[-1]["call_id"] == "cid-1"
+    assert outputs
+    assert outputs[-1]["call_id"] == "cid-1"
+    assert "喜歡被叫阿狗" in outputs[-1]["output"]
+
+    # The visible reply is the answer turn's text with a summed-usage footer (10+5, 20+6).
+    assert (message.replies[0].content or "").startswith("嗨 阿狗")
+    assert "⬆ 15 ⬇ 26" in (message.replies[0].content or "")
+    assert captured[0].startswith("嗨 阿狗")
+
+
+async def test_handle_message_reply_skips_memory_when_model_declines(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single text-only turn reads no memory and runs exactly one model call."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n機密", identity="Tester (tester) [id: 1]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="直接回答"), _completed_event(input_tokens=3, output_tokens=4)]
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    assert cog.client.responses.create_streams == [True]
+    assert "function_call_output" not in str(cog.client.responses.create_inputs)
+    assert "機密" not in str(cog.client.responses.create_inputs)
+    assert (message.replies[0].content or "").startswith("直接回答")

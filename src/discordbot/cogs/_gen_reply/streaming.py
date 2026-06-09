@@ -5,7 +5,7 @@ import re
 from openai import AsyncStream
 from nextcord import Message
 from pydantic import BaseModel, ConfigDict, SkipValidation
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import ResponseStreamEvent, ResponseFunctionToolCall
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
@@ -22,17 +22,36 @@ DISCORD_MESSAGE_LIMIT = 2000
 
 
 class ResponseStreamer(BaseModel):
-    """Renders a streaming Responses API reply onto the originating message.
+    """Renders a (possibly multi-turn) streaming Responses API reply onto a message.
+
+    One instance spans the whole agentic reply: the cog calls `consume_turn` for each
+    Responses stream (re-calling the model after a `get_user_memory` tool turn) and
+    `finalize` once at the end. Display, usage, and the lazily-created Discord reply
+    accumulate across turns so intermediate tool-only turns add nothing visible.
 
     Attributes:
         message: The Discord message being answered and replied to.
-        responses: The streaming Responses API events to render.
+        stored_content: The reply text accumulated across all turns.
+        reply: The Discord reply message, created lazily on the first text delta.
+        displayed_content: The text last written to the Discord reply.
+        content_started: Whether the first non-newline text delta has been seen.
+        model_name: The model name reported by the latest turn, for the usage footer.
+        input_tokens: Input tokens summed across all turns.
+        output_tokens: Output tokens summed across all turns.
+        used_web_search: Whether any turn used a native web-search / grounding tool.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     message: SkipValidation[Message]
-    responses: SkipValidation[AsyncStream[ResponseStreamEvent]]
+    stored_content: str = ""
+    reply: SkipValidation[Message | None] = None
+    displayed_content: str = ""
+    content_started: bool = False
+    model_name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    used_web_search: bool = False
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -86,59 +105,69 @@ class ResponseStreamer(BaseModel):
             previous = await previous.reply(content=chunk)
         return reply
 
-    async def stream(self) -> str:  # noqa: C901 -- dispatches on multiple Responses API stream event types
-        """Renders the streamed reply and returns the full content with usage footer."""
-        stored_content = ""
-        counted_content = 0
-        reply: Message | None = None
-        displayed_content = ""
-        content_started = False
-        model_name = ""
-        input_tokens = 0
-        output_tokens = 0
-        used_web_search = False
+    async def consume_turn(  # noqa: C901 -- dispatches on multiple Responses API stream event types
+        self, *, responses: AsyncStream[ResponseStreamEvent]
+    ) -> list[ResponseFunctionToolCall]:
+        """Streams one turn into the accumulated state and returns its tool calls.
 
-        async for response in self.responses:
+        Text deltas extend the persistent reply, usage is summed onto the instance,
+        and any `get_user_memory` function calls are returned so the cog can resolve
+        them and re-call the model. An empty list means this was the final turn.
+        """
+        function_calls: list[ResponseFunctionToolCall] = []
+        counted_content = 0
+
+        async for response in responses:
             if response.type in {"response.created", "response.completed"}:
                 # Capture the model on `created` too so the usage footer never
                 # falls back to an empty model name (and $0.00000000) when a
                 # stream ends without a clean `completed` event. Usage only
-                # arrives on `completed`.
-                model_name = response.response.model
+                # arrives on `completed`, and is summed across turns.
+                self.model_name = response.response.model
                 if response.response.usage:
-                    input_tokens = response.response.usage.input_tokens
-                    output_tokens = response.response.usage.output_tokens
+                    self.input_tokens += response.response.usage.input_tokens
+                    self.output_tokens += response.response.usage.output_tokens
             elif response.type in {
                 "response.web_search_call.in_progress",
                 "response.web_search_call.searching",
                 "response.web_search_call.completed",
                 "response.output_text.annotation.added",
             }:
-                used_web_search = True
+                self.used_web_search = True
             elif response.type == "response.output_text.delta":
                 delta = response.delta
-                if not content_started:
+                if not self.content_started:
                     delta = delta.lstrip("\n")
                     if not delta:
                         continue
-                    content_started = True
-                stored_content += delta
+                    self.content_started = True
+                self.stored_content += delta
                 counted_content += len(delta)
 
                 if counted_content >= 30:
-                    reply, displayed_content = await self._write_preview(
-                        reply=reply, content=stored_content, displayed_content=displayed_content
+                    self.reply, self.displayed_content = await self._write_preview(
+                        reply=self.reply,
+                        content=self.stored_content,
+                        displayed_content=self.displayed_content,
                     )
                     counted_content = 0
+            elif response.type == "response.output_item.done":
+                item = response.item
+                if item.type == "function_call" and item.name == "get_user_memory":
+                    function_calls.append(item)
 
-        input_rate, output_rate = get_token_rates(model_name=model_name)
-        cost = input_rate * input_tokens + output_rate * output_tokens
+        return function_calls
+
+    async def finalize(self) -> str:
+        """Writes the reward footer and final reply once all turns are consumed."""
+        input_rate, output_rate = get_token_rates(model_name=self.model_name)
+        cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         # Award chat points from token usage, divided down and capped per reply so a
         # single long (e.g. web-search) reply cannot mint a huge balance. We await this
         # (rather than fire-and-forget) so the resulting balance can land in the footer.
         # On DB failure, it returns None and the footer falls back to the delta-only format.
-        total_tokens = input_tokens + output_tokens
+        total_tokens = self.input_tokens + self.output_tokens
         reward = min(total_tokens // CHAT_REWARD_TOKEN_DIVISOR, CHAT_REWARD_MAX_PER_REPLY)
         avatar_url = await guild_avatar_url(
             user=self.message.author, guild=getattr(self.message, "guild", None)
@@ -150,19 +179,24 @@ class ResponseStreamer(BaseModel):
             amount=reward,
         )
 
-        stored_content = CODED_MENTION_RE.sub(r"\1", stored_content)
+        self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
         if result.new_balance is not None:
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=reward, signed=True, compact=True)
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
-        usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
+        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}"
 
         # Final update to ensure complete message is displayed.
-        await self._finalize(reply=reply, content=stored_content, footer=usage_footer)
-        stored_content += usage_footer
+        await self._finalize(reply=self.reply, content=self.stored_content, footer=usage_footer)
+        self.stored_content += usage_footer
 
-        if used_web_search:
+        if self.used_web_search:
             await update_reaction(message=self.message, bot_user=None, emoji="🌐")
 
-        return stored_content
+        return self.stored_content
+
+    async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
+        """Consumes a single-turn stream and finalizes; convenience for tool-free paths."""
+        await self.consume_turn(responses=responses)
+        return await self.finalize()
