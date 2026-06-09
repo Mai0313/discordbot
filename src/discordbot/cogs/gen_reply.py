@@ -32,9 +32,9 @@ from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._memory.retrieval import (
     READ_USER_MEMORY_TOOL_NAME,
     build_read_user_memory_tool,
+    has_stored_memory_candidate,
     build_memory_tool_candidates,
     execute_read_user_memory_tool_call,
-    has_stored_memory_candidate,
 )
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,

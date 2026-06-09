@@ -5,7 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 from datetime import UTC, datetime
 
 from PIL import Image
@@ -415,9 +415,7 @@ async def test_handle_streaming_excludes_prior_usage_from_chat_reward(
     del economy_isolated_db
     message = FakeMessage()
     prior_usage = ResponseUsageSummary(
-        model_name=TEST_LLM_MODEL,
-        input_tokens=3_000,
-        output_tokens=3_000,
+        model_name=TEST_LLM_MODEL, input_tokens=3_000, output_tokens=3_000
     )
     events = [
         SimpleNamespace(type="response.output_text.delta", delta="hi"),
@@ -425,15 +423,15 @@ async def test_handle_streaming_excludes_prior_usage_from_chat_reward(
             type="response.completed",
             response=SimpleNamespace(
                 model=TEST_LLM_MODEL,
-                usage=SimpleNamespace(input_tokens=10, output_tokens=10, output_tokens_details=None),
+                usage=SimpleNamespace(
+                    input_tokens=10, output_tokens=10, output_tokens_details=None
+                ),
             ),
         ),
     ]
 
     result = await ResponseStreamer(
-        message=message,
-        responses=_stream_events_from(events=events),
-        prior_usage=prior_usage,
+        message=message, responses=_stream_events_from(events=events), prior_usage=prior_usage
     ).stream()
 
     assert "⬆ 3,010 ⬇ 3,010" in result
