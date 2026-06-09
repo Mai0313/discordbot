@@ -92,13 +92,9 @@ def build_memory_allowlist(*, messages: list[Message], bot_user_id: int) -> dict
 def render_callable_users_block(*, allowed: dict[int, str]) -> EasyInputMessageParam:
     """Renders the callable-users context as a role=system separator block."""
     lines = "\n".join(f"[id: {user_id}] {label}" for user_id, label in allowed.items())
-    text = (
-        "==== Users whose long-term memory you may look up via get_user_memory ====\n"
-        f"{lines}"
-    )
+    text = f"==== Users whose long-term memory you may look up via get_user_memory ====\n{lines}"
     return EasyInputMessageParam(
-        role="system",
-        content=[ResponseInputTextParam(text=text, type="input_text")],
+        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
 
 
@@ -117,9 +113,7 @@ def parse_user_id_list(*, arguments: str) -> list[str]:
     return [str(item) for item in raw]
 
 
-def resolve_user_memories(
-    *, user_id_list: list[str], allowed: dict[int, str]
-) -> list[UserMemory]:
+def resolve_user_memories(*, user_id_list: list[str], allowed: dict[int, str]) -> list[UserMemory]:
     """Resolves requested ids to stored memory, enforcing the allowlist.
 
     Ids outside `allowed` are dropped (the permission boundary), non-numeric ids
