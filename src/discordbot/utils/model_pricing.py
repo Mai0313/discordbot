@@ -8,10 +8,8 @@ on first use and memoizes it for the rest of the process. Returns
 """
 
 from functools import cache
-from collections.abc import Mapping
 
-import logfire
-from pydantic import Field, BaseModel, ConfigDict, ValidationError
+from pydantic import Field, BaseModel, ConfigDict
 import requests
 
 MODEL_INFO_URL = (
@@ -32,24 +30,16 @@ class ModelPriceEntry(BaseModel):
 @cache
 def load_model_info() -> dict[str, ModelPriceEntry]:
     """Returns the validated LiteLLM model info table, fetched once per process."""
-    try:
-        response = requests.get(url=MODEL_INFO_URL, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        logfire.warn(f"Skipping model price fetch: {exc!s}")
-        return {}
+    response = requests.get(url=MODEL_INFO_URL, timeout=5)
+    response.raise_for_status()
+    data = response.json()
 
     prices: dict[str, ModelPriceEntry] = {}
     if not isinstance(data, dict):
         return prices
 
     for name, entry in data.items():
-        try:
-            # Pydantic can handle passing this as dict since we converted data to json.
-            prices[name] = ModelPriceEntry(**entry)
-        except ValidationError as exc:
-            logfire.warn(f"Skipping malformed model price entry {name}: {exc!s}")
+        prices[name] = ModelPriceEntry(**entry)
     return prices
 
 
