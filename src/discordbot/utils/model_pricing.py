@@ -7,6 +7,7 @@ on first use and memoizes it for the rest of the process. Returns
 `$0.00000000` instead of an estimate.
 """
 
+from typing import Any
 from functools import cache
 
 from pydantic import Field, BaseModel, ConfigDict
@@ -30,15 +31,12 @@ class ModelPriceEntry(BaseModel):
 @cache
 def load_model_info() -> dict[str, ModelPriceEntry]:
     """Returns the validated LiteLLM model info table, fetched once per process."""
+    prices: dict[str, ModelPriceEntry] = {}
     response = requests.get(url=MODEL_INFO_URL, timeout=5)
     response.raise_for_status()
-    data = response.json()
+    data_dict: dict[str, dict[str, Any]] = response.json()
 
-    prices: dict[str, ModelPriceEntry] = {}
-    if not isinstance(data, dict):
-        return prices
-
-    for name, entry in data.items():
+    for name, entry in data_dict.items():
         prices[name] = ModelPriceEntry(**entry)
     return prices
 
