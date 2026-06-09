@@ -168,6 +168,11 @@ def allowed_user_ids(candidates: Collection[MemoryToolCandidate]) -> set[int]:
     return {candidate.user_id for candidate in candidates}
 
 
+def has_stored_memory_candidate(candidates: Collection[MemoryToolCandidate]) -> bool:
+    """Returns whether any allowed user currently has consolidated memory."""
+    return any(read_main_memory(user_id=candidate.user_id) for candidate in candidates)
+
+
 def _input_message_text(message: EasyInputMessageParam) -> str:
     """Extracts text parts from one Responses API input message."""
     content = message["content"]
@@ -192,5 +197,6 @@ __all__ = [
     "build_memory_tool_candidates",
     "build_read_user_memory_tool",
     "execute_read_user_memory_tool_call",
+    "has_stored_memory_candidate",
     "render_retrieved_memory",
 ]

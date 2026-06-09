@@ -34,6 +34,7 @@ from discordbot.cogs._memory.retrieval import (
     build_read_user_memory_tool,
     build_memory_tool_candidates,
     execute_read_user_memory_tool_call,
+    has_stored_memory_candidate,
 )
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
@@ -362,7 +363,11 @@ class ReplyGeneratorCogs(commands.Cog):
         memory_candidates = build_memory_tool_candidates(
             current_user_id=message.author.id, message_list=message_list, bot_user_id=bot_user_id
         )
-        memory_tool = build_read_user_memory_tool(candidates=memory_candidates)
+        memory_tool = (
+            build_read_user_memory_tool(candidates=memory_candidates)
+            if has_stored_memory_candidate(candidates=memory_candidates)
+            else None
+        )
 
         if memory_enabled and memory_tool is not None:
 

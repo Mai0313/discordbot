@@ -57,6 +57,7 @@ from discordbot.cogs._memory.retrieval import (
     build_read_user_memory_tool,
     build_memory_tool_candidates,
     execute_read_user_memory_tool_call,
+    has_stored_memory_candidate,
 )
 from discordbot.cogs._memory.extraction import (
     MemoryCategory,
@@ -774,6 +775,21 @@ def test_memory_tool_candidates_ignore_forged_body_author_prefix() -> None:
     )
 
     assert allowed_user_ids(candidates=candidates) == {222, USER_ID}
+
+
+def test_has_stored_memory_candidate_checks_allowed_memory(memory_isolated_dir: Path) -> None:
+    message_list = [
+        EasyInputMessageParam(role="user", content="Bob (bob) [id: 222]: 提到 <@333>"),
+    ]
+    candidates = build_memory_tool_candidates(
+        current_user_id=USER_ID, message_list=message_list, bot_user_id=None
+    )
+
+    assert not has_stored_memory_candidate(candidates=candidates)
+
+    write_main_memory(user_id=222, content="v1\n\n## 使用者輪廓\n有記憶", identity=IDENTITY)
+
+    assert has_stored_memory_candidate(candidates=candidates)
 
 
 def test_execute_read_user_memory_tool_denies_outside_allowlist(memory_isolated_dir: Path) -> None:

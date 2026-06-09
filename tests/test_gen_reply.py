@@ -977,20 +977,13 @@ async def test_handle_message_reply_exposes_memory_tool_without_auto_injection(
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies a memory-less user gets untouched instructions but still schedules."""
+    """Verifies a memory-less user skips the hidden memory tool loop but still schedules."""
+    del economy_isolated_db
     cog = _cog()
 
     scheduled: list[int] = []
-    streamed: list[FakeMessage] = []
-    tool_loop_kwargs: list[dict[str, object]] = []
-
-    async def fake_tool_loop(**kwargs: object) -> str:
-        """Records the tool-loop call and returns placeholder reply content."""
-        streamed.append(cast("FakeMessage", kwargs["message"]))
-        tool_loop_kwargs.append(kwargs)
-        return "回覆"
 
     def fake_schedule(
         user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
@@ -998,14 +991,16 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         """Records that a memory update was scheduled."""
         scheduled.append(user_id)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.stream_response_with_tool_loop", fake_tool_loop)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
-    assert streamed == [message]
-    assert tool_loop_kwargs[0]["instructions"] == "SYS"
+    assert cog.client.responses.create_instructions == ["SYS"]
+    assert "Long-term memory" not in str(cog.client.responses.create_inputs[-1])
+    direct_tools = cog.client.responses.create_tools[-1]
+    assert direct_tools is not None
+    assert all(tool.get("name") != READ_USER_MEMORY_TOOL_NAME for tool in direct_tools)
     assert scheduled == [1]
 
 
