@@ -37,10 +37,12 @@ class ResponseUsageSummary(BaseModel):
     model_name: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    reward_input_tokens: int = 0
+    reward_output_tokens: int = 0
     cost: float = 0.0
     used_web_search: bool = False
 
-    def add_response(self, response: Response) -> None:
+    def add_response(self, response: Response, count_reward_tokens: bool = True) -> None:
         """Accumulates usage from one completed Responses API response."""
         self.model_name = response.model or self.model_name
         if response.usage is None:
@@ -50,6 +52,9 @@ class ResponseUsageSummary(BaseModel):
         input_rate, output_rate = get_token_rates(model_name=response.model)
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
+        if count_reward_tokens:
+            self.reward_input_tokens += input_tokens
+            self.reward_output_tokens += output_tokens
         self.cost += input_rate * input_tokens + output_rate * output_tokens
 
     def merge(self, other: "ResponseUsageSummary") -> None:
@@ -57,6 +62,8 @@ class ResponseUsageSummary(BaseModel):
         self.model_name = other.model_name or self.model_name
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.reward_input_tokens += other.reward_input_tokens
+        self.reward_output_tokens += other.reward_output_tokens
         self.cost += other.cost
         self.used_web_search = self.used_web_search or other.used_web_search
 
@@ -164,7 +171,7 @@ class ResponseStreamer(BaseModel):
 
     async def _usage_footer(self, usage: ResponseUsageSummary) -> str:
         """Credits chat reward and formats the usage footer."""
-        total_tokens = usage.input_tokens + usage.output_tokens
+        total_tokens = usage.reward_input_tokens + usage.reward_output_tokens
         reward = min(total_tokens // CHAT_REWARD_TOKEN_DIVISOR, CHAT_REWARD_MAX_PER_REPLY)
         avatar_url = await guild_avatar_url(
             user=self.message.author, guild=getattr(self.message, "guild", None)
@@ -248,7 +255,7 @@ async def collect_hidden_response_stream(
         if response.type == "response.created":
             result.usage.model_name = response.response.model or result.usage.model_name
         elif response.type == "response.completed":
-            result.usage.add_response(response=response.response)
+            result.usage.add_response(response=response.response, count_reward_tokens=False)
         elif response.type in {
             "response.web_search_call.in_progress",
             "response.web_search_call.searching",

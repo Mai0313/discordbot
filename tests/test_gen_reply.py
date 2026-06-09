@@ -17,7 +17,11 @@ from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModel
 from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._memory.retrieval import READ_USER_MEMORY_TOOL_NAME
-from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
+from discordbot.cogs._gen_reply.streaming import (
+    DISCORD_MESSAGE_LIMIT,
+    ResponseStreamer,
+    ResponseUsageSummary,
+)
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -402,6 +406,38 @@ async def test_handle_streaming_chat_reward_divided_and_capped(economy_isolated_
     # 6,000 tokens // 100 = 60, capped at 50; the footer shows the credited amount.
     assert "⬆ 3,000 ⬇ 3,000" in result
     assert "· 50 虛擬歡樂豆 (+50 虛擬歡樂豆)" in result
+
+
+async def test_handle_streaming_excludes_prior_usage_from_chat_reward(
+    economy_isolated_db: None,
+) -> None:
+    """Hidden tool-loop tokens are billed but do not increase the chat reward."""
+    del economy_isolated_db
+    message = FakeMessage()
+    prior_usage = ResponseUsageSummary(
+        model_name=TEST_LLM_MODEL,
+        input_tokens=3_000,
+        output_tokens=3_000,
+    )
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(
+                model=TEST_LLM_MODEL,
+                usage=SimpleNamespace(input_tokens=10, output_tokens=10, output_tokens_details=None),
+            ),
+        ),
+    ]
+
+    result = await ResponseStreamer(
+        message=message,
+        responses=_stream_events_from(events=events),
+        prior_usage=prior_usage,
+    ).stream()
+
+    assert "⬆ 3,010 ⬇ 3,010" in result
+    assert "· 0 虛擬歡樂豆 (0 虛擬歡樂豆)" in result
 
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain(
