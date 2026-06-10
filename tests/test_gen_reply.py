@@ -12,7 +12,7 @@ from PIL import Image
 import pytest
 from nextcord import File, Embed
 
-from discordbot.cogs.gen_reply import ReplyGeneratorCogs
+from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.cogs._memory.store import write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
@@ -26,6 +26,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
 )
 
 TEST_LLM_MODEL = "test-llm-model"
+FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -101,6 +102,7 @@ class FakeMessage:
         self.channel = SimpleNamespace(history=self._history)
         self.mentions: list[FakeAuthor] = []
         self.id = 987
+        self.created_at = FAKE_MESSAGE_CREATED_AT
         self.system_content = ""
         self.added_reactions: list[str] = []
         self.removed_reactions: list[tuple[str, FakeAuthor]] = []
@@ -325,6 +327,23 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
     return cog
+
+
+def _assert_runtime_time_context(instructions: str, system_prompt: str) -> None:
+    """Verifies that per-request time context wraps the base instructions."""
+    assert instructions.startswith("Current request time:")
+    assert "* Treat `message_created_at_asia_taipei` as now for this reply." in instructions
+    assert "* `message_created_at_asia_taipei`: 2026-06-10T11:04:05+08:00" in instructions
+    assert instructions.endswith(system_prompt)
+
+
+def test_build_runtime_instructions_adds_request_time_context() -> None:
+    """Request time context uses Discord's message creation timestamp."""
+    message = FakeMessage(content="hi")
+
+    instructions = _build_runtime_instructions(system_prompt="SYS", message=message)
+
+    _assert_runtime_time_context(instructions=instructions, system_prompt="SYS")
 
 
 async def _stream_events() -> AsyncIterator[SimpleNamespace]:
@@ -943,7 +962,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     # Answer request keeps the built-in tools (no get_user_memory) and the clean persona.
     answer_tools = [tool.get("name") for tool in cog.client.responses.create_tools[1]]
     assert "get_user_memory" not in answer_tools
-    assert cog.client.responses.create_instructions[1] == "SYS"
+    _assert_runtime_time_context(
+        instructions=cog.client.responses.create_instructions[1], system_prompt="SYS"
+    )
     assert "喜歡簡短回覆" not in str(cog.client.responses.create_inputs[1])
 
     # Extraction still scheduled for the author with a memory-free, tool-free list.
@@ -1004,7 +1025,9 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     # The selection phase still offers the tool even when nobody has stored memory; the
     # answer phase keeps the clean persona and the built-in tools.
     assert "get_user_memory" in [tool.get("name") for tool in cog.client.responses.create_tools[0]]
-    assert cog.client.responses.create_instructions[-1] == "SYS"
+    _assert_runtime_time_context(
+        instructions=cog.client.responses.create_instructions[-1], system_prompt="SYS"
+    )
     assert "get_user_memory" not in [
         tool.get("name") for tool in cog.client.responses.create_tools[-1]
     ]

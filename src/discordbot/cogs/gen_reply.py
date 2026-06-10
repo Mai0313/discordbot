@@ -21,6 +21,7 @@ from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
+from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
@@ -35,6 +36,7 @@ from discordbot.cogs._gen_reply.prompts import (
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
     MEMORY_SELECT_PROMPT,
+    REQUEST_TIME_CONTEXT_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
@@ -63,6 +65,15 @@ _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 def _message_has_url(content: str) -> bool:
     """Returns whether the current message carries an explicit URL."""
     return _MESSAGE_URL_RE.search(string=content) is not None
+
+
+def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
+    """Prepends per-request time context to the model instructions."""
+    message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
+    request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
+        message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
+    ).strip()
+    return f"{request_time_context}\n\n{system_prompt}"
 
 
 async def _no_participant_messages() -> list[Message]:
@@ -524,7 +535,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         responses = await self.client.responses.create(
             model=slow_model.name,
-            instructions=system_prompt,
+            instructions=_build_runtime_instructions(system_prompt=system_prompt, message=message),
             input=answer_input,
             reasoning=slow_model.reasoning,
             tools=list(slow_model.tools),

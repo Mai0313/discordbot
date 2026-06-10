@@ -32,6 +32,12 @@ COMMON_PROMPT = """
     * Never invent user IDs — only use ones that actually appeared in the conversation context.
 """
 
+REQUEST_TIME_CONTEXT_PROMPT = """
+Current request time:
+* Treat `message_created_at_asia_taipei` as now for this reply.
+* `message_created_at_asia_taipei`: {message_created_at_asia_taipei}
+"""
+
 REPLY_PROMPT = f"""
 {PERSONA_CHOICES}
 * Your response should be clear, and you should try to provide a straight answer.
