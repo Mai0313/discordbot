@@ -18,6 +18,7 @@ from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
+    user_scope,
     read_detail_tail,
     read_main_memory,
     read_raw_entries,
@@ -50,16 +51,17 @@ def _resolve_user_ids(folder: Path) -> list[int]:
 
 def _preview_one(user_id: int) -> None:
     """Prints privacy-preserving memory evidence statistics for one user."""
-    main_text = read_main_memory(user_id=user_id)
-    raw_text = read_raw_entries(user_id=user_id)
-    detail_text = read_detail_tail(user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+    scope = user_scope(user_id=user_id)
+    main_text = read_main_memory(scope=scope)
+    raw_text = read_raw_entries(scope=scope)
+    detail_text = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
     raw_keys = observation_keys_from_text(text=raw_text)
     detail_keys = observation_keys_from_text(text=detail_text)
     duplicate_keys = raw_keys & detail_keys
     console.print(
         f"[cyan]{user_id}: dry-run[/cyan] "
         f"main_chars={len(main_text)} "
-        f"raw_entries={count_raw_entries(user_id=user_id)} "
+        f"raw_entries={count_raw_entries(scope=scope)} "
         f"raw_keys={len(raw_keys)} detail_keys={len(detail_keys)} "
         f"duplicate_keys={len(duplicate_keys)}"
     )
@@ -72,11 +74,10 @@ async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
         extractor: Memory extractor whose consolidate model performs the rewrite.
         user_id: Discord user id whose memory directory is rebuilt.
     """
-    identity = read_main_identity(user_id=user_id) or f"[id: {user_id}]"
+    scope = user_scope(user_id=user_id)
+    identity = read_main_identity(scope=scope) or f"[id: {user_id}]"
     try:
-        result = await regenerate_main_memory(
-            user_id=user_id, extractor=extractor, identity=identity
-        )
+        result = await regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
     except Exception as error:
         console.print(f"[red]{user_id}: error ({error})[/red]")
         return

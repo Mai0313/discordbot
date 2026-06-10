@@ -33,8 +33,8 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     """Per-test memory directory with reset process-local memory state."""
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
-    monkeypatch.setattr("discordbot.cogs._memory.store._user_locks", {})
-    monkeypatch.setattr("discordbot.cogs._memory.store._user_locks_loop", None)
+    monkeypatch.setattr("discordbot.cogs._memory.store._scope_locks", {})
+    monkeypatch.setattr("discordbot.cogs._memory.store._scope_locks_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})

@@ -19,7 +19,9 @@ from discordbot.cogs._memory import pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
     clear_raw,
-    user_lock,
+    scope_lock,
+    user_scope,
+    clear_memory,
     mark_cleared,
     append_detail,
     cleared_since,
@@ -28,7 +30,6 @@ from discordbot.cogs._memory.store import (
     read_detail_tail,
     read_main_memory,
     read_raw_entries,
-    clear_user_memory,
     count_raw_entries,
     write_main_memory,
     read_main_identity,
@@ -73,6 +74,8 @@ if TYPE_CHECKING:
     from nextcord.ext import commands
 
 USER_ID = 123456789
+
+USER_SCOPE = user_scope(user_id=USER_ID)
 
 IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
@@ -188,14 +191,14 @@ def _parsed(output: BaseModel | None) -> SimpleNamespace:
 
 
 def test_read_main_memory_missing_file_returns_empty(memory_isolated_dir: Path) -> None:
-    assert read_main_memory(user_id=USER_ID) == ""
+    assert read_main_memory(scope=USER_SCOPE) == ""
 
 
 def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> None:
     write_main_memory(
-        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n測試內容\n", identity=IDENTITY
+        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n測試內容\n", identity=IDENTITY
     )
-    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n測試內容"
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n測試內容"
     leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
     assert leftovers == []
 
@@ -203,25 +206,25 @@ def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> No
 def test_write_main_memory_keeps_oversized_content_intact(memory_isolated_dir: Path) -> None:
     # No code-side clamp: growth is bounded by the LLM compaction pass.
     content = "v1\n\n## 使用者輪廓\n" + "長" * 50_000
-    write_main_memory(user_id=USER_ID, content=content, identity=IDENTITY)
-    assert len(read_main_memory(user_id=USER_ID)) == len(content)
+    write_main_memory(scope=USER_SCOPE, content=content, identity=IDENTITY)
+    assert len(read_main_memory(scope=USER_SCOPE)) == len(content)
 
 
 def test_write_main_memory_stamps_identity_on_disk(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
     on_disk = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
     assert on_disk.startswith(f"v1\n{IDENTITY}\n\n")
     # Every read path strips the identity metadata line back out.
-    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n內容"
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n內容"
 
 
 def test_write_main_memory_backs_up_previous_generation(memory_isolated_dir: Path) -> None:
     bak_path = memory_isolated_dir / str(USER_ID) / "main.bak.md"
-    write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n第一版", identity=IDENTITY)
     assert not bak_path.exists()
-    write_main_memory(user_id=USER_ID, content="v1\n\n第二版", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n第二版", identity=IDENTITY)
     assert "第一版" in bak_path.read_text(encoding="utf-8")
-    assert "第二版" in read_main_memory(user_id=USER_ID)
+    assert "第二版" in read_main_memory(scope=USER_SCOPE)
 
 
 def test_read_main_memory_keeps_identity_lookalike_body_lines(memory_isolated_dir: Path) -> None:
@@ -230,14 +233,14 @@ def test_read_main_memory_keeps_identity_lookalike_body_lines(memory_isolated_di
     hand_edited = "v1\n\n## 穩定事實\n* 使用者提過 Alice (alice) [id: 1] 是朋友\n"
     (user_dir / "main.md").write_text(data=hand_edited, encoding="utf-8")
     # Without the store-written identity line, the strip must be a no-op.
-    assert "[id: 1] 是朋友" in read_main_memory(user_id=USER_ID)
+    assert "[id: 1] 是朋友" in read_main_memory(scope=USER_SCOPE)
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    append_raw_entry(user_id=USER_ID, entry_text="穩定事實:\n- 慣用繁體中文")
-    assert count_raw_entries(user_id=USER_ID) == 2
-    raw_text = read_raw_entries(user_id=USER_ID)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    append_raw_entry(scope=USER_SCOPE, entry_text="穩定事實:\n- 慣用繁體中文")
+    assert count_raw_entries(scope=USER_SCOPE) == 2
+    raw_text = read_raw_entries(scope=USER_SCOPE)
     assert raw_text.startswith("## ")
     assert "喜歡簡短回覆" in raw_text
     assert "慣用繁體中文" in raw_text
@@ -246,7 +249,7 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
 def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> None:
     # Raw entries flow verbatim into the detail file, so author identity stays
     # confined to the main file and headers carry only the timestamp.
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短")
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
     on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
     header = on_disk.splitlines()[0]
     assert header.startswith("## ")
@@ -258,13 +261,13 @@ def test_read_raw_entries_strips_legacy_identity_suffix(memory_isolated_dir: Pat
     user_dir.mkdir(parents=True, exist_ok=True)
     legacy = f"## 2026-06-05T02:23:02+00:00 | {IDENTITY}\n偏好訊號:\n- 喜歡簡短\n"
     (user_dir / "raw.md").write_text(data=legacy, encoding="utf-8")
-    raw_text = read_raw_entries(user_id=USER_ID)
+    raw_text = read_raw_entries(scope=USER_SCOPE)
     # A raw file written before the suffix removal must not leak author
     # identity into the consolidation input.
     assert IDENTITY not in raw_text
     assert raw_text.splitlines()[0].startswith("## ")
     assert "喜歡簡短" in raw_text
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 def test_render_author_identity_is_single_line_and_sanitized() -> None:
@@ -280,12 +283,12 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 280)
-    append_raw_entry(user_id=USER_ID, entry_text="first entry " + "a" * 100)
-    append_raw_entry(user_id=USER_ID, entry_text="second entry " + "b" * 100)
-    raw_text = read_raw_entries(user_id=USER_ID)
+    append_raw_entry(scope=USER_SCOPE, entry_text="first entry " + "a" * 100)
+    append_raw_entry(scope=USER_SCOPE, entry_text="second entry " + "b" * 100)
+    raw_text = read_raw_entries(scope=USER_SCOPE)
     assert "first entry" not in raw_text
     assert "second entry" in raw_text
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert count_raw_entries(scope=USER_SCOPE) == 1
     # The evicted entry is preserved in the detail file, without author identity.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "first entry" in detail_text
@@ -296,61 +299,61 @@ def test_append_raw_entry_truncates_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 80)
-    append_raw_entry(user_id=USER_ID, entry_text="oversized " + "c" * 200)
-    assert count_raw_entries(user_id=USER_ID) == 1
+    append_raw_entry(scope=USER_SCOPE, entry_text="oversized " + "c" * 200)
+    assert count_raw_entries(scope=USER_SCOPE) == 1
     # The lone entry cannot be evicted, so it is truncated to honor the cap.
-    assert raw_file_bytes(user_id=USER_ID) <= 80 + 1
+    assert raw_file_bytes(scope=USER_SCOPE) <= 80 + 1
 
 
 def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
-    assert raw_file_bytes(user_id=USER_ID) == 0
-    append_raw_entry(user_id=USER_ID, entry_text="something")
-    assert raw_file_bytes(user_id=USER_ID) > 0
+    assert raw_file_bytes(scope=USER_SCOPE) == 0
+    append_raw_entry(scope=USER_SCOPE, entry_text="something")
+    assert raw_file_bytes(scope=USER_SCOPE) > 0
 
 
 def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
-    clear_raw(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
-    assert read_main_memory(user_id=USER_ID) != ""
+    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
+    append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
+    clear_raw(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert read_main_memory(scope=USER_SCOPE) != ""
 
 
 def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n第一版", identity=IDENTITY)
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw entry")
-    append_detail(user_id=USER_ID, text="## 2026-01-01T00:00:00 | x\n舊證據")
-    assert clear_user_memory(user_id=USER_ID) is True
-    assert read_main_memory(user_id=USER_ID) == ""
-    assert count_raw_entries(user_id=USER_ID) == 0
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n第一版", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
+    append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
+    append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00 | x\n舊證據")
+    assert clear_memory(scope=USER_SCOPE) is True
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 0
     # main, raw, the backup generation, and the detail file are all gone, then
     # the empty per-user directory itself is removed.
     assert not (memory_isolated_dir / str(USER_ID)).exists()
-    assert clear_user_memory(user_id=USER_ID) is False
+    assert clear_memory(scope=USER_SCOPE) is False
 
 
 def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
     user_dir = memory_isolated_dir / str(USER_ID)
     (user_dir / "main.md.tmp").write_text(data="partial", encoding="utf-8")
-    assert clear_user_memory(user_id=USER_ID) is True
+    assert clear_memory(scope=USER_SCOPE) is True
     assert not user_dir.exists()
 
 
 def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
     started_at = time.monotonic()
-    assert cleared_since(user_id=USER_ID, started_at=started_at) is False
-    clear_user_memory(user_id=USER_ID)
-    assert cleared_since(user_id=USER_ID, started_at=started_at) is True
+    assert cleared_since(scope=USER_SCOPE, started_at=started_at) is False
+    clear_memory(scope=USER_SCOPE)
+    assert cleared_since(scope=USER_SCOPE, started_at=started_at) is True
     later = time.monotonic()
-    assert cleared_since(user_id=USER_ID, started_at=later) is False
+    assert cleared_since(scope=USER_SCOPE, started_at=later) is False
 
 
 async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
-    lock_a = user_lock(user_id=USER_ID)
-    lock_b = user_lock(user_id=USER_ID)
-    lock_other = user_lock(user_id=USER_ID + 1)
+    lock_a = scope_lock(scope=USER_SCOPE)
+    lock_b = scope_lock(scope=USER_SCOPE)
+    lock_other = scope_lock(scope=user_scope(user_id=USER_ID + 1))
     assert lock_a is lock_b
     assert lock_a is not lock_other
 
@@ -366,7 +369,9 @@ async def test_extract_returns_redacted_draft() -> None:
         "提到 token sk-aaaabbbbccccddddeeee 的事",
         normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
-    draft = await extractor.extract(target_user_id=USER_ID, transcript="some transcript")
+    draft = await extractor.extract(
+        subject=f"target_user_id: {USER_ID}", transcript="some transcript"
+    )
     assert draft is not None
     assert draft.has_signal is True
     assert "sk-aaaabbbbccccddddeeee" not in draft.memory_markdown
@@ -380,7 +385,7 @@ async def test_extract_returns_redacted_draft() -> None:
 async def test_extract_no_signal_passthrough() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     assert draft is not None
     assert draft.has_signal is False
     assert draft.memory_markdown == ""
@@ -421,7 +426,7 @@ async def test_extract_filters_weak_observations() -> None:
             ),
         ),
     )
-    draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     assert draft is not None
     assert draft.has_signal is True
     assert [observation.normalized_key for observation in draft.observations] == [
@@ -446,7 +451,7 @@ async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyP
         return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    draft = await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     assert draft is not None
     assert draft.has_signal is False
 
@@ -460,7 +465,7 @@ async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) 
         return _parsed(output=None)
 
     monkeypatch.setattr(fake_client.responses, "parse", hang)
-    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
 async def test_extract_returns_none_on_validation_error() -> None:
@@ -469,19 +474,19 @@ async def test_extract_returns_none_on_validation_error() -> None:
         RawMemoryDraft.model_validate({})
     except ValidationError as exc:
         fake_client.responses.raises = exc
-    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
 async def test_extract_returns_none_on_generic_failure() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.raises = RuntimeError("boom")
-    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
 async def test_extract_returns_none_on_empty_parse() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = None
-    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
 async def test_consolidate_marks_empty_existing_memory() -> None:
@@ -550,7 +555,7 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
         consolidate_model=ModelSettings(name="consolidate-model", effort="none"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
-    await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
         existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
@@ -749,7 +754,7 @@ def _user_message() -> list[EasyInputMessageParam]:
 
 async def _wait_for_inflight() -> None:
     """Awaits the scheduled background memory task for the test user."""
-    task = pipeline._inflight_tasks.get(USER_ID)
+    task = pipeline._inflight_tasks.get(USER_SCOPE)
     if task is not None:
         await task
 
@@ -758,30 +763,32 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert count_raw_entries(user_id=USER_ID) == 1
-    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert count_raw_entries(user_id=USER_ID) == 0
-    assert raw_file_bytes(user_id=USER_ID) == 0
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert raw_file_bytes(scope=USER_SCOPE) == 0
 
 
 async def test_pipeline_defers_and_replays_newest_update_in_flight(
@@ -811,37 +818,40 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="第一",
         extractor=extractor,
         identity=IDENTITY,
     )
     await started.wait()
-    first_task = pipeline._inflight_tasks[USER_ID]
+    first_task = pipeline._inflight_tasks[USER_SCOPE]
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="第二",
         extractor=extractor,
         identity=IDENTITY,
     )
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="第三",
         extractor=extractor,
         identity=IDENTITY,
     )
-    assert pipeline._inflight_tasks[USER_ID] is first_task
+    assert pipeline._inflight_tasks[USER_SCOPE] is first_task
     release.set()
     await first_task
     # Only the newest skipped turn is replayed; its history already covers the
     # earlier skipped one.
-    replay_task = pipeline._inflight_tasks.get(USER_ID)
+    replay_task = pipeline._inflight_tasks.get(USER_SCOPE)
     assert replay_task is not None
     await replay_task
-    assert count_raw_entries(user_id=USER_ID) == 2
+    assert count_raw_entries(scope=USER_SCOPE) == 2
     assert any("第三" in reply for reply in seen_replies)
     assert not any("第二" in reply for reply in seen_replies)
 
@@ -853,14 +863,15 @@ async def test_pipeline_consolidates_at_threshold(
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆一",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
     parsed_outputs = [
         _draft("第二筆", normalized_key="preference.second"),
@@ -872,16 +883,17 @@ async def test_pipeline_consolidates_at_threshold(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆二",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert read_main_memory(user_id=USER_ID).startswith("v1")
-    assert "合併後" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert read_main_memory(scope=USER_SCOPE).startswith("v1")
+    assert "合併後" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
     # The consumed raw batch lands in the detail file, without author identity.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "第一筆" in detail_text
@@ -905,15 +917,16 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert count_raw_entries(user_id=USER_ID) == 1
-    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
     # Failure paths keep raw for retry and must not retire it as consumed.
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
 
@@ -922,7 +935,7 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n既有內容", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n既有內容", identity=IDENTITY)
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -935,15 +948,16 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "既有內容" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert "既有內容" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
     # A genuine no-op still consumes the batch, so it lands in the detail file too.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "已知資訊" in detail_text
@@ -955,7 +969,7 @@ async def test_pipeline_compaction_triggers_past_main_size(
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 100)
     write_main_memory(
-        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n" + "長" * 200, identity=IDENTITY
+        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 200, identity=IDENTITY
     )
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
@@ -980,14 +994,15 @@ async def test_pipeline_compaction_triggers_past_main_size(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "壓縮後" in read_main_memory(user_id=USER_ID)
+    assert "壓縮後" in read_main_memory(scope=USER_SCOPE)
     # The oversized main file flips consolidation into compaction mode, and
     # the consolidation input is dated for the 近期脈絡 aging rules.
     assert "COMPACTION" in seen_instructions[1]
@@ -998,7 +1013,7 @@ async def test_pipeline_small_main_skips_compaction(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n小檔案", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n小檔案", identity=IDENTITY)
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
 
@@ -1013,7 +1028,8 @@ async def test_pipeline_small_main_skips_compaction(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
@@ -1037,17 +1053,18 @@ async def test_pipeline_aborts_write_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await parse_started.wait()
-    mark_cleared(user_id=USER_ID)
+    mark_cleared(scope=USER_SCOPE)
     release.set()
     await _wait_for_inflight()
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 async def test_pipeline_background_failure_is_swallowed(
@@ -1060,17 +1077,18 @@ async def test_pipeline_background_failure_is_swallowed(
 
     monkeypatch.setattr(fake_client.responses, "parse", exploding_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
-    task = pipeline._inflight_tasks.get(USER_ID)
+    task = pipeline._inflight_tasks.get(USER_SCOPE)
     assert task is not None
     await asyncio.wait([task])
-    assert pipeline._inflight_tasks.get(USER_ID) is None
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert pipeline._inflight_tasks.get(USER_SCOPE) is None
+    assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1101,7 +1119,7 @@ def _memory_cog() -> MemoryCogs:
 
 
 async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1116,7 +1134,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
 async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path) -> None:
     long_lines = "\n".join(f"* 記憶條目 {index} " + "內" * 80 for index in range(80))
     write_main_memory(
-        user_id=USER_ID, content=f"v1\n\n## 使用者輪廓\n{long_lines}", identity=IDENTITY
+        scope=USER_SCOPE, content=f"v1\n\n## 使用者輪廓\n{long_lines}", identity=IDENTITY
     )
     cog = _memory_cog()
     interaction = _interaction()
@@ -1144,30 +1162,6 @@ async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> No
     assert "還沒有任何記憶" in (embed.description or "")
 
 
-async def test_memory_clear_removes_files_and_reports(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\nmain", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="raw")
-    cog = _memory_cog()
-    interaction = _interaction()
-    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
-    embed = interaction.response.sent["embed"]
-    assert isinstance(embed, Embed)
-    assert "已清除" in (embed.description or "")
-    assert read_main_memory(user_id=USER_ID) == ""
-    assert count_raw_entries(user_id=USER_ID) == 0
-    started_at = 0.0
-    assert cleared_since(user_id=USER_ID, started_at=started_at) is True
-
-
-async def test_memory_clear_without_memory_reports_noop(memory_isolated_dir: Path) -> None:
-    cog = _memory_cog()
-    interaction = _interaction()
-    await MemoryCogs.memory_clear.callback(cog, cast("Interaction", interaction))
-    embed = interaction.response.sent["embed"]
-    assert isinstance(embed, Embed)
-    assert "無事發生" in (embed.description or "")
-
-
 # ---------------------------------------------------------------------------
 # Memory regeneration
 # ---------------------------------------------------------------------------
@@ -1179,27 +1173,27 @@ async def test_regenerate_main_memory_rebuilds_from_evidence_only(
     memory_isolated_dir: Path,
 ) -> None:
     extractor, fake_client = _extractor()
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
-    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.output_parsed = ConsolidatedMemory(
         changed=True, memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶"
     )
 
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "regenerated"
-    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n重建後的記憶"
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n重建後的記憶"
     # The previous main survives as the backup generation with its identity line.
     bak_text = (memory_isolated_dir / str(USER_ID) / "main.bak.md").read_text(encoding="utf-8")
     assert "舊的整理" in bak_text
     main_text = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
     assert IDENTITY in main_text
     # The consumed raw batch retires into the cold tier like a consolidation.
-    assert count_raw_entries(user_id=USER_ID) == 0
-    assert "喜歡簡短回覆" in read_detail_tail(user_id=USER_ID, max_chars=10_000)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert "喜歡簡短回覆" in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
     # Pure-evidence rebuild: empty existing memory, compaction always applied.
     assert "COMPACTION" in fake_client.responses.parse_instructions[-1]
     user_text = fake_client.responses.parse_inputs[-1][0]["content"]
@@ -1214,60 +1208,60 @@ async def test_regenerate_main_memory_without_evidence_skips_llm(
 ) -> None:
     extractor, fake_client = _extractor()
     # An existing main alone is not evidence: the rebuild never reads it.
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
 
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "no_evidence"
     assert fake_client.responses.parse_models == []
-    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n舊的整理"
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊的整理"
     # No LLM attempt happened, so the cooldown must stay untouched.
-    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is False
+    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
 async def test_regenerate_main_memory_failure_keeps_existing_state(
     memory_isolated_dir: Path,
 ) -> None:
     extractor, fake_client = _extractor()
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
-    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.raises = TimeoutError()
 
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "failed"
-    assert read_main_memory(user_id=USER_ID) == "v1\n\n## 使用者輪廓\n舊的整理"
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊的整理"
+    assert count_raw_entries(scope=USER_SCOPE) == 1
     # Attempt-time cooldown: repeated failures are rate-limited too.
-    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is True
+    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
 
 
 def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
-    pipeline._last_regeneration[USER_ID] = time.monotonic()
-    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is True
+    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
+    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
     # A clear wipes the memory the cooldown belonged to; the fresh post-clear
     # state deserves a prompt rebuild, mirroring the consolidation cooldown.
-    mark_cleared(user_id=USER_ID)
-    assert pipeline.regeneration_on_cooldown(user_id=USER_ID) is False
+    mark_cleared(scope=USER_SCOPE)
+    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
 async def test_regenerate_main_memory_recheck_cooldown_under_lock(
     memory_isolated_dir: Path,
 ) -> None:
     extractor, fake_client = _extractor()
-    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     # An invocation queued behind a held lock passes the command-level check
     # before the in-flight one stamps the attempt; the locked re-check is what
     # keeps the per-user limit on the expensive rewrite.
-    pipeline._last_regeneration[USER_ID] = time.monotonic()
+    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
 
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "cooldown"
@@ -1276,29 +1270,29 @@ async def test_regenerate_main_memory_recheck_cooldown_under_lock(
 
 async def test_regenerate_main_memory_rejects_malformed_rewrite(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
-    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.output_parsed = ConsolidatedMemory(
         changed=True, memory_markdown="沒有 v1 開頭的壞輸出"
     )
 
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "failed"
-    assert read_main_memory(user_id=USER_ID) == ""
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 async def test_regenerate_main_memory_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     extractor, fake_client = _extractor()
-    append_detail(user_id=USER_ID, text=DETAIL_EVIDENCE)
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
 
     async def clearing_parse(**kwargs: object) -> SimpleNamespace:
-        mark_cleared(user_id=USER_ID)
+        mark_cleared(scope=USER_SCOPE)
         return _parsed(
             output=ConsolidatedMemory(
                 changed=True, memory_markdown="v1\n\n## 使用者輪廓\n不該被寫入"
@@ -1307,17 +1301,17 @@ async def test_regenerate_main_memory_aborts_write_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
     result = await pipeline.regenerate_main_memory(
-        user_id=USER_ID, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "failed"
-    assert read_main_memory(user_id=USER_ID) == ""
+    assert read_main_memory(scope=USER_SCOPE) == ""
 
 
 def test_read_main_identity_returns_stored_line(memory_isolated_dir: Path) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
-    assert read_main_identity(user_id=USER_ID) == IDENTITY
-    assert read_main_identity(user_id=987654321) == ""
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
+    assert read_main_identity(scope=USER_SCOPE) == IDENTITY
+    assert read_main_identity(scope=user_scope(user_id=987654321)) == ""
 
 
 class RegenResponseStub(ResponseStub):
@@ -1369,8 +1363,8 @@ async def test_memory_regenerate_command_reports_each_outcome(
     cog = _memory_cog()
     calls: dict[str, object] = {}
 
-    async def fake_regen(user_id: int, extractor: object, identity: str) -> str:
-        calls["user_id"] = user_id
+    async def fake_regen(scope: str, extractor: object, identity: str) -> str:
+        calls["scope"] = scope
         calls["identity"] = identity
         return result
 
@@ -1384,13 +1378,13 @@ async def test_memory_regenerate_command_reports_each_outcome(
     embed = interaction.followup.sent["embed"]
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
-    assert calls["user_id"] == USER_ID
+    assert calls["scope"] == USER_SCOPE
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
 async def test_memory_regenerate_command_blocked_by_cooldown(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
-    pipeline._last_regeneration[USER_ID] = time.monotonic()
+    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
 
@@ -1504,8 +1498,9 @@ def test_memory_commands_have_localizations() -> None:
     for command in (
         MemoryCogs.memory,
         MemoryCogs.memory_show,
-        MemoryCogs.memory_clear,
         MemoryCogs.memory_regenerate,
+        MemoryCogs.memory_server,
+        MemoryCogs.memory_server_show,
     ):
         assert command.name_localizations is not None
         assert Locale.zh_TW in command.name_localizations
@@ -1539,21 +1534,22 @@ async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert read_main_memory(user_id=USER_ID) == ""
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 第一筆觀察")
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1567,8 +1563,8 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
 async def test_memory_show_strips_version_header_and_counts_pending(
     memory_isolated_dir: Path,
 ) -> None:
-    write_main_memory(user_id=USER_ID, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
-    append_raw_entry(user_id=USER_ID, entry_text="偏好訊號:\n- 新觀察")
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1582,7 +1578,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
 async def test_memory_show_does_not_corrupt_malformed_version_token(
     memory_isolated_dir: Path,
 ) -> None:
-    write_main_memory(user_id=USER_ID, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
@@ -1630,29 +1626,31 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
 
     monkeypatch.setattr(fake_client.responses, "parse", hang)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="一",
         extractor=extractor,
         identity=IDENTITY,
     )
     await started.wait()
-    task = pipeline._inflight_tasks[USER_ID]
+    task = pipeline._inflight_tasks[USER_SCOPE]
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="二",
         extractor=extractor,
         identity=IDENTITY,
     )
-    assert USER_ID in pipeline._pending_updates
+    assert USER_SCOPE in pipeline._pending_updates
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
     await asyncio.sleep(0)
     # The callback must not raise, must clear the slot, and must not replay.
-    assert pipeline._inflight_tasks.get(USER_ID) is None
-    assert USER_ID in pipeline._pending_updates
+    assert pipeline._inflight_tasks.get(USER_SCOPE) is None
+    assert USER_SCOPE in pipeline._pending_updates
 
 
 async def test_pipeline_drops_pending_replay_after_clear(
@@ -1673,7 +1671,8 @@ async def test_pipeline_drops_pending_replay_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="一",
         extractor=extractor,
@@ -1682,21 +1681,22 @@ async def test_pipeline_drops_pending_replay_after_clear(
     await first_started.wait()
     # Queue a pending replay, then clear before the in-flight task finishes.
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="二",
         extractor=extractor,
         identity=IDENTITY,
     )
-    assert USER_ID in pipeline._pending_updates
-    clear_user_memory(user_id=USER_ID)
+    assert USER_SCOPE in pipeline._pending_updates
+    clear_memory(scope=USER_SCOPE)
     release.set()
-    first_task = pipeline._inflight_tasks.get(USER_ID)
+    first_task = pipeline._inflight_tasks.get(USER_SCOPE)
     if first_task is not None:
         await first_task
     # The pre-clear pending turn must not be replayed back into storage.
-    assert pipeline._inflight_tasks.get(USER_ID) is None
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert pipeline._inflight_tasks.get(USER_SCOPE) is None
+    assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
@@ -1717,15 +1717,16 @@ async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "合併結果" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert "合併結果" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
@@ -1746,15 +1747,16 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert read_main_memory(user_id=USER_ID) == ""
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1763,13 +1765,13 @@ async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
 
 
 def test_read_detail_tail_missing_file_is_empty(memory_isolated_dir: Path) -> None:
-    assert read_detail_tail(user_id=USER_ID, max_chars=100) == ""
+    assert read_detail_tail(scope=USER_SCOPE, max_chars=100) == ""
 
 
 def test_append_detail_strips_legacy_identity_suffix(memory_isolated_dir: Path) -> None:
     # A raw file written before the suffix removal can still retire entries
     # into the detail file; the write chokepoint keeps identity out of it.
-    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊證據")
+    append_detail(scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊證據")
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert IDENTITY not in detail_text
     assert "舊證據" in detail_text
@@ -1782,14 +1784,14 @@ def test_read_detail_tail_window_aligns_and_strips_identity(memory_isolated_dir:
     user_dir.mkdir(parents=True, exist_ok=True)
     # Written directly to simulate a detail file from before the suffix removal.
     (user_dir / "detail.md").write_text(data=f"{entry_one}\n\n{entry_two}\n", encoding="utf-8")
-    full = read_detail_tail(user_id=USER_ID, max_chars=10_000)
+    full = read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
     # Legacy identity header suffixes never leave the store.
     assert IDENTITY not in full
     assert "第一筆細節" in full
     assert "第二筆細節" in full
     # A window cutting into entry one drops the partial entry and starts at the
     # next header.
-    windowed = read_detail_tail(user_id=USER_ID, max_chars=len(entry_two) + 4)
+    windowed = read_detail_tail(scope=USER_SCOPE, max_chars=len(entry_two) + 4)
     assert windowed.startswith("## 2026-02-01")
     assert "第一筆細節" not in windowed
 
@@ -1805,13 +1807,13 @@ async def test_extract_returns_none_on_incomplete_response() -> None:
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
-    assert await extractor.extract(target_user_id=USER_ID, transcript="hi") is None
+    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
 async def test_memory_calls_set_max_output_tokens() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
-    await extractor.extract(target_user_id=USER_ID, transcript="hi")
+    await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     fake_client.responses.output_parsed = ConsolidatedMemory(changed=False, memory_markdown="")
     await extractor.consolidate(
         existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
@@ -1827,7 +1829,7 @@ async def test_pipeline_rejects_drastically_shrunken_rewrite(
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     existing = "v1\n\n## 使用者輪廓\n" + "穩" * 5_000
-    write_main_memory(user_id=USER_ID, content=existing, identity=IDENTITY)
+    write_main_memory(scope=USER_SCOPE, content=existing, identity=IDENTITY)
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -1841,7 +1843,8 @@ async def test_pipeline_rejects_drastically_shrunken_rewrite(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
@@ -1850,8 +1853,8 @@ async def test_pipeline_rejects_drastically_shrunken_rewrite(
     await _wait_for_inflight()
     # The lossy rewrite is refused: previous memory survives, raw is kept for
     # retry, and nothing is retired into the detail file.
-    assert "穩穩穩" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert "穩穩穩" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 1
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
 
 
@@ -1861,7 +1864,7 @@ async def test_pipeline_compaction_accepts_legitimate_shrink(
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
     write_main_memory(
-        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
+        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
     )
     extractor, fake_client = _extractor()
 
@@ -1876,15 +1879,16 @@ async def test_pipeline_compaction_accepts_legitimate_shrink(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "縮縮縮" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert "縮縮縮" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 async def test_pipeline_compaction_rejects_collapsed_rewrite(
@@ -1893,7 +1897,7 @@ async def test_pipeline_compaction_rejects_collapsed_rewrite(
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
     write_main_memory(
-        user_id=USER_ID, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
+        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
     )
     extractor, fake_client = _extractor()
 
@@ -1908,15 +1912,16 @@ async def test_pipeline_compaction_rejects_collapsed_rewrite(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "長長長" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 1
+    assert "長長長" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1928,11 +1933,12 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("訊號")
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
@@ -1941,8 +1947,8 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     await _wait_for_inflight()
     # Threshold is met but the cooldown has not elapsed: only the phase-1
     # extract call ran and raw stays queued.
-    assert count_raw_entries(user_id=USER_ID) == 1
-    assert read_main_memory(user_id=USER_ID) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert read_main_memory(scope=USER_SCOPE) == ""
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
 
 
@@ -1950,7 +1956,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_ID] = (
+    pipeline._last_consolidation[USER_SCOPE] = (
         time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
     )
     extractor, fake_client = _extractor()
@@ -1965,16 +1971,17 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "合併後" in read_main_memory(user_id=USER_ID)
+    assert "合併後" in read_main_memory(scope=USER_SCOPE)
     # The attempt refreshed the per-user cooldown timestamp.
-    assert pipeline._last_consolidation[USER_ID] > time.monotonic() - 5
+    assert pipeline._last_consolidation[USER_SCOPE] > time.monotonic() - 5
 
 
 async def test_pipeline_byte_trigger_bypasses_cooldown(
@@ -1982,7 +1989,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
-    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -1995,7 +2002,8 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
@@ -2003,14 +2011,16 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     )
     await _wait_for_inflight()
     # The raw byte burst escape hatch consolidates despite the active cooldown.
-    assert "爆量合併" in read_main_memory(user_id=USER_ID)
+    assert "爆量合併" in read_main_memory(scope=USER_SCOPE)
 
 
 async def test_pipeline_passes_recent_detail_to_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊的詳細證據")
+    append_detail(
+        scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊的詳細證據"
+    )
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
 
@@ -2027,7 +2037,8 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
@@ -2064,7 +2075,8 @@ async def test_memory_semaphore_caps_concurrent_updates(
     monkeypatch.setattr(fake_client.responses, "parse", tracking_parse)
     for offset in range(3):
         pipeline.schedule_memory_update(
-            user_id=USER_ID + offset,
+            scope=user_scope(user_id=USER_ID + offset),
+            subject=f"target_user_id: {USER_ID + offset}",
             message_list=_user_message(),
             full_reply="回覆",
             extractor=extractor,
@@ -2083,7 +2095,9 @@ async def test_memory_semaphore_caps_concurrent_updates(
 
 
 async def test_memory_show_detail_displays_detail_window(memory_isolated_dir: Path) -> None:
-    append_detail(user_id=USER_ID, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n詳細觀察內容")
+    append_detail(
+        scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n詳細觀察內容"
+    )
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=True)
@@ -2131,7 +2145,7 @@ def test_append_detail_trims_oldest_past_cap(
     monkeypatch.setattr("discordbot.cogs._memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 200)
     for index in range(6):
         append_detail(
-            user_id=USER_ID,
+            scope=USER_SCOPE,
             text=f"## 2026-01-0{index + 1}T00:00:00+00:00 | x\nentry {index} " + "a" * 80,
         )
     detail_path = memory_isolated_dir / str(USER_ID) / "detail.md"
@@ -2148,10 +2162,10 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_ID] = time.monotonic()
+    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     # The clear lands after the recorded attempt, so the cooldown belonged to
     # the wiped memory and must not delay the fresh state's first consolidation.
-    mark_cleared(user_id=USER_ID)
+    mark_cleared(scope=USER_SCOPE)
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
@@ -2164,12 +2178,13 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     pipeline.schedule_memory_update(
-        user_id=USER_ID,
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "全新整理" in read_main_memory(user_id=USER_ID)
-    assert count_raw_entries(user_id=USER_ID) == 0
+    assert "全新整理" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0

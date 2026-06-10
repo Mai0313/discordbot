@@ -81,8 +81,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• I slowly build a long-term memory of your preferences from our chats\n"
                     "• To fit a reply I may recall what I remember about people in the chat, marked with a 🧠 note\n\n"
                     "**`/memory show`** — see what I remember about you (private, paged when long; the `detail` option shows the recent fine-grained log)\n"
-                    "**`/memory clear`** — wipe everything I remember about you\n"
-                    "**`/memory regenerate`** — rebuild what I remember about you from scratch using only my observation log"
+                    "**`/memory regenerate`** — rebuild what I remember about you from scratch using only my observation log\n"
+                    "**`/memory server show`** — see what I remember about this server's community (private, paged when long)"
                 ),
             ),
             "games": HelpSection(
@@ -163,8 +163,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• 我會從對話中慢慢累積對你偏好的長期記憶\n"
                     "• 為了讓回覆更貼合，我可能會參考我記得的對話成員資訊，並用 🧠 標註\n\n"
                     "**`/memory show`** — 查看我對你記住了什麼（僅自己可見，過長會分頁；加上「詳細」選項可查看最近的詳細觀察記錄）\n"
-                    "**`/memory clear`** — 清除我對你的所有記憶\n"
-                    "**`/memory regenerate`** — 只根據觀察記錄，從頭重建我對你的長期記憶"
+                    "**`/memory regenerate`** — 只根據觀察記錄，從頭重建我對你的長期記憶\n"
+                    "**`/memory server show`** — 查看我對這個伺服器社群記住了什麼（僅自己可見，過長會分頁）"
                 ),
             ),
             "games": HelpSection(
@@ -245,8 +245,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• 会話からあなたの好みを長期記憶として少しずつ蓄積します\n"
                     "• 返信を最適化するため、会話の参加者について覚えていることを参照し、🧠 で示すことがあります\n\n"
                     "**`/memory show`** — 記憶している内容を表示（本人のみ閲覧可、長い場合はページ表示。「詳細」オプションで最近の詳細ログを表示）\n"
-                    "**`/memory clear`** — あなたに関する記憶をすべて消去\n"
-                    "**`/memory regenerate`** — 観察ログだけを使って、あなたに関する記憶を一から作り直します"
+                    "**`/memory regenerate`** — 観察ログだけを使って、あなたに関する記憶を一から作り直します\n"
+                    "**`/memory server show`** — このサーバーのコミュニティについて覚えている内容を表示（本人のみ閲覧可、長い場合はページ表示）"
                 ),
             ),
             "games": HelpSection(
