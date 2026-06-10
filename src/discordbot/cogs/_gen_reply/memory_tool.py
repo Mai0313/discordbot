@@ -11,6 +11,7 @@ import json
 
 from nextcord import User, Member, Message
 from pydantic import Field, BaseModel
+from nextcord.utils import escape_mentions
 from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -72,7 +73,9 @@ def _user_label(user: Member | User) -> str:
     """
     safe_display = " ".join(sanitize_identity(value=user.display_name).split())
     safe_username = " ".join(sanitize_identity(value=user.name).split())
-    return f"{safe_display} ({safe_username})"
+    # Neutralize @everyone/@here/<@id> in user-controlled names so a label can never
+    # turn the public usage footer into an unwanted ping.
+    return escape_mentions(f"{safe_display} ({safe_username})")
 
 
 def build_memory_allowlist(*, messages: list[Message], bot_user_id: int) -> dict[int, str]:

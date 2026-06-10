@@ -1089,6 +1089,17 @@ def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() ->
     assert allowed[2] == "Alice (alice)"
 
 
+def test_build_memory_allowlist_escapes_mention_labels() -> None:
+    """Mention syntax in a display name is neutralized so a label cannot ping."""
+    author = FakeAuthor(user_id=1)
+    author.display_name = "@everyone"
+    allowed = build_memory_allowlist(messages=[FakeMessage(author=author)], bot_user_id=999)
+
+    # The active @everyone is broken (zero-width space) while the text survives.
+    assert "@everyone" not in allowed[1]
+    assert "everyone" in allowed[1]
+
+
 def test_parse_user_id_list_handles_valid_and_malformed() -> None:
     """Valid payloads parse to string ids; malformed payloads degrade to an empty list."""
     assert parse_user_id_list(arguments='{"user_id_list": ["1", "2"]}') == ["1", "2"]
