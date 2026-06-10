@@ -75,6 +75,30 @@ def _message_has_url(content: str) -> bool:
     return _MESSAGE_URL_RE.search(string=content) is not None
 
 
+def _source_channel_is_public(message: Message) -> bool:
+    """Whether @everyone can view the message's channel, so its content is not private.
+
+    `message.channel` is a heterogeneous messageable union, so visibility is read
+    defensively (mirrors `utils.discord_embeds`): a private thread is never public; a
+    thread otherwise inherits its parent channel's `@everyone` visibility; a regular
+    guild channel uses its own. A non-guild message, or any channel whose permissions
+    cannot be resolved, counts as non-public — so content from channels members cannot
+    see never enters the server-wide memory any member can read via `/memory server show`.
+    """
+    guild = message.guild
+    if guild is None:
+        return False
+    channel = message.channel
+    is_private = getattr(channel, "is_private", None)
+    if callable(is_private) and is_private():
+        return False
+    source = getattr(channel, "parent", None) or channel
+    permissions_for = getattr(source, "permissions_for", None)
+    if not callable(permissions_for):
+        return False
+    return bool(getattr(permissions_for(guild.default_role), "view_channel", False))
+
+
 def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     """Prepends per-request time context to the model instructions."""
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
@@ -503,10 +527,13 @@ class ReplyGeneratorCogs(commands.Cog):
         """Schedules the bot's per-server memory update for a guild message.
 
         Server memory learns community-level signal from the whole conversation (no
-        target-centering, since every message is server context). DMs have no guild, so
-        there is nothing to remember.
+        target-centering, since every message is server context). Skipped for DMs and
+        for channels not visible to `@everyone`, so private / restricted-channel content
+        never enters the server-wide memory any member can read.
         """
         if self.bot.user is None or message.guild is None:
+            return
+        if not _source_channel_is_public(message=message):
             return
         schedule_memory_update(
             scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id),

@@ -39,9 +39,25 @@ class FakeGuild:
     """Minimal guild stub with a stable ID and name."""
 
     def __init__(self, guild_id: int = 1, name: str = "Test Guild") -> None:
-        """Initializes the fake guild ID and name."""
+        """Initializes the fake guild ID, name, and @everyone role sentinel."""
         self.id = guild_id
         self.name = name
+        self.default_role = SimpleNamespace()
+
+
+class FakeChannel:
+    """Minimal channel stub: history plus an @everyone view-permission flag."""
+
+    def __init__(self, history: object, view_channel: bool = True) -> None:
+        """Initializes the channel stub with its history coroutine and visibility."""
+        self.history = history
+        self.parent = None
+        self._view_channel = view_channel
+
+    def permissions_for(self, role: object) -> SimpleNamespace:
+        """Returns the @everyone permissions for this channel."""
+        del role
+        return SimpleNamespace(view_channel=self._view_channel)
 
 
 class FakeReference:
@@ -91,7 +107,9 @@ class FakeAuthor:
 class FakeMessage:
     """Provides a fake message object that records created replies."""
 
-    def __init__(self, content: str = "", author: FakeAuthor | None = None) -> None:
+    def __init__(
+        self, content: str = "", author: FakeAuthor | None = None, channel_public: bool = True
+    ) -> None:
         """Initializes the fake message with no recorded replies."""
         self.replies: list[FakeReply] = []
         self.author = author or FakeAuthor()
@@ -101,7 +119,7 @@ class FakeMessage:
         self.stickers: list[FakeAttachment] = []
         self.reference: FakeReference | None = None
         self.guild: FakeGuild | None = FakeGuild()
-        self.channel = SimpleNamespace(history=self._history)
+        self.channel = FakeChannel(history=self._history, view_channel=channel_public)
         self.mentions: list[FakeAuthor] = []
         self.id = 987
         self.created_at = FAKE_MESSAGE_CREATED_AT
@@ -658,7 +676,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
         yield bot_msg
 
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
-    current.channel = SimpleNamespace(history=fake_history)
+    current.channel = FakeChannel(history=fake_history)
     history = await cog._get_history_message(message=current, limit=30)
     assert len(history) == 3
     assert history[0]["role"] == "system"
@@ -1632,4 +1650,25 @@ async def test_handle_message_reply_skips_server_memory_in_dm(
     await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
 
     assert "不該出現" not in str(cog.client.responses.create_inputs[-1])
+    assert scheduled == [user_scope(user_id=1)]
+
+
+async def test_handle_message_reply_skips_server_write_in_private_channel(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A channel @everyone cannot see never feeds the server-wide memory."""
+    cog = _cog()
+    scheduled: list[object] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled scope."""
+        scheduled.append(kwargs["scope"])
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=False)
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # Private channel: the per-user update still runs, but no server-scope update.
     assert scheduled == [user_scope(user_id=1)]
