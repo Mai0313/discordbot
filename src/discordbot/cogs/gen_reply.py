@@ -378,16 +378,10 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
-        (
-            hist_messages,
-            reference_messages,
-            current_message,
-            participant_messages,
-        ) = await asyncio.gather(
+        hist_messages, reference_messages, current_message = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
-            self._collect_participant_messages(message=message, history_limit=history_limit),
         )
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
@@ -405,6 +399,11 @@ class ReplyGeneratorCogs(commands.Cog):
         running_input: ResponseInputParam = [*message_list]
         allowed: dict[int, str] = {}
         if memory_enabled and self.bot.user:
+            # Only the allowlist needs the raw Message objects, so the SUMMARY route
+            # (memory_enabled=False) skips this second history fetch entirely.
+            participant_messages = await self._collect_participant_messages(
+                message=message, history_limit=history_limit
+            )
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
