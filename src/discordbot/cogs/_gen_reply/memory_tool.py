@@ -64,6 +64,20 @@ class UserMemory(BaseModel):
     memory: str = Field(description="Consolidated long-term memory markdown, identity-stripped.")
 
 
+class MemorySelection(BaseModel):
+    """Outcome of the memory-selection phase: chosen memories plus that request's token usage.
+
+    Attributes:
+        memories: The user memories the model chose to read, allowlist-enforced and deduped.
+        input_tokens: Input tokens the selection request consumed, for reply accounting.
+        output_tokens: Output tokens the selection request consumed, for reply accounting.
+    """
+
+    memories: list[UserMemory] = Field(description="Allowlist-enforced memories the model chose.")
+    input_tokens: int = Field(description="Input tokens the selection request consumed.")
+    output_tokens: int = Field(description="Output tokens the selection request consumed.")
+
+
 def _user_label(user: Member | User) -> str:
     """Renders a sanitized `display (username)` label for a Discord user.
 

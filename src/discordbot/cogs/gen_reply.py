@@ -42,6 +42,7 @@ from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
+    MemorySelection,
     parse_user_id_list,
     memory_lookup_labels,
     resolve_user_memories,
@@ -387,12 +388,13 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         message_list: list[EasyInputMessageParam],
         allowed: dict[int, str],
-    ) -> list[UserMemory]:
+    ) -> MemorySelection:
         """Phase 1 of a reply: lets the model choose whose long-term memory to read.
 
         Runs an isolated request offering only the get_user_memory tool (Gemini cannot mix a
         custom function tool with its built-in search/url tools), then resolves the chosen ids
-        server-side against the allowlist. The result is injected into the answer request.
+        server-side against the allowlist. Returns the memories plus this request's token usage
+        so the reply footer and chat reward account for the selection call too.
         """
         slow_model = self.runtime_models.slow_model
         selection_input: ResponseInputParam = [
@@ -424,7 +426,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
                     memories.append(memory)
-        return memories
+        input_tokens = responses.usage.input_tokens if responses.usage else 0
+        output_tokens = responses.usage.output_tokens if responses.usage else 0
+        return MemorySelection(
+            memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
+        )
 
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
@@ -465,19 +471,30 @@ class ReplyGeneratorCogs(commands.Cog):
         slow_model = self.runtime_models.slow_model
         answer_input: ResponseInputParam = [*message_list]
         memory_labels: list[str] = []
+        selection_input_tokens = 0
+        selection_output_tokens = 0
         if memory_enabled and self.bot.user:
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
             if allowed:
-                memories = await self._select_user_memories(
+                selection = await self._select_user_memories(
                     message=message, message_list=message_list, allowed=allowed
                 )
-                if memories:
-                    answer_input.append(render_memory_context_block(memories=memories))
-                    memory_labels = memory_lookup_labels(memories=memories)
+                selection_input_tokens = selection.input_tokens
+                selection_output_tokens = selection.output_tokens
+                if selection.memories:
+                    answer_input.append(render_memory_context_block(memories=selection.memories))
+                    memory_labels = memory_lookup_labels(memories=selection.memories)
 
-        streamer = ResponseStreamer(message=message, memory_lookups=memory_labels)
+        # Seed the streamer with the selection request's usage so the footer and chat reward
+        # reflect both LLM calls; the answer stream sums its own usage on top.
+        streamer = ResponseStreamer(
+            message=message,
+            memory_lookups=memory_labels,
+            input_tokens=selection_input_tokens,
+            output_tokens=selection_output_tokens,
+        )
         responses = await self.client.responses.create(
             model=slow_model.name,
             instructions=system_prompt,

@@ -180,6 +180,8 @@ class FakeResponses:
         # Each entry is the `.output` item list for one non-streaming (memory selection)
         # create(); popped in order.
         self.select_queue: list[list[SimpleNamespace]] = []
+        # `.usage` returned by each non-streaming (memory selection) create().
+        self.select_usage: SimpleNamespace | None = None
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
         self,
@@ -206,7 +208,9 @@ class FakeResponses:
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
-        return SimpleNamespace(output_text=self.output_text, output=output)
+        return SimpleNamespace(
+            output_text=self.output_text, output=output, usage=self.select_usage
+        )
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
@@ -1166,6 +1170,36 @@ async def test_handle_message_reply_injects_selected_memory_into_answer(
     assert "⬆ 5 ⬇ 6" in content
     assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in content
     assert captured[0].startswith("嗨 阿狗")
+
+
+async def test_handle_message_reply_footer_includes_selection_usage(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The footer token counts include the selection request, not just the answer stream."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    cog.client.responses.select_queue = [
+        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
+    ]
+    cog.client.responses.select_usage = SimpleNamespace(input_tokens=100, output_tokens=20)
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=5, output_tokens=6)]
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # 100+5 input, 20+6 output summed across the selection and answer requests.
+    assert "⬆ 105 ⬇ 26" in (message.replies[0].content or "")
 
 
 async def test_handle_message_reply_footer_omits_users_without_memory(
