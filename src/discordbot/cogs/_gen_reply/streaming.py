@@ -4,7 +4,7 @@ import re
 
 from openai import AsyncStream
 from nextcord import Message
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses import ResponseStreamEvent, ResponseFunctionToolCall
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -39,6 +39,7 @@ class ResponseStreamer(BaseModel):
         input_tokens: Input tokens summed across all turns.
         output_tokens: Output tokens summed across all turns.
         used_web_search: Whether any turn used a native web-search / grounding tool.
+        memory_lookups: Labels of users whose stored memory was read this reply, for the footer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -52,6 +53,7 @@ class ResponseStreamer(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     used_web_search: bool = False
+    memory_lookups: list[str] = Field(default_factory=list)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -184,8 +186,13 @@ class ResponseStreamer(BaseModel):
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=reward, signed=True, compact=True)
+        # Appended after the ⬇ anchor so USAGE_FOOTER_RE still strips the whole line;
+        # dedupes while preserving lookup order across turns.
+        memory_note = ""
+        if self.memory_lookups:
+            memory_note = f" · 🧠 {', '.join(dict.fromkeys(self.memory_lookups))}"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
-        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}"
+        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_note}"
 
         # Final update to ensure complete message is displayed.
         await self._finalize(reply=self.reply, content=self.stored_content, footer=usage_footer)

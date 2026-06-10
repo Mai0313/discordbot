@@ -1162,7 +1162,37 @@ async def test_handle_message_reply_runs_memory_tool_then_answers(
     # The visible reply is the answer turn's text with a summed-usage footer (10+5, 20+6).
     assert (message.replies[0].content or "").startswith("嗨 阿狗")
     assert "⬆ 15 ⬇ 26" in (message.replies[0].content or "")
+    # The footer credits whose memory was actually read.
+    assert "🧠 Tester (tester)" in (message.replies[0].content or "")
     assert captured[0].startswith("嗨 阿狗")
+
+
+async def test_handle_message_reply_footer_omits_users_without_memory(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that finds no stored memory leaves the 🧠 footer note off."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()  # No memory written for the author.
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="cid-1", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=10, output_tokens=20),
+        ],
+        [_text_event(delta="你好"), _completed_event(input_tokens=5, output_tokens=6)],
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The tool still ran (two turns), but nothing was read, so no 🧠 note.
+    assert cog.client.responses.create_streams == [True, True]
+    assert "🧠" not in (message.replies[0].content or "")
 
 
 async def test_handle_message_reply_skips_memory_when_model_declines(

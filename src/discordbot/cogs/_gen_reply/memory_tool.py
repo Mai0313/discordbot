@@ -18,6 +18,11 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.cogs._memory.store import read_main_memory
 from discordbot.cogs._gen_reply.input import sanitize_identity
 
+# Returned for an allowed id that has no stored memory file, so the model still
+# sees an explicit signal. Also lets the usage footer tell "looked up" apart from
+# "actually had memory".
+NO_STORED_MEMORY = "(no stored memory for this user)"
+
 # Mechanism-only description: the "when to call it" behavior rule lives in
 # REPLY_PROMPT (developer authority), not in the tool definition.
 GET_USER_MEMORY_TOOL: FunctionToolParam = {
@@ -134,12 +139,19 @@ def resolve_user_memories(*, user_id_list: list[str], allowed: dict[int, str]) -
         memory = read_main_memory(user_id=user_id)
         results.append(
             UserMemory(
-                username=allowed[user_id],
-                user_id=str(user_id),
-                memory=memory or "(no stored memory for this user)",
+                username=allowed[user_id], user_id=str(user_id), memory=memory or NO_STORED_MEMORY
             )
         )
     return results
+
+
+def memory_lookup_labels(*, memories: list[UserMemory]) -> list[str]:
+    """Labels of looked-up users that actually had stored memory, for the usage footer.
+
+    Users that were queried but had no stored memory are omitted: they did not
+    contribute anything to the reply, so surfacing them would be misleading.
+    """
+    return [memory.username for memory in memories if memory.memory != NO_STORED_MEMORY]
 
 
 def dump_user_memories(*, memories: list[UserMemory]) -> str:

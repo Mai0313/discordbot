@@ -47,6 +47,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     dump_user_memories,
     parse_user_id_list,
+    memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
     render_callable_users_block,
@@ -434,6 +435,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 memories = resolve_user_memories(
                     user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
                 )
+                streamer.memory_lookups.extend(memory_lookup_labels(memories=memories))
                 running_input.append(
                     ResponseFunctionToolCallParam(
                         type="function_call",
