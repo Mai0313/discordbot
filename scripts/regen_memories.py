@@ -77,9 +77,7 @@ async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
     scope = user_scope(user_id=user_id)
     identity = read_main_identity(scope=scope) or f"[id: {user_id}]"
     try:
-        result = await regenerate_main_memory(
-            scope=scope, extractor=extractor, identity=identity
-        )
+        result = await regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
     except Exception as error:
         console.print(f"[red]{user_id}: error ({error})[/red]")
         return
