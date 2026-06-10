@@ -4,7 +4,7 @@ import re
 
 from openai import AsyncStream
 from nextcord import Message
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses import ResponseStreamEvent
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -22,17 +22,38 @@ DISCORD_MESSAGE_LIMIT = 2000
 
 
 class ResponseStreamer(BaseModel):
-    """Renders a streaming Responses API reply onto the originating message.
+    """Renders one streaming Responses API reply onto a Discord message.
+
+    The cog calls `stream` once with the answer-turn stream; text is previewed as it
+    arrives, then a usage footer (and an optional memory-credit line) is written. Memory
+    lookups are decided in a separate request before streaming, so the labels are passed
+    in via `memory_lookups` rather than discovered here.
 
     Attributes:
         message: The Discord message being answered and replied to.
-        responses: The streaming Responses API events to render.
+        stored_content: The accumulated reply text.
+        reply: The Discord reply message, created lazily on the first text delta.
+        displayed_content: The text last written to the Discord reply.
+        content_started: Whether the first non-newline text delta has been seen.
+        model_name: The model name reported by the stream, for the usage footer.
+        input_tokens: Input tokens reported by the stream.
+        output_tokens: Output tokens reported by the stream.
+        used_web_search: Whether the reply used a native web-search / grounding tool.
+        memory_lookups: Labels of users whose stored memory was injected this reply, for the footer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     message: SkipValidation[Message]
-    responses: SkipValidation[AsyncStream[ResponseStreamEvent]]
+    stored_content: str = ""
+    reply: SkipValidation[Message | None] = None
+    displayed_content: str = ""
+    content_started: bool = False
+    model_name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    used_web_search: bool = False
+    memory_lookups: list[str] = Field(default_factory=list)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -72,7 +93,7 @@ class ResponseStreamer(BaseModel):
             await reply.edit(content=preview)
         return reply, preview
 
-    async def _finalize(self, reply: Message | None, content: str, footer: str) -> Message:
+    async def _write_final_message(self, reply: Message | None, content: str, footer: str) -> None:
         """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
@@ -84,61 +105,54 @@ class ResponseStreamer(BaseModel):
         previous = reply
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
-        return reply
 
-    async def stream(self) -> str:  # noqa: C901 -- dispatches on multiple Responses API stream event types
-        """Renders the streamed reply and returns the full content with usage footer."""
-        stored_content = ""
+    async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
+        """Streams the reply, accumulating text, usage, and web-search state onto the instance."""
         counted_content = 0
-        reply: Message | None = None
-        displayed_content = ""
-        content_started = False
-        model_name = ""
-        input_tokens = 0
-        output_tokens = 0
-        used_web_search = False
-
-        async for response in self.responses:
+        async for response in responses:
             if response.type in {"response.created", "response.completed"}:
-                # Capture the model on `created` too so the usage footer never
-                # falls back to an empty model name (and $0.00000000) when a
-                # stream ends without a clean `completed` event. Usage only
-                # arrives on `completed`.
-                model_name = response.response.model
+                # Capture the model on `created` too so the usage footer never falls back
+                # to an empty model name (and $0.00000000) when a stream ends without a
+                # clean `completed` event. Usage only arrives on `completed`.
+                self.model_name = response.response.model
                 if response.response.usage:
-                    input_tokens = response.response.usage.input_tokens
-                    output_tokens = response.response.usage.output_tokens
+                    self.input_tokens += response.response.usage.input_tokens
+                    self.output_tokens += response.response.usage.output_tokens
             elif response.type in {
                 "response.web_search_call.in_progress",
                 "response.web_search_call.searching",
                 "response.web_search_call.completed",
                 "response.output_text.annotation.added",
             }:
-                used_web_search = True
+                self.used_web_search = True
             elif response.type == "response.output_text.delta":
                 delta = response.delta
-                if not content_started:
+                if not self.content_started:
                     delta = delta.lstrip("\n")
                     if not delta:
                         continue
-                    content_started = True
-                stored_content += delta
+                    self.content_started = True
+                self.stored_content += delta
                 counted_content += len(delta)
 
                 if counted_content >= 30:
-                    reply, displayed_content = await self._write_preview(
-                        reply=reply, content=stored_content, displayed_content=displayed_content
+                    self.reply, self.displayed_content = await self._write_preview(
+                        reply=self.reply,
+                        content=self.stored_content,
+                        displayed_content=self.displayed_content,
                     )
                     counted_content = 0
 
-        input_rate, output_rate = get_token_rates(model_name=model_name)
-        cost = input_rate * input_tokens + output_rate * output_tokens
+    async def _finalize_reply(self) -> str:
+        """Writes the reward footer and final reply once the stream is consumed."""
+        input_rate, output_rate = get_token_rates(model_name=self.model_name)
+        cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         # Award chat points from token usage, divided down and capped per reply so a
         # single long (e.g. web-search) reply cannot mint a huge balance. We await this
         # (rather than fire-and-forget) so the resulting balance can land in the footer.
         # On DB failure, it returns None and the footer falls back to the delta-only format.
-        total_tokens = input_tokens + output_tokens
+        total_tokens = self.input_tokens + self.output_tokens
         reward = min(total_tokens // CHAT_REWARD_TOKEN_DIVISOR, CHAT_REWARD_MAX_PER_REPLY)
         avatar_url = await guild_avatar_url(
             user=self.message.author, guild=getattr(self.message, "guild", None)
@@ -150,19 +164,36 @@ class ResponseStreamer(BaseModel):
             amount=reward,
         )
 
-        stored_content = CODED_MENTION_RE.sub(r"\1", stored_content)
+        self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
         if result.new_balance is not None:
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=reward, signed=True, compact=True)
+        # Credit looked-up memory owners on a second -# subtext line. Dedupe while
+        # preserving lookup order; past two names collapse to "等 N 人" so a busy
+        # lookup stays short. USAGE_FOOTER_RE matches this optional second line too.
+        memory_line = ""
+        if self.memory_lookups:
+            names = list(dict.fromkeys(self.memory_lookups))
+            if len(names) > 2:
+                memory_line = f"\n-# 🧠 已讀取 {', '.join(names[:2])} 等 {len(names)} 人的記憶"
+            else:
+                memory_line = f"\n-# 🧠 已讀取 {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
-        usage_footer = f"\n\n-# {model_name} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f} · {balance_text}"
+        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_line}"
 
         # Final update to ensure complete message is displayed.
-        await self._finalize(reply=reply, content=stored_content, footer=usage_footer)
-        stored_content += usage_footer
+        await self._write_final_message(
+            reply=self.reply, content=self.stored_content, footer=usage_footer
+        )
+        self.stored_content += usage_footer
 
-        if used_web_search:
+        if self.used_web_search:
             await update_reaction(message=self.message, bot_user=None, emoji="🌐")
 
-        return stored_content
+        return self.stored_content
+
+    async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
+        """Streams the reply onto the message and writes the usage footer; returns the full text."""
+        await self._consume(responses=responses)
+        return await self._finalize_reply()

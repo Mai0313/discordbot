@@ -22,8 +22,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import update_reaction
-from discordbot.cogs._memory.store import read_main_memory
-from discordbot.cogs._memory.prompts import render_memory_injection
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -36,13 +34,27 @@ from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
+    MEMORY_SELECT_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+from discordbot.cogs._gen_reply.memory_tool import (
+    GET_USER_MEMORY_TOOL,
+    UserMemory,
+    MemorySelection,
+    parse_user_id_list,
+    memory_lookup_labels,
+    resolve_user_memories,
+    build_memory_allowlist,
+    render_callable_users_block,
+    render_memory_context_block,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+
+    from openai.types.responses import ResponseFunctionToolCall
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -51,6 +63,13 @@ _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 def _message_has_url(content: str) -> bool:
     """Returns whether the current message carries an explicit URL."""
     return _MESSAGE_URL_RE.search(string=content) is not None
+
+
+async def _no_participant_messages() -> list[Message]:
+    """Empty stand-in for the participant fetch so the SUMMARY route can skip it while
+    the rest of the reply context still loads concurrently in one gather.
+    """
+    return []
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -197,6 +216,37 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
+    async def _collect_participant_messages(
+        self, message: Message, history_limit: int
+    ) -> list[Message]:
+        """Collects the raw current, reference, and history messages for the memory allowlist.
+
+        The rendered Responses input drops the underlying `Message` objects, but the
+        allowlist needs each message's `.author` and `.mentions`. This re-walks the same
+        reference chain (depth 3) and channel history the `_get_*` helpers render.
+        """
+        messages: list[Message] = [message]
+
+        visited: set[int] = {message.id}
+        current = message
+        while (
+            len(messages) < 4
+            and current.reference
+            and isinstance(current.reference.resolved, Message)
+            and current.reference.resolved.id not in visited
+        ):
+            ref = current.reference.resolved
+            visited.add(ref.id)
+            messages.append(ref)
+            current = ref
+
+        async for hist_msg in message.channel.history(
+            limit=history_limit, before=message, oldest_first=True
+        ):
+            messages.append(hist_msg)
+
+        return messages
+
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
@@ -332,14 +382,90 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
             return "QA"
 
+    async def _select_user_memories(
+        self,
+        *,
+        message: Message,
+        message_list: list[EasyInputMessageParam],
+        allowed: dict[int, str],
+    ) -> MemorySelection:
+        """Phase 1 of a reply: lets the model choose whose long-term memory to read.
+
+        Runs an isolated request offering only the get_user_memory tool (Gemini cannot mix a
+        custom function tool with its built-in search/url tools), then resolves the chosen ids
+        server-side against the allowlist. Returns the memories plus this request's token usage
+        so the reply footer and chat reward account for the selection call too.
+        """
+        slow_model = self.runtime_models.slow_model
+        selection_input: ResponseInputParam = [
+            *message_list,
+            render_callable_users_block(allowed=allowed),
+        ]
+        responses = await self.client.responses.create(
+            model=slow_model.name,
+            instructions=MEMORY_SELECT_PROMPT,
+            input=selection_input,
+            reasoning=slow_model.reasoning,
+            tools=[GET_USER_MEMORY_TOOL],
+            stream=False,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
+        )
+        memories: list[UserMemory] = []
+        seen: set[str] = set()
+        for item in responses.output:
+            if item.type != "function_call":
+                continue
+            call = cast("ResponseFunctionToolCall", item)
+            if call.name != "get_user_memory":
+                continue
+            for memory in resolve_user_memories(
+                user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
+            ):
+                if memory.user_id not in seen:
+                    seen.add(memory.user_id)
+                    memories.append(memory)
+        # Bound how many memories ride into the answer request so a pathological multi-user
+        # lookup (e.g. a message mentioning many people) can't bloat or overrun it. Each
+        # main.md can be tens of KB before compaction; keep the first few in selection order.
+        max_memories = 8
+        if len(memories) > max_memories:
+            logfire.warn(
+                "Capping selected memories to the per-reply limit",
+                requested=len(memories),
+                kept=max_memories,
+            )
+            memories = memories[:max_memories]
+        input_tokens = responses.usage.input_tokens if responses.usage else 0
+        output_tokens = responses.usage.output_tokens if responses.usage else 0
+        return MemorySelection(
+            memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
+        )
+
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
-        hist_messages, reference_messages, current_message = await asyncio.gather(
+        # The allowlist needs raw Message objects (authors + mentions); fetch them in the
+        # same gather so they overlap with the rendered context. SUMMARY
+        # (memory_enabled=False) substitutes an empty fetch to skip the second history
+        # read entirely while keeping the gather shape and result types precise.
+        collect_participants = (
+            self._collect_participant_messages(message=message, history_limit=history_limit)
+            if memory_enabled and self.bot.user
+            else _no_participant_messages()
+        )
+        (
+            hist_messages,
+            reference_messages,
+            current_message,
+            participant_messages,
+        ) = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
+            collect_participants,
         )
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
@@ -347,31 +473,67 @@ class ReplyGeneratorCogs(commands.Cog):
             *current_message,
         ]
 
-        # User-influenceable memory rides as a lowest-authority role=assistant
-        # self-note with string content (assistant rejects input_text parts),
-        # never trailing (Claude prefill through LiteLLM); `message_list` stays
-        # memory-free for phase-1 extraction.
-        llm_input: list[EasyInputMessageParam] = message_list
-        if memory_enabled and (memory_text := read_main_memory(user_id=message.author.id)):
-            memory_message = EasyInputMessageParam(
-                role="assistant", content=render_memory_injection(memory=memory_text).strip()
-            )
-            llm_input = [memory_message, *hist_messages, *reference_messages, *current_message]
-
+        # Gemini cannot use a custom function tool together with its built-in search/url
+        # tools, so memory retrieval is two-phase: phase 1 lets the model pick whose
+        # long-term memory to read via get_user_memory (no built-in tools), and phase 2
+        # streams the answer with the built-in tools always available and any selected
+        # memory injected as context. The allowlist (conversation authors + mentioned
+        # users, minus the bot) is the permission boundary.
         slow_model = self.runtime_models.slow_model
+        memory_labels: list[str] = []
+        selection_input_tokens = 0
+        selection_output_tokens = 0
+        memory_block: EasyInputMessageParam | None = None
+        if memory_enabled and self.bot.user:
+            allowed = build_memory_allowlist(
+                messages=participant_messages, bot_user_id=self.bot.user.id
+            )
+            if allowed:
+                # Memory selection is an optional preflight; a provider/proxy hiccup here must
+                # never turn an answerable message into the generic error path.
+                try:
+                    selection = await self._select_user_memories(
+                        message=message, message_list=message_list, allowed=allowed
+                    )
+                except Exception:
+                    logfire.warn(
+                        "Memory selection failed; answering without memory", _exc_info=True
+                    )
+                else:
+                    selection_input_tokens = selection.input_tokens
+                    selection_output_tokens = selection.output_tokens
+                    if selection.memories:
+                        memory_block = render_memory_context_block(memories=selection.memories)
+                        memory_labels = memory_lookup_labels(memories=selection.memories)
+
+        # Keep the current user message LAST so the model answers it rather than continuing
+        # the assistant memory note: the memory rides as earlier context, after history and
+        # reference but before the current message.
+        answer_input: ResponseInputParam = [*hist_messages, *reference_messages]
+        if memory_block is not None:
+            answer_input.append(memory_block)
+        answer_input.extend(current_message)
+
+        # Seed the streamer with the selection request's usage so the footer and chat reward
+        # reflect both LLM calls; the answer stream sums its own usage on top.
+        streamer = ResponseStreamer(
+            message=message,
+            memory_lookups=memory_labels,
+            input_tokens=selection_input_tokens,
+            output_tokens=selection_output_tokens,
+        )
         responses = await self.client.responses.create(
             model=slow_model.name,
             instructions=system_prompt,
-            input=cast("ResponseInputParam", llm_input),
+            input=answer_input,
             reasoning=slow_model.reasoning,
-            tools=slow_model.tools,
+            tools=list(slow_model.tools),
             stream=True,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
             extra_body={"mock_testing_fallbacks": False},
         )
-
-        full_reply = await ResponseStreamer(message=message, responses=responses).stream()
+        full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
                 hist_messages=hist_messages,

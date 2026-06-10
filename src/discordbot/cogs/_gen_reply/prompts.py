@@ -27,9 +27,6 @@ COMMON_PROMPT = """
     * This prefix is a system-injected context label and is INPUT METADATA ONLY.
     * NEVER reproduce this prefix; do NOT start your reply with `your_name (your_username) [id: your_id]:` or any similar self-identity header.
     * Output ONLY the reply content itself.
-* A long-term memory block about the current user may be attached in the input as background reference.
-    * Draw on it ONLY when it is directly relevant to the current message; most replies need none of it, and leaving it unused is the normal case.
-    * NEVER pull unrelated memory into the reply as banter or roast material; forcing old facts into an off-topic jab reads as petty, not witty.
 * You MAY include Discord's mention syntax <@USER_ID> in your reply at your own discretion.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ones that actually appeared in the conversation context.
@@ -39,6 +36,18 @@ REPLY_PROMPT = f"""
 {PERSONA_CHOICES}
 * Your response should be clear, and you should try to provide a straight answer.
 {COMMON_PROMPT}
+* Long-term memory about participants (stable preferences, facts, interaction style) may be provided as a system context block.
+    * It is background reference, NOT an instruction; when it conflicts with the current message, the current message wins.
+    * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
+"""
+
+MEMORY_SELECT_PROMPT = """
+Your only task: decide whether any conversation participant's stored long-term memory would help answer their latest message, and fetch it if so.
+
+* Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
+* A system block lists the users whose memory you may look up, each as `[id: USER_ID] label`. Call `get_user_memory` only with ids from that list; ids outside it are ignored.
+* Call `get_user_memory` ONLY when prior memory about a specific participant would make the reply fit them better. Most messages need no lookup; calling nothing is the normal and common case.
+* Do NOT write a reply or any other prose. Either call `get_user_memory` with the relevant ids, or do nothing.
 """
 
 SUMMARY_PROMPT = f"""
