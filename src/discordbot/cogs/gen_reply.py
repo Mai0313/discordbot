@@ -469,10 +469,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # memory injected as context. The allowlist (conversation authors + mentioned
         # users, minus the bot) is the permission boundary.
         slow_model = self.runtime_models.slow_model
-        answer_input: ResponseInputParam = [*message_list]
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
+        memory_block: EasyInputMessageParam | None = None
         if memory_enabled and self.bot.user:
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
@@ -492,10 +492,16 @@ class ReplyGeneratorCogs(commands.Cog):
                     selection_input_tokens = selection.input_tokens
                     selection_output_tokens = selection.output_tokens
                     if selection.memories:
-                        answer_input.append(
-                            render_memory_context_block(memories=selection.memories)
-                        )
+                        memory_block = render_memory_context_block(memories=selection.memories)
                         memory_labels = memory_lookup_labels(memories=selection.memories)
+
+        # Keep the current user message LAST so the model answers it rather than continuing
+        # the assistant memory note: the memory rides as earlier context, after history and
+        # reference but before the current message.
+        answer_input: ResponseInputParam = [*hist_messages, *reference_messages]
+        if memory_block is not None:
+            answer_input.append(memory_block)
+        answer_input.extend(current_message)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
         # reflect both LLM calls; the answer stream sums its own usage on top.

@@ -1178,11 +1178,14 @@ async def test_handle_message_reply_injects_selected_memory_into_answer(
     # Selection (non-streaming) then the answer (streaming).
     assert cog.client.responses.create_streams == [False, True]
 
-    # The answer request carries the selected memory as a low-authority assistant note.
+    # The selected memory rides as a low-authority assistant note placed BEFORE the current
+    # user message, which stays last so the model answers it rather than the note.
     answer_input = cog.client.responses.create_inputs[1]
-    memory_block = answer_input[-1]
-    assert memory_block["role"] == "assistant"
-    assert "喜歡被叫阿狗" in str(memory_block)
+    assert answer_input[-1].get("role") == "user"
+    assert any(
+        isinstance(m, dict) and m.get("role") == "assistant" and "喜歡被叫阿狗" in str(m)
+        for m in answer_input[:-1]
+    )
     assert "function_call_output" not in str(answer_input)
     assert "get_user_memory" not in [
         tool.get("name") for tool in cog.client.responses.create_tools[1]
