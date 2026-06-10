@@ -1150,10 +1150,12 @@ async def test_handle_message_reply_injects_selected_memory_into_answer(
     # Selection (non-streaming) then the answer (streaming).
     assert cog.client.responses.create_streams == [False, True]
 
-    # The answer request carries the selected memory as a context block, with built-in tools.
-    answer_input = str(cog.client.responses.create_inputs[1])
-    assert "喜歡被叫阿狗" in answer_input
-    assert "function_call_output" not in answer_input
+    # The answer request carries the selected memory as a low-authority assistant note.
+    answer_input = cog.client.responses.create_inputs[1]
+    memory_block = answer_input[-1]
+    assert memory_block["role"] == "assistant"
+    assert "喜歡被叫阿狗" in str(memory_block)
+    assert "function_call_output" not in str(answer_input)
     assert "get_user_memory" not in [
         tool.get("name") for tool in cog.client.responses.create_tools[1]
     ]
