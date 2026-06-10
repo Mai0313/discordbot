@@ -58,10 +58,15 @@ class FakeReply:
         self.files: list[File] | None = None
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
+        self.deleted = False
 
     async def edit(self, content: str) -> None:
         """Records the replacement content passed to edit."""
         self.content = content
+
+    async def delete(self) -> None:
+        """Records that this reply message was deleted."""
+        self.deleted = True
 
     async def reply(self, content: str) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
@@ -1466,3 +1471,37 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     # Backward compatible: a single-line footer still strips cleanly.
     single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body
+
+
+async def test_handle_message_reply_reverts_preview_on_tool_turn(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tool turn that already streamed a preview gets it deleted, not left dangling."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]")
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    # Turn 1 streams a >=30-char preamble (forcing a preview) and only then calls the tool.
+    preamble = "讓我先查一下你的長期記憶再回答你" * 2
+    cog.client.responses.stream_queue = [
+        [
+            _text_event(delta=preamble),
+            _function_call_event(call_id="c", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ],
+        [_text_event(delta="真正的答案"), _completed_event(input_tokens=1, output_tokens=1)],
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The preamble preview (first reply) was deleted; the final answer carries no preamble.
+    assert message.replies[0].deleted is True
+    final = message.replies[-1].content or ""
+    assert final.startswith("真正的答案")
+    assert "讓我先查" not in final

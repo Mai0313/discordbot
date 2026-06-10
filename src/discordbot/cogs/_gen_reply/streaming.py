@@ -124,6 +124,8 @@ class ResponseStreamer(BaseModel):
         # text on tool turns today; this keeps that an invariant rather than an assumption.
         text_before_turn = self.stored_content
         content_started_before_turn = self.content_started
+        displayed_before_turn = self.displayed_content
+        reply_before_turn = self.reply
 
         async for response in responses:
             if response.type in {"response.created", "response.completed"}:
@@ -167,6 +169,17 @@ class ResponseStreamer(BaseModel):
         if function_calls:
             self.stored_content = text_before_turn
             self.content_started = content_started_before_turn
+            # If this tool turn streamed a visible preview before the call arrived, undo
+            # it too, so the preamble never lingers in the channel (e.g. if the follow-up
+            # turn errors out). Delete a reply created this turn; otherwise restore the
+            # prior answer text rather than editing to empty (Discord rejects empty edits).
+            if self.reply is not None and self.displayed_content != displayed_before_turn:
+                if reply_before_turn is None:
+                    await self.reply.delete()
+                    self.reply = None
+                else:
+                    await self.reply.edit(content=displayed_before_turn)
+                self.displayed_content = displayed_before_turn
 
         return function_calls
 
