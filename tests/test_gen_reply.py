@@ -1479,7 +1479,9 @@ async def test_handle_message_reply_reverts_preview_on_tool_turn(
     """A tool turn that already streamed a preview gets it deleted, not left dangling."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]")
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+    )
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.schedule_memory_update",
