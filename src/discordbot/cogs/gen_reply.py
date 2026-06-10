@@ -426,6 +426,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
                     memories.append(memory)
+        # Bound how many memories ride into the answer request so a pathological multi-user
+        # lookup (e.g. a message mentioning many people) can't bloat or overrun it. Each
+        # main.md can be tens of KB before compaction; keep the first few in selection order.
+        max_memories = 8
+        if len(memories) > max_memories:
+            logfire.warn(
+                "Capping selected memories to the per-reply limit",
+                requested=len(memories),
+                kept=max_memories,
+            )
+            memories = memories[:max_memories]
         input_tokens = responses.usage.input_tokens if responses.usage else 0
         output_tokens = responses.usage.output_tokens if responses.usage else 0
         return MemorySelection(

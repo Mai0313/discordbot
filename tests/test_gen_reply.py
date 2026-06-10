@@ -1427,6 +1427,48 @@ async def test_handle_message_reply_resolves_multiple_selection_calls(
     assert "乙記憶" in answer_input
 
 
+async def test_handle_message_reply_caps_injected_memories(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More selected users than the per-reply cap inject only the first few, in order."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    for uid in range(1, 11):
+        write_main_memory(
+            user_id=uid,
+            content=f"v1\n\n## 使用者輪廓\n記憶內容{uid}",
+            identity=f"U{uid} (u{uid}) [id: {uid}]",
+        )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    message = FakeMessage(content="<@999> 大家", author=FakeAuthor(user_id=1))
+    message.mentions = [FakeAuthor(user_id=uid) for uid in range(2, 11)]
+
+    cog.client.responses.select_queue = [
+        [
+            _function_call_item(
+                call_id="c",
+                arguments='{"user_id_list": ["1","2","3","4","5","6","7","8","9","10"]}',
+            )
+        ]
+    ]
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    answer_input = str(cog.client.responses.create_inputs[1])
+    # First 8 (in selection order) are injected; the 9th and 10th are dropped.
+    assert "記憶內容8" in answer_input
+    assert "記憶內容9" not in answer_input
+    assert "記憶內容10" not in answer_input
+
+
 async def test_handle_message_reply_allowlist_includes_reference_author(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
