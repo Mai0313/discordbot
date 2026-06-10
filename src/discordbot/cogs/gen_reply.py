@@ -478,14 +478,24 @@ class ReplyGeneratorCogs(commands.Cog):
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
             if allowed:
-                selection = await self._select_user_memories(
-                    message=message, message_list=message_list, allowed=allowed
-                )
-                selection_input_tokens = selection.input_tokens
-                selection_output_tokens = selection.output_tokens
-                if selection.memories:
-                    answer_input.append(render_memory_context_block(memories=selection.memories))
-                    memory_labels = memory_lookup_labels(memories=selection.memories)
+                # Memory selection is an optional preflight; a provider/proxy hiccup here must
+                # never turn an answerable message into the generic error path.
+                try:
+                    selection = await self._select_user_memories(
+                        message=message, message_list=message_list, allowed=allowed
+                    )
+                except Exception:
+                    logfire.warn(
+                        "Memory selection failed; answering without memory", _exc_info=True
+                    )
+                else:
+                    selection_input_tokens = selection.input_tokens
+                    selection_output_tokens = selection.output_tokens
+                    if selection.memories:
+                        answer_input.append(
+                            render_memory_context_block(memories=selection.memories)
+                        )
+                        memory_labels = memory_lookup_labels(memories=selection.memories)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
         # reflect both LLM calls; the answer stream sums its own usage on top.

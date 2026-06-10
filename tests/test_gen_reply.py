@@ -695,9 +695,15 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     class FakeResponder:
         """Records the message handed to the streaming responder."""
 
-        def __init__(self, message: FakeMessage, memory_lookups: list[str] | None = None) -> None:
+        def __init__(
+            self,
+            message: FakeMessage,
+            memory_lookups: list[str] | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+        ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups
+            del memory_lookups, input_tokens, output_tokens
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -886,9 +892,15 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     class FakeResponder:
         """Stands in for the answer-phase streamer without real streaming."""
 
-        def __init__(self, message: FakeMessage, memory_lookups: list[str] | None = None) -> None:
+        def __init__(
+            self,
+            message: FakeMessage,
+            memory_lookups: list[str] | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+        ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups
+            del memory_lookups, input_tokens, output_tokens
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -959,9 +971,15 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     class FakeResponder:
         """Stands in for the answer-phase streamer without real streaming."""
 
-        def __init__(self, message: FakeMessage, memory_lookups: list[str] | None = None) -> None:
+        def __init__(
+            self,
+            message: FakeMessage,
+            memory_lookups: list[str] | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+        ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups
+            del memory_lookups, input_tokens, output_tokens
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1005,9 +1023,15 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     class FakeResponder:
         """Stands in for the answer-phase streamer without real streaming."""
 
-        def __init__(self, message: FakeMessage, memory_lookups: list[str] | None = None) -> None:
+        def __init__(
+            self,
+            message: FakeMessage,
+            memory_lookups: list[str] | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+        ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups
+            del memory_lookups, input_tokens, output_tokens
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1427,6 +1451,42 @@ async def test_handle_message_reply_allowlist_includes_reference_author(
     select_input = str(cog.client.responses.create_inputs[0])
     assert "[id: 7] Parent (parent)" in select_input
     assert "[id: 1] Tester (tester)" in select_input
+
+
+async def test_handle_message_reply_continues_when_selection_fails(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing memory-selection request must not break the reply; it answers without memory."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    async def boom(
+        message: FakeMessage, message_list: list[object], allowed: dict[int, str]
+    ) -> object:
+        """Simulates a selection-request failure."""
+        del message, message_list, allowed
+        raise RuntimeError("selection provider error")
+
+    monkeypatch.setattr(cog, "_select_user_memories", boom)
+
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="照常回答"), _completed_event(input_tokens=5, output_tokens=6)]
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The answer request still ran and produced a reply, with no memory injected and no 🧠.
+    assert (message.replies[0].content or "").startswith("照常回答")
+    assert "🧠" not in (message.replies[0].content or "")
 
 
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
