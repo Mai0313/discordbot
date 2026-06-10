@@ -169,19 +169,30 @@ class ResponseStreamer(BaseModel):
         if function_calls:
             self.stored_content = text_before_turn
             self.content_started = content_started_before_turn
-            # If this tool turn streamed a visible preview before the call arrived, undo
-            # it too, so the preamble never lingers in the channel (e.g. if the follow-up
-            # turn errors out). Delete a reply created this turn; otherwise restore the
-            # prior answer text rather than editing to empty (Discord rejects empty edits).
-            if self.reply is not None and self.displayed_content != displayed_before_turn:
-                if reply_before_turn is None:
-                    await self.reply.delete()
-                    self.reply = None
-                else:
-                    await self.reply.edit(content=displayed_before_turn)
-                self.displayed_content = displayed_before_turn
+            await self._revert_tool_turn_preview(
+                reply_before_turn=reply_before_turn, displayed_before_turn=displayed_before_turn
+            )
 
         return function_calls
+
+    async def _revert_tool_turn_preview(
+        self, *, reply_before_turn: Message | None, displayed_before_turn: str
+    ) -> None:
+        """Undoes a Discord preview streamed during a turn that turned out to be a tool call.
+
+        Tool turns carry no user-facing answer, so a preamble preview must not linger in
+        the channel (e.g. if the follow-up turn errors out). A reply created this turn is
+        deleted; one that already showed a prior answer is restored to that text rather
+        than edited to empty, which Discord rejects.
+        """
+        if self.reply is None or self.displayed_content == displayed_before_turn:
+            return
+        if reply_before_turn is None:
+            await self.reply.delete()
+            self.reply = None
+        else:
+            await self.reply.edit(content=displayed_before_turn)
+        self.displayed_content = displayed_before_turn
 
     async def finalize(self) -> str:
         """Writes the reward footer and final reply once all turns are consumed."""
