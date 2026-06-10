@@ -13,14 +13,9 @@ import logfire
 from nextcord import File, Embed, Message
 from pydantic import ValidationError
 from nextcord.ext import commands
-from openai.types.responses.response_input_param import (
-    FunctionCallOutput,
-    ResponseInputParam,
-    EasyInputMessageParam,
-)
+from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
-from openai.types.responses.response_function_tool_call_param import ResponseFunctionToolCallParam
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
@@ -39,22 +34,26 @@ from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
     SUMMARY_PROMPT,
+    MEMORY_SELECT_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
-    dump_user_memories,
+    UserMemory,
     parse_user_id_list,
     memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
     render_callable_users_block,
+    render_memory_context_block,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+
+    from openai.types.responses import ResponseFunctionToolCall
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -382,6 +381,51 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
             return "QA"
 
+    async def _select_user_memories(
+        self,
+        *,
+        message: Message,
+        message_list: list[EasyInputMessageParam],
+        allowed: dict[int, str],
+    ) -> list[UserMemory]:
+        """Phase 1 of a reply: lets the model choose whose long-term memory to read.
+
+        Runs an isolated request offering only the get_user_memory tool (Gemini cannot mix a
+        custom function tool with its built-in search/url tools), then resolves the chosen ids
+        server-side against the allowlist. The result is injected into the answer request.
+        """
+        slow_model = self.runtime_models.slow_model
+        selection_input: ResponseInputParam = [
+            *message_list,
+            render_callable_users_block(allowed=allowed),
+        ]
+        responses = await self.client.responses.create(
+            model=slow_model.name,
+            instructions=MEMORY_SELECT_PROMPT,
+            input=selection_input,
+            reasoning=slow_model.reasoning,
+            tools=[GET_USER_MEMORY_TOOL],
+            stream=False,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
+        )
+        memories: list[UserMemory] = []
+        seen: set[str] = set()
+        for item in responses.output:
+            if item.type != "function_call":
+                continue
+            call = cast("ResponseFunctionToolCall", item)
+            if call.name != "get_user_memory":
+                continue
+            for memory in resolve_user_memories(
+                user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
+            ):
+                if memory.user_id not in seen:
+                    seen.add(memory.user_id)
+                    memories.append(memory)
+        return memories
+
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
@@ -412,64 +456,40 @@ class ReplyGeneratorCogs(commands.Cog):
             *current_message,
         ]
 
-        # Long-term memory is no longer injected: the slow model decides whether and
-        # whose memory to read by calling the get_user_memory tool. The allowlist
-        # (conversation authors + mentioned users, minus the bot) is the permission
-        # boundary; `message_list` stays memory-free for phase-1 extraction.
+        # Gemini cannot use a custom function tool together with its built-in search/url
+        # tools, so memory retrieval is two-phase: phase 1 lets the model pick whose
+        # long-term memory to read via get_user_memory (no built-in tools), and phase 2
+        # streams the answer with the built-in tools always available and any selected
+        # memory injected as context. The allowlist (conversation authors + mentioned
+        # users, minus the bot) is the permission boundary.
         slow_model = self.runtime_models.slow_model
-        base_tools = list(slow_model.tools)
-        tools = base_tools
-        running_input: ResponseInputParam = [*message_list]
-        allowed: dict[int, str] = {}
+        answer_input: ResponseInputParam = [*message_list]
+        memory_labels: list[str] = []
         if memory_enabled and self.bot.user:
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
             if allowed:
-                tools = [*base_tools, GET_USER_MEMORY_TOOL]
-                running_input.append(render_callable_users_block(allowed=allowed))
+                memories = await self._select_user_memories(
+                    message=message, message_list=message_list, allowed=allowed
+                )
+                if memories:
+                    answer_input.append(render_memory_context_block(memories=memories))
+                    memory_labels = memory_lookup_labels(memories=memories)
 
-        streamer = ResponseStreamer(message=message)
-        for turn in range(3):
-            # The final turn drops the memory tool so a tool-looping model is always
-            # forced to produce a text answer instead of exhausting the turn cap.
-            turn_tools = tools if turn < 2 else base_tools
-            responses = await self.client.responses.create(
-                model=slow_model.name,
-                instructions=system_prompt,
-                input=running_input,
-                reasoning=slow_model.reasoning,
-                tools=turn_tools,
-                stream=True,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
-            )
-            function_calls = await streamer.consume_turn(responses=responses)
-            if not function_calls:
-                break
-            for call in function_calls:
-                memories = resolve_user_memories(
-                    user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
-                )
-                streamer.memory_lookups.extend(memory_lookup_labels(memories=memories))
-                running_input.append(
-                    ResponseFunctionToolCallParam(
-                        type="function_call",
-                        call_id=call.call_id,
-                        name=call.name,
-                        arguments=call.arguments,
-                    )
-                )
-                running_input.append(
-                    FunctionCallOutput(
-                        type="function_call_output",
-                        call_id=call.call_id,
-                        output=dump_user_memories(memories=memories),
-                    )
-                )
-
-        full_reply = await streamer.finalize()
+        streamer = ResponseStreamer(message=message, memory_lookups=memory_labels)
+        responses = await self.client.responses.create(
+            model=slow_model.name,
+            instructions=system_prompt,
+            input=answer_input,
+            reasoning=slow_model.reasoning,
+            tools=list(slow_model.tools),
+            stream=True,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
+        )
+        full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
                 hist_messages=hist_messages,

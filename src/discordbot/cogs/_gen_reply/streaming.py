@@ -5,7 +5,7 @@ import re
 from openai import AsyncStream
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from openai.types.responses import ResponseStreamEvent, ResponseFunctionToolCall
+from openai.types.responses import ResponseStreamEvent
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
@@ -22,24 +22,24 @@ DISCORD_MESSAGE_LIMIT = 2000
 
 
 class ResponseStreamer(BaseModel):
-    """Renders a (possibly multi-turn) streaming Responses API reply onto a message.
+    """Renders one streaming Responses API reply onto a Discord message.
 
-    One instance spans the whole agentic reply: the cog calls `consume_turn` for each
-    Responses stream (re-calling the model after a `get_user_memory` tool turn) and
-    `finalize` once at the end. Display, usage, and the lazily-created Discord reply
-    accumulate across turns so intermediate tool-only turns add nothing visible.
+    The cog calls `stream` once with the answer-turn stream; text is previewed as it
+    arrives, then a usage footer (and an optional memory-credit line) is written. Memory
+    lookups are decided in a separate request before streaming, so the labels are passed
+    in via `memory_lookups` rather than discovered here.
 
     Attributes:
         message: The Discord message being answered and replied to.
-        stored_content: The reply text accumulated across all turns.
+        stored_content: The accumulated reply text.
         reply: The Discord reply message, created lazily on the first text delta.
         displayed_content: The text last written to the Discord reply.
         content_started: Whether the first non-newline text delta has been seen.
-        model_name: The model name reported by the latest turn, for the usage footer.
-        input_tokens: Input tokens summed across all turns.
-        output_tokens: Output tokens summed across all turns.
-        used_web_search: Whether any turn used a native web-search / grounding tool.
-        memory_lookups: Labels of users whose stored memory was read this reply, for the footer.
+        model_name: The model name reported by the stream, for the usage footer.
+        input_tokens: Input tokens reported by the stream.
+        output_tokens: Output tokens reported by the stream.
+        used_web_search: Whether the reply used a native web-search / grounding tool.
+        memory_lookups: Labels of users whose stored memory was injected this reply, for the footer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -93,7 +93,7 @@ class ResponseStreamer(BaseModel):
             await reply.edit(content=preview)
         return reply, preview
 
-    async def _finalize(self, reply: Message | None, content: str, footer: str) -> Message:
+    async def _write_final_message(self, reply: Message | None, content: str, footer: str) -> None:
         """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
@@ -105,34 +105,15 @@ class ResponseStreamer(BaseModel):
         previous = reply
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
-        return reply
 
-    async def consume_turn(  # noqa: C901 -- dispatches on multiple Responses API stream event types
-        self, *, responses: AsyncStream[ResponseStreamEvent]
-    ) -> list[ResponseFunctionToolCall]:
-        """Streams one turn into the accumulated state and returns its tool calls.
-
-        Text deltas extend the persistent reply, usage is summed onto the instance,
-        and any `get_user_memory` function calls are returned so the cog can resolve
-        them and re-call the model. An empty list means this was the final turn.
-        """
-        function_calls: list[ResponseFunctionToolCall] = []
+    async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
+        """Streams the reply, accumulating text, usage, and web-search state onto the instance."""
         counted_content = 0
-        # Snapshot so a turn that resolves into a get_user_memory call can roll back any
-        # preamble text it streamed: tool turns carry no user-facing answer, so committing
-        # their text would prepend it to the real answer from the next turn. Gemini emits no
-        # text on tool turns today; this keeps that an invariant rather than an assumption.
-        text_before_turn = self.stored_content
-        content_started_before_turn = self.content_started
-        displayed_before_turn = self.displayed_content
-        reply_before_turn = self.reply
-
         async for response in responses:
             if response.type in {"response.created", "response.completed"}:
-                # Capture the model on `created` too so the usage footer never
-                # falls back to an empty model name (and $0.00000000) when a
-                # stream ends without a clean `completed` event. Usage only
-                # arrives on `completed`, and is summed across turns.
+                # Capture the model on `created` too so the usage footer never falls back
+                # to an empty model name (and $0.00000000) when a stream ends without a
+                # clean `completed` event. Usage only arrives on `completed`.
                 self.model_name = response.response.model
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
@@ -161,41 +142,9 @@ class ResponseStreamer(BaseModel):
                         displayed_content=self.displayed_content,
                     )
                     counted_content = 0
-            elif response.type == "response.output_item.done":
-                item = response.item
-                if item.type == "function_call" and item.name == "get_user_memory":
-                    function_calls.append(item)
 
-        if function_calls:
-            self.stored_content = text_before_turn
-            self.content_started = content_started_before_turn
-            await self._revert_tool_turn_preview(
-                reply_before_turn=reply_before_turn, displayed_before_turn=displayed_before_turn
-            )
-
-        return function_calls
-
-    async def _revert_tool_turn_preview(
-        self, *, reply_before_turn: Message | None, displayed_before_turn: str
-    ) -> None:
-        """Undoes a Discord preview streamed during a turn that turned out to be a tool call.
-
-        Tool turns carry no user-facing answer, so a preamble preview must not linger in
-        the channel (e.g. if the follow-up turn errors out). A reply created this turn is
-        deleted; one that already showed a prior answer is restored to that text rather
-        than edited to empty, which Discord rejects.
-        """
-        if self.reply is None or self.displayed_content == displayed_before_turn:
-            return
-        if reply_before_turn is None:
-            await self.reply.delete()
-            self.reply = None
-        else:
-            await self.reply.edit(content=displayed_before_turn)
-        self.displayed_content = displayed_before_turn
-
-    async def finalize(self) -> str:
-        """Writes the reward footer and final reply once all turns are consumed."""
+    async def _finalize_reply(self) -> str:
+        """Writes the reward footer and final reply once the stream is consumed."""
         input_rate, output_rate = get_token_rates(model_name=self.model_name)
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
@@ -234,7 +183,9 @@ class ResponseStreamer(BaseModel):
         usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_line}"
 
         # Final update to ensure complete message is displayed.
-        await self._finalize(reply=self.reply, content=self.stored_content, footer=usage_footer)
+        await self._write_final_message(
+            reply=self.reply, content=self.stored_content, footer=usage_footer
+        )
         self.stored_content += usage_footer
 
         if self.used_web_search:
@@ -243,6 +194,6 @@ class ResponseStreamer(BaseModel):
         return self.stored_content
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
-        """Consumes a single-turn stream and finalizes; convenience for tool-free paths."""
-        await self.consume_turn(responses=responses)
-        return await self.finalize()
+        """Streams the reply onto the message and writes the usage footer; returns the full text."""
+        await self._consume(responses=responses)
+        return await self._finalize_reply()
