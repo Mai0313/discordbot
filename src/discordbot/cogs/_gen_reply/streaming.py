@@ -118,6 +118,12 @@ class ResponseStreamer(BaseModel):
         """
         function_calls: list[ResponseFunctionToolCall] = []
         counted_content = 0
+        # Snapshot so a turn that resolves into a get_user_memory call can roll back any
+        # preamble text it streamed: tool turns carry no user-facing answer, so committing
+        # their text would prepend it to the real answer from the next turn. Gemini emits no
+        # text on tool turns today; this keeps that an invariant rather than an assumption.
+        text_before_turn = self.stored_content
+        content_started_before_turn = self.content_started
 
         async for response in responses:
             if response.type in {"response.created", "response.completed"}:
@@ -158,6 +164,10 @@ class ResponseStreamer(BaseModel):
                 if item.type == "function_call" and item.name == "get_user_memory":
                     function_calls.append(item)
 
+        if function_calls:
+            self.stored_content = text_before_turn
+            self.content_started = content_started_before_turn
+
         return function_calls
 
     async def finalize(self) -> str:
@@ -186,13 +196,18 @@ class ResponseStreamer(BaseModel):
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
             balance_text = currency_text(amount=reward, signed=True, compact=True)
-        # Appended after the ⬇ anchor so USAGE_FOOTER_RE still strips the whole line;
-        # dedupes while preserving lookup order across turns.
-        memory_note = ""
+        # Credit looked-up memory owners on a second -# subtext line. Dedupe while
+        # preserving lookup order; past two names collapse to "等 N 人" so a busy
+        # lookup stays short. USAGE_FOOTER_RE matches this optional second line too.
+        memory_line = ""
         if self.memory_lookups:
-            memory_note = f" · 🧠 {', '.join(dict.fromkeys(self.memory_lookups))}"
+            names = list(dict.fromkeys(self.memory_lookups))
+            if len(names) > 2:
+                memory_line = f"\n-# 🧠 已讀取 {', '.join(names[:2])} 等 {len(names)} 人的記憶"
+            else:
+                memory_line = f"\n-# 🧠 已讀取 {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
-        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_note}"
+        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_line}"
 
         # Final update to ensure complete message is displayed.
         await self._finalize(reply=self.reply, content=self.stored_content, footer=usage_footer)

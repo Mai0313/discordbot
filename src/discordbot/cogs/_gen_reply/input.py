@@ -24,8 +24,10 @@ from discordbot.utils.model_pricing import get_supported_modalities
 # Without this, the model performs in-context learning on its own past footers
 # and starts hallucinating fake "-# model · ⬆ ... ⬇ ... · $... · ..." lines into
 # fresh replies. Anchored on the `\n\n-# ` separator plus the ⬆/⬇ token-count
-# icons, which never appear together in user-authored content.
-USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*$")
+# icons, which never appear together in user-authored content. The optional
+# trailing `\n-# ...` line matches the second subtext line that credits looked-up
+# memory owners, so the whole footer is stripped as one unit.
+USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 
 # A display name (or legacy username) containing an `[id: ...]`-shaped string
 # could forge the sender-identity prefix this module prepends, which the reply

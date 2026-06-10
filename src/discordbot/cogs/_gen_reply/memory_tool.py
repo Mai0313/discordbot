@@ -9,7 +9,7 @@ drops any requested id outside the allowlist before reading a file.
 
 import json
 
-from nextcord import Message
+from nextcord import User, Member, Message
 from pydantic import Field, BaseModel
 from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -63,17 +63,15 @@ class UserMemory(BaseModel):
     memory: str = Field(description="Consolidated long-term memory markdown, identity-stripped.")
 
 
-def _user_label(user: object) -> str:
+def _user_label(user: Member | User) -> str:
     """Renders a sanitized `display (username)` label for a Discord user.
 
     Mirrors `render_author_identity` minus the `[id: ...]` suffix (the id is the
     allowlist key) and collapses whitespace so the callable-users block stays
     one line per user.
     """
-    display_name = getattr(user, "display_name", "") or ""
-    username = getattr(user, "name", "") or ""
-    safe_display = " ".join(sanitize_identity(value=display_name).split())
-    safe_username = " ".join(sanitize_identity(value=username).split())
+    safe_display = " ".join(sanitize_identity(value=user.display_name).split())
+    safe_username = " ".join(sanitize_identity(value=user.name).split())
     return f"{safe_display} ({safe_username})"
 
 

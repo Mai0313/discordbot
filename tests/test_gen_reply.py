@@ -1162,8 +1162,8 @@ async def test_handle_message_reply_runs_memory_tool_then_answers(
     # The visible reply is the answer turn's text with a summed-usage footer (10+5, 20+6).
     assert (message.replies[0].content or "").startswith("嗨 阿狗")
     assert "⬆ 15 ⬇ 26" in (message.replies[0].content or "")
-    # The footer credits whose memory was actually read.
-    assert "🧠 Tester (tester)" in (message.replies[0].content or "")
+    # The footer credits whose memory was actually read, on its own -# subtext line.
+    assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in (message.replies[0].content or "")
     assert captured[0].startswith("嗨 阿狗")
 
 
@@ -1221,3 +1221,237 @@ async def test_handle_message_reply_skips_memory_when_model_declines(
     assert "function_call_output" not in str(cog.client.responses.create_inputs)
     assert "機密" not in str(cog.client.responses.create_inputs)
     assert (message.replies[0].content or "").startswith("直接回答")
+
+
+async def test_handle_message_reply_drops_memory_for_non_allowlisted_id(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model asking for an id absent from the conversation gets no memory back."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    # Memory exists for user 42, who never appears in the conversation.
+    write_main_memory(
+        user_id=42, content="v1\n\n## 使用者輪廓\n機密外人記憶", identity="Outsider (out) [id: 42]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="cid-1", arguments='{"user_id_list": ["42"]}'),
+            _completed_event(input_tokens=10, output_tokens=20),
+        ],
+        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)],
+    ]
+
+    message = FakeMessage(content="<@999> 查 42 的記憶", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The allowlist (author 1 only) drops id 42: empty tool output, no leak, no 🧠 note.
+    second_input = cog.client.responses.create_inputs[1]
+    outputs = [
+        i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"
+    ]
+    assert outputs[-1]["output"] == "[]"
+    assert "機密外人記憶" not in str(cog.client.responses.create_inputs)
+    assert "🧠" not in (message.replies[0].content or "")
+
+
+async def test_handle_message_reply_caps_at_three_turns_and_drops_tool_last(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model that calls the tool every turn stops at 3 creates; the last turn omits the tool."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    def tool_turn() -> list[SimpleNamespace]:
+        """A fresh tool-calling turn (events are consumed once per create)."""
+        return [
+            _function_call_event(call_id="cid", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ]
+
+    cog.client.responses.stream_queue = [tool_turn(), tool_turn(), tool_turn()]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # Exactly three create() calls (range(3) cap), no fourth despite a tool call each turn.
+    assert cog.client.responses.create_streams == [True, True, True]
+    assert "get_user_memory" in str(cog.client.responses.create_tools[0])
+    assert "get_user_memory" in str(cog.client.responses.create_tools[1])
+    # The final turn drops the memory tool to force a text answer.
+    assert "get_user_memory" not in str(cog.client.responses.create_tools[2])
+
+
+async def test_handle_message_reply_footer_lists_memory_owners_in_order(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Looked-up owners render in lookup order and collapse to 等 N 人 past two."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    for uid, ident in (
+        (1, "Tester (tester) [id: 1]"),
+        (2, "Alice (alice) [id: 2]"),
+        (3, "Bob (bob) [id: 3]"),
+    ):
+        write_main_memory(user_id=uid, content=f"v1\n\n## 使用者輪廓\n{uid}", identity=ident)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    alice = FakeAuthor(user_id=2)
+    alice.name, alice.display_name = "alice", "Alice"
+    bob = FakeAuthor(user_id=3)
+    bob.name, bob.display_name = "bob", "Bob"
+    message = FakeMessage(content="<@999> 大家的記憶", author=FakeAuthor(user_id=1))
+    message.mentions = [alice, bob]
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="c", arguments='{"user_id_list": ["1", "2", "3"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ],
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)],
+    ]
+
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    content = message.replies[0].content or ""
+    assert "\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶" in content
+
+
+async def test_handle_message_reply_footer_dedupes_repeat_lookups(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Looking the same user up across turns credits them once in the footer."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="c1", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ],
+        [
+            _function_call_event(call_id="c2", arguments='{"user_id_list": ["1"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ],
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)],
+    ]
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    content = message.replies[0].content or ""
+    assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in content
+    assert content.count("Tester (tester)") == 1
+
+
+async def test_handle_message_reply_handles_multiple_calls_in_one_turn(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two get_user_memory calls in one turn each get their own resolved output."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        user_id=1, content="v1\n\n## 使用者輪廓\n甲記憶", identity="Tester (tester) [id: 1]"
+    )
+    write_main_memory(
+        user_id=2, content="v1\n\n## 使用者輪廓\n乙記憶", identity="Alice (alice) [id: 2]"
+    )
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+
+    alice = FakeAuthor(user_id=2)
+    alice.name, alice.display_name = "alice", "Alice"
+    message = FakeMessage(content="<@999> 兩個人", author=FakeAuthor(user_id=1))
+    message.mentions = [alice]
+
+    cog.client.responses.stream_queue = [
+        [
+            _function_call_event(call_id="cid-1", arguments='{"user_id_list": ["1"]}'),
+            _function_call_event(call_id="cid-2", arguments='{"user_id_list": ["2"]}'),
+            _completed_event(input_tokens=1, output_tokens=1),
+        ],
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)],
+    ]
+
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    second_input = cog.client.responses.create_inputs[1]
+    calls = [i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call"]
+    outputs = [
+        i for i in second_input if isinstance(i, dict) and i.get("type") == "function_call_output"
+    ]
+    assert {c["call_id"] for c in calls} == {"cid-1", "cid-2"}
+    assert {o["call_id"] for o in outputs} == {"cid-1", "cid-2"}
+    assert "甲記憶" in str(outputs)
+    assert "乙記憶" in str(outputs)
+
+
+async def test_handle_message_reply_allowlist_includes_reference_author(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A referenced message's author becomes callable via the participant walk."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_memory_update",
+        lambda user_id, message_list, full_reply, extractor, identity: None,
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+
+    parent_author = FakeAuthor(user_id=7)
+    parent_author.name, parent_author.display_name = "parent", "Parent"
+    parent = FakeMessage(content="原訊息", author=parent_author)
+    parent.id = 988
+
+    message = FakeMessage(content="<@999> 回覆他", author=FakeAuthor(user_id=1))
+    message.reference = FakeReference(resolved=parent)
+
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The model declined the tool, but the reference author (7) is offered as callable.
+    first_input = str(cog.client.responses.create_inputs[0])
+    assert "[id: 7] Parent (parent)" in first_input
+    assert "[id: 1] Tester (tester)" in first_input
+
+
+def test_usage_footer_re_strips_memory_credit_second_line() -> None:
+    """The optional second -# memory line is stripped together with the usage footer."""
+    body = "答案內容"
+    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# 🧠 已讀取 Tester (tester) 的記憶"
+    assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
+    # Backward compatible: a single-line footer still strips cleanly.
+    single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
+    assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body

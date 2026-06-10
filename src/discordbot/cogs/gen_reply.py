@@ -65,6 +65,13 @@ def _message_has_url(content: str) -> bool:
     return _MESSAGE_URL_RE.search(string=content) is not None
 
 
+async def _no_participant_messages() -> list[Message]:
+    """Empty stand-in for the participant fetch so the SUMMARY route can skip it while
+    the rest of the reply context still loads concurrently in one gather.
+    """
+    return []
+
+
 class ReplyGeneratorCogs(commands.Cog):
     """Generates AI replies for Discord messages.
 
@@ -379,10 +386,25 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
         """Handles generating text replies using history and context."""
-        hist_messages, reference_messages, current_message = await asyncio.gather(
+        # The allowlist needs raw Message objects (authors + mentions); fetch them in the
+        # same gather so they overlap with the rendered context. SUMMARY
+        # (memory_enabled=False) substitutes an empty fetch to skip the second history
+        # read entirely while keeping the gather shape and result types precise.
+        collect_participants = (
+            self._collect_participant_messages(message=message, history_limit=history_limit)
+            if memory_enabled and self.bot.user
+            else _no_participant_messages()
+        )
+        (
+            hist_messages,
+            reference_messages,
+            current_message,
+            participant_messages,
+        ) = await asyncio.gather(
             self._get_history_message(message=message, limit=history_limit),
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
+            collect_participants,
         )
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
@@ -400,11 +422,6 @@ class ReplyGeneratorCogs(commands.Cog):
         running_input: ResponseInputParam = [*message_list]
         allowed: dict[int, str] = {}
         if memory_enabled and self.bot.user:
-            # Only the allowlist needs the raw Message objects, so the SUMMARY route
-            # (memory_enabled=False) skips this second history fetch entirely.
-            participant_messages = await self._collect_participant_messages(
-                message=message, history_limit=history_limit
-            )
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
