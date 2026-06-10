@@ -14,7 +14,7 @@ from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
-from discordbot.cogs._memory.store import write_main_memory
+from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -24,6 +24,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     resolve_user_memories,
     build_memory_allowlist,
 )
+from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 
 TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
@@ -35,11 +36,12 @@ if TYPE_CHECKING:
 
 
 class FakeGuild:
-    """Minimal guild stub with a stable ID."""
+    """Minimal guild stub with a stable ID and name."""
 
-    def __init__(self, guild_id: int = 1) -> None:
-        """Initializes the fake guild ID."""
+    def __init__(self, guild_id: int = 1, name: str = "Test Guild") -> None:
+        """Initializes the fake guild ID and name."""
         self.id = guild_id
+        self.name = name
 
 
 class FakeReference:
@@ -905,7 +907,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     """The selection phase offers get_user_memory + callable users; the answer phase keeps built-ins."""
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n喜歡簡短回覆", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        identity="Tester (tester) [id: 1]",
     )
 
     class FakeResponder:
@@ -929,17 +933,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
 
     scheduled: list[dict[str, object]] = []
 
-    def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
-    ) -> None:
+    def fake_schedule(**kwargs: object) -> None:
         """Records the scheduled memory update arguments."""
-        scheduled.append({
-            "user_id": user_id,
-            "message_list": message_list,
-            "full_reply": full_reply,
-            "extractor": extractor,
-            "identity": identity,
-        })
+        scheduled.append(kwargs)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
@@ -972,7 +968,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert isinstance(scheduled_list, list)
     assert "get_user_memory" not in str(scheduled_list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
-    assert scheduled[0]["user_id"] == 1
+    assert scheduled[0]["scope"] == user_scope(user_id=1)
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
@@ -1008,13 +1004,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             del responses
             return "回覆"
 
-    scheduled: list[int] = []
+    scheduled: list[object] = []
 
-    def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
-    ) -> None:
+    def fake_schedule(**kwargs: object) -> None:
         """Records that a memory update was scheduled."""
-        scheduled.append(user_id)
+        scheduled.append(kwargs["scope"])
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
@@ -1031,7 +1025,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert "get_user_memory" not in [
         tool.get("name") for tool in cog.client.responses.create_tools[-1]
     ]
-    assert scheduled == [1]
+    assert scheduled == [user_scope(user_id=1), server_scope(bot_id=999, server_id=1)]
 
 
 async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
@@ -1040,7 +1034,9 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     """Verifies memory_enabled=False (summary route) bypasses injection and extraction."""
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n不該被注入", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n不該被注入",
+        identity="Tester (tester) [id: 1]",
     )
 
     class FakeResponder:
@@ -1062,13 +1058,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
             del responses
             return "回覆"
 
-    scheduled: list[int] = []
+    scheduled: list[object] = []
 
-    def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
-    ) -> None:
+    def fake_schedule(**kwargs: object) -> None:
         """Records that a memory update was scheduled."""
-        scheduled.append(user_id)
+        scheduled.append(kwargs["scope"])
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
@@ -1156,7 +1150,11 @@ def test_parse_user_id_list_handles_valid_and_malformed() -> None:
 def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
     del memory_isolated_dir
-    write_main_memory(user_id=1, content="v1\n\n## 使用者輪廓\n甲的記憶", identity="A (a) [id: 1]")
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲的記憶",
+        identity="A (a) [id: 1]",
+    )
     allowed = {1: "A (a)", 2: "B (b)"}
 
     memories = resolve_user_memories(user_id_list=["1", "<@1>", "3", "abc", "2"], allowed=allowed)
@@ -1175,16 +1173,16 @@ async def test_handle_message_reply_injects_selected_memory_into_answer(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n喜歡被叫阿狗", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n喜歡被叫阿狗",
+        identity="Tester (tester) [id: 1]",
     )
 
-    captured: list[str] = []
+    captured: list[object] = []
 
-    def fake_schedule(
-        user_id: int, message_list: list[object], full_reply: str, extractor: object, identity: str
-    ) -> None:
+    def fake_schedule(**kwargs: object) -> None:
         """Captures the finalized reply handed to extraction."""
-        captured.append(full_reply)
+        captured.append(kwargs["full_reply"])
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
@@ -1229,13 +1227,12 @@ async def test_handle_message_reply_footer_includes_selection_usage(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲",
+        identity="Tester (tester) [id: 1]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     cog.client.responses.select_queue = [
         [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
@@ -1259,10 +1256,7 @@ async def test_handle_message_reply_footer_omits_users_without_memory(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()  # No memory written for the author.
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     cog.client.responses.select_queue = [
         [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
@@ -1286,13 +1280,12 @@ async def test_handle_message_reply_skips_memory_when_model_declines(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n機密", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n機密",
+        identity="Tester (tester) [id: 1]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     # select_queue left empty: the selection model declines to call the tool.
     cog.client.responses.stream_queue = [
@@ -1316,13 +1309,12 @@ async def test_handle_message_reply_drops_memory_for_non_allowlisted_id(
     cog = _cog()
     # Memory exists for user 42, who never appears in the conversation.
     write_main_memory(
-        user_id=42, content="v1\n\n## 使用者輪廓\n機密外人記憶", identity="Outsider (out) [id: 42]"
+        scope=user_scope(user_id=42),
+        content="v1\n\n## 使用者輪廓\n機密外人記憶",
+        identity="Outsider (out) [id: 42]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     cog.client.responses.select_queue = [
         [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
@@ -1350,12 +1342,11 @@ async def test_handle_message_reply_footer_lists_memory_owners_in_order(
         (2, "Alice (alice) [id: 2]"),
         (3, "Bob (bob) [id: 3]"),
     ):
-        write_main_memory(user_id=uid, content=f"v1\n\n## 使用者輪廓\n{uid}", identity=ident)
+        write_main_memory(
+            scope=user_scope(user_id=uid), content=f"v1\n\n## 使用者輪廓\n{uid}", identity=ident
+        )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     alice = FakeAuthor(user_id=2)
     alice.name, alice.display_name = "alice", "Alice"
@@ -1384,13 +1375,12 @@ async def test_handle_message_reply_footer_dedupes_repeat_lookups(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲",
+        identity="Tester (tester) [id: 1]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     cog.client.responses.select_queue = [
         [
@@ -1417,16 +1407,17 @@ async def test_handle_message_reply_resolves_multiple_selection_calls(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n甲記憶", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲記憶",
+        identity="Tester (tester) [id: 1]",
     )
     write_main_memory(
-        user_id=2, content="v1\n\n## 使用者輪廓\n乙記憶", identity="Alice (alice) [id: 2]"
+        scope=user_scope(user_id=2),
+        content="v1\n\n## 使用者輪廓\n乙記憶",
+        identity="Alice (alice) [id: 2]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     alice = FakeAuthor(user_id=2)
     alice.name, alice.display_name = "alice", "Alice"
@@ -1458,15 +1449,12 @@ async def test_handle_message_reply_caps_injected_memories(
     cog = _cog()
     for uid in range(1, 11):
         write_main_memory(
-            user_id=uid,
+            scope=user_scope(user_id=uid),
             content=f"v1\n\n## 使用者輪廓\n記憶內容{uid}",
             identity=f"U{uid} (u{uid}) [id: {uid}]",
         )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     message = FakeMessage(content="<@999> 大家", author=FakeAuthor(user_id=1))
     message.mentions = [FakeAuthor(user_id=uid) for uid in range(2, 11)]
@@ -1499,10 +1487,7 @@ async def test_handle_message_reply_allowlist_includes_reference_author(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
 
     parent_author = FakeAuthor(user_id=7)
@@ -1528,13 +1513,12 @@ async def test_handle_message_reply_continues_when_selection_fails(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        user_id=1, content="v1\n\n## 使用者輪廓\n甲", identity="Tester (tester) [id: 1]"
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲",
+        identity="Tester (tester) [id: 1]",
     )
 
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.schedule_memory_update",
-        lambda user_id, message_list, full_reply, extractor, identity: None,
-    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     async def boom(
         message: FakeMessage, message_list: list[object], allowed: dict[int, str]
@@ -1565,3 +1549,87 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     # Backward compatible: a single-line footer still strips cleanly.
     single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body
+
+
+class _ServerMemoryResponder:
+    """Answer-phase streamer stub that returns a fixed reply."""
+
+    def __init__(
+        self,
+        message: FakeMessage,
+        memory_lookups: list[str] | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> None:
+        """Stores the streaming target message and ignores usage seeds."""
+        del memory_lookups, input_tokens, output_tokens
+        self.message = message
+
+    async def stream(self, *, responses: object) -> str:
+        """Returns placeholder reply content."""
+        del responses
+        return "回覆"
+
+
+async def test_handle_message_reply_injects_and_schedules_server_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a guild the bot injects the server's memory and schedules a server-scope update."""
+    cog = _cog()
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 伺服器輪廓\n這個社群很愛嘴",
+        identity="Test Guild [id: 1]",
+    )
+    scheduled: list[dict[str, object]] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled memory update."""
+        scheduled.append(kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The server memory rides into the answer request as background context.
+    assert "這個社群很愛嘴" in str(cog.client.responses.create_inputs[-1])
+    # The user update is scheduled first, the server update second.
+    assert len(scheduled) == 2
+    user_update, server_update = scheduled
+    assert user_update["scope"] == user_scope(user_id=1)
+    assert server_update["scope"] == server_scope(bot_id=999, server_id=1)
+    assert server_update["subject"] == "target_server_id: 1"
+    assert server_update["extractor"] is cog.server_memory_extractor
+    assert server_update["identity"] == "Test Guild [id: 1]"
+    # The server extractor drives the server-flavor prompts.
+    assert cog.server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
+    assert cog.server_memory_extractor.consolidate_prompt is SERVER_PHASE2_PROMPT
+
+
+async def test_handle_message_reply_skips_server_memory_in_dm(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A DM has no guild, so server memory is neither injected nor scheduled."""
+    cog = _cog()
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 伺服器輪廓\n不該出現",
+        identity="Test Guild [id: 1]",
+    )
+    scheduled: list[object] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled scope."""
+        scheduled.append(kwargs["scope"])
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    message.guild = None
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    assert "不該出現" not in str(cog.client.responses.create_inputs[-1])
+    assert scheduled == [user_scope(user_id=1)]

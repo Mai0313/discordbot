@@ -1,4 +1,10 @@
-"""Background orchestration for the two-phase per-user memory pipeline."""
+"""Background orchestration for the two-phase memory pipeline.
+
+The pipeline is keyed by an opaque scope (see ``store``), so the same
+orchestration drives both per-user and per-server (bot self) memory. The
+flavor-specific bits are injected: ``subject`` names the extraction target and
+``extractor`` carries the flavor's prompts.
+"""
 
 import time
 from typing import Literal
@@ -11,7 +17,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs._memory.store import (
     clear_raw,
-    user_lock,
+    scope_lock,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -43,10 +49,11 @@ class _PendingMemoryUpdate(BaseModel):
     """The newest skipped update request, replayed once the in-flight task ends.
 
     Attributes:
+        subject: The phase-1 extraction directive naming the memory target.
         message_list: Reply-pipeline input messages captured for the skipped turn.
         full_reply: The streamed reply text for the skipped turn.
         extractor: The extraction service to run the replayed update with.
-        identity: Single-line author identity stamped into the main memory
+        identity: Single-line target identity stamped into the main memory
             file as human-inspection metadata.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
@@ -54,6 +61,7 @@ class _PendingMemoryUpdate(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    subject: str
     message_list: SkipValidation[list[EasyInputMessageParam]]
     full_reply: str
     extractor: SkipValidation[MemoryExtractorAI]
@@ -61,25 +69,26 @@ class _PendingMemoryUpdate(BaseModel):
     captured_at: float
 
 
-# Process-level per-user in-flight de-dupe; while one extraction runs, only the
+# Process-level per-scope in-flight de-dupe; while one extraction runs, only the
 # NEWEST skipped turn is kept and replayed afterwards. Its history window
 # already contains the earlier skipped turns, so one replay recovers the
 # dropped signal without a real queue.
-_inflight_tasks: dict[int, asyncio.Task[None]] = {}
-_pending_updates: dict[int, _PendingMemoryUpdate] = {}
+_inflight_tasks: dict[str, asyncio.Task[None]] = {}
+_pending_updates: dict[str, _PendingMemoryUpdate] = {}
 _inflight_loop: asyncio.AbstractEventLoop | None = None
 
-# Per-user consolidation attempt times for the cooldown; monotonic, so it does
+# Per-scope consolidation attempt times for the cooldown; monotonic, so it does
 # not need a loop-change reset. Tests clear it through the conftest fixture.
-_last_consolidation: dict[int, float] = {}
+_last_consolidation: dict[str, float] = {}
 
-# Per-user regeneration attempt times, separate from the consolidation cooldown
+# Per-scope regeneration attempt times, separate from the consolidation cooldown
 # so a manual `/memory regenerate` never starves the automatic background
 # consolidation or vice versa. Recorded at attempt time so failures cool down too.
-_last_regeneration: dict[int, float] = {}
+_last_regeneration: dict[str, float] = {}
 
 # Loop-keyed process-wide semaphore capping concurrent background memory
-# updates so a busy server cannot fan out unbounded LLM work.
+# updates so a busy server cannot fan out unbounded LLM work. Shared across
+# flavors, so per-user and per-server updates draw from the same budget.
 _memory_semaphore_obj: asyncio.Semaphore | None = None
 _memory_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
@@ -94,8 +103,9 @@ def _memory_semaphore() -> asyncio.Semaphore:
     return _memory_semaphore_obj
 
 
-def schedule_memory_update(
-    user_id: int,
+def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) plus the turn payload
+    scope: str,
+    subject: str,
     message_list: list[EasyInputMessageParam],
     full_reply: str,
     extractor: MemoryExtractorAI,
@@ -108,9 +118,10 @@ def schedule_memory_update(
         _inflight_tasks.clear()
         _pending_updates.clear()
         _inflight_loop = loop
-    running = _inflight_tasks.get(user_id)
+    running = _inflight_tasks.get(scope)
     if running is not None and not running.done():
-        _pending_updates[user_id] = _PendingMemoryUpdate(
+        _pending_updates[scope] = _PendingMemoryUpdate(
+            subject=subject,
             message_list=message_list,
             full_reply=full_reply,
             extractor=extractor,
@@ -120,21 +131,22 @@ def schedule_memory_update(
         return
     task = asyncio.create_task(
         _run_memory_update(
-            user_id=user_id,
+            scope=scope,
+            subject=subject,
             message_list=message_list,
             full_reply=full_reply,
             extractor=extractor,
             identity=identity,
         )
     )
-    _inflight_tasks[user_id] = task
-    task.add_done_callback(lambda finished: _finish_memory_update(user_id=user_id, task=finished))
+    _inflight_tasks[scope] = task
+    task.add_done_callback(lambda finished: _finish_memory_update(scope=scope, task=finished))
 
 
-def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
+def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
     """Clears the in-flight slot, logs failures, and replays a pending update."""
-    if _inflight_tasks.get(user_id) is task:
-        _inflight_tasks.pop(user_id, None)
+    if _inflight_tasks.get(scope) is task:
+        _inflight_tasks.pop(scope, None)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
         # CancelledError (a BaseException on 3.11+) out of this callback, and a
@@ -143,16 +155,17 @@ def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
     try:
         task.result()
     except Exception:
-        logfire.warn("Background memory update failed", user_id=user_id, _exc_info=True)
-    pending = _pending_updates.pop(user_id, None)
+        logfire.warn("Background memory update failed", scope=scope, _exc_info=True)
+    pending = _pending_updates.pop(scope, None)
     if pending is None:
         return
-    if cleared_since(user_id=user_id, started_at=pending.captured_at):
-        # The user cleared their memory after this turn was captured; replaying
-        # it would write the pre-clear conversation back into storage.
+    if cleared_since(scope=scope, started_at=pending.captured_at):
+        # The memory was cleared after this turn was captured; replaying it
+        # would write the pre-clear conversation back into storage.
         return
     schedule_memory_update(
-        user_id=user_id,
+        scope=scope,
+        subject=pending.subject,
         message_list=pending.message_list,
         full_reply=pending.full_reply,
         extractor=pending.extractor,
@@ -160,8 +173,9 @@ def _finish_memory_update(user_id: int, task: asyncio.Task[None]) -> None:
     )
 
 
-async def _run_memory_update(
-    user_id: int,
+async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update's flavor + payload
+    scope: str,
+    subject: str,
     message_list: list[EasyInputMessageParam],
     full_reply: str,
     extractor: MemoryExtractorAI,
@@ -170,49 +184,47 @@ async def _run_memory_update(
     """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation."""
     started_at = time.monotonic()
     transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
-    async with user_lock(user_id=user_id), _memory_semaphore():
-        draft = await extractor.extract(target_user_id=user_id, transcript=transcript)
+    async with scope_lock(scope=scope), _memory_semaphore():
+        draft = await extractor.extract(subject=subject, transcript=transcript)
         if draft is None or not draft.has_signal or not draft.memory_markdown:
             return
-        if cleared_since(user_id=user_id, started_at=started_at):
-            # The user cleared their memory while this update was in flight;
-            # dropping the write beats resurrecting deleted memory.
+        if cleared_since(scope=scope, started_at=started_at):
+            # The memory was cleared while this update was in flight; dropping
+            # the write beats resurrecting deleted memory.
             return
-        recent_detail = read_detail_tail(
-            user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS
-        )
+        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         deduped_observations = filter_duplicate_observations(
             observations=draft.observations,
-            existing_text="\n\n".join((read_raw_entries(user_id=user_id), recent_detail)),
+            existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
         )
         if not deduped_observations:
             return
         append_raw_entry(
-            user_id=user_id,
+            scope=scope,
             entry_text=draft.model_copy(
                 update={"observations": deduped_observations}
             ).memory_markdown,
         )
-        if not _should_consolidate(user_id=user_id):
+        if not _should_consolidate(scope=scope):
             return
         # Recorded at attempt time, not success time, so repeated LLM failures
         # are rate-limited by the same cooldown instead of retrying every turn.
-        _last_consolidation[user_id] = time.monotonic()
+        _last_consolidation[scope] = time.monotonic()
         await _consolidate_locked(
-            user_id=user_id, started_at=started_at, extractor=extractor, identity=identity
+            scope=scope, started_at=started_at, extractor=extractor, identity=identity
         )
 
 
-def _should_consolidate(user_id: int) -> bool:
+def _should_consolidate(scope: str) -> bool:
     """Whether the raw backlog warrants a consolidation right now."""
-    if raw_file_bytes(user_id=user_id) >= RAW_CONSOLIDATION_MAX_BYTES:
+    if raw_file_bytes(scope=scope) >= RAW_CONSOLIDATION_MAX_BYTES:
         # A verbose burst consolidates regardless of the cooldown so the raw
         # file cannot sit large until the timer expires.
         return True
-    if count_raw_entries(user_id=user_id) < RAW_CONSOLIDATION_THRESHOLD:
+    if count_raw_entries(scope=scope) < RAW_CONSOLIDATION_THRESHOLD:
         return False
-    last_attempt = _last_consolidation.get(user_id)
-    if last_attempt is None or cleared_since(user_id=user_id, started_at=last_attempt):
+    last_attempt = _last_consolidation.get(scope)
+    if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
         # No prior attempt, or the memory was cleared since it: the fresh
         # post-clear state deserves a prompt first consolidation instead of
         # waiting out a cooldown that belonged to the wiped memory.
@@ -221,22 +233,22 @@ def _should_consolidate(user_id: int) -> bool:
 
 
 async def _consolidate_locked(
-    user_id: int, started_at: float, extractor: MemoryExtractorAI, identity: str
+    scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
 ) -> None:
     """Consolidates accumulated raw entries into the main memory file."""
-    existing_main = read_main_memory(user_id=user_id)
+    existing_main = read_main_memory(scope=scope)
     compact = len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS
     result = await extractor.consolidate(
         existing_main=existing_main,
-        raw_entries=read_raw_entries(user_id=user_id),
-        recent_detail=read_detail_tail(user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+        raw_entries=read_raw_entries(scope=scope),
+        recent_detail=read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
         today=datetime.now(UTC).date().isoformat(),
         compact=compact,
     )
     if result is None:
         # LLM path failed; keep the raw entries so the next update retries.
         return
-    if cleared_since(user_id=user_id, started_at=started_at):
+    if cleared_since(scope=scope, started_at=started_at):
         return
     is_well_formed = result.memory_markdown.startswith("v1\n")
     if result.memory_markdown and not is_well_formed:
@@ -253,7 +265,7 @@ async def _consolidate_locked(
         # (one generation deep) from being overwritten by the bad rewrite.
         logfire.warn(
             "Memory consolidation shrank too much; keeping previous memory",
-            user_id=user_id,
+            scope=scope,
             existing_chars=len(existing_main),
             rewritten_chars=len(result.memory_markdown),
             compact=compact,
@@ -263,21 +275,21 @@ async def _consolidate_locked(
         # Accept any well-formed `v1` rewrite, even one the model flagged
         # `changed=false`, so a single contradictory boolean cannot silently
         # discard the whole raw batch.
-        write_main_memory(user_id=user_id, content=result.memory_markdown, identity=identity)
+        write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
     # The consumed batch's content is preserved in the cold-tier detail file,
     # minus legacy identity header suffixes; the failure paths above keep raw
     # for retry and therefore must not retire it.
-    append_detail(user_id=user_id, text=read_raw_entries(user_id=user_id))
-    clear_raw(user_id=user_id)
+    append_detail(scope=scope, text=read_raw_entries(scope=scope))
+    clear_raw(scope=scope)
 
 
-def regeneration_on_cooldown(user_id: int) -> bool:
+def regeneration_on_cooldown(scope: str) -> bool:
     """Whether a recent regeneration attempt blocks another one right now."""
-    last_attempt = _last_regeneration.get(user_id)
-    if last_attempt is None or cleared_since(user_id=user_id, started_at=last_attempt):
+    last_attempt = _last_regeneration.get(scope)
+    if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
         # A clear since the last attempt wiped the memory that cooldown
         # belonged to; the fresh post-clear state deserves a prompt rebuild.
         return False
@@ -285,7 +297,7 @@ def regeneration_on_cooldown(user_id: int) -> bool:
 
 
 async def regenerate_main_memory(
-    user_id: int, extractor: MemoryExtractorAI, identity: str
+    scope: str, extractor: MemoryExtractorAI, identity: str
 ) -> Literal["regenerated", "no_evidence", "failed", "cooldown"]:
     """Rebuilds the main memory file from cold-tier evidence alone.
 
@@ -298,16 +310,14 @@ async def regenerate_main_memory(
     `write_main_memory` keeps the previous generation in `main.bak.md`.
     """
     started_at = time.monotonic()
-    async with user_lock(user_id=user_id), _memory_semaphore():
-        if regeneration_on_cooldown(user_id=user_id):
+    async with scope_lock(scope=scope), _memory_semaphore():
+        if regeneration_on_cooldown(scope=scope):
             # Invocations queued behind a held lock all pass the command-level
             # cooldown check before the first one stamps the attempt; the
-            # re-check under the lock keeps the per-user limit on the rewrite.
+            # re-check under the lock keeps the per-scope limit on the rewrite.
             return "cooldown"
-        raw_entries = read_raw_entries(user_id=user_id)
-        recent_detail = read_detail_tail(
-            user_id=user_id, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS
-        )
+        raw_entries = read_raw_entries(scope=scope)
+        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         # Detail entries are retired raw entries verbatim with the same
         # `## <ISO timestamp>` headers, so the combined corpus (oldest first)
         # slots into the raw-entries consolidation input unchanged.
@@ -316,7 +326,7 @@ async def regenerate_main_memory(
             return "no_evidence"
         # Recorded at attempt time, not success time, so repeated LLM failures
         # are rate-limited by the same cooldown.
-        _last_regeneration[user_id] = time.monotonic()
+        _last_regeneration[scope] = time.monotonic()
         result = await extractor.consolidate(
             existing_main="",
             raw_entries=evidence,
@@ -328,14 +338,14 @@ async def regenerate_main_memory(
             # LLM failure or malformed rewrite; a from-scratch rebuild has no
             # prior size to compare, so the `v1` header check is the guard.
             return "failed"
-        if cleared_since(user_id=user_id, started_at=started_at):
+        if cleared_since(scope=scope, started_at=started_at):
             return "failed"
-        write_main_memory(user_id=user_id, content=result.memory_markdown, identity=identity)
+        write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier
             # exactly like a consolidation so it cannot be re-ingested.
-            append_detail(user_id=user_id, text=raw_entries)
-            clear_raw(user_id=user_id)
+            append_detail(scope=scope, text=raw_entries)
+            clear_raw(scope=scope)
         return "regenerated"
 
 

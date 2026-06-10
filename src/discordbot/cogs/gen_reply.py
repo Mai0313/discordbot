@@ -23,11 +23,13 @@ from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import update_reaction
+from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
     sanitize_identity,
     render_author_identity,
+    render_server_identity,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.prompts import (
@@ -49,8 +51,14 @@ from discordbot.cogs._gen_reply.memory_tool import (
     memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
+    render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
+)
+from discordbot.cogs._memory.server_prompts import (
+    SERVER_PHASE1_PROMPT,
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
 if TYPE_CHECKING:
@@ -123,6 +131,25 @@ class ReplyGeneratorCogs(commands.Cog):
             extract_model=self.runtime_models.extract_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
+        )
+
+    @cached_property
+    def server_memory_extractor(self) -> MemoryExtractorAI:
+        """The cached per-server (bot self) memory extraction service.
+
+        Returns:
+            An extractor sharing the per-user models and client but driving the
+            server-flavor prompts, so the bot builds community-level memory per
+            guild through the same engine.
+        """
+        return MemoryExtractorAI(
+            client=self.client,
+            extract_model=self.runtime_models.extract_model,
+            evaluate_model=self.runtime_models.memory_evaluator_model,
+            consolidate_model=self.runtime_models.memories_model,
+            phase1_prompt=SERVER_PHASE1_PROMPT,
+            evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
+            consolidate_prompt=SERVER_PHASE2_PROMPT,
         )
 
     @cached_property
@@ -454,6 +481,44 @@ class ReplyGeneratorCogs(commands.Cog):
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
+    def _read_server_memory_block(
+        self, *, message: Message, memory_enabled: bool
+    ) -> EasyInputMessageParam | None:
+        """Reads the current guild's server memory as a context block, if any.
+
+        Unlike user memory there is exactly one server memory per guild, so it needs no
+        selection phase, allowlist, or function tool: it is read directly with zero extra
+        LLM latency. Returns None for DMs (no guild), the SUMMARY route, or an empty memory.
+        """
+        if not memory_enabled or self.bot.user is None or message.guild is None:
+            return None
+        server_memory = read_main_memory(
+            scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id)
+        )
+        return render_server_memory_block(memory=server_memory) if server_memory else None
+
+    def _schedule_server_memory_update(
+        self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
+    ) -> None:
+        """Schedules the bot's per-server memory update for a guild message.
+
+        Server memory learns community-level signal from the whole conversation (no
+        target-centering, since every message is server context). DMs have no guild, so
+        there is nothing to remember.
+        """
+        if self.bot.user is None or message.guild is None:
+            return
+        schedule_memory_update(
+            scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id),
+            subject=f"target_server_id: {message.guild.id}",
+            message_list=message_list,
+            full_reply=full_reply,
+            extractor=self.server_memory_extractor,
+            identity=render_server_identity(
+                server_name=message.guild.name, server_id=message.guild.id
+            ),
+        )
+
     async def _handle_message_reply(
         self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
     ) -> None:
@@ -517,12 +582,20 @@ class ReplyGeneratorCogs(commands.Cog):
                         memory_block = render_memory_context_block(memories=selection.memories)
                         memory_labels = memory_lookup_labels(memories=selection.memories)
 
+        # The bot's own per-server memory rides as background context, read directly with
+        # no selection phase (exactly one memory per guild). The broader server note
+        # precedes the per-participant note.
+        server_memory_block = self._read_server_memory_block(
+            message=message, memory_enabled=memory_enabled
+        )
+
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
         # reference but before the current message.
         answer_input: ResponseInputParam = [*hist_messages, *reference_messages]
-        if memory_block is not None:
-            answer_input.append(memory_block)
+        answer_input.extend(
+            block for block in (server_memory_block, memory_block) if block is not None
+        )
         answer_input.extend(current_message)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
@@ -553,7 +626,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 target_user_id=message.author.id,
             )
             schedule_memory_update(
-                user_id=message.author.id,
+                scope=user_scope(user_id=message.author.id),
+                subject=f"target_user_id: {message.author.id}",
                 message_list=memory_message_list,
                 full_reply=full_reply,
                 extractor=self.memory_extractor,
@@ -562,6 +636,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     username=message.author.name,
                     user_id=message.author.id,
                 ),
+            )
+            self._schedule_server_memory_update(
+                message=message, message_list=message_list, full_reply=full_reply
             )
 
     @commands.Cog.listener()

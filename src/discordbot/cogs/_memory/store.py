@@ -1,6 +1,9 @@
-"""File-backed storage for per-user long-term memory.
+"""File-backed storage for long-term memory, keyed by an opaque scope.
 
-Memory lives as plain markdown under ``data/memories/<user_id>/``: ``main.md``
+A scope is a relative path under ``data/memories/`` that doubles as the
+registry key. Per-user memory uses ``user_scope(user_id)`` (``<user_id>``);
+the bot's own per-server memory uses ``server_scope(bot_id, server_id)``
+(``<bot_id>/<server_id>``). Both share the exact same file layout: ``main.md``
 is the consolidated hot tier injected into reply prompts, ``raw.md``
 accumulates phase-1 raw extraction entries until consolidation rewrites the
 main file, ``main.bak.md`` keeps the previous main generation as a manual
@@ -10,7 +13,7 @@ consolidation reads its tail window as provenance and ``/memory show`` can
 page through it, but it is never injected into reply prompts. The live files
 stay tens of KB at most and the detail file is appended in O(1), tail-window
 read, and trimmed back to a hard byte cap, so IO is synchronous; cross-task
-safety comes from the per-user asyncio locks.
+safety comes from the per-scope asyncio locks.
 """
 
 import os
@@ -49,35 +52,46 @@ _IDENTITY_CAPTURE_RE = re.compile(r"^v1\n([^\n]*\[id: \d+\][^\n]*)\n")
 # identity to the consolidation LLM or `/memory show`.
 _RAW_HEADER_IDENTITY_RE = re.compile(r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE)
 
-# Process-local registries; tests reset them through the conftest fixture.
-_user_locks: dict[int, asyncio.Lock] = {}
-_user_locks_loop: asyncio.AbstractEventLoop | None = None
-_cleared_at: dict[int, float] = {}
+# Process-local registries keyed by scope; tests reset them through the
+# conftest fixture.
+_scope_locks: dict[str, asyncio.Lock] = {}
+_scope_locks_loop: asyncio.AbstractEventLoop | None = None
+_cleared_at: dict[str, float] = {}
 
 
-def _user_dir(user_id: int) -> Path:
-    """Returns the per-user memory directory."""
-    return _MEMORY_DIR / str(user_id)
+def user_scope(user_id: int) -> str:
+    """Returns the storage scope for one user's memory."""
+    return str(user_id)
 
 
-def _main_path(user_id: int) -> Path:
-    """Returns the consolidated main memory path for a user."""
-    return _user_dir(user_id=user_id) / "main.md"
+def server_scope(bot_id: int, server_id: int) -> str:
+    """Returns the storage scope for the bot's memory of one server."""
+    return f"{bot_id}/{server_id}"
 
 
-def _raw_path(user_id: int) -> Path:
-    """Returns the raw extraction accumulation path for a user."""
-    return _user_dir(user_id=user_id) / "raw.md"
+def _scope_dir(scope: str) -> Path:
+    """Returns the memory directory for a scope."""
+    return _MEMORY_DIR / scope
 
 
-def _bak_path(user_id: int) -> Path:
+def _main_path(scope: str) -> Path:
+    """Returns the consolidated main memory path for a scope."""
+    return _scope_dir(scope=scope) / "main.md"
+
+
+def _raw_path(scope: str) -> Path:
+    """Returns the raw extraction accumulation path for a scope."""
+    return _scope_dir(scope=scope) / "raw.md"
+
+
+def _bak_path(scope: str) -> Path:
     """Returns the one-generation backup path written before each main rewrite."""
-    return _user_dir(user_id=user_id) / "main.bak.md"
+    return _scope_dir(scope=scope) / "main.bak.md"
 
 
-def _detail_path(user_id: int) -> Path:
+def _detail_path(scope: str) -> Path:
     """Returns the cold-tier detail path for consumed and evicted raw entries."""
-    return _user_dir(user_id=user_id) / "detail.md"
+    return _scope_dir(scope=scope) / "detail.md"
 
 
 def _read_text(path: Path) -> str:
@@ -88,43 +102,43 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def user_lock(user_id: int) -> asyncio.Lock:
-    """Returns the per-user lock that serializes memory file writes."""
-    global _user_locks_loop  # noqa: PLW0603 -- process-local lock registry keyed by loop
+def scope_lock(scope: str) -> asyncio.Lock:
+    """Returns the per-scope lock that serializes memory file writes."""
+    global _scope_locks_loop  # noqa: PLW0603 -- process-local lock registry keyed by loop
     loop = asyncio.get_running_loop()
-    if _user_locks_loop is not loop:
-        _user_locks.clear()
-        _user_locks_loop = loop
-    return _user_locks.setdefault(user_id, asyncio.Lock())
+    if _scope_locks_loop is not loop:
+        _scope_locks.clear()
+        _scope_locks_loop = loop
+    return _scope_locks.setdefault(scope, asyncio.Lock())
 
 
-def mark_cleared(user_id: int) -> None:
+def mark_cleared(scope: str) -> None:
     """Records a manual memory clear so older in-flight updates abort their writes."""
-    _cleared_at[user_id] = time.monotonic()
+    _cleared_at[scope] = time.monotonic()
 
 
-def cleared_since(user_id: int, started_at: float) -> bool:
-    """Whether the user's memory was cleared at or after `started_at` (time.monotonic)."""
-    cleared = _cleared_at.get(user_id)
+def cleared_since(scope: str, started_at: float) -> bool:
+    """Whether the scope's memory was cleared at or after `started_at` (time.monotonic)."""
+    cleared = _cleared_at.get(scope)
     return cleared is not None and cleared >= started_at
 
 
-def read_main_memory(user_id: int) -> str:
+def read_main_memory(scope: str) -> str:
     """Returns the consolidated memory, stripped of identity metadata."""
-    return _strip_identity(text=_read_text(path=_main_path(user_id=user_id))).strip()
+    return _strip_identity(text=_read_text(path=_main_path(scope=scope))).strip()
 
 
-def read_main_identity(user_id: int) -> str:
+def read_main_identity(scope: str) -> str:
     """Returns the identity metadata line stored in the main file, or empty.
 
     Offline regeneration has no Discord context to rebuild the identity from,
     so it preserves the line the last online write stamped into the file.
     """
-    match = _IDENTITY_CAPTURE_RE.match(_read_text(path=_main_path(user_id=user_id)))
+    match = _IDENTITY_CAPTURE_RE.match(_read_text(path=_main_path(scope=scope)))
     return match.group(1) if match else ""
 
 
-def write_main_memory(user_id: int, content: str, identity: str) -> None:
+def write_main_memory(scope: str, content: str, identity: str) -> None:
     """Atomically replaces the consolidated main memory file.
 
     There is no size clamp: growth is bounded by the consolidation compaction
@@ -133,11 +147,11 @@ def write_main_memory(user_id: int, content: str, identity: str) -> None:
     is inserted after the `v1` header as human-inspection metadata that every
     read path strips back out.
     """
-    _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
-    main_path = _main_path(user_id=user_id)
+    _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
+    main_path = _main_path(scope=scope)
     previous = _read_text(path=main_path)
     if previous:
-        _bak_path(user_id=user_id).write_text(data=previous, encoding="utf-8")
+        _bak_path(scope=scope).write_text(data=previous, encoding="utf-8")
     rendered = content.strip()
     if rendered.startswith("v1\n"):
         body = rendered.removeprefix("v1\n")
@@ -147,15 +161,15 @@ def write_main_memory(user_id: int, content: str, identity: str) -> None:
     os.replace(src=tmp_path, dst=main_path)
 
 
-def append_raw_entry(user_id: int, entry_text: str) -> None:
+def append_raw_entry(scope: str, entry_text: str) -> None:
     """Appends one timestamped raw entry, archiving the oldest entries on overflow.
 
     Headers carry only the timestamp: raw entries flow verbatim into the
     detail file, and author identity must stay confined to the main file.
     """
-    _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
+    _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
-    raw_path = _raw_path(user_id=user_id)
+    raw_path = _raw_path(scope=scope)
     combined = f"{_read_text(path=raw_path)}\n\n## {timestamp}\n{entry_text.strip()}"
     entries = _split_raw_entries(text=combined)
     evicted: list[str] = []
@@ -172,10 +186,10 @@ def append_raw_entry(user_id: int, entry_text: str) -> None:
     if evicted:
         # Move to the detail file only after the raw write succeeded so a
         # failed write cannot retire entries that still live in the raw file.
-        append_detail(user_id=user_id, text="\n\n".join(evicted))
+        append_detail(scope=scope, text="\n\n".join(evicted))
 
 
-def append_detail(user_id: int, text: str) -> None:
+def append_detail(scope: str, text: str) -> None:
     """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
     The detail file preserves raw entry content verbatim; author identity
@@ -189,8 +203,8 @@ def append_detail(user_id: int, text: str) -> None:
     block = _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
     if not block:
         return
-    _user_dir(user_id=user_id).mkdir(parents=True, exist_ok=True)
-    detail_path = _detail_path(user_id=user_id)
+    _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
+    detail_path = _detail_path(scope=scope)
     with detail_path.open(mode="a", encoding="utf-8") as handle:
         if handle.tell() > 0:
             handle.write("\n")
@@ -225,7 +239,7 @@ def _trim_detail(path: Path) -> None:
     os.replace(src=tmp_path, dst=path)
 
 
-def read_detail_tail(user_id: int, max_chars: int) -> str:
+def read_detail_tail(scope: str, max_chars: int) -> str:
     """Returns the newest detail-file window, minus legacy identity metadata.
 
     Only a bounded byte window is read from the end of the file so the call
@@ -235,7 +249,7 @@ def read_detail_tail(user_id: int, max_chars: int) -> str:
     entry) the raw tail is returned as a best effort.
     """
     try:
-        with _detail_path(user_id=user_id).open(mode="rb") as handle:
+        with _detail_path(scope=scope).open(mode="rb") as handle:
             size = handle.seek(0, os.SEEK_END)
             # UTF-8 spends at most 4 bytes per character, so this window can
             # never decode to fewer than max_chars characters.
@@ -254,46 +268,46 @@ def read_detail_tail(user_id: int, max_chars: int) -> str:
     return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
 
 
-def count_raw_entries(user_id: int) -> int:
+def count_raw_entries(scope: str) -> int:
     """Returns how many raw entries are waiting for consolidation."""
-    return len(_split_raw_entries(text=_read_text(path=_raw_path(user_id=user_id))))
+    return len(_split_raw_entries(text=_read_text(path=_raw_path(scope=scope))))
 
 
-def raw_file_bytes(user_id: int) -> int:
+def raw_file_bytes(scope: str) -> int:
     """Returns the raw file size in bytes, with a missing file counting as zero."""
-    return len(_read_text(path=_raw_path(user_id=user_id)).encode("utf-8"))
+    return len(_read_text(path=_raw_path(scope=scope)).encode("utf-8"))
 
 
-def read_raw_entries(user_id: int) -> str:
+def read_raw_entries(scope: str) -> str:
     """Returns the raw file text for consolidation input, minus legacy identity metadata.
 
     New headers are timestamp-only; the ` | <identity>` strip remains so a raw
     file written before the suffix was removed cannot leak author identity
     into the consolidated memory content.
     """
-    text = _read_text(path=_raw_path(user_id=user_id))
+    text = _read_text(path=_raw_path(scope=scope))
     return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
 
 
-def clear_raw(user_id: int) -> None:
+def clear_raw(scope: str) -> None:
     """Deletes the raw file after a consolidation consumed it."""
-    _raw_path(user_id=user_id).unlink(missing_ok=True)
+    _raw_path(scope=scope).unlink(missing_ok=True)
 
 
-def clear_user_memory(user_id: int) -> bool:
-    """Deletes the user's memory files and flags in-flight updates to abort.
+def clear_memory(scope: str) -> bool:
+    """Deletes the scope's memory files and flags in-flight updates to abort.
 
     Returns:
         True when at least one memory file existed and was removed.
     """
-    mark_cleared(user_id=user_id)
+    mark_cleared(scope=scope)
     removed = False
-    main_path = _main_path(user_id=user_id)
+    main_path = _main_path(scope=scope)
     for path in (
         main_path,
-        _raw_path(user_id=user_id),
-        _bak_path(user_id=user_id),
-        _detail_path(user_id=user_id),
+        _raw_path(scope=scope),
+        _bak_path(scope=scope),
+        _detail_path(scope=scope),
     ):
         try:
             path.unlink()
@@ -306,11 +320,11 @@ def clear_user_memory(user_id: int) -> bool:
     # can leave a tmp file behind; drop them so the directory removal below
     # does not fail.
     main_path.with_suffix(".md.tmp").unlink(missing_ok=True)
-    _detail_path(user_id=user_id).with_suffix(".md.tmp").unlink(missing_ok=True)
+    _detail_path(scope=scope).with_suffix(".md.tmp").unlink(missing_ok=True)
     # A missing or unexpectedly non-empty directory is left for offline
     # maintenance instead of failing the clear.
     with contextlib.suppress(OSError):
-        _user_dir(user_id=user_id).rmdir()
+        _scope_dir(scope=scope).rmdir()
     return removed
 
 

@@ -157,7 +157,13 @@ class ConsolidatedMemory(BaseModel):
 
 
 class MemoryExtractorAI(BaseModel):
-    """Runs the two-phase memory LLM calls with best-effort fallbacks."""
+    """Runs the two-phase memory LLM calls with best-effort fallbacks.
+
+    The phase prompts are instance fields so the same engine can drive a
+    different memory flavor (e.g. the bot's per-server memory) by swapping the
+    prompts while reusing the extraction, consolidation, validation, and
+    redaction logic unchanged. They default to the per-user prompts.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -165,13 +171,22 @@ class MemoryExtractorAI(BaseModel):
     extract_model: ModelSettings
     consolidate_model: ModelSettings
     evaluate_model: ModelSettings | None = None
+    phase1_prompt: str = PHASE1_PROMPT
+    evaluator_prompt: str = PHASE1_EVALUATOR_PROMPT
+    consolidate_prompt: str = PHASE2_PROMPT
+    compaction_block: str = PHASE2_COMPACTION_BLOCK
 
-    async def extract(self, target_user_id: int, transcript: str) -> RawMemoryDraft | None:
-        """Returns the phase-1 raw memory draft, or None when the LLM path fails."""
-        user_text = f"target_user_id: {target_user_id}\n\nConversation transcript:\n{transcript}"
+    async def extract(self, subject: str, transcript: str) -> RawMemoryDraft | None:
+        """Returns the phase-1 raw memory draft, or None when the LLM path fails.
+
+        `subject` is the leading directive naming the memory's target (e.g.
+        `target_user_id: <id>` or `target_server_id: <id>`); the phase-1 prompt
+        explains how to read it.
+        """
+        user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
         draft = await self._parse(
             model=self.extract_model,
-            instructions=PHASE1_PROMPT,
+            instructions=self.phase1_prompt,
             user_text=user_text,
             text_format=RawMemoryDraft,
             timeout_seconds=MEMORY_EXTRACT_TIMEOUT_SECONDS,
@@ -187,9 +202,9 @@ class MemoryExtractorAI(BaseModel):
             return draft
         evaluated = await self._parse(
             model=evaluate_model,
-            instructions=PHASE1_EVALUATOR_PROMPT,
+            instructions=self.evaluator_prompt,
             user_text=(
-                f"target_user_id: {target_user_id}\n\n"
+                f"{subject}\n\n"
                 f"Conversation transcript:\n{transcript}\n\n"
                 f"Candidate observations:\n{draft.model_dump_json()}"
             ),
@@ -211,7 +226,9 @@ class MemoryExtractorAI(BaseModel):
             f"<raw_entries>\n{raw_entries.strip()}\n</raw_entries>\n\n"
             f"<recent_detail>\n{recent_detail.strip() or '(empty)'}\n</recent_detail>"
         )
-        instructions = PHASE2_PROMPT + PHASE2_COMPACTION_BLOCK if compact else PHASE2_PROMPT
+        instructions = (
+            self.consolidate_prompt + self.compaction_block if compact else self.consolidate_prompt
+        )
         result = await self._parse(
             model=self.consolidate_model,
             instructions=instructions,

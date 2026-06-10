@@ -53,6 +53,17 @@ def render_author_identity(display_name: str, username: str, user_id: int) -> st
     return f"{safe_display} ({safe_username}) [id: {user_id}]"
 
 
+def render_server_identity(server_name: str, server_id: int) -> str:
+    """Renders the single-line server identity stamped into per-server memory files.
+
+    Mirrors `render_author_identity`: the guild name is user-controlled, so it
+    is sanitized against `[id:` lookalikes and collapsed to one line before the
+    `[id: <server_id>]` suffix the memory store's identity regex expects.
+    """
+    safe_name = " ".join(sanitize_identity(value=server_name).split())
+    return f"{safe_name} [id: {server_id}]"
+
+
 class MessageInputBuilder(BaseModel):
     """Converts Discord messages into Responses API input parts.
 
