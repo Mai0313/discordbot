@@ -33,7 +33,7 @@ from discordbot.cogs._gen_reply.input import (
     strip_attachment_parts,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
-from discordbot.cogs._gen_reply.context import ReplyContext
+from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -115,11 +115,22 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     return f"{request_time_context}\n\n{system_prompt}"
 
 
-async def _no_participant_messages() -> list[Message]:
-    """Empty stand-in for the participant fetch so the SUMMARY route can skip it while
-    the rest of the reply context still loads concurrently in one gather.
-    """
-    return []
+def _walk_reference_chain(message: Message) -> list[Message]:
+    """Walks the reply-reference chain up to depth 3, oldest link last."""
+    chain: list[Message] = []
+    visited: set[int] = {message.id}
+    current = message
+    while (
+        len(chain) < 3
+        and current.reference
+        and isinstance(current.reference.resolved, Message)
+        and current.reference.resolved.id not in visited
+    ):
+        ref = current.reference.resolved
+        visited.add(ref.id)
+        chain.append(ref)
+        current = ref
+    return chain
 
 
 async def _discard_task(task: asyncio.Task[ReplyContext]) -> None:
@@ -203,10 +214,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return MessageInputBuilder(bot=self.bot, runtime_models=self.runtime_models)
 
-    async def _get_history_message(
-        self, message: Message, limit: int
-    ) -> list[EasyInputMessageParam]:
-        """Retrieves and processes channel history as context."""
+    async def _get_history_message(self, message: Message, limit: int) -> RenderedHistory:
+        """Retrieves channel history once, returning rendered context plus raw messages."""
         messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -232,24 +241,11 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             messages.extend(processed)
 
-        return messages
+        return RenderedHistory(rendered=messages, raw=hist_messages)
 
     async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
         """Walks the reference chain up to depth 3 and renders each link as context."""
-        chain: list[Message] = []
-        visited: set[int] = {message.id}
-        current = message
-        while (
-            len(chain) < 3
-            and current.reference
-            and isinstance(current.reference.resolved, Message)
-            and current.reference.resolved.id not in visited
-        ):
-            ref = current.reference.resolved
-            visited.add(ref.id)
-            chain.append(ref)
-            current = ref
-
+        chain = _walk_reference_chain(message=message)
         if not chain:
             return []
 
@@ -294,37 +290,6 @@ class ReplyGeneratorCogs(commands.Cog):
         ]
         current_msg = await self.input_builder.process_single_message(message=message)
         messages.append(current_msg)
-        return messages
-
-    async def _collect_participant_messages(
-        self, message: Message, history_limit: int
-    ) -> list[Message]:
-        """Collects the raw current, reference, and history messages for the memory allowlist.
-
-        The rendered Responses input drops the underlying `Message` objects, but the
-        allowlist needs each message's `.author` and `.mentions`. This re-walks the same
-        reference chain (depth 3) and channel history the `_get_*` helpers render.
-        """
-        messages: list[Message] = [message]
-
-        visited: set[int] = {message.id}
-        current = message
-        while (
-            len(messages) < 4
-            and current.reference
-            and isinstance(current.reference.resolved, Message)
-            and current.reference.resolved.id not in visited
-        ):
-            ref = current.reference.resolved
-            visited.add(ref.id)
-            messages.append(ref)
-            current = ref
-
-        async for hist_msg in message.channel.history(
-            limit=history_limit, before=message, oldest_first=True
-        ):
-            messages.append(hist_msg)
-
         return messages
 
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
@@ -600,21 +565,10 @@ class ReplyGeneratorCogs(commands.Cog):
         reads (channel history, memory files, the selection request), so a non-QA route
         can discard it safely.
         """
-        # The allowlist needs raw Message objects (authors + mentions); fetch them in the
-        # same gather so they overlap with the rendered history. SUMMARY
-        # (memory_enabled=False) substitutes an empty fetch to skip the second history
-        # read entirely while keeping the gather shape and result types precise.
-        collect_participants = (
-            self._collect_participant_messages(message=message, history_limit=history_limit)
-            if memory_enabled and self.bot.user
-            else _no_participant_messages()
-        )
         with logfire.span("gen_reply context build"):
-            hist_messages, participant_messages = await asyncio.gather(
-                self._get_history_message(message=message, limit=history_limit),
-                collect_participants,
-            )
+            history = await self._get_history_message(message=message, limit=history_limit)
             reference_messages, current_message = await parts_task
+        hist_messages = history.rendered
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
             *reference_messages,
@@ -640,8 +594,11 @@ class ReplyGeneratorCogs(commands.Cog):
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
         if memory_enabled and self.bot.user:
+            # The allowlist needs raw Message objects (authors + mentions): the current
+            # message, its reference chain, and the raw side of the shared history fetch.
             allowed = build_memory_allowlist(
-                messages=participant_messages, bot_user_id=self.bot.user.id
+                messages=[message, *_walk_reference_chain(message=message), *history.raw],
+                bot_user_id=self.bot.user.id,
             )
             # In a public channel, members named in the server's nickname table are askable
             # by alias even when absent from the conversation: widen the permission boundary

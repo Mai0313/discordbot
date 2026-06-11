@@ -1,7 +1,27 @@
 """Pre-built reply context shared by routing, memory selection, and the answer."""
 
+from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
+
+
+class RenderedHistory(BaseModel):
+    """One channel-history fetch shared by the rendered context and the memory allowlist.
+
+    History used to be fetched twice (once to render Responses input, once for the raw
+    authors and mentions the allowlist needs); carrying both views of a single fetch
+    removes that duplicate Discord API call from the reply critical path.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    rendered: SkipValidation[list[EasyInputMessageParam]] = Field(
+        default_factory=list, description="History context blocks rendered for the answer input."
+    )
+    raw: SkipValidation[list[Message]] = Field(
+        default_factory=list,
+        description="Raw history messages backing the rendered blocks, for the allowlist.",
+    )
 
 
 class ReplyContext(BaseModel):

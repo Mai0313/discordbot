@@ -713,8 +713,9 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
     history = await cog._get_history_message(message=current, limit=30)
-    assert len(history) == 3
-    assert history[0]["role"] == "system"
+    assert len(history.rendered) == 3
+    assert history.rendered[0]["role"] == "system"
+    assert [m.content for m in history.raw] == ["hello", "bot answer"]
 
     parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
     grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
