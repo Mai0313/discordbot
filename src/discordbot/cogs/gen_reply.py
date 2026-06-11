@@ -437,8 +437,12 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
-    ) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        """Routes the message to the appropriate handler using pre-built context parts."""
+    ) -> RouteDecision:
+        """Routes the message to the appropriate handler using pre-built context parts.
+
+        Besides the handler choice, the route also grades how much reasoning effort the
+        answer deserves; QA and SUMMARY override the slow model's effort with it.
+        """
         message_list: list[EasyInputMessageParam] = [*reference_messages, *current_message]
 
         try:
@@ -455,16 +459,16 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_body={"mock_testing_fallbacks": False},
                 )
             if responses.output_parsed is None:
-                return "QA"
-            decision = responses.output_parsed.decision
-            if decision == "SUMMARY" and _message_has_url(content=message.content):
-                return "QA"
-            return decision
+                return RouteDecision(decision="QA")
+            route = responses.output_parsed
+            if route.decision == "SUMMARY" and _message_has_url(content=message.content):
+                return RouteDecision(decision="QA", effort=route.effort)
+            return route
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
             logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
-            return "QA"
+            return RouteDecision(decision="QA")
 
     async def _select_user_memories(
         self,
@@ -680,9 +684,10 @@ class ReplyGeneratorCogs(commands.Cog):
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
+        effort: Literal["low", "medium", "high"] = "high",
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates."""
-        slow_model = self.runtime_models.slow_model
+        slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
         # reference but before the current message.
@@ -701,6 +706,7 @@ class ReplyGeneratorCogs(commands.Cog):
             memory_lookups=context.memory_labels,
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
+            model_effort=effort,
         )
         with logfire.span("gen_reply answer", model=slow_model.name):
             responses = await self.client.responses.create(
@@ -818,18 +824,19 @@ class ReplyGeneratorCogs(commands.Cog):
                     reference_messages=reference_messages,
                     current_message=current_message,
                 )
-                pipeline_span.set_attribute(key="route", value=route)
-                if route == "IMAGE":
+                pipeline_span.set_attribute(key="route", value=route.decision)
+                pipeline_span.set_attribute(key="effort", value=route.effort)
+                if route.decision == "IMAGE":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="🎨")
                     await self._handle_image_reply(message=message, user_prompt=user_prompt)
-                elif route == "VIDEO":
+                elif route.decision == "VIDEO":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="🎬")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
-                elif route == "SUMMARY":
+                elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="📖")
@@ -848,13 +855,17 @@ class ReplyGeneratorCogs(commands.Cog):
                         system_prompt=SUMMARY_PROMPT,
                         context=context,
                         memory_enabled=False,
+                        effort=route.effort,
                     )
                 else:
                     reactions.advance(emoji="💭")
                     context = await prep_task
                     prep_task = None
                     await self._handle_message_reply(
-                        message=message, system_prompt=REPLY_PROMPT, context=context
+                        message=message,
+                        system_prompt=REPLY_PROMPT,
+                        context=context,
+                        effort=route.effort,
                     )
                 reactions.advance(emoji="🆗")
         finally:

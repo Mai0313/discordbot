@@ -62,6 +62,10 @@ class ResponseStreamer(BaseModel):
     model_name: str = Field(
         default="", description="The model name reported by the stream, for the usage footer."
     )
+    model_effort: str = Field(
+        default="",
+        description="Route-decided reasoning effort shown next to the model in the footer.",
+    )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
     used_web_search: bool = Field(
@@ -278,7 +282,10 @@ class ResponseStreamer(BaseModel):
             else:
                 memory_line = f"\n-# 🧠 已讀取 {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
-        usage_footer = f"\n\n-# {self.model_name} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_line}"
+        model_label = (
+            f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
+        )
+        usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f} · {balance_text}{memory_line}"
 
         # Final update to ensure complete message is displayed.
         await self._write_final_message(

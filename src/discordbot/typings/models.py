@@ -130,11 +130,15 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Callers: `_handle_message_reply`.
+        Callers: `_handle_message_reply` (which overrides `effort` with the
+        route-decided level), attachment modality gating, and dev scripts.
 
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
+        # Both branches dispatch the same model today; the peak/off-peak split is
+        # kept on purpose because Gemini Pro has historically slowed down during
+        # peak hours and the split may be needed again.
         if self.is_peak:
             return ModelSettings(name="gemini-pro-latest", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
@@ -194,10 +198,15 @@ class RouteDecision(BaseModel):
 
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
+        effort: Reasoning effort the answer model should spend on this message.
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
         description="Reply mode selected for the incoming Discord message."
+    )
+    effort: Literal["low", "medium", "high"] = Field(
+        default="high",
+        description="Reasoning effort the answer model should spend on this message.",
     )
 
 

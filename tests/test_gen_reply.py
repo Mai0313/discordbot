@@ -200,7 +200,7 @@ class FakeResponses:
         self.create_tools: list[list[object] | None] = []
         self.parse_models: list[str] = []
         self.output_text = "caption"
-        self.output_parsed = SimpleNamespace(decision="SUMMARY")
+        self.output_parsed = RouteDecision(decision="SUMMARY")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
         # Each entry is the `.output` item list for one non-streaming (memory selection)
@@ -353,7 +353,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     return cog
 
 
-async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> str:
+async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision:
     """Routes a message after building the shared reference/current parts."""
     reference_messages, current_message = await cog._get_reference_and_current(message=message)
     return await cog._route_message(
@@ -747,7 +747,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert await _route(cog=cog, message=message) == "SUMMARY"
+    assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
@@ -775,9 +775,10 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -808,7 +809,8 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
     cog = _cog()
     message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
 
-    assert await _route(cog=cog, message=message) == "QA"
+    routed = await _route(cog=cog, message=message)
+    assert routed.decision == "QA"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
 
@@ -837,10 +839,10 @@ async def test_gen_reply_on_message_dispatches_routes(
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
-    ) -> str:
+    ) -> RouteDecision:
         """Returns the parametrized route."""
         del reference_messages, current_message
-        return route
+        return RouteDecision(decision=route)
 
     async def fake_prepare(
         message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
@@ -875,6 +877,7 @@ async def test_gen_reply_on_message_dispatches_routes(
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
+        effort: str = "high",
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
@@ -1098,9 +1101,10 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1177,9 +1181,10 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1231,9 +1236,10 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1741,9 +1747,10 @@ class _ServerMemoryResponder:
         memory_lookups: list[str] | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        model_effort: str = "",
     ) -> None:
         """Stores the streaming target message and ignores usage seeds."""
-        del memory_lookups, input_tokens, output_tokens
+        del memory_lookups, input_tokens, output_tokens, model_effort
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
