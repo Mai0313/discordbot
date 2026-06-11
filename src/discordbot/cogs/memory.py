@@ -10,7 +10,7 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import nextcord
-from nextcord import Embed, Locale, Interaction, SlashOption
+from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_litellm_client
@@ -19,7 +19,6 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._memory.store import (
     user_scope,
     server_scope,
-    read_detail_tail,
     read_main_memory,
     count_raw_entries,
 )
@@ -32,21 +31,16 @@ from discordbot.cogs._memory.views import (
     memory_footer_text,
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
-from discordbot.cogs._memory.pipeline import regenerate_main_memory, regeneration_on_cooldown
-from discordbot.cogs._memory.constants import MEMORY_DETAIL_VIEW_MAX_CHARS
+from discordbot.cogs._memory.pipeline import regeneration_on_cooldown, schedule_memory_regeneration
 from discordbot.cogs._memory.extraction import MemoryExtractorAI
 
 _SUCCESS_EMBED_COLOR = 0x57F287
 _WARN_EMBED_COLOR = 0xFEE75C
-_ERROR_EMBED_COLOR = 0xED4245
 
 _MEMORY_TITLE = "🧠 我對你的記憶"
-_DETAIL_TITLE = "🧠 詳細記憶記錄"
 _SERVER_MEMORY_TITLE = "🧠 我對這個伺服器的記憶"
-_SERVER_DETAIL_TITLE = "🧠 伺服器詳細記憶記錄"
 _REGEN_TITLE = "🔄 記憶重建"
 _REGEN_COOLDOWN_DESCRIPTION = "記憶重建剛執行過，請稍後再試。"
-_DETAIL_FOOTER = "已整理過的詳細觀察記錄，僅顯示最近的視窗"
 
 
 class MemoryCogs(commands.Cog):
@@ -113,33 +107,11 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "ボットがあなたについて記憶している内容を表示します。",
         },
     )
-    async def memory_show(
-        self,
-        interaction: Interaction,
-        detail: bool = SlashOption(
-            name="detail",
-            description="Show the recent fine-grained detail log instead of the consolidated memory.",
-            name_localizations={Locale.zh_TW: "詳細", Locale.ja: "詳細"},
-            description_localizations={
-                Locale.zh_TW: "改為顯示最近的詳細觀察記錄，而非整理後的記憶",
-                Locale.ja: "統合メモリーの代わりに最近の詳細ログを表示します。",
-            },
-            required=False,
-            default=False,
-        ),
-    ) -> None:
-        """Shows the caller's consolidated memory or its detail log, paginated."""
+    async def memory_show(self, interaction: Interaction) -> None:
+        """Shows the caller's consolidated memory, paginated."""
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
-        if detail:
-            await self._show_detail(
-                interaction=interaction,
-                scope=scope,
-                title=_DETAIL_TITLE,
-                empty_description="目前還沒有任何詳細記錄，等我整理過幾輪記憶後就會出現。",
-            )
-            return
         await self._show_memory(
             interaction=interaction,
             scope=scope,
@@ -172,21 +144,7 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "このサーバーのコミュニティについてボットが記憶している内容を表示します。",
         },
     )
-    async def memory_server_show(
-        self,
-        interaction: Interaction,
-        detail: bool = SlashOption(
-            name="detail",
-            description="Show the recent fine-grained detail log instead of the consolidated memory.",
-            name_localizations={Locale.zh_TW: "詳細", Locale.ja: "詳細"},
-            description_localizations={
-                Locale.zh_TW: "改為顯示最近的詳細觀察記錄，而非整理後的記憶",
-                Locale.ja: "統合メモリーの代わりに最近の詳細ログを表示します。",
-            },
-            required=False,
-            default=False,
-        ),
-    ) -> None:
+    async def memory_server_show(self, interaction: Interaction) -> None:
         """Shows the bot's consolidated memory of the current server, paginated."""
         if interaction.guild is None or self.bot.user is None:
             # Per-server memory only exists inside a guild; there is no scope in DMs.
@@ -198,14 +156,6 @@ class MemoryCogs(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         scope = server_scope(bot_id=self.bot.user.id, server_id=interaction.guild.id)
-        if detail:
-            await self._show_detail(
-                interaction=interaction,
-                scope=scope,
-                title=_SERVER_DETAIL_TITLE,
-                empty_description="這個伺服器目前還沒有任何詳細記錄，等我整理過幾輪記憶後就會出現。",
-            )
-            return
         await self._show_memory(
             interaction=interaction,
             scope=scope,
@@ -247,19 +197,6 @@ class MemoryCogs(commands.Cog):
         embed = Embed(title=title, description=description, color=MEMORY_EMBED_COLOR)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    async def _show_detail(
-        self, interaction: Interaction, scope: str, title: str, empty_description: str
-    ) -> None:
-        """Shows the newest window of a scope's cold-tier detail log."""
-        detail_text = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_VIEW_MAX_CHARS)
-        if not detail_text:
-            embed = Embed(title=title, description=empty_description, color=MEMORY_EMBED_COLOR)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        await self._send_memory_pages(
-            interaction=interaction, text=detail_text, footer_text=_DETAIL_FOOTER, title=title
-        )
-
     async def _send_memory_pages(
         self, interaction: Interaction, text: str, footer_text: str, title: str
     ) -> None:
@@ -289,7 +226,7 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_regenerate(self, interaction: Interaction) -> None:
-        """Rebuilds the caller's consolidated memory from cold-tier evidence alone."""
+        """Schedules a background rebuild of the caller's memory from evidence alone."""
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
@@ -301,10 +238,10 @@ class MemoryCogs(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        # The rebuild is one whole-file LLM rewrite that can run far past
-        # Discord's 3-second ack window; defer keeps the interaction alive.
-        await interaction.response.defer(ephemeral=True)
-        result = await regenerate_main_memory(
+        # The rebuild is one whole-file LLM rewrite that runs far past Discord's
+        # ack window, so it is dispatched to the background task queue and the
+        # command replies immediately; the user checks back with `/memory show`.
+        scheduled = schedule_memory_regeneration(
             scope=scope,
             extractor=self.memory_extractor,
             identity=render_author_identity(
@@ -313,21 +250,14 @@ class MemoryCogs(commands.Cog):
                 user_id=interaction.user.id,
             ),
         )
-        outcomes = {
-            "regenerated": (
-                "已根據觀察記錄重新整理我對你的長期記憶，可以用 `/memory show` 查看。",
-                _SUCCESS_EMBED_COLOR,
-            ),
-            "no_evidence": (
-                "目前還沒有足夠的觀察記錄可以重建記憶，多跟我聊聊吧。",
-                _WARN_EMBED_COLOR,
-            ),
-            "failed": ("重建失敗，已保留原本的記憶，請稍後再試。", _ERROR_EMBED_COLOR),
-            "cooldown": (_REGEN_COOLDOWN_DESCRIPTION, _WARN_EMBED_COLOR),
-        }
-        description, color = outcomes[result]
+        if scheduled:
+            description = "已排程重建記憶，整理完成後可以用 `/memory show` 查看。"
+            color = _SUCCESS_EMBED_COLOR
+        else:
+            description = "記憶正在重建中，完成後可以用 `/memory show` 查看。"
+            color = _WARN_EMBED_COLOR
         embed = Embed(title=_REGEN_TITLE, description=description, color=color)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 def setup(bot: commands.Bot) -> None:

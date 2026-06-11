@@ -1122,7 +1122,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1138,7 +1138,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     )
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     sent = interaction.response.sent
     assert sent["ephemeral"] is True
     view = sent["view"]
@@ -1155,7 +1155,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
 async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1349,52 +1349,102 @@ def _regen_interaction(user_id: int = USER_ID) -> SimpleNamespace:
 
 
 @pytest.mark.parametrize(
-    argnames=("result", "expected_text"),
-    argvalues=[
-        ("regenerated", "重新整理"),
-        ("no_evidence", "還沒有足夠的觀察記錄"),
-        ("failed", "重建失敗"),
-        ("cooldown", "請稍後再試"),
-    ],
+    argnames=("scheduled", "expected_text"), argvalues=[(True, "已排程"), (False, "正在重建中")]
 )
-async def test_memory_regenerate_command_reports_each_outcome(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, result: str, expected_text: str
+async def test_memory_regenerate_command_schedules_in_background(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, scheduled: bool, expected_text: str
 ) -> None:
     cog = _memory_cog()
     calls: dict[str, object] = {}
 
-    async def fake_regen(scope: str, extractor: object, identity: str) -> str:
+    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
         calls["scope"] = scope
         calls["identity"] = identity
-        return result
+        return scheduled
 
-    monkeypatch.setattr("discordbot.cogs.memory.regenerate_main_memory", fake_regen)
+    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
 
-    # The rebuild runs past Discord's ack window, so the response is deferred.
-    assert interaction.response.deferred == {"ephemeral": True}
-    assert interaction.followup.sent["ephemeral"] is True
-    embed = interaction.followup.sent["embed"]
+    # The command replies immediately and never blocks on the rebuild, so it
+    # neither defers nor uses a followup.
+    assert interaction.response.deferred is None
+    assert interaction.followup.sent == {}
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
-async def test_memory_regenerate_command_blocked_by_cooldown(memory_isolated_dir: Path) -> None:
+async def test_memory_regenerate_command_blocked_by_cooldown(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cog = _memory_cog()
     pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
+    scheduled = False
+
+    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
+        nonlocal scheduled
+        scheduled = True
+        return True
+
+    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
 
-    # Rejected up front: no defer, no LLM work, just the ephemeral notice.
+    # Rejected up front: nothing scheduled, no defer, just the ephemeral notice.
+    assert scheduled is False
     assert interaction.response.deferred is None
     assert interaction.followup.sent == {}
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "請稍後再試" in (embed.description or "")
+
+
+async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n背景重建後的記憶"
+    )
+
+    scheduled = pipeline.schedule_memory_regeneration(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert scheduled is True
+    # The actual rebuild runs as a background task; await it to observe the write.
+    await pipeline._regeneration_tasks[USER_SCOPE]
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n背景重建後的記憶"
+
+
+async def test_schedule_memory_regeneration_dedupes_in_flight(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extractor, _ = _extractor()
+    release = asyncio.Event()
+
+    async def blocking_regen(scope: str, extractor: object, identity: str) -> str:
+        await release.wait()
+        return "regenerated"
+
+    monkeypatch.setattr(pipeline, "regenerate_main_memory", blocking_regen)
+
+    first = pipeline.schedule_memory_regeneration(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+    second = pipeline.schedule_memory_regeneration(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert first is True
+    # A rebuild already in flight must not double-schedule the whole-file rewrite.
+    assert second is False
+    release.set()
+    await pipeline._regeneration_tasks[USER_SCOPE]
 
 
 def test_paginate_on_lines_single_page_passthrough() -> None:
@@ -1552,7 +1602,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
@@ -1567,7 +1617,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 使用者輪廓")
@@ -1581,7 +1631,7 @@ async def test_memory_show_does_not_corrupt_malformed_version_token(
     write_main_memory(scope=USER_SCOPE, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=False)
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     # Only an exact `v1\n` header is stripped; `v10...` must survive intact.
@@ -2087,35 +2137,6 @@ async def test_memory_semaphore_caps_concurrent_updates(
     # Three users started concurrently but the patched semaphore allows one
     # LLM call at a time.
     assert max_in_flight == 1
-
-
-# ---------------------------------------------------------------------------
-# /memory show detail layer
-# ---------------------------------------------------------------------------
-
-
-async def test_memory_show_detail_displays_detail_window(memory_isolated_dir: Path) -> None:
-    append_detail(
-        scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n詳細觀察內容"
-    )
-    cog = _memory_cog()
-    interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=True)
-    assert interaction.response.sent["ephemeral"] is True
-    embed = interaction.response.sent["embed"]
-    assert isinstance(embed, Embed)
-    assert "詳細觀察內容" in (embed.description or "")
-    assert IDENTITY not in (embed.description or "")
-    assert "詳細" in (embed.title or "")
-
-
-async def test_memory_show_detail_empty_notice(memory_isolated_dir: Path) -> None:
-    cog = _memory_cog()
-    interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction), detail=True)
-    embed = interaction.response.sent["embed"]
-    assert isinstance(embed, Embed)
-    assert "還沒有任何詳細記錄" in (embed.description or "")
 
 
 def test_rewrite_shrink_guard_lets_huge_main_compact_to_target() -> None:
