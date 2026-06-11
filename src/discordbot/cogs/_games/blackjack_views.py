@@ -57,7 +57,6 @@ from discordbot.cogs._games.settlement import (
     blackjack_player_early_finish_note,
 )
 from discordbot.cogs._games.interactions import (
-    send_ephemeral_notice,
     set_view_item_visible,
     disable_view_components,
     edit_message_with_retry,
@@ -80,6 +79,7 @@ from discordbot.cogs._games.presentation import (
     build_system_talk_embed,
     blackjack_outcome_presentation,
 )
+from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:

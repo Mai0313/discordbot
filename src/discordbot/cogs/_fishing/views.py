@@ -9,8 +9,8 @@ from typing import cast
 import asyncio
 
 import nextcord
-from nextcord import User, Embed, Member, Message, ButtonStyle, Interaction, SelectOption
-from nextcord.ui import View, Modal, Button, TextInput, StringSelect
+from nextcord import User, Member, Message, ButtonStyle, Interaction, SelectOption
+from nextcord.ui import Modal, Button, TextInput, StringSelect
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.fishing import (
@@ -25,12 +25,6 @@ from discordbot.cogs._fishing.shop import (
     parse_bait_quantity,
     gear_option_description,
 )
-from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import (
-    track_public_message,
-    delete_public_message,
-    forget_public_message,
-)
 from discordbot.cogs._fishing.database import (
     list_gear,
     settle_cast,
@@ -40,7 +34,11 @@ from discordbot.cogs._fishing.database import (
     fetch_recent_catches,
     get_grade_config_map,
 )
-from discordbot.cogs._games.interactions import send_ephemeral_notice
+from discordbot.utils.owned_message_views import (
+    OwnedPublicView,
+    send_ephemeral_notice,
+    edit_owned_public_message,
+)
 from discordbot.cogs._fishing.presentation import (
     build_shop_embed,
     build_error_embed,
@@ -62,79 +60,17 @@ def require_fishing_user(interaction: Interaction) -> User | Member:
     return interaction.user
 
 
-class FishingPublicView(View):
+class FishingPublicView(OwnedPublicView):
     """Base view for fishing states that own one Discord message."""
 
     def __init__(self, owner_id: int, delete_on_timeout: bool = True) -> None:
         """Initializes fishing controls with an idle timeout."""
-        super().__init__(timeout=FISHING_ACTION_TIMEOUT_SECONDS)
-        self.owner_id = owner_id
-        self.delete_on_timeout = delete_on_timeout
-        self.message: Message | None = None
-
-    def bind_message(self, message: Message | None) -> None:
-        """Records the message this view should update or delete."""
-        self.message = message
-
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        """Allows only the user who opened this fishing panel to operate it."""
-        user = require_fishing_user(interaction=interaction)
-        if self.owner_id == user.id:
-            return True
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content="這個釣魚面板只有發起者可以操作，請自己用 `/games fishing` 開一個新的",
-            log_message="Failed to send fishing owner mismatch notice",
+        super().__init__(
+            owner_id=owner_id,
+            timeout_seconds=FISHING_ACTION_TIMEOUT_SECONDS,
+            owner_mismatch_notice="這個釣魚面板只有發起者可以操作，請自己用 `/games fishing` 開一個新的",
+            delete_on_timeout=delete_on_timeout,
         )
-        return False
-
-    async def on_timeout(self) -> None:
-        """Deletes the tracked public message after the idle timeout."""
-        if self.message is None or not self.delete_on_timeout:
-            return
-        await delete_public_message(message=self.message)
-
-
-async def edit_fishing_message(
-    interaction: Interaction,
-    embed: Embed,
-    view: FishingPublicView | None,
-    message: Message | None = None,
-) -> None:
-    """Edits the current fishing message for a component or modal interaction."""
-    target_message = message or interaction.message
-    if view is not None:
-        view.bind_message(message=target_message)
-    edit_payload = {
-        "embed": embed,
-        "view": view,
-        **embed_spacer_payload(embeds=[embed], is_edit=True, target=target_message or interaction),
-    }
-    if not interaction.response.is_done():
-        edited = await interaction.response.edit_message(**edit_payload)
-        if isinstance(edited, Message) and view is not None:
-            view.bind_message(message=edited)
-        return
-    if target_message is not None:
-        try:
-            await target_message.edit(**edit_payload)
-            return
-        except nextcord.NotFound:
-            message_id = getattr(target_message, "id", None)
-            if isinstance(message_id, int):
-                await forget_public_message(message_id=message_id)
-    sent_message = await interaction.followup.send(
-        embed=embed,
-        view=view,
-        wait=True,
-        **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-    )
-    if view is not None:
-        view.bind_message(message=sent_message)
-    await track_public_message(
-        message=sent_message,
-        user_name=getattr(require_fishing_user(interaction=interaction), "name", None),
-    )
 
 
 class FishingPanelView(FishingPublicView):
@@ -470,7 +406,7 @@ async def show_panel(interaction: Interaction, owner_id: int) -> None:
     user = require_fishing_user(interaction=interaction)
     panel = await get_fishing_panel(user_id=user.id)
     grade_map = await get_grade_config_map()
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_panel_embed(panel=panel, grade_map=grade_map),
         view=FishingPanelView(owner_id=owner_id),
@@ -485,7 +421,7 @@ async def show_shop(
     panel = await get_fishing_panel(user_id=user.id)
     gear = await list_gear()
     rods, baits = partition_gear(gear=gear)
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_shop_embed(balance=panel.balance, rods=rods, baits=baits, notice=notice),
         view=FishingShopView(owner_id=owner_id, rods=rods, baits=baits),
@@ -497,7 +433,7 @@ async def show_leaderboard(interaction: Interaction, owner_id: int) -> None:
     """Renders the top-catches leaderboard into the public message."""
     catches = await fetch_top_catches(limit=10)
     grade_map = await get_grade_config_map()
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_leaderboard_embed(catches=catches, grade_map=grade_map),
         view=FishingNavView(owner_id=owner_id),
@@ -509,7 +445,7 @@ async def show_stats(interaction: Interaction, owner_id: int) -> None:
     user = require_fishing_user(interaction=interaction)
     panel = await get_fishing_panel(user_id=user.id)
     recent = await fetch_recent_catches(user_id=user.id, limit=5)
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_stats_embed(panel=panel, recent=recent),
         view=FishingNavView(owner_id=owner_id),
@@ -526,14 +462,14 @@ async def begin_cast(interaction: Interaction, owner_id: int) -> None:
             if panel.angler.rod is not None
             else "你還沒有可用的釣竿，先去商店買一支吧"
         )
-        await edit_fishing_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_error_embed(message=message),
             view=FishingErrorView(owner_id=owner_id),
         )
         return
     if not panel.baits:
-        await edit_fishing_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_error_embed(message="你沒有魚餌了，先去商店補貨"),
             view=FishingErrorView(owner_id=owner_id),
@@ -550,7 +486,7 @@ async def begin_cast(interaction: Interaction, owner_id: int) -> None:
         )
         for stack in panel.baits
     ]
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_bait_select_embed(panel=panel),
         view=FishingBaitSelectView(owner_id=owner_id, bait_options=bait_options),
@@ -559,7 +495,7 @@ async def begin_cast(interaction: Interaction, owner_id: int) -> None:
 
 async def run_cast(interaction: Interaction, owner_id: int, bait_id: str) -> None:
     """Runs the two-beat cast animation and settles the catch."""
-    await edit_fishing_message(interaction=interaction, embed=build_casting_embed(), view=None)
+    await edit_owned_public_message(interaction=interaction, embed=build_casting_embed(), view=None)
     await asyncio.sleep(CAST_ANIMATION_SECONDS)
     user = require_fishing_user(interaction=interaction)
     avatar_url = await guild_avatar_url(user=user, guild=getattr(interaction, "guild", None))
@@ -567,7 +503,7 @@ async def run_cast(interaction: Interaction, owner_id: int, bait_id: str) -> Non
         user_id=user.id, name=user.name, bait_id=bait_id, avatar_url=avatar_url
     )
     if result.roll is None:
-        await edit_fishing_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_error_embed(message=_cast_failure_message(status=result.status)),
             view=FishingErrorView(owner_id=owner_id),
@@ -575,7 +511,7 @@ async def run_cast(interaction: Interaction, owner_id: int, bait_id: str) -> Non
         return
     panel = await get_fishing_panel(user_id=user.id)
     grade_map = await get_grade_config_map()
-    await edit_fishing_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_reveal_embed(result=result, panel=panel, grade_map=grade_map),
         view=FishingPostCastView(owner_id=owner_id),
@@ -593,7 +529,6 @@ __all__ = [
     "FishingShopView",
     "begin_cast",
     "build_panel_embed",
-    "edit_fishing_message",
     "require_fishing_user",
     "run_cast",
     "show_leaderboard",

@@ -2,12 +2,11 @@
 
 from io import BytesIO
 from typing import cast
-from collections.abc import Callable
 
 import nextcord
 from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
 from pydantic import BaseModel, ConfigDict, SkipValidation
-from nextcord.ui import View, Modal, Button, TextInput, StringSelect
+from nextcord.ui import Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
@@ -18,13 +17,6 @@ from discordbot.cogs._stock.database import (
     list_market_quotes,
     settle_stock_operation,
 )
-from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.message_cleanup import (
-    track_public_message,
-    delete_public_message,
-    forget_public_message,
-)
-from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._stock.presentation import (
     build_news_embed,
     build_error_embed,
@@ -35,6 +27,11 @@ from discordbot.cogs._stock.presentation import (
     build_market_board_image,
     build_stock_detail_embed,
     build_action_prompt_embed,
+)
+from discordbot.utils.owned_message_views import (
+    OwnedPublicView,
+    send_ephemeral_notice,
+    edit_owned_public_message,
 )
 
 MARKET_PAGE_SIZE = 25
@@ -70,60 +67,17 @@ def build_market_message_payload(
     return embed, File(fp=BytesIO(board), filename=filename)
 
 
-def _fresh_file_factory(file: File | None) -> Callable[[], File] | None:
-    """Returns a factory that creates fresh uploads for retry or fallback paths."""
-    if file is None:
-        return None
-    file.reset()
-    payload = file.fp.read()
-    file.reset()
-    filename = file.filename
-    description = file.description
-
-    def build_file() -> File:
-        return File(fp=BytesIO(payload), filename=filename, description=description)
-
-    return build_file
-
-
-def _fresh_extra_files(file_factory: Callable[[], File] | None) -> list[File] | None:
-    """Builds a fresh extra file list for one Discord request."""
-    if file_factory is None:
-        return None
-    return [file_factory()]
-
-
-class StockPublicView(View):
+class StockPublicView(OwnedPublicView):
     """Base view for stock states that own one Discord message."""
 
     def __init__(self, owner_id: int, delete_on_timeout: bool = True) -> None:
         """Initializes stock controls with an idle timeout."""
-        super().__init__(timeout=STOCK_ACTION_TIMEOUT_SECONDS)
-        self.owner_id = owner_id
-        self.delete_on_timeout = delete_on_timeout
-        self.message: Message | None = None
-
-    def bind_message(self, message: Message | None) -> None:
-        """Records the message this view should update or delete."""
-        self.message = message
-
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        """Allows only the user who opened this stock panel to operate it."""
-        user = require_stock_user(interaction=interaction)
-        if self.owner_id == user.id:
-            return True
-        await send_ephemeral_notice(
-            interaction=interaction,
-            content="這個股票面板只有發起者可以操作，請自己使用 `/stock` 開一個新的面板",
-            log_message="Failed to send stock owner mismatch notice",
+        super().__init__(
+            owner_id=owner_id,
+            timeout_seconds=STOCK_ACTION_TIMEOUT_SECONDS,
+            owner_mismatch_notice="這個股票面板只有發起者可以操作，請自己使用 `/stock` 開一個新的面板",
+            delete_on_timeout=delete_on_timeout,
         )
-        return False
-
-    async def on_timeout(self) -> None:
-        """Deletes tracked public stock messages after 180 seconds without interaction."""
-        if self.message is None or not self.delete_on_timeout:
-            return
-        await delete_public_message(message=self.message)
 
 
 class _StockQuantitySubmission(BaseModel):
@@ -181,7 +135,7 @@ class StockMarketView(StockPublicView):
         symbol = select.values[0]
         if symbol in {"loading", "none"}:
             self.stop()
-            await edit_stock_message(
+            await edit_owned_public_message(
                 interaction=interaction,
                 embed=build_error_embed(message="目前沒有可用的股票"),
                 view=StockMarketView(quotes=self.quotes, owner_id=self.owner_id),
@@ -210,7 +164,7 @@ class StockMarketView(StockPublicView):
     async def tutorial(self, _button: Button, interaction: Interaction) -> None:
         """Shows the stock tutorial in the public stock message."""
         self.stop()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_tutorial_embed(),
             view=StockTutorialView(owner_id=self.owner_id),
@@ -221,7 +175,7 @@ class StockMarketView(StockPublicView):
         self.stop()
         normalized_page = min(max(page_index, 0), self.page_count - 1)
         embed, file = build_market_message_payload(quotes=self.quotes, page_index=normalized_page)
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=embed,
             file=file,
@@ -246,7 +200,7 @@ class StockTutorialView(StockPublicView):
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=embed,
             file=file,
@@ -279,7 +233,7 @@ class StockDetailView(StockPublicView):
         """Shows recent deterministic news in the public stock message."""
         news = await get_stock_news(symbol=self.symbol)
         self.stop()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_news_embed(news=news, symbol=self.symbol),
             view=StockNewsControlsView(symbol=self.symbol, owner_id=self.owner_id),
@@ -293,7 +247,7 @@ class StockDetailView(StockPublicView):
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=embed,
             file=file,
@@ -408,7 +362,7 @@ class StockPostTradeView(StockPublicView):
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
         self.stop()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=embed,
             file=file,
@@ -484,7 +438,7 @@ async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int
         detail = await get_stock_detail(symbol=symbol, user_id=user.id, user_name=user.name)
     except ValueError:
         quotes = await list_market_quotes()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_error_embed(message=f"找不到股票 `{symbol}`"),
             view=StockMarketView(quotes=quotes, owner_id=owner_id),
@@ -493,7 +447,7 @@ async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int
     filename = f"{symbol.lower()}_7d.png"
     chart_bytes = build_price_chart(ticks=detail.ticks)
     view = StockDetailView(symbol=symbol, owner_id=owner_id)
-    await edit_stock_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_stock_detail_embed(detail=detail, chart_filename=filename),
         file=File(fp=BytesIO(chart_bytes), filename=filename),
@@ -510,13 +464,13 @@ async def edit_stock_action_prompt(interaction: Interaction, symbol: str, owner_
         detail = await get_stock_detail(symbol=symbol, user_id=user.id, user_name=user.name)
     except ValueError:
         quotes = await list_market_quotes()
-        await edit_stock_message(
+        await edit_owned_public_message(
             interaction=interaction,
             embed=build_error_embed(message=f"找不到股票 `{symbol}`"),
             view=StockMarketView(quotes=quotes, owner_id=owner_id),
         )
         return
-    await edit_stock_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_action_prompt_embed(detail=detail),
         view=StockActionView(symbol=symbol, owner_id=owner_id),
@@ -551,65 +505,12 @@ async def submit_stock_quantity(submission: _StockQuantitySubmission) -> None:
         if result.success
         else StockActionView(symbol=submission.symbol, owner_id=submission.owner_id)
     )
-    await edit_stock_message(
+    await edit_owned_public_message(
         interaction=interaction,
         embed=build_settlement_embed(result=result),
         view=view,
         message=submission.message,
     )
-
-
-async def edit_stock_message(
-    interaction: Interaction,
-    embed: nextcord.Embed,
-    view: StockPublicView | None,
-    file: File | None = None,
-    message: Message | None = None,
-) -> None:
-    """Edits the current stock message for a component or modal interaction."""
-    target_message = message or interaction.message
-    if view is not None:
-        view.bind_message(message=target_message)
-    file_factory = _fresh_file_factory(file=file)
-    kwargs: dict[str, object] = {
-        "embed": embed,
-        "view": view,
-        **embed_spacer_payload(
-            embeds=[embed],
-            is_edit=True,
-            target=target_message or interaction,
-            extra_files=_fresh_extra_files(file_factory=file_factory),
-        ),
-    }
-    if not interaction.response.is_done():
-        edited = await interaction.response.edit_message(**kwargs)
-        if isinstance(edited, Message) and view is not None:
-            view.bind_message(message=edited)
-        return
-    if target_message is not None:
-        try:
-            await target_message.edit(**kwargs)
-            return
-        except nextcord.NotFound:
-            message_id = getattr(target_message, "id", None)
-            if isinstance(message_id, int):
-                await forget_public_message(message_id=message_id)
-    followup_kwargs: dict[str, object] = {
-        "embed": embed,
-        "view": view,
-        "wait": True,
-        **embed_spacer_payload(
-            embeds=[embed],
-            is_edit=False,
-            target=interaction,
-            extra_files=_fresh_extra_files(file_factory=file_factory),
-        ),
-    }
-    sent_message = await interaction.followup.send(**followup_kwargs)
-    if view is not None:
-        view.bind_message(message=sent_message)
-    user_name = getattr(require_stock_user(interaction=interaction), "name", None)
-    await track_public_message(message=sent_message, user_name=user_name)
 
 
 __all__ = [
@@ -624,7 +525,6 @@ __all__ = [
     "build_market_message_payload",
     "edit_stock_action_prompt",
     "edit_stock_detail",
-    "edit_stock_message",
     "require_stock_user",
     "submit_stock_quantity",
 ]

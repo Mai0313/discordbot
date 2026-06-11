@@ -13,9 +13,9 @@ from PIL import Image
 import pytest
 from nextcord import File, Embed
 
-from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.context import ReplyContext
@@ -813,16 +813,20 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
 
 @pytest.mark.parametrize(
-    argnames=("route", "expected_call"),
+    argnames=("route", "expected_call", "expected_prep", "expected_flags"),
     argvalues=[
-        ("IMAGE", "_handle_image_reply"),
-        ("VIDEO", "_handle_video_reply"),
-        ("SUMMARY", "_handle_message_reply"),
-        ("QA", "_handle_message_reply"),
+        ("IMAGE", "_handle_image_reply", [(30, True)], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], []),
+        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False]),
+        ("QA", "_handle_message_reply", [(30, True)], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(
-    monkeypatch: pytest.MonkeyPatch, route: str, expected_call: str
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    expected_call: str,
+    expected_prep: list[tuple[int, bool]],
+    expected_flags: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -890,20 +894,14 @@ async def test_gen_reply_on_message_dispatches_routes(
     await cog.on_message(message=message)
     assert expected_call in calls
     assert calls[-1] == "reaction:🆗"
-    # The speculative QA context always builds first.
-    assert prep_requests[0] == (30, True)
+    # The speculative QA context always builds first; SUMMARY rebuilds at its own
+    # history depth without memory, and QA consumes the speculative context as-is.
+    assert prep_requests == expected_prep
+    assert memory_flags == expected_flags
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
-        assert prep_requests == [(30, True)]
-    # Summaries opt out of per-user memory and rebuild at their own history depth;
-    # QA consumes the speculative context as-is.
-    if route == "SUMMARY":
-        assert memory_flags == [False]
-        assert prep_requests == [(30, True), (100, False)]
-    elif route == "QA":
-        assert memory_flags == [True]
+    else:
         assert contexts == [prepared_context]
-        assert prep_requests == [(30, True)]
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
@@ -950,7 +948,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 async def test_reaction_status_chain_orders_and_replaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """advance schedules ordered swaps without blocking; flush waits for the tail."""
+    """Advance schedules ordered swaps without blocking; flush waits for the tail."""
     events: list[tuple[str, str | None]] = []
 
     async def fake_reaction(

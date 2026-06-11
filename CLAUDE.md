@@ -23,7 +23,7 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Cog Rules
 
-- One `commands.Cog` subclass plus a sync `setup` per cog module. Cogs do not import peer cogs; use the bot instance, shared typings, or cog-private helper packages.
+- One `commands.Cog` subclass plus a sync `setup` per cog module. Cogs do not import peer cogs; use the bot instance, shared `typings/` / `utils/` modules, or cog-private helper packages.
 - User-facing slash commands need localized names and descriptions for English, Traditional Chinese, and Japanese.
 - Any user-visible command or behavior change must update `src/discordbot/cogs/help.py` in the same change and keep `tests/test_help.py` passing.
 - When multiple embeds in one message need aligned widths, use `utils.discord_embeds.embed_spacer_payload(...)` with `target=` so edits retain the already-uploaded spacer; re-uploading it on every edit trips Discord error 400009 on rapidly edited messages.
@@ -112,7 +112,7 @@ make gen-docs                    # regenerate docs/ from sources
 ## Fishing
 
 - `/games fishing` is a single-player, LLM-free money sink under `cogs/_fishing/`; state lives in `data/database/games.db` through the fishing-owned engine, wallet cash stays in economy.
-- One public message edited in place, opener-only, self-deletes after 180s idle. Mirror `_stock/views.py`: `FishingPublicView` plus the central `edit_fishing_message(...)`.
+- One public message edited in place, opener-only, self-deletes after 180s idle. Stock and fishing share `utils/owned_message_views.py`: subclass `OwnedPublicView` and edit through the central `edit_owned_public_message(...)` (stock passes the board PNG via `file=`).
 - `fish_grade_config`, `fish_species`, and `fishing_gear` are the tunable source of truth, seeded offline; `_fishing/defaults.py::build_default_catalog` is the one catalog definition.
 - `_fishing/catch.py` is pure and RNG-injected. Luck is the additive rod+bait `rarity_shift_bps`, clamped, never moving the most common grade.
 - Net-deflationary by design: every cast's EV is below bait + amortized rod cost, catches cap at `FISHING_MAX_SINGLE_CATCH`, and every rod+bait combo must stay a sink; the seeded EV regression in `tests/test_fishing_catch.py` guards this after retuning. Purchases burn via `apply_ordered_wallet_deltas`; payouts credit via `credit_with_repayment`.
