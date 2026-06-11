@@ -4,19 +4,14 @@ from typing import Literal
 
 from discordbot.typings.games import GameParticipant, GameParticipantIdentity
 from discordbot.typings.economy import MAX_SINGLE_BET
+from discordbot.utils.amount_parsing import parse_decimal_amount
 
 WagerMode = Literal["clamp", "exact"]
 
 
 def parse_wager_amount(raw_amount: str | None) -> int | None:
-    """Parses user-entered wager text with optional comma separators."""
-    normalized = (raw_amount or "").replace(",", "").strip()
-    if not normalized.isdecimal():
-        return None
-    try:
-        return int(normalized)
-    except ValueError:
-        return None
+    """Parses user-entered wager text; zero is allowed and means all-in."""
+    return parse_decimal_amount(raw=raw_amount)
 
 
 def build_wager_participant(

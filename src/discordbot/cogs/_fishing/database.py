@@ -60,7 +60,7 @@ from discordbot.typings.fishing import (
     FishGradeConfigUpsert,
 )
 from discordbot.cogs._fishing.catch import roll_catch
-from discordbot.utils.sqlite_config import configure_sqlite_connection
+from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger, stored_int_to_text
 from discordbot.cogs._economy.database import (
     get_balance,
@@ -94,18 +94,6 @@ def _configure_sqlite_on_checkout(
 ) -> None:
     """Configures pooled connections from test-swapped engines."""
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
-    """Installs SQLite connection hooks on the active engine."""
-    if not event.contains(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite):
-        event.listen(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite)
-    if not event.contains(
-        target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
-    ):
-        event.listen(
-            target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
-        )
 
 
 def _current_schema_lock() -> asyncio.Lock:
@@ -151,7 +139,11 @@ async def _angler_lock(user_id: int) -> AsyncIterator[None]:
 
 def open_fishing_session() -> AsyncSession:
     """Creates an async session bound to the current fishing database engine."""
-    _ensure_sqlite_hooks(engine=_engine)
+    ensure_sqlite_hooks(
+        engine=_engine,
+        on_connect_fn=_configure_sqlite,
+        on_checkout_fn=_configure_sqlite_on_checkout,
+    )
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
@@ -163,7 +155,11 @@ async def _begin_immediate(session: AsyncSession) -> None:
 async def _ensure_schema() -> None:
     """Bootstraps the fishing schema once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    _ensure_sqlite_hooks(engine=_engine)
+    ensure_sqlite_hooks(
+        engine=_engine,
+        on_connect_fn=_configure_sqlite,
+        on_checkout_fn=_configure_sqlite_on_checkout,
+    )
     if _schema_ready_for is _engine:
         return
     async with _current_schema_lock():

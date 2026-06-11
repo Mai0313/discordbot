@@ -9,6 +9,7 @@ from nextcord.ext import commands
 
 from discordbot.cogs._economy import embeds
 from discordbot.utils.avatars import guild_avatar_url
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
@@ -59,14 +60,8 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 def _parse_positive_amount(raw_amount: str | None) -> int | None:
     """Parses user-entered positive amount text with optional comma separators."""
-    normalized = (raw_amount or "").replace(",", "").strip()
-    if not normalized.isdecimal():
-        return None
-    try:
-        amount = int(normalized)
-    except ValueError:
-        return None
-    if amount <= 0:
+    amount = parse_decimal_amount(raw=raw_amount)
+    if amount is None or amount <= 0:
         return None
     return amount
 
@@ -77,12 +72,12 @@ def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
     Returns ``(is_valid, amount)`` where ``amount`` is ``None`` when collecting
     everything owed. ``is_valid`` is ``False`` only for malformed text.
     """
-    normalized = (raw_amount or "").replace(",", "").strip()
-    if not normalized:
+    if not (raw_amount or "").strip():
         return True, None
-    if not normalized.isdecimal():
+    amount = parse_decimal_amount(raw=raw_amount)
+    if amount is None:
         return False, None
-    return True, int(normalized) or None
+    return True, amount or None
 
 
 class EconomyCogs(commands.Cog):
