@@ -2,11 +2,14 @@
 
 import re
 import time
+import asyncio
+import contextlib
 
 from openai import AsyncStream
 import logfire
 from nextcord import Message
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseStreamEvent
 
 from discordbot.utils.avatars import guild_avatar_url
@@ -26,10 +29,12 @@ DISCORD_MESSAGE_LIMIT = 2000
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
-    The cog calls `stream` once with the answer-turn stream; text is previewed as it
+    The cog calls `stream` once with the answer-turn stream; reasoning summaries are
+    previewed as `-#` subtext while the model thinks, the real text replaces them as it
     arrives, then a usage footer (and an optional memory-credit line) is written. Memory
     lookups are decided in a separate request before streaming, so the labels are passed
-    in via `memory_lookups` rather than discovered here.
+    in via `memory_lookups` rather than discovered here. Discord edits run on a
+    time-based snapshot editor task so consuming the stream never waits on Discord.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -38,6 +43,9 @@ class ResponseStreamer(BaseModel):
         description="The Discord message being answered and replied to."
     )
     stored_content: str = Field(default="", description="The accumulated reply text.")
+    reasoning_content: str = Field(
+        default="", description="The accumulated reasoning-summary text shown before content."
+    )
     reply: SkipValidation[Message | None] = Field(
         default=None, description="The Discord reply message, created lazily on the first delta."
     )
@@ -46,6 +54,10 @@ class ResponseStreamer(BaseModel):
     )
     content_started: bool = Field(
         default=False, description="Whether the first non-newline text delta has been seen."
+    )
+    preview_interval_seconds: float = Field(
+        default=1.0,
+        description="Cadence of the snapshot editor's Discord edits while streaming.",
     )
     model_name: str = Field(
         default="", description="The model name reported by the stream, for the usage footer."
@@ -66,6 +78,8 @@ class ResponseStreamer(BaseModel):
             "request, so the first-content-delta log measures answer-call-to-first-token."
         ),
     )
+    _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
+    _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -92,18 +106,76 @@ class ResponseStreamer(BaseModel):
             follow_up_chunks.append(f"{remaining[tail_capacity:]}{footer}")
         return parent_content, follow_up_chunks
 
-    async def _write_preview(
-        self, reply: Message | None, content: str, displayed_content: str
-    ) -> tuple[Message | None, str]:
-        """Writes at most one Discord message worth of streaming preview text."""
-        preview = content[:DISCORD_MESSAGE_LIMIT]
-        if preview == displayed_content:
-            return reply, displayed_content
-        if reply is None:
-            reply = await self.message.reply(content=preview)
+    def _render_preview(self) -> str:
+        """Builds the current streaming preview: real content once started, else reasoning.
+
+        The reasoning preview shows the tail of the model's thought summary as `-#`
+        subtext lines under a 💭 header, so the user watches the thinking process until
+        the first real content delta replaces it. The window keeps the newest lines that
+        fit one Discord message, so a long think never hits the 2000-char limit.
+        """
+        if self.content_started:
+            return self.stored_content[:DISCORD_MESSAGE_LIMIT]
+        if not self.reasoning_content:
+            return ""
+        # Mentions are escaped because this transient text is never meant to ping;
+        # the real reply may mention people, the thought process must not.
+        tail = escape_mentions(self.reasoning_content[-1500:])
+        lines = [f"-# {line}" for line in tail.splitlines() if line.strip()]
+        header = "-# 💭 思考中..."
+        budget = DISCORD_MESSAGE_LIMIT - len(header)
+        kept: list[str] = []
+        for line in reversed(lines):
+            if budget - (len(line) + 1) < 0:
+                break
+            kept.append(line)
+            budget -= len(line) + 1
+        kept.reverse()
+        return "\n".join([header, *kept])
+
+    async def _write_preview_snapshot(self) -> None:
+        """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
+        preview = self._render_preview()
+        if not preview or preview == self.displayed_content:
+            return
+        if self.reply is None:
+            self.reply = await self.message.reply(content=preview)
         else:
-            await reply.edit(content=preview)
-        return reply, preview
+            await self.reply.edit(content=preview)
+        self.displayed_content = preview
+
+    async def _preview_editor(self) -> None:
+        """Edits the reply with the latest snapshot on a fixed cadence until stopped.
+
+        Stopping uses the event rather than task cancellation so an in-flight Discord
+        write always completes before `_finalize_reply` runs; a cancel landing inside
+        the first `message.reply` could otherwise orphan the created message and let
+        the finalizer create a duplicate.
+        """
+        while True:
+            try:
+                await asyncio.wait_for(
+                    self._editor_stop.wait(), timeout=self.preview_interval_seconds
+                )
+            except TimeoutError:
+                with contextlib.suppress(Exception):
+                    await self._write_preview_snapshot()
+            else:
+                return
+
+    def _ensure_editor_started(self) -> None:
+        """Starts the snapshot editor task on the first delta that gives it work."""
+        if self._editor_task is None:
+            self._editor_task = asyncio.create_task(coro=self._preview_editor())
+
+    async def _stop_editor(self) -> None:
+        """Signals the editor to stop and waits out any in-flight Discord write."""
+        if self._editor_task is None:
+            return
+        self._editor_stop.set()
+        with contextlib.suppress(Exception):
+            await self._editor_task
+        self._editor_task = None
 
     async def _write_final_message(self, reply: Message | None, content: str, footer: str) -> None:
         """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
@@ -119,8 +191,11 @@ class ResponseStreamer(BaseModel):
             previous = await previous.reply(content=chunk)
 
     async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
-        """Streams the reply, accumulating text, usage, and web-search state onto the instance."""
-        counted_content = 0
+        """Streams the reply, accumulating text, usage, and web-search state onto the instance.
+
+        Only accumulates state; the snapshot editor task renders it to Discord, so this
+        loop never blocks on a Discord edit between deltas.
+        """
         async for response in responses:
             if response.type in {"response.created", "response.completed"}:
                 # Capture the model on `created` too so the usage footer never falls back
@@ -137,6 +212,20 @@ class ResponseStreamer(BaseModel):
                 "response.output_text.annotation.added",
             }:
                 self.used_web_search = True
+            elif response.type == "response.reasoning_summary_text.delta":
+                delta = response.delta
+                if not self.reasoning_content:
+                    # Gemini may prepend newlines to the first reasoning delta too.
+                    delta = delta.lstrip("\n")
+                    if not delta:
+                        continue
+                    logfire.info(
+                        "gen_reply first reasoning delta",
+                        elapsed_seconds=time.monotonic() - self.created_at,
+                        model=self.model_name,
+                    )
+                self.reasoning_content += delta
+                self._ensure_editor_started()
             elif response.type == "response.output_text.delta":
                 delta = response.delta
                 if not self.content_started:
@@ -150,15 +239,7 @@ class ResponseStreamer(BaseModel):
                         model=self.model_name,
                     )
                 self.stored_content += delta
-                counted_content += len(delta)
-
-                if counted_content >= 30:
-                    self.reply, self.displayed_content = await self._write_preview(
-                        reply=self.reply,
-                        content=self.stored_content,
-                        displayed_content=self.displayed_content,
-                    )
-                    counted_content = 0
+                self._ensure_editor_started()
 
     async def _finalize_reply(self) -> str:
         """Writes the reward footer and final reply once the stream is consumed."""
@@ -212,5 +293,8 @@ class ResponseStreamer(BaseModel):
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
-        await self._consume(responses=responses)
+        try:
+            await self._consume(responses=responses)
+        finally:
+            await self._stop_editor()
         return await self._finalize_reply()

@@ -850,7 +850,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         memory_enabled=False,
                     )
                 else:
-                    reactions.advance(emoji="❓")
+                    reactions.advance(emoji="💭")
                     context = await prep_task
                     prep_task = None
                     await self._handle_message_reply(
