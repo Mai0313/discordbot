@@ -17,7 +17,9 @@ from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instruc
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from openai.types.responses.response_input_param import EasyInputMessageParam
+
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, strip_attachment_parts
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -376,6 +378,7 @@ async def _reply_via_pipeline(
     system_prompt: str = "SYS",
     history_limit: int = 2,
     memory_enabled: bool = True,
+    effort: Literal["low", "medium", "high"] = "high",
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
@@ -390,6 +393,7 @@ async def _reply_via_pipeline(
         system_prompt=system_prompt,
         context=context,
         memory_enabled=memory_enabled,
+        effort=effort,
     )
 
 
@@ -1958,3 +1962,243 @@ async def test_handle_message_reply_keeps_boundary_in_private_channel(
     await _reply_via_pipeline(cog=cog, message=message)
 
     assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])
+
+
+async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
+    """The reasoning preview renders as -# subtext and real content replaces it in place."""
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    streamer.reasoning_content = "first thought\n\nsecond thought"
+
+    await streamer._write_preview_snapshot()
+    assert len(message.replies) == 1
+    preview = message.replies[0].content
+    assert isinstance(preview, str)
+    assert preview.splitlines()[0] == "-# 💭 思考中..."
+    assert "-# first thought" in preview
+    assert "-# second thought" in preview
+
+    streamer.content_started = True
+    streamer.stored_content = "real answer"
+    await streamer._write_preview_snapshot()
+    assert len(message.replies) == 1
+    assert message.replies[0].content == "real answer"
+
+
+def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
+    """A long think keeps only its newest tail lines under the Discord limit."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "\n".join(f"thought line {i} " + "x" * 80 for i in range(60))
+
+    preview = streamer._render_preview()
+
+    assert len(preview) <= DISCORD_MESSAGE_LIMIT
+    lines = preview.splitlines()
+    assert lines[0] == "-# 💭 思考中..."
+    assert all(line.startswith("-# ") for line in lines)
+    assert "thought line 59" in preview
+    assert "thought line 9 " not in preview
+
+
+def test_streamer_reasoning_preview_escapes_mentions() -> None:
+    """Transient thought text can never ping people or roles."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "should I ping @everyone or <@123456789012345678>?"
+
+    preview = streamer._render_preview()
+
+    assert "@everyone" not in preview
+    assert "<@123456789012345678>" not in preview
+
+
+async def test_streamer_strips_leading_newlines_from_first_reasoning_delta(
+    economy_isolated_db: None,
+) -> None:
+    """Gemini's leading reasoning newlines are dropped like content newlines."""
+    del economy_isolated_db
+    events = [
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\n\n"),
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\nthought"),
+        _text_event(delta="answer"),
+        _completed_event(input_tokens=1, output_tokens=1),
+    ]
+    streamer = ResponseStreamer(message=FakeMessage())
+
+    await streamer.stream(responses=_stream_events_from(events=events))
+
+    assert streamer.reasoning_content == "thought"
+
+
+async def test_streamer_edits_are_time_throttled(economy_isolated_db: None) -> None:
+    """The snapshot editor writes far fewer Discord edits than stream deltas."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    async def _events() -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(type="response.reasoning_summary_text.delta", delta="thinking hard")
+        await asyncio.sleep(0.06)
+        for index in range(40):
+            yield SimpleNamespace(type="response.output_text.delta", delta=f"chunk{index} ")
+            await asyncio.sleep(0.002)
+        yield _completed_event(input_tokens=1, output_tokens=1)
+
+    streamer = ResponseStreamer(message=message, preview_interval_seconds=0.02)
+    result = await streamer.stream(responses=_events())
+
+    assert len(message.replies) == 1
+    reply = message.replies[0]
+    assert 1 + len(reply.edits) < 40
+    assert result.startswith("chunk0 ")
+    assert isinstance(reply.content, str)
+    assert reply.content.startswith("chunk0 ")
+
+
+async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> None:
+    """The usage footer labels the model with the route-decided effort."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message, model_effort="low").stream(
+        responses=_stream_events()
+    )
+
+    assert f"\n\n-# {TEST_LLM_MODEL} (low) · ⬆ 12 ⬇ 34" in result
+    assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
+
+
+async def test_route_message_carries_effort_and_defaults_high() -> None:
+    """The route result carries the model's effort; unparsed output falls back to high."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteDecision(decision="QA", effort="low")
+    message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
+    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="low")
+
+    cog.client.responses.output_parsed = None
+    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="high")
+
+
+async def test_route_url_summary_downgrade_keeps_effort() -> None:
+    """The URL-summary-to-QA downgrade preserves the graded effort."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteDecision(decision="SUMMARY", effort="medium")
+    message = FakeMessage(
+        content="整理 https://example.test/a", author=FakeAuthor(user_id=1)
+    )
+
+    routed = await _route(cog=cog, message=message)
+
+    assert routed == RouteDecision(decision="QA", effort="medium")
+
+
+async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None) -> None:
+    """The answer request's reasoning effort follows the route decision."""
+    del economy_isolated_db
+    cog = _cog()
+    message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
+
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False, effort="low")
+
+    assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
+
+
+def test_strip_attachment_parts_replaces_payload_parts() -> None:
+    """Image and file parts collapse to text markers; plain text passes through."""
+    payload_message = EasyInputMessageParam(
+        role="user",
+        content=[
+            {"type": "input_text", "text": "user (u) [id: 1]: look"},
+            {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
+            {"type": "input_file", "filename": "a.pdf", "file_data": "data:application/pdf;base64,xxx"},
+        ],
+    )
+    plain_message = EasyInputMessageParam(role="user", content="plain")
+
+    stripped = strip_attachment_parts(messages=[plain_message, payload_message])
+
+    assert stripped[0] is plain_message
+    parts = stripped[1]["content"]
+    assert isinstance(parts, list)
+    assert [part["type"] for part in parts] == ["input_text", "input_text", "input_text"]
+    assert parts[1]["text"] == "[attachment: image]"
+    assert parts[2]["text"] == "[attachment: file]"
+    original_parts = payload_message["content"]
+    assert isinstance(original_parts, list)
+    assert original_parts[1]["type"] == "input_image"
+
+
+async def test_route_input_excludes_attachment_payloads() -> None:
+    """The route request sees an attachment marker instead of the file payload."""
+    cog = _cog()
+    message = FakeMessage(content="<@999> see", author=FakeAuthor(user_id=1))
+    message.attachments = [FakeAttachment(filename="note.txt", content_type="text/plain")]
+
+    await _route(cog=cog, message=message)
+
+    rendered = str(cog.client.responses.parse_inputs[-1])
+    assert "input_file" not in rendered
+    assert "[attachment: file]" in rendered
+
+
+async def test_select_user_memories_strips_attachment_payloads() -> None:
+    """The selection request sees attachment markers instead of image payloads."""
+    cog = _cog()
+    cog.client.responses.select_queue = [[]]
+    message_list = [
+        EasyInputMessageParam(
+            role="user",
+            content=[
+                {"type": "input_text", "text": "user (u) [id: 1]: look"},
+                {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
+            ],
+        )
+    ]
+
+    await cog._select_user_memories(
+        message=FakeMessage(), message_list=message_list, allowed={1: "u"}
+    )
+
+    rendered = str(cog.client.responses.create_inputs[-1])
+    assert "input_image" not in rendered
+    assert "[attachment: image]" in rendered
+
+
+async def test_attachment_parts_cached_until_message_changes() -> None:
+    """Rendered attachment parts are cached per message and refresh on edit."""
+    cog = _cog()
+    message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
+    attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
+    message.attachments = [attachment]
+
+    first = await cog.input_builder.get_attachment_parts(message=message)
+    again = await cog.input_builder.get_attachment_parts(message=message)
+
+    assert attachment.read_count == 1
+    assert again == first
+
+    message.edited_at = datetime.now(tz=UTC)
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 2
+
+
+async def test_memory_selection_timeout_degrades_to_no_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung selection request times out and the context carries no memory."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_TIMEOUT_SECONDS", 0.01)
+
+    async def slow_selection(**kwargs: object) -> None:
+        """Simulates a proxy hang far past the selection deadline."""
+        del kwargs
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+
+    context = await cog._prepare_reply_context(
+        message=message, history_limit=2, memory_enabled=True, parts_task=parts_task
+    )
+
+    assert context.memory_block is None
+    assert context.memory_labels == []
