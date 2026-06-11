@@ -12,10 +12,6 @@ from collections.abc import Iterator
 from pydantic import Field, BaseModel, computed_field
 import requests
 
-# ---------------------------------------------------------------------------
-# URL parsing
-# ---------------------------------------------------------------------------
-
 
 class ThreadsURL(BaseModel):
     """Parses and normalises a Threads post URL.
@@ -53,11 +49,6 @@ class ThreadsURL(BaseModel):
         parsed = urlparse(self.raw_url)
         path_parts = parsed.path.strip("/").split("/")
         return path_parts[-1] if path_parts else ""
-
-
-# ---------------------------------------------------------------------------
-# API data models
-# ---------------------------------------------------------------------------
 
 
 class User(BaseModel):
@@ -276,8 +267,6 @@ class Post(MediaContainer):
     like_count: int | None = Field(default=None, description="Number of likes")
     taken_at: int | None = Field(default=None, description="Post creation timestamp (Unix epoch)")
 
-    # -- derived properties ---------------------------------------------------
-
     @property
     def caption_text(self) -> str:
         """The extracted caption text or fallback link preview title.
@@ -393,11 +382,6 @@ class Post(MediaContainer):
         return [u for u in dict.fromkeys(urls) if u]
 
 
-# ---------------------------------------------------------------------------
-# HTML → Post extraction models
-# ---------------------------------------------------------------------------
-
-
 class ThreadItem(BaseModel):
     """Represents one item in a Threads reply chain.
 
@@ -439,11 +423,6 @@ class ThreadData(BaseModel):
         return None, []
 
 
-# ---------------------------------------------------------------------------
-# Output model (public API — fields unchanged)
-# ---------------------------------------------------------------------------
-
-
 class ThreadsOutput(BaseModel):
     """Output model for a single Threads post.
 
@@ -483,10 +462,6 @@ class ThreadsOutput(BaseModel):
             path.unlink(missing_ok=True)
 
 
-# ---------------------------------------------------------------------------
-# Downloader
-# ---------------------------------------------------------------------------
-
 _SJS_PATTERN = re.compile(
     r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', re.DOTALL
 )
@@ -501,8 +476,6 @@ class ThreadsDownloader(BaseModel):
 
     output_folder: str = Field(default="./tmp")
 
-    # -- HTTP -----------------------------------------------------------------
-
     def _fetch_html(self, url: str) -> str:
         """Fetches the HTML content of the given URL."""
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
@@ -512,8 +485,6 @@ class ThreadsDownloader(BaseModel):
             return response.text
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to fetch HTML from {url}: {e}") from e
-
-    # -- HTML parsing ---------------------------------------------------------
 
     @staticmethod
     def _find_keys(obj: dict | list | str | float | None, key: str) -> list:
@@ -628,8 +599,6 @@ class ThreadsDownloader(BaseModel):
 
         return None, []
 
-    # -- Media download -------------------------------------------------------
-
     @staticmethod
     def _determine_extension(media_url: str) -> str:
         """Determines the file extension from a media URL."""
@@ -673,8 +642,6 @@ class ThreadsDownloader(BaseModel):
             return filepath
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to download media from {url}: {e}") from e
-
-    # -- Public API -----------------------------------------------------------
 
     def extract_post_data(self, url: str) -> tuple[Post | None, list[Post]]:
         """Extracts post data and its parents from a Threads URL.
