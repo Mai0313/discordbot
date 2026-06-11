@@ -113,6 +113,19 @@ class RuntimeModelCatalog(BaseModel):
         return fast_model
 
     @property
+    def tool_model(self) -> ModelSettings:
+        """The model settings for the phase-1 get_user_memory selection decision.
+
+        Callers: `_select_user_memories`.
+
+        Returns:
+            Fast settings for the "should I read whose long-term memory" tool-call
+            decision that runs on the reply critical path before the answer, kept
+            off the heavier slow_model tier so it adds minimal latency.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="none")
+
+    @property
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 

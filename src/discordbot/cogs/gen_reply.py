@@ -458,16 +458,16 @@ class ReplyGeneratorCogs(commands.Cog):
         server-side against the allowlist. Returns the memories plus this request's token usage
         so the reply footer and chat reward account for the selection call too.
         """
-        slow_model = self.runtime_models.slow_model
+        tool_model = self.runtime_models.tool_model
         selection_input: ResponseInputParam = [
             *message_list,
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.client.responses.create(
-            model=slow_model.name,
+            model=tool_model.name,
             instructions=MEMORY_SELECT_PROMPT,
             input=selection_input,
-            reasoning=slow_model.reasoning,
+            reasoning=tool_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
             stream=False,
             service_tier="auto",
