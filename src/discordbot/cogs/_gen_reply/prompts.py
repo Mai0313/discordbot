@@ -55,6 +55,7 @@ Your only task: decide whether any conversation participant's stored long-term m
 
 * Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
 * A system block lists the users whose memory you may look up, each as `[id: USER_ID] label`. Call `get_user_memory` only with ids from that list; ids outside it are ignored.
+* A background block may carry this server's memory, including a `## 成員稱呼` table mapping members to the colloquial nicknames the community uses. When a message refers to someone by a nickname instead of a mention, use that table to resolve the nickname to the right `[id: USER_ID]` before looking it up.
 * Call `get_user_memory` ONLY when prior memory about a specific participant would make the reply fit them better. Most messages need no lookup; calling nothing is the normal and common case.
 * Do NOT write a reply or any other prose. Either call `get_user_memory` with the relevant ids, or do nothing.
 """

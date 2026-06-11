@@ -7,6 +7,7 @@ permission boundary: the model is shown the callable users, and `resolve_user_me
 drops any requested id outside the allowlist before reading a file.
 """
 
+import re
 import json
 
 from nextcord import User, Member, Message
@@ -106,6 +107,39 @@ def build_memory_allowlist(*, messages: list[Message], bot_user_id: int) -> dict
             if user.id == bot_user_id or user.id in allowed:
                 continue
             allowed[user.id] = _user_label(user=user)
+    return allowed
+
+
+# Pulls the `## 成員稱呼` nickname-table section out of a server memory file, then each
+# member row's `[id: USER_ID]`. The section ends at the next `## ` heading or end of file.
+_MEMBER_ALIAS_SECTION_RE = re.compile(
+    r"^##\s*成員稱呼\s*$(?P<body>.*?)(?=^##\s|\Z)", flags=re.MULTILINE | re.DOTALL
+)
+_MEMBER_ALIAS_ID_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]")
+
+
+def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
+    """Parses askable user ids out of a server memory's `## 成員稱呼` nickname table.
+
+    Each table row maps a member to the aliases the community uses and carries that
+    member's `[id: USER_ID]`. In a public channel these ids widen the lookup allowlist so a
+    member can be asked about by nickname even when absent from the conversation. The row
+    minus its id token becomes the label, escaped so a stored name can never inject a ping.
+    Returns an empty map when the section is absent.
+    """
+    section = _MEMBER_ALIAS_SECTION_RE.search(memory)
+    if section is None:
+        return {}
+    allowed: dict[int, str] = {}
+    for line in section.group("body").splitlines():
+        match = _MEMBER_ALIAS_ID_RE.search(line)
+        if match is None:
+            continue
+        user_id = int(match.group("user_id"))
+        if user_id in allowed:
+            continue
+        label = _MEMBER_ALIAS_ID_RE.sub("", line).strip().lstrip("*").strip()
+        allowed[user_id] = escape_mentions(label) or str(user_id)
     return allowed
 
 
