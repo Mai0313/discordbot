@@ -4,18 +4,24 @@ import re
 import base64
 from typing import Literal, cast
 import asyncio
+from datetime import datetime
 from mimetypes import guess_type
+from collections import OrderedDict
 
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
+from discordbot.utils.images import (
+    get_image_data,
+    shrink_image_bytes,
+    convert_base64_to_data_uri,
+)
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 
@@ -104,6 +110,13 @@ class MessageInputBuilder(BaseModel):
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
+    # Rendered attachment parts per message, so replying repeatedly in the same channel
+    # does not re-download and re-encode the same history attachments every time. Keyed
+    # on edit time and source counts so an edit or a late embed unfurl re-renders.
+    _attachment_cache: OrderedDict[
+        tuple[int, datetime | None, int, int, int],
+        list[ResponseInputImageParam | ResponseInputFileParam],
+    ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
         """Removes bot mention syntax from image/video generation prompts."""
@@ -168,6 +181,11 @@ class MessageInputBuilder(BaseModel):
             else:
                 content_type = guess_type(source.url)[0] or "image/png"
             file_bytes = await source.read()
+            # Downscale and re-encode off the event loop so an oversized photo never
+            # rides into the request as a multi-MB base64 payload.
+            file_bytes, content_type = await asyncio.to_thread(
+                shrink_image_bytes, payload=file_bytes, content_type=content_type
+            )
             b64_data = base64.b64encode(file_bytes).decode("utf-8")
             data_uri = f"data:{content_type};base64,{b64_data}"
             return ResponseInputImageParam(image_url=data_uri, detail="auto", type="input_image")
@@ -239,7 +257,21 @@ class MessageInputBuilder(BaseModel):
     async def get_attachment_parts(
         self, message: Message
     ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
-        """Extracts attachment content parts from a message."""
+        """Extracts attachment content parts from a message, with a per-message cache."""
+        if not (message.attachments or message.stickers or message.embeds):
+            return []
+        cache_key = (
+            message.id,
+            message.edited_at,
+            len(message.attachments),
+            len(message.stickers),
+            len(message.embeds),
+        )
+        cached = self._attachment_cache.get(cache_key)
+        if cached is not None:
+            self._attachment_cache.move_to_end(cache_key)
+            return list(cached)
+
         slow_model = self.runtime_models.slow_model
         modalities = get_supported_modalities(model_name=slow_model.name)
         content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
@@ -268,8 +300,14 @@ class MessageInputBuilder(BaseModel):
                 if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
                     content_parts.append(await self.image_to_part(source=url))
 
-        content_parts = [part for part in content_parts if part is not None]
-        return content_parts
+        resolved = [part for part in content_parts if part is not None]
+        # A None part means a download/convert failed; skip caching so the next reply
+        # retries instead of pinning the degraded render.
+        if None not in content_parts:
+            self._attachment_cache[cache_key] = list(resolved)
+            if len(self._attachment_cache) > 128:
+                self._attachment_cache.popitem(last=False)
+        return resolved
 
     async def process_single_message(self, message: Message) -> EasyInputMessageParam:
         """Processes a single Discord message into a Responses API input message."""

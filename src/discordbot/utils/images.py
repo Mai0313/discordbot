@@ -39,6 +39,56 @@ def get_pil_image(image_file: str) -> Image.Image:
     return image.convert("RGB")
 
 
+# Gemini scales anything past 3072x3072 down server-side before the model sees it, so
+# capping the longest edge locally never changes what the model consumes; it only stops
+# us uploading bytes the provider would discard anyway.
+_MAX_IMAGE_DIMENSION = 3072
+
+
+def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
+    """Downscales an image to the provider's effective resolution and re-encodes it.
+
+    Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
+    bytes); images with transparency stay PNG so alpha survives; GIFs and other
+    animated images pass through untouched so motion context survives. Anything
+    PIL cannot decode passes through unchanged.
+
+    Args:
+        payload: The original encoded image bytes.
+        content_type: The image's MIME type, used to pick passthrough cases.
+
+    Returns:
+        The (possibly re-encoded) image bytes and their MIME type.
+    """
+    if content_type == "image/gif":
+        return payload, content_type
+    try:
+        image = Image.open(fp=BytesIO(initial_bytes=payload))
+        if getattr(image, "is_animated", False):
+            return payload, content_type
+        has_alpha = (
+            image.mode in {"RGBA", "LA", "PA"}
+            or (image.mode == "P" and "transparency" in image.info)
+        )
+        within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
+        if within_bounds and (content_type == "image/jpeg" or has_alpha):
+            return payload, content_type
+        image.thumbnail(
+            size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION),
+            resample=Image.Resampling.LANCZOS,
+        )
+        buffered = BytesIO()
+        if has_alpha:
+            image.save(fp=buffered, format="PNG")
+            return buffered.getvalue(), "image/png"
+        image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
+        return buffered.getvalue(), "image/jpeg"
+    except Exception:
+        # An undecodable or exotic payload is sent as-is; the API rejects it the
+        # same way it would have before the shrink existed.
+        return payload, content_type
+
+
 @overload
 def get_image_data(image_file: str, use_b64: Literal[True] = ...) -> str:  # noqa: D418
     """Returns image data as a base64 string."""
@@ -58,8 +108,8 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
     URI, the embedded payload is returned as-is — no PIL decode/encode round
     trip, no format change. JPEG stays JPEG, PNG stays PNG.
 
-    Slow path: anything else is fetched / decoded via :func:`get_pil_image` and
-    re-encoded as PNG.
+    Slow path: anything else is fetched / decoded via :func:`get_pil_image`,
+    downscaled to the provider's effective resolution, and re-encoded as JPEG.
 
     Args:
         image_file: URL or data URI.
@@ -78,8 +128,11 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
         return payload if use_b64 else base64.b64decode(s=payload)
 
     image = get_pil_image(image_file=image_file)
+    image.thumbnail(
+        size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
+    )
     buffered = BytesIO()
-    image.save(fp=buffered, format="PNG")
+    image.save(fp=buffered, format="JPEG", quality=95)
     content = buffered.getvalue()
     if use_b64:
         return base64.b64encode(s=content).decode(encoding="utf-8")

@@ -127,6 +127,7 @@ class FakeMessage:
         self.mentions: list[FakeAuthor] = []
         self.id = 987
         self.created_at = FAKE_MESSAGE_CREATED_AT
+        self.edited_at: datetime | None = None
         self.system_content = ""
         self.added_reactions: list[str] = []
         self.removed_reactions: list[tuple[str, FakeAuthor]] = []
