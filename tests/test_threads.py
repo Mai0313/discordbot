@@ -167,3 +167,25 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
         assert target.author_name, "author_name should not be empty"
         assert target.taken_at is not None, "taken_at should not be None"
     assert fetched_urls == [threads_url.clean_url]
+
+
+def test_post_tolerates_null_string_fields() -> None:
+    """A post whose link preview serialises image_url as null still parses."""
+    post = Post.model_validate(
+        obj={
+            "code": "NULLPREV",
+            "caption": {"text": "shared a link"},
+            "user": {"username": "author", "profile_pic_url": ""},
+            "text_post_app_info": {
+                "link_preview_attachment": {
+                    "title": "instagram.com",
+                    "image_url": None,
+                    "url": "https://www.instagram.com/reel/abc/",
+                }
+            },
+        }
+    )
+    assert post.code == "NULLPREV"
+    assert post.text_post_app_info is not None
+    assert post.text_post_app_info.link_preview_attachment is not None
+    assert post.text_post_app_info.link_preview_attachment.image_url == ""

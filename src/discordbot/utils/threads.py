@@ -9,8 +9,29 @@ import contextlib
 from urllib.parse import urlparse
 from collections.abc import Iterator
 
-from pydantic import Field, BaseModel, computed_field
+from pydantic import Field, BaseModel, ValidationInfo, computed_field, field_validator
 import requests
+
+
+class _ThreadsModel(BaseModel):
+    """Base model tolerating an explicit JSON null on plain string fields.
+
+    Threads sometimes serialises an optional string field (e.g. a link
+    preview's image_url) as an explicit null instead of omitting it. Those
+    fields are declared as str with an empty default, so the null would raise a
+    ValidationError, which the parser treats as a corrupt block and silently
+    drops the whole post. Coercing null to the empty string keeps the default
+    semantics for both absent and null values.
+    """
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _coerce_null_string(cls, value: object, info: ValidationInfo) -> object:
+        """Maps a null value to an empty string for str-typed fields."""
+        field_name = info.field_name
+        if value is None and field_name and cls.model_fields[field_name].annotation is str:
+            return ""
+        return value
 
 
 class ThreadsURL(BaseModel):
@@ -51,7 +72,7 @@ class ThreadsURL(BaseModel):
         return path_parts[-1] if path_parts else ""
 
 
-class User(BaseModel):
+class User(_ThreadsModel):
     """Represents a Threads user.
 
     Attributes:
@@ -63,7 +84,7 @@ class User(BaseModel):
     profile_pic_url: str = Field(default="", description="Profile picture URL")
 
 
-class Caption(BaseModel):
+class Caption(_ThreadsModel):
     """Represents caption text attached to a Threads post.
 
     Attributes:
@@ -73,7 +94,7 @@ class Caption(BaseModel):
     text: str = Field(default="", description="Caption text content")
 
 
-class VideoVersion(BaseModel):
+class VideoVersion(_ThreadsModel):
     """Represents an available video rendition.
 
     Attributes:
@@ -83,7 +104,7 @@ class VideoVersion(BaseModel):
     url: str = Field(default="", description="Video file URL")
 
 
-class ImageCandidate(BaseModel):
+class ImageCandidate(_ThreadsModel):
     """Represents an available image rendition.
 
     Attributes:
@@ -93,7 +114,7 @@ class ImageCandidate(BaseModel):
     url: str = Field(default="", description="Image URL")
 
 
-class ImageVersions2(BaseModel):
+class ImageVersions2(_ThreadsModel):
     """Holds available image renditions for a media object.
 
     Attributes:
@@ -105,7 +126,7 @@ class ImageVersions2(BaseModel):
     )
 
 
-class CarouselMedia(BaseModel):
+class CarouselMedia(_ThreadsModel):
     """Represents one media item in a Threads carousel.
 
     Attributes:
@@ -121,7 +142,7 @@ class CarouselMedia(BaseModel):
     )
 
 
-class MediaContainer(BaseModel):
+class MediaContainer(_ThreadsModel):
     """Contains media fields shared by posts and linked inline media.
 
     Attributes:
@@ -162,7 +183,7 @@ class MediaContainer(BaseModel):
         return [u for u in urls if u]
 
 
-class Fragment(BaseModel):
+class Fragment(_ThreadsModel):
     """Represents one text fragment from Threads structured text.
 
     Attributes:
@@ -172,7 +193,7 @@ class Fragment(BaseModel):
     plaintext: str = Field(default="", description="Plain text content of the fragment")
 
 
-class TextFragments(BaseModel):
+class TextFragments(_ThreadsModel):
     """Holds ordered structured text fragments.
 
     Attributes:
@@ -184,7 +205,7 @@ class TextFragments(BaseModel):
     )
 
 
-class LinkPreviewAttachment(BaseModel):
+class LinkPreviewAttachment(_ThreadsModel):
     """Represents metadata for a link preview attachment.
 
     Attributes:
@@ -210,7 +231,7 @@ class LinkedInlineMedia(MediaContainer):
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
-class TextPostAppInfo(BaseModel):
+class TextPostAppInfo(_ThreadsModel):
     """Represents Threads-specific post metadata and engagement fields.
 
     Attributes:
@@ -382,7 +403,7 @@ class Post(MediaContainer):
         return [u for u in dict.fromkeys(urls) if u]
 
 
-class ThreadItem(BaseModel):
+class ThreadItem(_ThreadsModel):
     """Represents one item in a Threads reply chain.
 
     Attributes:
@@ -392,7 +413,7 @@ class ThreadItem(BaseModel):
     post: Post | None = Field(default=None)
 
 
-class ThreadData(BaseModel):
+class ThreadData(_ThreadsModel):
     """Represents Threads reply-chain data extracted from HTML JSON.
 
     Attributes:
@@ -773,6 +794,6 @@ if __name__ == "__main__":
     console = Console()
 
     downloader = ThreadsDownloader(output_folder="./tmp")
-    url = "https://www.threads.com/@god.withme4ever/post/DZRDeFFmDiX?xmt=AQG0e9ucF6uRsl3Fw1Vomsphfm9UOxCuaETcG30CkZLD6w"
+    url = "https://www.threads.com/@chengweilai2/post/DZZImVsCWU-?xmt=AQG0MLHN7M4RJOdbdF1HzSG5Qm-9a1b2aOB5HN4ksjCrhQ"
     with downloader.parse(url=url) as outputs:
         console.print(outputs)
