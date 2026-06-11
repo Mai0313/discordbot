@@ -76,6 +76,10 @@ _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 # answers without memory instead of letting a slow proxy stall the whole pipeline.
 MEMORY_SELECT_TIMEOUT_SECONDS = 2.0
 
+# Hard ceiling on the video-generation polling loop so a hung provider job cannot
+# leave the message handler waiting forever.
+VIDEO_GENERATION_TIMEOUT_SECONDS = 600.0
+
 
 def _message_has_url(content: str) -> bool:
     """Returns whether the current message carries an explicit URL."""
@@ -300,11 +304,12 @@ class ReplyGeneratorCogs(commands.Cog):
             prompt=user_prompt or "請依照訊息內容生成一段影片。",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        while video.status not in ("completed", "failed"):
-            await asyncio.sleep(5)
-            video = await self.client.videos.retrieve(
-                video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
-            )
+        async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
+            while video.status not in ("completed", "failed"):
+                await asyncio.sleep(5)
+                video = await self.client.videos.retrieve(
+                    video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
+                )
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(
