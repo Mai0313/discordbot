@@ -17,8 +17,6 @@ class DiscordConfig(BaseSettings):
         description="The token from discord for calling models.",
         examples=["MTEz-..."],
         validation_alias=AliasChoices("DISCORD_BOT_TOKEN"),
-        frozen=False,
-        deprecated=False,
     )
 
 
@@ -30,8 +28,6 @@ class EconomyConfig(BaseSettings):
         description="Allow central-bank borrowers to approve their own loan requests for local testing.",
         examples=[False],
         validation_alias=AliasChoices("ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL"),
-        frozen=False,
-        deprecated=False,
     )
 
 

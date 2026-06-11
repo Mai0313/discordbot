@@ -1,12 +1,11 @@
 """Discord embed and image builders for the simulated stock market."""
 
 from io import BytesIO
-from typing import TypedDict
 from functools import cache, lru_cache
 
 from PIL import Image, ImageDraw
 from nextcord import Embed
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.stock import (
     StockAction,
@@ -62,14 +61,16 @@ _MARKET_NAME_MAX_WIDTH = 280
 _MARKET_CATEGORY_MAX_WIDTH = 112
 
 
-class _MarketFonts(TypedDict):
+class _MarketFonts(BaseModel):
     """Font set used by the stock market board image."""
 
-    title: Font
-    header: Font
-    symbol: Font
-    body: Font
-    small: Font
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    title: Font = Field(description="Board title font.")
+    header: Font = Field(description="Table header font.")
+    symbol: Font = Field(description="Stock symbol font.")
+    body: Font = Field(description="Row text font.")
+    small: Font = Field(description="Footer and badge font.")
 
 
 class _MarketBoardQuote(BaseModel):
@@ -77,13 +78,13 @@ class _MarketBoardQuote(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str
-    name: str
-    category: str
-    price_cents: int
-    total_shares: int
-    change_bps: int
-    pressure_bps: int
+    symbol: str = Field(description="Stock ticker symbol.")
+    name: str = Field(description="Company display name.")
+    category: str = Field(description="Company category label.")
+    price_cents: int = Field(description="Quoted price in cents.")
+    total_shares: int = Field(description="Total issued shares for market cap.")
+    change_bps: int = Field(description="Price change in basis points.")
+    pressure_bps: int = Field(description="Order-flow pressure in basis points.")
 
 
 class _MarketBoardSpec(BaseModel):
@@ -91,9 +92,9 @@ class _MarketBoardSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    quotes: tuple[_MarketBoardQuote, ...]
-    page_index: int
-    page_size: int
+    quotes: tuple[_MarketBoardQuote, ...] = Field(description="Quotes for the rendered page.")
+    page_index: int = Field(description="Zero-based page index.")
+    page_size: int = Field(description="Rows per page.")
 
 
 def market_board_filename(page_index: int) -> str:
@@ -223,13 +224,13 @@ def _market_page[MarketPageRow](
 @cache
 def _market_fonts() -> _MarketFonts:
     """Loads the market board fonts with a bundled-system fallback chain."""
-    return {
-        "title": load_font(size=34, bold=True),
-        "header": load_font(size=20, bold=True),
-        "symbol": load_font(size=28, bold=True),
-        "body": load_font(size=24, bold=False),
-        "small": load_font(size=16, bold=False),
-    }
+    return _MarketFonts(
+        title=load_font(size=34, bold=True),
+        header=load_font(size=20, bold=True),
+        symbol=load_font(size=28, bold=True),
+        body=load_font(size=24, bold=False),
+        small=load_font(size=16, bold=False),
+    )
 
 
 def _draw_market_header(
@@ -242,16 +243,16 @@ def _draw_market_header(
     """Draws the board title and summary line."""
     x = _MARKET_BOARD_MARGIN
     y = _MARKET_BOARD_MARGIN
-    draw.text(xy=(x, y), text="市場看板", font=fonts["title"], fill=_MARKET_TEXT)
+    draw.text(xy=(x, y), text="市場看板", font=fonts.title, fill=_MARKET_TEXT)
     summary = f"{quote_count:,} 檔股票"
     if page_count > 1:
         summary = f"{summary} · 第 {page_index + 1}/{page_count} 頁"
-    draw.text(xy=(x, y + 40), text=summary, font=fonts["small"], fill=_MARKET_MUTED)
+    draw.text(xy=(x, y + 40), text=summary, font=fonts.small, fill=_MARKET_MUTED)
     draw_text_right(
         draw=draw,
         text=f"單位: {CURRENCY_NAME}",
         xy=(_MARKET_CAP_RIGHT, y + 40),
-        font=fonts["small"],
+        font=fonts.small,
         fill=_MARKET_MUTED,
     )
 
@@ -264,40 +265,40 @@ def _draw_market_table_header(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y:
     )
     baseline = y + 14
     draw.text(
-        xy=(_MARKET_SYMBOL_X, baseline), text="代碼", font=fonts["header"], fill=_MARKET_MUTED
+        xy=(_MARKET_SYMBOL_X, baseline), text="代碼", font=fonts.header, fill=_MARKET_MUTED
     )
     draw.text(
-        xy=(_MARKET_COMPANY_X, baseline), text="公司", font=fonts["header"], fill=_MARKET_MUTED
+        xy=(_MARKET_COMPANY_X, baseline), text="公司", font=fonts.header, fill=_MARKET_MUTED
     )
     draw.text(
-        xy=(_MARKET_CATEGORY_X, baseline), text="分類", font=fonts["header"], fill=_MARKET_MUTED
+        xy=(_MARKET_CATEGORY_X, baseline), text="分類", font=fonts.header, fill=_MARKET_MUTED
     )
     draw_text_right(
         draw=draw,
         text="股價",
         xy=(_MARKET_PRICE_RIGHT, baseline),
-        font=fonts["header"],
+        font=fonts.header,
         fill=_MARKET_MUTED,
     )
     draw_text_right(
         draw=draw,
         text="今日",
         xy=(_MARKET_CHANGE_RIGHT, baseline),
-        font=fonts["header"],
+        font=fonts.header,
         fill=_MARKET_MUTED,
     )
     draw_text_right(
         draw=draw,
         text="買賣壓力",
         xy=(_MARKET_PRESSURE_RIGHT, baseline),
-        font=fonts["header"],
+        font=fonts.header,
         fill=_MARKET_MUTED,
     )
     draw_text_right(
         draw=draw,
         text="市值",
         xy=(_MARKET_CAP_RIGHT, baseline),
-        font=fonts["header"],
+        font=fonts.header,
         fill=_MARKET_MUTED,
     )
 
@@ -326,42 +327,42 @@ def _draw_market_row(
     )
     market_cap = cash_floor(cents=quote.price_cents * quote.total_shares)
     name = fit_text(
-        draw=draw, text=quote.name, font=fonts["body"], max_width=_MARKET_NAME_MAX_WIDTH
+        draw=draw, text=quote.name, font=fonts.body, max_width=_MARKET_NAME_MAX_WIDTH
     )
     category = fit_text(
-        draw=draw, text=quote.category, font=fonts["small"], max_width=_MARKET_CATEGORY_MAX_WIDTH
+        draw=draw, text=quote.category, font=fonts.small, max_width=_MARKET_CATEGORY_MAX_WIDTH
     )
     draw.text(
-        xy=(_MARKET_SYMBOL_X, y + 14), text=quote.symbol, font=fonts["symbol"], fill=_MARKET_ACCENT
+        xy=(_MARKET_SYMBOL_X, y + 14), text=quote.symbol, font=fonts.symbol, fill=_MARKET_ACCENT
     )
-    draw.text(xy=(_MARKET_COMPANY_X, y + 8), text=name, font=fonts["body"], fill=_MARKET_TEXT)
-    _draw_tag(draw=draw, text=category, xy=(_MARKET_CATEGORY_X, y + 19), font=fonts["small"])
+    draw.text(xy=(_MARKET_COMPANY_X, y + 8), text=name, font=fonts.body, fill=_MARKET_TEXT)
+    _draw_tag(draw=draw, text=category, xy=(_MARKET_CATEGORY_X, y + 19), font=fonts.small)
     draw_text_right(
         draw=draw,
         text=format_price(price_cents=quote.price_cents),
         xy=(_MARKET_PRICE_RIGHT, y + 12),
-        font=fonts["body"],
+        font=fonts.body,
         fill=_MARKET_TEXT,
     )
     draw_text_right(
         draw=draw,
         text=signed_percent(bps=quote.change_bps),
         xy=(_MARKET_CHANGE_RIGHT, y + 12),
-        font=fonts["body"],
+        font=fonts.body,
         fill=_metric_color(bps=quote.change_bps),
     )
     draw_text_right(
         draw=draw,
         text=signed_percent(bps=quote.pressure_bps),
         xy=(_MARKET_PRESSURE_RIGHT, y + 12),
-        font=fonts["body"],
+        font=fonts.body,
         fill=_metric_color(bps=quote.pressure_bps),
     )
     draw_text_right(
         draw=draw,
         text=compact_amount(amount=market_cap),
         xy=(_MARKET_CAP_RIGHT, y + 12),
-        font=fonts["body"],
+        font=fonts.body,
         fill=_MARKET_TEXT,
     )
 
@@ -375,7 +376,7 @@ def _draw_empty_market_row(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y: in
     draw.text(
         xy=(_MARKET_SYMBOL_X, y + 16),
         text="目前沒有可用的股票",
-        font=fonts["body"],
+        font=fonts.body,
         fill=_MARKET_MUTED,
     )
 
