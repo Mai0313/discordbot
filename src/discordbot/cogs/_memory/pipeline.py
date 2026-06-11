@@ -26,6 +26,7 @@ from discordbot.cogs._memory.store import (
     read_main_memory,
     read_raw_entries,
     count_raw_entries,
+    detail_file_bytes,
     write_main_memory,
 )
 from discordbot.cogs._memory.constants import (
@@ -296,6 +297,16 @@ async def _consolidate_locked(
     # for retry and therefore must not retire it.
     append_detail(scope=scope, text=read_raw_entries(scope=scope))
     clear_raw(scope=scope)
+
+
+def regeneration_has_evidence(scope: str) -> bool:
+    """Whether any cold-tier evidence exists for a from-scratch rebuild.
+
+    Mirrors the evidence guard inside `regenerate_main_memory` cheaply (no full
+    window read), so the command can surface "no observations yet" up front
+    instead of scheduling a background rebuild that would silently do nothing.
+    """
+    return bool(read_raw_entries(scope=scope)) or detail_file_bytes(scope=scope) > 0
 
 
 def regeneration_on_cooldown(scope: str) -> bool:

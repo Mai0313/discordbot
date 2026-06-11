@@ -31,7 +31,11 @@ from discordbot.cogs._memory.views import (
     memory_footer_text,
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
-from discordbot.cogs._memory.pipeline import regeneration_on_cooldown, schedule_memory_regeneration
+from discordbot.cogs._memory.pipeline import (
+    regeneration_on_cooldown,
+    regeneration_has_evidence,
+    schedule_memory_regeneration,
+)
 from discordbot.cogs._memory.extraction import MemoryExtractorAI
 
 _SUCCESS_EMBED_COLOR = 0x57F287
@@ -234,6 +238,17 @@ class MemoryCogs(commands.Cog):
             embed = Embed(
                 title=_REGEN_TITLE,
                 description=_REGEN_COOLDOWN_DESCRIPTION,
+                color=_WARN_EMBED_COLOR,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if not regeneration_has_evidence(scope=scope):
+            # A from-scratch rebuild needs cold-tier evidence; without any, the
+            # background task would silently no-op, so say so up front instead
+            # of claiming a rebuild was scheduled.
+            embed = Embed(
+                title=_REGEN_TITLE,
+                description="目前還沒有足夠的觀察記錄可以重建記憶，多跟我聊聊吧。",
                 color=_WARN_EMBED_COLOR,
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)

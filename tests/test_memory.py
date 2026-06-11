@@ -1221,6 +1221,19 @@ async def test_regenerate_main_memory_without_evidence_skips_llm(
     assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
+def test_regeneration_has_evidence_tracks_raw_and_detail(memory_isolated_dir: Path) -> None:
+    # An existing main alone is not evidence; only raw or detail counts.
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is False
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
+    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is True
+
+
+def test_regeneration_has_evidence_detects_detail_only(memory_isolated_dir: Path) -> None:
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is True
+
+
 async def test_regenerate_main_memory_failure_keeps_existing_state(
     memory_isolated_dir: Path,
 ) -> None:
@@ -1363,6 +1376,8 @@ async def test_memory_regenerate_command_schedules_in_background(
         return scheduled
 
     monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    # Evidence must exist or the command short-circuits before scheduling.
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
 
@@ -1376,6 +1391,32 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
+
+
+async def test_memory_regenerate_command_reports_no_evidence(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog = _memory_cog()
+    scheduled = False
+
+    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
+        nonlocal scheduled
+        scheduled = True
+        return True
+
+    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    # No raw or detail evidence exists for this scope.
+    interaction = _regen_interaction()
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+
+    # Without evidence the background task would no-op, so nothing is scheduled
+    # and the user is told there is nothing to rebuild yet.
+    assert scheduled is False
+    assert interaction.response.deferred is None
+    assert interaction.response.sent["ephemeral"] is True
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "還沒有足夠的觀察記錄" in (embed.description or "")
 
 
 async def test_memory_regenerate_command_blocked_by_cooldown(
