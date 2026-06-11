@@ -46,12 +46,6 @@ _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 # Capturing variant used by `read_main_identity` to recover the stored line.
 _IDENTITY_CAPTURE_RE = re.compile(r"^v1\n([^\n]*\[id: \d+\][^\n]*)\n")
 
-# The ` | <identity>` suffix that raw entry headers carried before identity
-# was confined to the main file. New headers are timestamp-only; the strip
-# remains so raw / detail files written before the removal never leak author
-# identity to the consolidation LLM or `/memory show`.
-_RAW_HEADER_IDENTITY_RE = re.compile(r"^(## \d{4}-\d{2}-\d{2}T\S+) \| [^\n]*$", flags=re.MULTILINE)
-
 # Process-local registries keyed by scope; tests reset them through the
 # conftest fixture.
 _scope_locks: dict[str, asyncio.Lock] = {}
@@ -193,14 +187,12 @@ def append_detail(scope: str, text: str) -> None:
     """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
     The detail file preserves raw entry content verbatim; author identity
-    stays confined to the main file, so legacy ` | <identity>` header
-    suffixes from a pre-removal raw file are stripped before the write.
-    Append-mode IO keeps the common write O(1) in the file size; once the
-    file outgrows `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed
-    away, which is safe because content past the consolidation read window
-    is unreachable by every consumer anyway.
+    stays confined to the main file. Append-mode IO keeps the common write
+    O(1) in the file size; once the file outgrows `DETAIL_FILE_MAX_BYTES`
+    the oldest entries are trimmed away, which is safe because content past
+    the consolidation read window is unreachable by every consumer anyway.
     """
-    block = _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
+    block = text.strip()
     if not block:
         return
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
@@ -240,7 +232,7 @@ def _trim_detail(path: Path) -> None:
 
 
 def read_detail_tail(scope: str, max_chars: int) -> str:
-    """Returns the newest detail-file window, minus legacy identity metadata.
+    """Returns the newest detail-file window, aligned to a raw-entry header.
 
     Only a bounded byte window is read from the end of the file so the call
     stays O(window) as the uncapped detail file grows. The window is aligned
@@ -265,7 +257,7 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
         tail = text[max(0, len(text) - max_chars) :]
         match = _RAW_ENTRY_HEADER_RE.search(tail)
         text = tail[match.start() :] if match else tail
-    return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
+    return text.strip()
 
 
 def count_raw_entries(scope: str) -> int:
@@ -289,14 +281,8 @@ def detail_file_bytes(scope: str) -> int:
 
 
 def read_raw_entries(scope: str) -> str:
-    """Returns the raw file text for consolidation input, minus legacy identity metadata.
-
-    New headers are timestamp-only; the ` | <identity>` strip remains so a raw
-    file written before the suffix was removed cannot leak author identity
-    into the consolidated memory content.
-    """
-    text = _read_text(path=_raw_path(scope=scope))
-    return _RAW_HEADER_IDENTITY_RE.sub(r"\1", text).strip()
+    """Returns the raw file text for consolidation input."""
+    return _read_text(path=_raw_path(scope=scope)).strip()
 
 
 def clear_raw(scope: str) -> None:
