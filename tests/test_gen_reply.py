@@ -82,10 +82,12 @@ class FakeReply:
         self.files: list[File] | None = None
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
+        self.edits: list[str] = []
 
     async def edit(self, content: str) -> None:
         """Records the replacement content passed to edit."""
         self.content = content
+        self.edits.append(content)
 
     async def reply(self, content: str) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
@@ -183,9 +185,11 @@ class FakeAttachment:
         self.content_type = content_type
         self._payload = payload
         self.url = url
+        self.read_count = 0
 
     async def read(self) -> bytes:
         """Returns the configured attachment bytes."""
+        self.read_count += 1
         return self._payload
 
 
@@ -199,7 +203,9 @@ class FakeResponses:
         self.create_instructions: list[str] = []
         self.create_inputs: list[ResponseInputParam | str] = []
         self.create_tools: list[list[object] | None] = []
+        self.create_reasonings: list[dict[str, str]] = []
         self.parse_models: list[str] = []
+        self.parse_inputs: list[object] = []
         self.output_text = "caption"
         self.output_parsed = RouteDecision(decision="SUMMARY")
         # Each entry is the event list for one streaming create(); popped in order.
@@ -223,7 +229,8 @@ class FakeResponses:
         tools: list[object] | None = None,
     ) -> object:
         """Records the call; returns a streamed event iterator or non-stream output."""
-        del reasoning, service_tier, extra_headers, extra_body
+        del service_tier, extra_headers, extra_body
+        self.create_reasonings.append(reasoning)
         self.create_models.append(model)
         self.create_instructions.append(instructions)
         self.create_inputs.append(input)
@@ -252,6 +259,7 @@ class FakeResponses:
     ) -> SimpleNamespace:
         """Records the route model and returns configured parsed output."""
         self.parse_models.append(model)
+        self.parse_inputs.append(input)
         return SimpleNamespace(output_parsed=self.output_parsed)
 
 

@@ -92,10 +92,12 @@ class DragonGateTurn(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    turn_number: int
-    participant: GameParticipant
-    pillars: list[Card]
-    direction: DragonGateDirection | None = None
+    turn_number: int = Field(description="Sequence number of this turn within the table.")
+    participant: GameParticipant = Field(description="Player taking this turn.")
+    pillars: list[Card] = Field(description="The two gate pillar cards.")
+    direction: DragonGateDirection | None = Field(
+        default=None, description="High/low choice for a same-point gate, None until chosen."
+    )
 
     @property
     def is_pair(self) -> bool:
@@ -118,14 +120,16 @@ class DragonGateTurnResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    turn_number: int
-    participant: GameParticipant
-    pillars: list[Card]
-    third_card: Card
-    bet: int
-    outcome: DragonGateOutcome
-    delta: int
-    direction: DragonGateDirection | None = None
+    turn_number: int = Field(description="Sequence number of the resolved turn.")
+    participant: GameParticipant = Field(description="Player whose attempt was resolved.")
+    pillars: list[Card] = Field(description="The two gate pillar cards.")
+    third_card: Card = Field(description="The third card drawn to resolve the bet.")
+    bet: int = Field(description="Bet amount placed on this turn.")
+    outcome: DragonGateOutcome = Field(description="Resolved outcome label for the turn.")
+    delta: int = Field(description="Signed point change applied to the player's balance.")
+    direction: DragonGateDirection | None = Field(
+        default=None, description="High/low choice used for a same-point gate, if any."
+    )
 
 
 class DragonGateRound(BaseModel):
@@ -141,15 +145,26 @@ class DragonGateRound(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    rng: Random
-    participants: list[GameParticipant]
-    current_player_index: int = 0
-    turn_number: int = 0
-    active_turn: DragonGateTurn | None = None
-    last_result: DragonGateTurnResult | None = None
-    player_deltas: dict[int, int] = Field(default_factory=dict)
-    withdrawn_user_ids: set[int] = Field(default_factory=set)
-    finished: bool = False
+    rng: Random = Field(description="Random source used for card draws.")
+    participants: list[GameParticipant] = Field(description="Seated players in rotation order.")
+    current_player_index: int = Field(
+        default=0, description="Index of the participant whose turn is active."
+    )
+    turn_number: int = Field(default=0, description="Number of turns dealt so far.")
+    active_turn: DragonGateTurn | None = Field(
+        default=None, description="Turn awaiting a bet, None when the table is finished."
+    )
+    last_result: DragonGateTurnResult | None = Field(
+        default=None, description="Most recently resolved turn result."
+    )
+    player_deltas: dict[int, int] = Field(
+        default_factory=dict,
+        description="In-memory running net delta per player since joining, ante excluded.",
+    )
+    withdrawn_user_ids: set[int] = Field(
+        default_factory=set, description="User IDs of players who have left the table."
+    )
+    finished: bool = Field(default=False, description="True once every seat has withdrawn.")
 
     @classmethod
     def from_participants(

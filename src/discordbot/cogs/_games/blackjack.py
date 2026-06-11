@@ -234,15 +234,25 @@ class BlackjackHandState(BaseModel):
         actions_taken: Hit / Double / Surrender counter used by action guards.
     """
 
-    cards: list[Card] = Field(default_factory=list)
-    bet: int
-    base_bet: int
-    finished: bool = False
-    doubled: bool = False
-    surrendered: bool = False
-    is_split_hand: bool = False
-    is_split_aces: bool = False
-    actions_taken: int = 0
+    cards: list[Card] = Field(
+        default_factory=list, description="Cards currently held in this hand."
+    )
+    bet: int = Field(description="Active wager for this hand (doubled after Double Down).")
+    base_bet: int = Field(description="Original wager kept for Surrender refund math.")
+    finished: bool = Field(
+        default=False, description="True once this hand no longer needs Hit / Stand actions."
+    )
+    doubled: bool = Field(default=False, description="True after a Double Down on this hand.")
+    surrendered: bool = Field(default=False, description="True after a Surrender on this hand.")
+    is_split_hand: bool = Field(
+        default=False, description="True when this hand came out of a Split."
+    )
+    is_split_aces: bool = Field(
+        default=False, description="True when both split halves came from an Ace pair."
+    )
+    actions_taken: int = Field(
+        default=0, description="Hit / Double / Surrender counter used by action guards."
+    )
 
     def total(self) -> int:
         """Returns the current best total for this sub-hand."""
@@ -277,10 +287,16 @@ class BlackjackPlayerHand(BaseModel):
             insurance.
     """
 
-    participant: GameParticipant
-    hands: list[BlackjackHandState] = Field(default_factory=list)
-    insurance_bet: int = 0
-    insurance_resolved: bool = False
+    participant: GameParticipant = Field(description="Discord player and wager metadata.")
+    hands: list[BlackjackHandState] = Field(
+        default_factory=list, description="All active sub-hands in display order."
+    )
+    insurance_bet: int = Field(
+        default=0, description="Insurance side bet amount, 0 when none was taken."
+    )
+    insurance_resolved: bool = Field(
+        default=False, description="True once the player has made an insurance choice."
+    )
 
     @property
     def finished(self) -> bool:
@@ -497,18 +513,40 @@ class BlackjackRound(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    rng: Random
-    players: list[BlackjackPlayerHand]
-    dealer: list[Card] = Field(default_factory=list)
-    shoe: list[Card] = Field(default_factory=list)
-    current_player_index: int = 0
-    current_hand_index: int = 0
-    dealer_played: bool = False
-    finished: bool = False
-    auto_play_dealer: bool = True
-    phase: RoundPhase = "player_actions"
-    insurance_offered: bool = False
-    peeked_blackjack: bool = False
+    rng: Random = Field(description="Random source used for card draws.")
+    players: list[BlackjackPlayerHand] = Field(
+        description="Per-player containers, each holding one or more sub-hands."
+    )
+    dealer: list[Card] = Field(
+        default_factory=list, description="Dealer cards shared by the table."
+    )
+    shoe: list[Card] = Field(
+        default_factory=list, description="Remaining cards in the FIFO multi-deck shoe."
+    )
+    current_player_index: int = Field(
+        default=0, description="Index of the player whose turn is active."
+    )
+    current_hand_index: int = Field(
+        default=0, description="Index of the active sub-hand within the active player."
+    )
+    dealer_played: bool = Field(
+        default=False, description="True once the dealer has drawn for all standing players."
+    )
+    finished: bool = Field(default=False, description="True once no more player actions remain.")
+    auto_play_dealer: bool = Field(
+        default=True,
+        description="True when dealer cards are drawn synchronously after player actions finish.",
+    )
+    phase: RoundPhase = Field(
+        default="player_actions", description="Lifecycle phase of the round."
+    )
+    insurance_offered: bool = Field(
+        default=False, description="True only when the dealer up-card is an Ace."
+    )
+    peeked_blackjack: bool = Field(
+        default=False,
+        description="True once the dealer's hole-card peek revealed a natural Blackjack.",
+    )
 
     @classmethod
     def from_participants(

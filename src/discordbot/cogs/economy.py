@@ -373,7 +373,7 @@ class EconomyCogs(commands.Cog):
     @nextcord.slash_command(
         name="give",
         description=f"Transfer your {CURRENCY_NAME} to another member or bot.",
-        name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "虛擬歡樂豆送付"},
+        name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "送金"},
         description_localizations={
             Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員或 bot",
             Locale.ja: f"他のメンバーまたは bot に{CURRENCY_NAME}を送ります。",
@@ -396,7 +396,7 @@ class EconomyCogs(commands.Cog):
         amount: str = SlashOption(
             name="amount",
             description=f"How much {CURRENCY_NAME} to transfer (must be positive). Commas are allowed.",
-            name_localizations={Locale.zh_TW: "虛擬歡樂豆", Locale.ja: "虛擬歡樂豆"},
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
                 Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)，可加逗號",
                 Locale.ja: f"送る{CURRENCY_NAME} (1以上)。カンマ可。",
