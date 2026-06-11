@@ -264,12 +264,8 @@ def _draw_market_table_header(draw: ImageDraw.ImageDraw, fonts: _MarketFonts, y:
         fill=_MARKET_SURFACE,
     )
     baseline = y + 14
-    draw.text(
-        xy=(_MARKET_SYMBOL_X, baseline), text="代碼", font=fonts.header, fill=_MARKET_MUTED
-    )
-    draw.text(
-        xy=(_MARKET_COMPANY_X, baseline), text="公司", font=fonts.header, fill=_MARKET_MUTED
-    )
+    draw.text(xy=(_MARKET_SYMBOL_X, baseline), text="代碼", font=fonts.header, fill=_MARKET_MUTED)
+    draw.text(xy=(_MARKET_COMPANY_X, baseline), text="公司", font=fonts.header, fill=_MARKET_MUTED)
     draw.text(
         xy=(_MARKET_CATEGORY_X, baseline), text="分類", font=fonts.header, fill=_MARKET_MUTED
     )
@@ -326,9 +322,7 @@ def _draw_market_row(
         width=1,
     )
     market_cap = cash_floor(cents=quote.price_cents * quote.total_shares)
-    name = fit_text(
-        draw=draw, text=quote.name, font=fonts.body, max_width=_MARKET_NAME_MAX_WIDTH
-    )
+    name = fit_text(draw=draw, text=quote.name, font=fonts.body, max_width=_MARKET_NAME_MAX_WIDTH)
     category = fit_text(
         draw=draw, text=quote.category, font=fonts.small, max_width=_MARKET_CATEGORY_MAX_WIDTH
     )

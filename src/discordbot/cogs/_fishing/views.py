@@ -495,7 +495,9 @@ async def begin_cast(interaction: Interaction, owner_id: int) -> None:
 
 async def run_cast(interaction: Interaction, owner_id: int, bait_id: str) -> None:
     """Runs the two-beat cast animation and settles the catch."""
-    await edit_owned_public_message(interaction=interaction, embed=build_casting_embed(), view=None)
+    await edit_owned_public_message(
+        interaction=interaction, embed=build_casting_embed(), view=None
+    )
     await asyncio.sleep(CAST_ANIMATION_SECONDS)
     user = require_fishing_user(interaction=interaction)
     avatar_url = await guild_avatar_url(user=user, guild=getattr(interaction, "guild", None))

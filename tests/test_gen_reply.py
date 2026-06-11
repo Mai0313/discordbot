@@ -836,9 +836,7 @@ async def test_gen_reply_on_message_dispatches_routes(
     prepared_context = ReplyContext()
 
     async def fake_route(
-        message: FakeMessage,
-        reference_messages: list[object],
-        current_message: list[object],
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> str:
         """Returns the parametrized route."""
         del reference_messages, current_message
@@ -923,9 +921,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert dm_empty.replies[0].content == "?"
 
     async def boom(
-        message: FakeMessage,
-        reference_messages: list[object],
-        current_message: list[object],
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> str:
         """Raises to exercise error handling."""
         del reference_messages, current_message
@@ -945,9 +941,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert failed.replies[0].content is None
 
 
-async def test_reaction_status_chain_orders_and_replaces(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
     """Advance schedules ordered swaps without blocking; flush waits for the tail."""
     events: list[tuple[str, str | None]] = []
 
@@ -979,9 +973,7 @@ async def test_on_message_discards_speculative_context_on_image_route(
     cancelled: list[bool] = []
 
     async def fake_route(
-        message: FakeMessage,
-        reference_messages: list[object],
-        current_message: list[object],
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> str:
         """Routes every message to IMAGE."""
         del reference_messages, current_message

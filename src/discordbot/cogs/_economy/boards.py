@@ -191,11 +191,7 @@ def _draw_header(
         width=2,
     )
     draw_text_center(
-        draw=draw,
-        text="PUBLIC",
-        center=(_BOARD_WIDTH - 96, y + 23),
-        font=fonts.small,
-        fill=accent,
+        draw=draw, text="PUBLIC", center=(_BOARD_WIDTH - 96, y + 23), font=fonts.small, fill=accent
     )
 
 
@@ -215,11 +211,7 @@ def _draw_table_header(
     draw.text(xy=(_RANK_X, baseline), text="排名", font=fonts.header, fill=_MUTED)
     draw.text(xy=(_NAME_X, baseline), text="玩家", font=fonts.header, fill=_MUTED)
     draw_text_right(
-        draw=draw,
-        text=amount_header,
-        xy=(_AMOUNT_RIGHT, baseline),
-        font=fonts.header,
-        fill=accent,
+        draw=draw, text=amount_header, xy=(_AMOUNT_RIGHT, baseline), font=fonts.header, fill=accent
     )
 
 
