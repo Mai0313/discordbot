@@ -28,7 +28,7 @@ def test_shrink_reencodes_small_png_photo_as_jpeg() -> None:
     """An in-bounds opaque PNG still re-encodes as the cheaper JPEG."""
     payload = _encoded_bytes(size=(64, 64), mode="RGB", image_format="PNG")
 
-    shrunk, mime_type = shrink_image_bytes(payload=payload, content_type="image/png")
+    _shrunk, mime_type = shrink_image_bytes(payload=payload, content_type="image/png")
 
     assert mime_type == "image/jpeg"
 

@@ -43,9 +43,7 @@ def configure_sqlite_connection(
 
 
 def ensure_sqlite_hooks(
-    engine: AsyncEngine,
-    on_connect_fn: Callable[..., None],
-    on_checkout_fn: Callable[..., None],
+    engine: AsyncEngine, on_connect_fn: Callable[..., None], on_checkout_fn: Callable[..., None]
 ) -> None:
     """Installs the connect and checkout listeners on an engine exactly once.
 

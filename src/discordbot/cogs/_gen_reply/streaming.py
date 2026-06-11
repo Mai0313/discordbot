@@ -56,8 +56,7 @@ class ResponseStreamer(BaseModel):
         default=False, description="Whether the first non-newline text delta has been seen."
     )
     preview_interval_seconds: float = Field(
-        default=1.0,
-        description="Cadence of the snapshot editor's Discord edits while streaming.",
+        default=1.0, description="Cadence of the snapshot editor's Discord edits while streaming."
     )
     model_name: str = Field(
         default="", description="The model name reported by the stream, for the usage footer."
@@ -194,6 +193,36 @@ class ResponseStreamer(BaseModel):
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
 
+    def _on_reasoning_delta(self, delta: str) -> None:
+        """Accumulates one reasoning-summary delta, logging the first one's latency."""
+        if not self.reasoning_content:
+            # Gemini may prepend newlines to the first reasoning delta too.
+            delta = delta.lstrip("\n")
+            if not delta:
+                return
+            logfire.info(
+                "gen_reply first reasoning delta",
+                elapsed_seconds=time.monotonic() - self.created_at,
+                model=self.model_name,
+            )
+        self.reasoning_content += delta
+        self._ensure_editor_started()
+
+    def _on_content_delta(self, delta: str) -> None:
+        """Accumulates one content delta, logging the first one's latency."""
+        if not self.content_started:
+            delta = delta.lstrip("\n")
+            if not delta:
+                return
+            self.content_started = True
+            logfire.info(
+                "gen_reply first content delta",
+                elapsed_seconds=time.monotonic() - self.created_at,
+                model=self.model_name,
+            )
+        self.stored_content += delta
+        self._ensure_editor_started()
+
     async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text, usage, and web-search state onto the instance.
 
@@ -217,33 +246,9 @@ class ResponseStreamer(BaseModel):
             }:
                 self.used_web_search = True
             elif response.type == "response.reasoning_summary_text.delta":
-                delta = response.delta
-                if not self.reasoning_content:
-                    # Gemini may prepend newlines to the first reasoning delta too.
-                    delta = delta.lstrip("\n")
-                    if not delta:
-                        continue
-                    logfire.info(
-                        "gen_reply first reasoning delta",
-                        elapsed_seconds=time.monotonic() - self.created_at,
-                        model=self.model_name,
-                    )
-                self.reasoning_content += delta
-                self._ensure_editor_started()
+                self._on_reasoning_delta(delta=response.delta)
             elif response.type == "response.output_text.delta":
-                delta = response.delta
-                if not self.content_started:
-                    delta = delta.lstrip("\n")
-                    if not delta:
-                        continue
-                    self.content_started = True
-                    logfire.info(
-                        "gen_reply first content delta",
-                        elapsed_seconds=time.monotonic() - self.created_at,
-                        model=self.model_name,
-                    )
-                self.stored_content += delta
-                self._ensure_editor_started()
+                self._on_content_delta(delta=response.delta)
 
     async def _finalize_reply(self) -> str:
         """Writes the reward footer and final reply once the stream is consumed."""

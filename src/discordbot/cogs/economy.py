@@ -9,7 +9,6 @@ from nextcord.ext import commands
 
 from discordbot.cogs._economy import embeds
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
@@ -25,6 +24,7 @@ from discordbot.cogs._economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.cogs._stock.database import get_stock_portfolio
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.cogs._economy.database import (
     top_n,
     buy_vip,

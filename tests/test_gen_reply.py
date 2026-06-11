@@ -12,13 +12,12 @@ from datetime import UTC, datetime
 from PIL import Image
 import pytest
 from nextcord import File, Embed
+from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from openai.types.responses.response_input_param import EasyInputMessageParam
-
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, strip_attachment_parts
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
@@ -372,7 +371,7 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision
     )
 
 
-async def _reply_via_pipeline(
+async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply's signature
     cog: ReplyGeneratorCogs,
     message: FakeMessage,
     system_prompt: str = "SYS",
@@ -2081,9 +2080,7 @@ async def test_route_url_summary_downgrade_keeps_effort() -> None:
     """The URL-summary-to-QA downgrade preserves the graded effort."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteDecision(decision="SUMMARY", effort="medium")
-    message = FakeMessage(
-        content="整理 https://example.test/a", author=FakeAuthor(user_id=1)
-    )
+    message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
 
     routed = await _route(cog=cog, message=message)
 
@@ -2108,7 +2105,11 @@ def test_strip_attachment_parts_replaces_payload_parts() -> None:
         content=[
             {"type": "input_text", "text": "user (u) [id: 1]: look"},
             {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
-            {"type": "input_file", "filename": "a.pdf", "file_data": "data:application/pdf;base64,xxx"},
+            {
+                "type": "input_file",
+                "filename": "a.pdf",
+                "file_data": "data:application/pdf;base64,xxx",
+            },
         ],
     )
     plain_message = EasyInputMessageParam(role="user", content="plain")
@@ -2148,7 +2149,11 @@ async def test_select_user_memories_strips_attachment_payloads() -> None:
             role="user",
             content=[
                 {"type": "input_text", "text": "user (u) [id: 1]: look"},
-                {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,xxx",
+                    "detail": "auto",
+                },
             ],
         )
     ]

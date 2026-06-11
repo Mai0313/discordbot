@@ -420,9 +420,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Attachment parts are reduced to text markers: classification needs the text and
         the fact that an attachment exists, not the payload bytes.
         """
-        message_list = strip_attachment_parts(
-            messages=[*reference_messages, *current_message]
-        )
+        message_list = strip_attachment_parts(messages=[*reference_messages, *current_message])
 
         try:
             fast_model = self.runtime_models.fast_model

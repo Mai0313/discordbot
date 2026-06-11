@@ -17,11 +17,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import (
-    get_image_data,
-    shrink_image_bytes,
-    convert_base64_to_data_uri,
-)
+from discordbot.utils.images import get_image_data, shrink_image_bytes, convert_base64_to_data_uri
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 
@@ -47,9 +43,7 @@ def sanitize_identity(value: str) -> str:
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
 
 
-def strip_attachment_parts(
-    messages: list[EasyInputMessageParam],
-) -> list[EasyInputMessageParam]:
+def strip_attachment_parts(messages: list[EasyInputMessageParam]) -> list[EasyInputMessageParam]:
     """Returns copies of input messages with attachment parts reduced to text markers.
 
     The route and memory-selection preflight calls only need the conversation text plus
@@ -254,24 +248,10 @@ class MessageInputBuilder(BaseModel):
             return "image"
         return "image"
 
-    async def get_attachment_parts(
+    async def _render_attachment_parts(
         self, message: Message
-    ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
-        """Extracts attachment content parts from a message, with a per-message cache."""
-        if not (message.attachments or message.stickers or message.embeds):
-            return []
-        cache_key = (
-            message.id,
-            message.edited_at,
-            len(message.attachments),
-            len(message.stickers),
-            len(message.embeds),
-        )
-        cached = self._attachment_cache.get(cache_key)
-        if cached is not None:
-            self._attachment_cache.move_to_end(cache_key)
-            return list(cached)
-
+    ) -> list[ResponseInputImageParam | ResponseInputFileParam | None]:
+        """Renders every attachment source on a message; failures stay as None."""
         slow_model = self.runtime_models.slow_model
         modalities = get_supported_modalities(model_name=slow_model.name)
         content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
@@ -300,6 +280,27 @@ class MessageInputBuilder(BaseModel):
                 if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
                     content_parts.append(await self.image_to_part(source=url))
 
+        return content_parts
+
+    async def get_attachment_parts(
+        self, message: Message
+    ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
+        """Extracts attachment content parts from a message, with a per-message cache."""
+        if not (message.attachments or message.stickers or message.embeds):
+            return []
+        cache_key = (
+            message.id,
+            message.edited_at,
+            len(message.attachments),
+            len(message.stickers),
+            len(message.embeds),
+        )
+        cached = self._attachment_cache.get(cache_key)
+        if cached is not None:
+            self._attachment_cache.move_to_end(cache_key)
+            return list(cached)
+
+        content_parts = await self._render_attachment_parts(message=message)
         resolved = [part for part in content_parts if part is not None]
         # A None part means a download/convert failed; skip caching so the next reply
         # retries instead of pinning the degraded render.

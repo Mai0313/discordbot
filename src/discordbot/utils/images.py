@@ -66,16 +66,14 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
         image = Image.open(fp=BytesIO(initial_bytes=payload))
         if getattr(image, "is_animated", False):
             return payload, content_type
-        has_alpha = (
-            image.mode in {"RGBA", "LA", "PA"}
-            or (image.mode == "P" and "transparency" in image.info)
+        has_alpha = image.mode in {"RGBA", "LA", "PA"} or (
+            image.mode == "P" and "transparency" in image.info
         )
         within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
         if within_bounds and (content_type == "image/jpeg" or has_alpha):
             return payload, content_type
         image.thumbnail(
-            size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION),
-            resample=Image.Resampling.LANCZOS,
+            size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
         )
         buffered = BytesIO()
         if has_alpha:
