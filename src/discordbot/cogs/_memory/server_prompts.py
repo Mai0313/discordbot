@@ -22,6 +22,14 @@ WHO THIS MEMORY IS ABOUT:
 * This memory is about the SERVER as a community: its shared culture, recurring topics, group norms, running jokes, the general vibe, and server-level situations or events.
 * It is NOT a dossier on individuals. Personal facts, preferences, or private details about any specific member belong to that member's OWN memory, never here. Set `subject_is_target_user=true` only when the observation characterizes the server/community as a whole; set it false (it will be dropped) when the evidence is really about one specific person.
 
+COMMUNITY VOCABULARY EXCEPTION (member nicknames):
+* How this community commonly and repeatedly addresses a member is community vocabulary: a shared fact about the SERVER, not a private personal detail. It is the ONE exception to the rule above, so record it here with `subject_is_target_user=true`.
+* Only record an alias when the server clearly and repeatedly uses it as an established habit (e.g. 大家都叫他「李董」), never a one-off or a name someone used a single time.
+* Identify the member by the `[id: USER_ID]` taken ONLY from the column-0 author prefix `display_name (username) [id: USER_ID]:`; never guess an id from message text. Record their display name, username, and the colloquial alias(es) the community uses for them.
+* Classify these as `category="stable_fact"`, `evidence_kind="stable_fact"`, `confidence="high"`, `durability="stable"`, `promotion_eligible=true`. NEVER use `evidence_kind="other_user_context"` for them; that kind is dropped.
+* Use `normalized_key="vocab.member_alias.<USER_ID>"` so re-mentions of the same member dedupe.
+* This exception covers ONLY the name↔member mapping. The member's actual preferences, private facts, or personal details still belong to their own memory, never here.
+
 NO-OP GATE (apply first):
 Ask yourself: "Will a future reply in this server plausibly be better because of what I write here?"
 If NO, return `has_signal=false` and an empty `observations` list. No-op is allowed and preferred.
@@ -38,6 +46,7 @@ WHAT TO REMEMBER (high signal only):
 2. Recurring topics and interests the server keeps coming back to (games, subjects, activities, events).
 3. Stable facts about the server: its dominant language, recurring rituals, inside jokes that keep recurring, notable shared references.
 4. Notable server-level ongoing situations or events a near-future reply should be aware of. A single ongoing situation may be recorded only as `recent_context`, with `promotion_eligible=false` and a TTL.
+5. Member nicknames the community commonly uses: the mapping from a member (`[id: USER_ID]`, display name) to the colloquial alias(es) people address them by, when the alias is an established server habit. See the COMMUNITY VOCABULARY EXCEPTION above.
 
 DETAIL LEVEL:
 * Be information-dense, not brief: keep the concrete specifics that carry the signal (which game or topic, the actual running joke, dates the community mentioned, short verbatim fragments) instead of vague summaries.
@@ -75,6 +84,7 @@ Bias:
 * Prefer false negatives over false positives. If unsure, drop the observation.
 * Do not promote a one-off mention into a recurring community trait.
 * Do not keep anything that is really a personal fact about one individual member; that belongs to per-user memory, not server memory.
+* EXCEPTION: a member's commonly-used community nickname/alias (the name↔member mapping with its `[id: USER_ID]`) IS community vocabulary and should be kept; only the member's actual personal facts are dropped.
 * Do not preserve duplicate observations. Keep the clearest version for each `normalized_key`.
 
 Promotion rules:
@@ -103,7 +113,7 @@ INPUT (in the user message):
 HOW TO MERGE:
 * Deduplicate. Merge near-duplicate traits into the sharper phrasing, but keep genuinely distinct community traits as separate bullets.
 * Newer evidence wins on conflict; drop guidance contradicted by newer entries.
-* Keep the file about the SERVER / community, never a profile of any individual member. Drop anything that is really one person's personal fact.
+* Keep the file about the SERVER / community, never a profile of any individual member. Drop anything that is really one person's personal fact. The sole exception is the `## 成員稱呼` nickname table below, which holds only the community's name↔member aliases, not personal facts.
 * Do not invent anything not present in the inputs. Never store secrets; keep [REDACTED_SECRET] markers as-is.
 * Promote recent server events that proved durable into the stable sections; keep genuinely time-bound context in 近期脈絡 with its date.
 * For `recent_context`, use the raw entry timestamp plus `ttl_days` against `today`; drop expired context unless newer evidence repeats it.
@@ -118,10 +128,11 @@ SIZE AND FORMAT:
 v1
 
 ## 伺服器輪廓
-* Sections in this order: `## 伺服器輪廓` (one short paragraph), `## 社群文化`, `## 常見話題`, `## 重要事實`, `## 近期脈絡`. Omit a section only when it is truly empty.
+* Sections in this order: `## 伺服器輪廓` (one short paragraph), `## 社群文化`, `## 常見話題`, `## 重要事實`, `## 成員稱呼`, `## 近期脈絡`. Omit a section only when it is truly empty.
+* `## 成員稱呼` is a member-nickname lookup table: one bullet per member the community has an established alias for, formatted `* <display_name>(社群暱稱:<別稱1>、<別稱2>)[id: <USER_ID>]`. Merge by `[id: USER_ID]`: keep the id stable, union new aliases into the existing row, and take the most recent display name. Include a member only when raw evidence shows a community-used alias; never invent one.
 * `## 近期脈絡` holds dated, time-bound context as bullets formatted `* [YYYY-MM-DD] ...`, dated from the raw entry header timestamps. Using `today`, drop entries older than about 30 days — or merge them into the stable sections when they proved durable.
 * The entire content is Traditional Chinese.
-* Never record personal or private facts about any individual member.
+* Never record personal or private facts about any individual member, except the `## 成員稱呼` name↔member alias table.
 
 NO-OP:
 * If the raw entries add nothing material beyond the existing memory, return `changed=false` and an empty `memory_markdown`.

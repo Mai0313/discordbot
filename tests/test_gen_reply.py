@@ -23,6 +23,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     parse_user_id_list,
     resolve_user_memories,
     build_memory_allowlist,
+    allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 
@@ -1686,3 +1687,109 @@ async def test_handle_message_reply_skips_server_write_in_private_channel(
 
     # Private channel: the per-user update still runs, but no server-scope update.
     assert scheduled == [user_scope(user_id=1)]
+
+
+def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
+    """Only ids under the `## 成員稱呼` section are returned, labelled by the table row."""
+    memory = (
+        "v1\n\n## 伺服器輪廓\n社群\n\n"
+        "## 成員稱呼\n"
+        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
+        "* Bob(社群暱稱:阿伯)[id: 456]\n\n"
+        "## 近期脈絡\n* [2026-06-10] 某人 [id: 789] 提到活動\n"
+    )
+    allowed = allowlist_ids_from_server_memory(memory=memory)
+    assert set(allowed) == {123, 456}
+    assert "李董" in allowed[123]
+    assert "[id:" not in allowed[123]
+    # An id outside the nickname section (e.g. in 近期脈絡) is never exposed.
+    assert 789 not in allowed
+
+
+async def test_handle_message_reply_injects_server_memory_into_selection(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The selection phase sees the server memory so it can resolve nicknames to ids."""
+    cog = _cog()
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 伺服器輪廓\n選擇階段也要看到",
+        identity="Test Guild [id: 1]",
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # Selection input carries the server memory, with the callable-users block kept last.
+    selection_input = cog.client.responses.create_inputs[0]
+    assert "選擇階段也要看到" in str(selection_input)
+    assert "[id: 1]" in str(selection_input[-1])
+    assert "Tester (tester)" in str(selection_input[-1])
+
+
+async def test_handle_message_reply_widens_allowlist_with_public_nickname_table(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In a public channel a member named only in the nickname table is askable by alias."""
+    del economy_isolated_db
+    cog = _cog()
+    # User 42 never speaks in the conversation, but the server nickname table names them.
+    write_main_memory(
+        scope=user_scope(user_id=42),
+        content="v1\n\n## 使用者輪廓\n李董的祕密",
+        identity="Boss (boss) [id: 42]",
+    )
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 成員稱呼\n* Boss(社群暱稱:李董)[id: 42]",
+        identity="Test Guild [id: 1]",
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+
+    cog.client.responses.select_queue = [
+        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
+    ]
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)]
+    ]
+
+    message = FakeMessage(content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    # The nickname-table id widened the allowlist, so the outsider's memory is injected.
+    assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
+
+
+async def test_handle_message_reply_keeps_boundary_in_private_channel(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private channel does not widen the allowlist: outsider memory stays unreachable."""
+    del economy_isolated_db
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=42),
+        content="v1\n\n## 使用者輪廓\n李董的祕密",
+        identity="Boss (boss) [id: 42]",
+    )
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 成員稱呼\n* Boss(社群暱稱:李董)[id: 42]",
+        identity="Test Guild [id: 1]",
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+
+    cog.client.responses.select_queue = [
+        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
+    ]
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)]
+    ]
+
+    message = FakeMessage(
+        content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1), channel_public=False
+    )
+    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+
+    assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])

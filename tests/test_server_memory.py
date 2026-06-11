@@ -106,6 +106,28 @@ def test_server_consolidation_prompt_keeps_the_v1_contract() -> None:
     assert "近期脈絡" in SERVER_PHASE2_PROMPT
 
 
+def test_phase1_prompt_records_member_aliases_as_community_vocabulary() -> None:
+    # Member nicknames are carved out as the one exception to the no-individuals rule,
+    # and must be classified as stable_fact so the shared gate accepts them.
+    assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_PROMPT
+    assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_PROMPT
+    assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_PROMPT
+    # The same kind that the deterministic gate drops must be explicitly forbidden here.
+    assert "other_user_context" in SERVER_PHASE1_PROMPT
+
+
+def test_evaluator_prompt_keeps_member_aliases() -> None:
+    assert "nickname/alias" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert "community vocabulary" in SERVER_PHASE1_EVALUATOR_PROMPT
+
+
+def test_consolidation_prompt_adds_member_alias_section() -> None:
+    # The lookup table is its own section, placed before the dated 近期脈絡 section.
+    assert "## 成員稱呼" in SERVER_PHASE2_PROMPT
+    assert SERVER_PHASE2_PROMPT.index("## 成員稱呼") < SERVER_PHASE2_PROMPT.index("## 近期脈絡")
+    assert "社群暱稱" in SERVER_PHASE2_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # /memory server show
 # ---------------------------------------------------------------------------

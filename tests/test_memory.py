@@ -391,6 +391,26 @@ async def test_extract_no_signal_passthrough() -> None:
     assert draft.memory_markdown == ""
 
 
+async def test_extract_keeps_member_alias_as_community_vocabulary() -> None:
+    """A stable_fact member-alias observation survives the shared gate (server vocabulary)."""
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="社群都叫 [id: 42] 李董",
+                normalized_key="vocab.member_alias.42",
+                category="stable_fact",
+                evidence_kind="stable_fact",
+                evidence_quote="大家都叫他李董",
+            ),
+        ),
+    )
+    draft = await extractor.extract(subject="target_server_id: 1", transcript="hi")
+    assert draft is not None
+    assert [obs.normalized_key for obs in draft.observations] == ["vocab.member_alias.42"]
+
+
 async def test_extract_filters_weak_observations() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(

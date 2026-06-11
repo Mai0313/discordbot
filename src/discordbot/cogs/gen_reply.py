@@ -54,6 +54,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
+    allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
@@ -450,16 +451,22 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         message_list: list[EasyInputMessageParam],
         allowed: dict[int, str],
+        server_memory_block: EasyInputMessageParam | None = None,
     ) -> MemorySelection:
         """Phase 1 of a reply: lets the model choose whose long-term memory to read.
 
         Runs an isolated request offering only the get_user_memory tool (Gemini cannot mix a
         custom function tool with its built-in search/url tools), then resolves the chosen ids
-        server-side against the allowlist. Returns the memories plus this request's token usage
-        so the reply footer and chat reward account for the selection call too.
+        server-side against the allowlist. The current guild's server memory rides in front as
+        background context so a spoken nickname can be mapped to its user id. Returns the
+        memories plus this request's token usage so the reply footer and chat reward account
+        for the selection call too.
         """
         tool_model = self.runtime_models.tool_model
+        # The callable-users block stays last so the model reads it right before deciding;
+        # the server-memory block (if any) leads as earlier background context.
         selection_input: ResponseInputParam = [
+            *([server_memory_block] if server_memory_block is not None else []),
             *message_list,
             render_callable_users_block(allowed=allowed),
         ]
@@ -505,21 +512,19 @@ class ReplyGeneratorCogs(commands.Cog):
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-    def _read_server_memory_block(
-        self, *, message: Message, memory_enabled: bool
-    ) -> EasyInputMessageParam | None:
-        """Reads the current guild's server memory as a context block, if any.
+    def _read_server_memory(self, *, message: Message, memory_enabled: bool) -> str:
+        """Reads the current guild's raw server memory, or "" when there is none.
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
         selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns None for DMs (no guild), the SUMMARY route, or an empty memory.
+        LLM latency. Returns "" for DMs (no guild), the SUMMARY route, or an empty memory.
+        Read once per reply and shared by the selection and answer phases.
         """
         if not memory_enabled or self.bot.user is None or message.guild is None:
-            return None
-        server_memory = read_main_memory(
+            return ""
+        return read_main_memory(
             scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id)
         )
-        return render_server_memory_block(memory=server_memory) if server_memory else None
 
     def _schedule_server_memory_update(
         self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
@@ -576,6 +581,14 @@ class ReplyGeneratorCogs(commands.Cog):
             *current_message,
         ]
 
+        # The bot's own per-server memory is read once here and shared by both phases: it
+        # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
+        # rides into the answer as background context. One file read, no extra LLM call.
+        server_memory = self._read_server_memory(message=message, memory_enabled=memory_enabled)
+        server_memory_block = (
+            render_server_memory_block(memory=server_memory) if server_memory else None
+        )
+
         # Gemini cannot use a custom function tool together with its built-in search/url
         # tools, so memory retrieval is two-phase: phase 1 lets the model pick whose
         # long-term memory to read via get_user_memory (no built-in tools), and phase 2
@@ -591,12 +604,27 @@ class ReplyGeneratorCogs(commands.Cog):
             allowed = build_memory_allowlist(
                 messages=participant_messages, bot_user_id=self.bot.user.id
             )
+            # In a public channel, members named in the server's nickname table are askable
+            # by alias even when absent from the conversation: widen the permission boundary
+            # with their ids. Conversation participant labels still win on conflict.
+            if (
+                server_memory
+                and message.guild is not None
+                and _source_channel_is_public(message=message)
+            ):
+                for user_id, label in allowlist_ids_from_server_memory(
+                    memory=server_memory
+                ).items():
+                    allowed.setdefault(user_id, label)
             if allowed:
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.
                 try:
                     selection = await self._select_user_memories(
-                        message=message, message_list=message_list, allowed=allowed
+                        message=message,
+                        message_list=message_list,
+                        allowed=allowed,
+                        server_memory_block=server_memory_block,
                     )
                 except Exception:
                     logfire.warn(
@@ -608,13 +636,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     if selection.memories:
                         memory_block = render_memory_context_block(memories=selection.memories)
                         memory_labels = memory_lookup_labels(memories=selection.memories)
-
-        # The bot's own per-server memory rides as background context, read directly with
-        # no selection phase (exactly one memory per guild). The broader server note
-        # precedes the per-participant note.
-        server_memory_block = self._read_server_memory_block(
-            message=message, memory_enabled=memory_enabled
-        )
 
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
