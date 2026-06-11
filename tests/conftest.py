@@ -41,6 +41,8 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._regeneration_tasks", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._regeneration_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._memory_semaphore_obj", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._memory_semaphore_loop", None)
     return memories_dir

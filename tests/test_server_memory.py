@@ -10,7 +10,6 @@ from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory.store import (
     user_scope,
     server_scope,
-    append_detail,
     read_main_memory,
     write_main_memory,
 )
@@ -144,9 +143,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
     )
     cog = _server_cog()
     interaction = _guild_interaction()
-    await MemoryCogs.memory_server_show.callback(
-        cog, cast("Interaction", interaction), detail=False
-    )
+    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction", interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -156,9 +153,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _server_cog()
     interaction = _guild_interaction()
-    await MemoryCogs.memory_server_show.callback(
-        cog, cast("Interaction", interaction), detail=False
-    )
+    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有對這個伺服器的記憶" in (embed.description or "")
@@ -167,23 +162,9 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     cog = _server_cog()
     interaction = _guild_interaction(guild_id=None)
-    await MemoryCogs.memory_server_show.callback(
-        cog, cast("Interaction", interaction), detail=False
-    )
+    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")
     # A DM read must never reach the store.
     assert read_main_memory(scope=SERVER_SCOPE) == ""
-
-
-async def test_memory_server_show_detail_window(memory_isolated_dir: Path) -> None:
-    append_detail(scope=SERVER_SCOPE, text="## 2026-06-01T00:00:00+00:00\n伺服器詳細觀察")
-    cog = _server_cog()
-    interaction = _guild_interaction()
-    await MemoryCogs.memory_server_show.callback(
-        cog, cast("Interaction", interaction), detail=True
-    )
-    embed = interaction.response.sent["embed"]
-    assert isinstance(embed, Embed)
-    assert "伺服器詳細觀察" in (embed.description or "")

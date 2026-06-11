@@ -278,6 +278,16 @@ def raw_file_bytes(scope: str) -> int:
     return len(_read_text(path=_raw_path(scope=scope)).encode("utf-8"))
 
 
+def detail_file_bytes(scope: str) -> int:
+    """Returns the cold-tier detail file size in bytes, missing file counting as zero.
+
+    Uses ``stat`` rather than reading the whole file so an evidence-presence
+    check stays O(1) even when the detail file is near its multi-megabyte cap.
+    """
+    path = _detail_path(scope=scope)
+    return path.stat().st_size if path.is_file() else 0
+
+
 def read_raw_entries(scope: str) -> str:
     """Returns the raw file text for consolidation input, minus legacy identity metadata.
 

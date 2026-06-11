@@ -26,6 +26,7 @@ from discordbot.cogs._memory.store import (
     read_main_memory,
     read_raw_entries,
     count_raw_entries,
+    detail_file_bytes,
     write_main_memory,
 )
 from discordbot.cogs._memory.constants import (
@@ -43,6 +44,11 @@ from discordbot.cogs._memory.extraction import (
     transcript_from_messages,
     filter_duplicate_observations,
 )
+
+# Outcome of a from-scratch main-file rebuild. Aliased so the background
+# scheduler's task dict shares the exact type (asyncio.Task is invariant in its
+# result type, so a Literal cannot stand in for a bare str).
+_RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
 
 
 class _PendingMemoryUpdate(BaseModel):
@@ -85,6 +91,13 @@ _last_consolidation: dict[str, float] = {}
 # so a manual `/memory regenerate` never starves the automatic background
 # consolidation or vice versa. Recorded at attempt time so failures cool down too.
 _last_regeneration: dict[str, float] = {}
+
+# Per-scope in-flight regeneration tasks so a manual rebuild runs in the
+# background without blocking the command, and a second request while one is
+# still running cannot double-schedule the whole-file rewrite. Kept separate
+# from `_inflight_tasks` because regeneration is a distinct, user-triggered job.
+_regeneration_tasks: dict[str, asyncio.Task[_RegenerationResult]] = {}
+_regeneration_loop: asyncio.AbstractEventLoop | None = None
 
 # Loop-keyed process-wide semaphore capping concurrent background memory
 # updates so a busy server cannot fan out unbounded LLM work. Shared across
@@ -286,6 +299,16 @@ async def _consolidate_locked(
     clear_raw(scope=scope)
 
 
+def regeneration_has_evidence(scope: str) -> bool:
+    """Whether any cold-tier evidence exists for a from-scratch rebuild.
+
+    Mirrors the evidence guard inside `regenerate_main_memory` cheaply (no full
+    window read), so the command can surface "no observations yet" up front
+    instead of scheduling a background rebuild that would silently do nothing.
+    """
+    return bool(read_raw_entries(scope=scope)) or detail_file_bytes(scope=scope) > 0
+
+
 def regeneration_on_cooldown(scope: str) -> bool:
     """Whether a recent regeneration attempt blocks another one right now."""
     last_attempt = _last_regeneration.get(scope)
@@ -296,9 +319,49 @@ def regeneration_on_cooldown(scope: str) -> bool:
     return time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
 
 
+def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, identity: str) -> bool:
+    """Starts a background main-memory rebuild without blocking the command.
+
+    Returns False when a rebuild is already in flight for this scope (so the
+    caller can report "still rebuilding" instead of double-scheduling the
+    whole-file rewrite); True when a fresh background task was started.
+    """
+    global _regeneration_loop  # noqa: PLW0603 -- process task de-dupe
+    loop = asyncio.get_running_loop()
+    if _regeneration_loop is not loop:
+        _regeneration_tasks.clear()
+        _regeneration_loop = loop
+    running = _regeneration_tasks.get(scope)
+    if running is not None and not running.done():
+        return False
+    task = asyncio.create_task(
+        regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
+    )
+    _regeneration_tasks[scope] = task
+    task.add_done_callback(
+        lambda finished: _finish_memory_regeneration(scope=scope, task=finished)
+    )
+    return True
+
+
+def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResult]) -> None:
+    """Clears the in-flight slot and logs failures of a background rebuild."""
+    if _regeneration_tasks.get(scope) is task:
+        _regeneration_tasks.pop(scope, None)
+    if task.cancelled():
+        # Cancelled (e.g. bot shutdown): reading result() would raise
+        # CancelledError out of this callback, and an aborted rebuild leaves the
+        # existing memory untouched, so there is nothing to recover.
+        return
+    try:
+        task.result()
+    except Exception:
+        logfire.warn("Background memory regeneration failed", scope=scope, _exc_info=True)
+
+
 async def regenerate_main_memory(
     scope: str, extractor: MemoryExtractorAI, identity: str
-) -> Literal["regenerated", "no_evidence", "failed", "cooldown"]:
+) -> _RegenerationResult:
     """Rebuilds the main memory file from cold-tier evidence alone.
 
     The existing main file is deliberately NOT fed to the model: the rebuild

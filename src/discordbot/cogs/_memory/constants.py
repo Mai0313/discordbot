@@ -53,10 +53,6 @@ MEMORY_MAX_OUTPUT_TOKENS = 32_768
 # and raw batch on top).
 MEMORY_DETAIL_CONTEXT_MAX_CHARS = 500_000
 
-# Tail window of the detail file shown by `/memory show detail`; older content
-# stays on disk only.
-MEMORY_DETAIL_VIEW_MAX_CHARS = 100_000
-
 # Hard cap for the cold-tier detail file. Content past the consolidation read
 # window (MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4 bytes) is unreachable by every
 # consumer, so trimming the oldest entries once the file outgrows the cap
