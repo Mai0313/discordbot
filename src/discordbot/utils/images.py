@@ -49,9 +49,10 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
     """Downscales an image to the provider's effective resolution and re-encodes it.
 
     Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
-    bytes); images with transparency stay PNG so alpha survives; GIFs and other
-    animated images pass through untouched so motion context survives. Anything
-    PIL cannot decode passes through unchanged.
+    bytes); images with transparency or an indexed palette stay PNG (alpha must
+    survive, and JPEG artifacts are visible on flat-color palette graphics);
+    GIFs and other animated images pass through untouched so motion context
+    survives. Anything PIL cannot decode passes through unchanged.
 
     Args:
         payload: The original encoded image bytes.
@@ -66,17 +67,15 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
         image = Image.open(fp=BytesIO(initial_bytes=payload))
         if getattr(image, "is_animated", False):
             return payload, content_type
-        has_alpha = image.mode in {"RGBA", "LA", "PA"} or (
-            image.mode == "P" and "transparency" in image.info
-        )
+        keep_png = image.mode in {"RGBA", "LA", "PA", "P"}
         within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
-        if within_bounds and (content_type == "image/jpeg" or has_alpha):
+        if within_bounds and (content_type == "image/jpeg" or keep_png):
             return payload, content_type
         image.thumbnail(
             size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
         )
         buffered = BytesIO()
-        if has_alpha:
+        if keep_png:
             image.save(fp=buffered, format="PNG")
             return buffered.getvalue(), "image/png"
         image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)

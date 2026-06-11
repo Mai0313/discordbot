@@ -298,14 +298,16 @@ class MessageInputBuilder(BaseModel):
         cached = self._attachment_cache.get(cache_key)
         if cached is not None:
             self._attachment_cache.move_to_end(cache_key)
-            return list(cached)
+            # Hand out per-part copies so no caller ever holds the cached dicts; the
+            # values are immutable strings, so the copies stay cheap.
+            return [part.copy() for part in cached]
 
         content_parts = await self._render_attachment_parts(message=message)
         resolved = [part for part in content_parts if part is not None]
         # A None part means a download/convert failed; skip caching so the next reply
         # retries instead of pinning the degraded render.
         if None not in content_parts:
-            self._attachment_cache[cache_key] = list(resolved)
+            self._attachment_cache[cache_key] = [part.copy() for part in resolved]
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)
         return resolved

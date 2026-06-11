@@ -65,6 +65,17 @@ def test_shrink_passes_small_alpha_png_through() -> None:
     assert mime_type == "image/png"
 
 
+def test_shrink_keeps_palette_as_png() -> None:
+    """An oversized palette image downscales but stays PNG to avoid JPEG artifacts."""
+    payload = _encoded_bytes(size=(4000, 20), mode="P", image_format="PNG")
+
+    shrunk, mime_type = shrink_image_bytes(payload=payload, content_type="image/png")
+
+    assert mime_type == "image/png"
+    image = Image.open(fp=BytesIO(initial_bytes=shrunk))
+    assert max(image.size) <= 3072
+
+
 def test_shrink_passes_gif_through() -> None:
     """GIFs pass through untouched so animation survives."""
     payload = _encoded_bytes(size=(4000, 20), mode="RGB", image_format="GIF")
