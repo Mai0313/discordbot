@@ -1,8 +1,10 @@
 """Streams a Responses API reply onto a Discord message."""
 
 import re
+import time
 
 from openai import AsyncStream
+import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses import ResponseStreamEvent
@@ -28,32 +30,42 @@ class ResponseStreamer(BaseModel):
     arrives, then a usage footer (and an optional memory-credit line) is written. Memory
     lookups are decided in a separate request before streaming, so the labels are passed
     in via `memory_lookups` rather than discovered here.
-
-    Attributes:
-        message: The Discord message being answered and replied to.
-        stored_content: The accumulated reply text.
-        reply: The Discord reply message, created lazily on the first text delta.
-        displayed_content: The text last written to the Discord reply.
-        content_started: Whether the first non-newline text delta has been seen.
-        model_name: The model name reported by the stream, for the usage footer.
-        input_tokens: Input tokens reported by the stream.
-        output_tokens: Output tokens reported by the stream.
-        used_web_search: Whether the reply used a native web-search / grounding tool.
-        memory_lookups: Labels of users whose stored memory was injected this reply, for the footer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    message: SkipValidation[Message]
-    stored_content: str = ""
-    reply: SkipValidation[Message | None] = None
-    displayed_content: str = ""
-    content_started: bool = False
-    model_name: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    used_web_search: bool = False
-    memory_lookups: list[str] = Field(default_factory=list)
+    message: SkipValidation[Message] = Field(
+        description="The Discord message being answered and replied to."
+    )
+    stored_content: str = Field(default="", description="The accumulated reply text.")
+    reply: SkipValidation[Message | None] = Field(
+        default=None, description="The Discord reply message, created lazily on the first delta."
+    )
+    displayed_content: str = Field(
+        default="", description="The text last written to the Discord reply."
+    )
+    content_started: bool = Field(
+        default=False, description="Whether the first non-newline text delta has been seen."
+    )
+    model_name: str = Field(
+        default="", description="The model name reported by the stream, for the usage footer."
+    )
+    input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
+    output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
+    used_web_search: bool = Field(
+        default=False, description="Whether the reply used a native web-search / grounding tool."
+    )
+    memory_lookups: list[str] = Field(
+        default_factory=list,
+        description="Labels of users whose stored memory was injected, for the footer.",
+    )
+    created_at: float = Field(
+        default_factory=time.monotonic,
+        description=(
+            "Monotonic creation time; the streamer is constructed right before the answer "
+            "request, so the first-content-delta log measures answer-call-to-first-token."
+        ),
+    )
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -132,6 +144,11 @@ class ResponseStreamer(BaseModel):
                     if not delta:
                         continue
                     self.content_started = True
+                    logfire.info(
+                        "gen_reply first content delta",
+                        elapsed_seconds=time.monotonic() - self.created_at,
+                        model=self.model_name,
+                    )
                 self.stored_content += delta
                 counted_content += len(delta)
 

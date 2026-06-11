@@ -5,20 +5,9 @@ import asyncio
 from collections.abc import Callable, Iterable
 
 import logfire
-from nextcord import Message, Interaction
+from nextcord import Message
 from nextcord.ui import Item, View
 from nextcord.errors import DiscordServerError
-
-
-async def send_ephemeral_notice(interaction: Interaction, content: str, log_message: str) -> None:
-    """Sends an ephemeral interaction notice with response/followup fallback."""
-    try:
-        if interaction.response.is_done():
-            await interaction.followup.send(content=content, ephemeral=True)
-            return
-        await interaction.response.send_message(content=content, ephemeral=True)
-    except Exception:
-        logfire.warn(log_message, _exc_info=True)
 
 
 def disable_view_components(

@@ -119,11 +119,12 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_select_user_memories`.
 
         Returns:
-            Fast settings for the "should I read whose long-term memory" tool-call
-            decision that runs on the reply critical path before the answer, kept
-            off the heavier slow_model tier so it adds minimal latency.
+            Fastest settings for the "should I read whose long-term memory" tool-call
+            decision that runs on the reply critical path before the answer: it only
+            picks users and fetches their stored memory without transforming it, so
+            the lightest model minimizes latency.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="none")
+        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
 
     @property
     def slow_model(self) -> ModelSettings:

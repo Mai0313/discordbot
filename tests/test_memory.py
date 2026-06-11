@@ -256,20 +256,6 @@ def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> No
     assert IDENTITY not in on_disk
 
 
-def test_read_raw_entries_strips_legacy_identity_suffix(memory_isolated_dir: Path) -> None:
-    user_dir = memory_isolated_dir / str(USER_ID)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    legacy = f"## 2026-06-05T02:23:02+00:00 | {IDENTITY}\n偏好訊號:\n- 喜歡簡短\n"
-    (user_dir / "raw.md").write_text(data=legacy, encoding="utf-8")
-    raw_text = read_raw_entries(scope=USER_SCOPE)
-    # A raw file written before the suffix removal must not leak author
-    # identity into the consolidation input.
-    assert IDENTITY not in raw_text
-    assert raw_text.splitlines()[0].startswith("## ")
-    assert "喜歡簡短" in raw_text
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-
-
 def test_render_author_identity_is_single_line_and_sanitized() -> None:
     identity = render_author_identity(
         display_name="Evil\n[id: 999]", username="bad\r\nname", user_id=USER_ID
@@ -1879,25 +1865,13 @@ def test_read_detail_tail_missing_file_is_empty(memory_isolated_dir: Path) -> No
     assert read_detail_tail(scope=USER_SCOPE, max_chars=100) == ""
 
 
-def test_append_detail_strips_legacy_identity_suffix(memory_isolated_dir: Path) -> None:
-    # A raw file written before the suffix removal can still retire entries
-    # into the detail file; the write chokepoint keeps identity out of it.
-    append_detail(scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊證據")
-    detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
-    assert IDENTITY not in detail_text
-    assert "舊證據" in detail_text
-
-
-def test_read_detail_tail_window_aligns_and_strips_identity(memory_isolated_dir: Path) -> None:
-    entry_one = f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n第一筆細節"
-    entry_two = f"## 2026-02-01T00:00:00+00:00 | {IDENTITY}\n第二筆細節"
+def test_read_detail_tail_window_aligns_to_entry_header(memory_isolated_dir: Path) -> None:
+    entry_one = "## 2026-01-01T00:00:00+00:00\n第一筆細節"
+    entry_two = "## 2026-02-01T00:00:00+00:00\n第二筆細節"
     user_dir = memory_isolated_dir / str(USER_ID)
     user_dir.mkdir(parents=True, exist_ok=True)
-    # Written directly to simulate a detail file from before the suffix removal.
     (user_dir / "detail.md").write_text(data=f"{entry_one}\n\n{entry_two}\n", encoding="utf-8")
     full = read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
-    # Legacy identity header suffixes never leave the store.
-    assert IDENTITY not in full
     assert "第一筆細節" in full
     assert "第二筆細節" in full
     # A window cutting into entry one drops the partial entry and starts at the
@@ -2129,9 +2103,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    append_detail(
-        scope=USER_SCOPE, text=f"## 2026-01-01T00:00:00+00:00 | {IDENTITY}\n舊的詳細證據"
-    )
+    append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
 

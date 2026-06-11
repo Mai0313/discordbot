@@ -42,11 +42,7 @@ from discordbot.cogs._games.dragon_gate import (
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
 )
-from discordbot.cogs._games.interactions import (
-    send_ephemeral_notice,
-    set_view_item_visible,
-    edit_message_with_retry,
-)
+from discordbot.cogs._games.interactions import set_view_item_visible, edit_message_with_retry
 from discordbot.cogs._games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -61,6 +57,7 @@ from discordbot.cogs._games.presentation import (
     lobby_participant_line,
     build_system_talk_embed,
 )
+from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:

@@ -2,12 +2,12 @@
 
 from io import BytesIO
 from time import monotonic
-from typing import Final, TypedDict
+from typing import Final
 from functools import cache
 from collections.abc import Sequence
 
 from PIL import Image, ImageDraw
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right, draw_text_center
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
@@ -37,14 +37,16 @@ _NAME_MAX_WIDTH = 520
 _BOARD_IMAGE_CACHE_TTL_SECONDS: Final[float] = 5.0
 
 
-class _BoardFonts(TypedDict):
+class _BoardFonts(BaseModel):
     """Font set used by economy board images."""
 
-    title: Font
-    header: Font
-    rank: Font
-    body: Font
-    small: Font
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    title: Font = Field(description="Board title font.")
+    header: Font = Field(description="Table header font.")
+    rank: Font = Field(description="Ranking number font.")
+    body: Font = Field(description="Row text font.")
+    small: Font = Field(description="Subtitle and badge font.")
 
 
 class _RankingBoardSpec(BaseModel):
@@ -52,12 +54,12 @@ class _RankingBoardSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    title: str
-    subtitle: str
-    amount_header: str
-    amount_label: str
-    accent: tuple[int, int, int]
-    rows: tuple[tuple[str, int], ...]
+    title: str = Field(description="Board title text.")
+    subtitle: str = Field(description="Subtitle line under the title.")
+    amount_header: str = Field(description="Amount column header text.")
+    amount_label: str = Field(description="Label prefixed to each amount cell, empty for none.")
+    accent: tuple[int, int, int] = Field(description="Accent RGB color for headers and medals.")
+    rows: tuple[tuple[str, int], ...] = Field(description="Ranked (name, amount) rows to render.")
 
 
 class _RankingRow(BaseModel):
@@ -65,9 +67,9 @@ class _RankingRow(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    position: int
-    name: str
-    amount: int
+    position: int = Field(description="One-based ranking position.")
+    name: str = Field(description="Player display name.")
+    amount: int = Field(description="Amount shown in the row.")
 
 
 _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
@@ -160,13 +162,13 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
 @cache
 def _board_fonts() -> _BoardFonts:
     """Loads CJK-capable fonts for ranking boards."""
-    return {
-        "title": load_font(size=34, bold=True),
-        "header": load_font(size=19, bold=True),
-        "rank": load_font(size=26, bold=True),
-        "body": load_font(size=24, bold=False),
-        "small": load_font(size=16, bold=False),
-    }
+    return _BoardFonts(
+        title=load_font(size=34, bold=True),
+        header=load_font(size=19, bold=True),
+        rank=load_font(size=26, bold=True),
+        body=load_font(size=24, bold=False),
+        small=load_font(size=16, bold=False),
+    )
 
 
 def _draw_header(
@@ -179,8 +181,8 @@ def _draw_header(
     """Draws the board title area."""
     x = _BOARD_MARGIN
     y = _BOARD_MARGIN
-    draw.text(xy=(x, y), text=title, font=fonts["title"], fill=_TEXT)
-    draw.text(xy=(x, y + 42), text=subtitle, font=fonts["small"], fill=_MUTED)
+    draw.text(xy=(x, y), text=title, font=fonts.title, fill=_TEXT)
+    draw.text(xy=(x, y + 42), text=subtitle, font=fonts.small, fill=_MUTED)
     draw.rounded_rectangle(
         xy=(_BOARD_WIDTH - 162, y + 14, _BOARD_WIDTH - _BOARD_MARGIN, y + 48),
         radius=10,
@@ -189,11 +191,7 @@ def _draw_header(
         width=2,
     )
     draw_text_center(
-        draw=draw,
-        text="PUBLIC",
-        center=(_BOARD_WIDTH - 96, y + 23),
-        font=fonts["small"],
-        fill=accent,
+        draw=draw, text="PUBLIC", center=(_BOARD_WIDTH - 96, y + 23), font=fonts.small, fill=accent
     )
 
 
@@ -210,14 +208,10 @@ def _draw_table_header(
         fill=_SURFACE,
     )
     baseline = y + 12
-    draw.text(xy=(_RANK_X, baseline), text="排名", font=fonts["header"], fill=_MUTED)
-    draw.text(xy=(_NAME_X, baseline), text="玩家", font=fonts["header"], fill=_MUTED)
+    draw.text(xy=(_RANK_X, baseline), text="排名", font=fonts.header, fill=_MUTED)
+    draw.text(xy=(_NAME_X, baseline), text="玩家", font=fonts.header, fill=_MUTED)
     draw_text_right(
-        draw=draw,
-        text=amount_header,
-        xy=(_AMOUNT_RIGHT, baseline),
-        font=fonts["header"],
-        fill=accent,
+        draw=draw, text=amount_header, xy=(_AMOUNT_RIGHT, baseline), font=fonts.header, fill=accent
     )
 
 
@@ -240,18 +234,18 @@ def _draw_rank_row(
     draw.text(
         xy=(_RANK_X, y + 13),
         text=_rank_text(position=position),
-        font=fonts["rank"],
+        font=fonts.rank,
         fill=spec.accent if position <= 3 else _MUTED,
     )
     display_name = fit_text(
-        draw=draw, text=row.name or "未知玩家", font=fonts["body"], max_width=_NAME_MAX_WIDTH
+        draw=draw, text=row.name or "未知玩家", font=fonts.body, max_width=_NAME_MAX_WIDTH
     )
-    draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts["body"], fill=_TEXT)
+    draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts.body, fill=_TEXT)
     draw_text_right(
         draw=draw,
         text=_ranking_amount_text(spec=spec, amount=row.amount),
         xy=(_AMOUNT_RIGHT, y + 13),
-        font=fonts["body"],
+        font=fonts.body,
         fill=_TEXT,
     )
 
@@ -261,7 +255,7 @@ def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> No
     draw.rectangle(
         xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=_SURFACE
     )
-    draw.text(xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts["body"], fill=_MUTED)
+    draw.text(xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts.body, fill=_MUTED)
 
 
 def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:

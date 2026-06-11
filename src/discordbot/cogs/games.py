@@ -37,8 +37,8 @@ from discordbot.cogs._fishing.database import get_fishing_panel, get_grade_confi
 from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
-from discordbot.cogs._games.interactions import send_ephemeral_notice
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._fishing.presentation import build_panel_embed

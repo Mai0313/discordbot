@@ -15,7 +15,8 @@ from discordbot.typings.economy import JackpotSettlementRequest, JackpotSettleme
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs._economy.database import apply_jackpot_settlement_batch
-from discordbot.cogs._games.interactions import send_ephemeral_notice, disable_view_components
+from discordbot.cogs._games.interactions import disable_view_components
+from discordbot.utils.owned_message_views import send_ephemeral_notice
 
 if TYPE_CHECKING:
     from random import Random

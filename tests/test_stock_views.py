@@ -13,6 +13,7 @@ import pytest
 from nextcord import File, Embed, Locale
 
 from discordbot.cogs import stock
+from discordbot.utils import owned_message_views
 from discordbot.cogs.stock import StockCogs
 from discordbot.cogs._stock import views as stock_views
 from discordbot.typings.stock import (
@@ -764,10 +765,10 @@ def test_failed_stock_settlement_title_does_not_depend_on_operation_id() -> None
     assert embed.fields[0].name == "操作代碼"
 
 
-async def test_edit_stock_message_publicly_recovers_when_target_was_deleted(
+async def test_edit_owned_public_message_recovers_when_target_was_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stale stock message edit sends a public followup instead of dropping the result."""
+    """A stale panel message edit sends a public followup instead of dropping the result."""
     forgotten: list[int] = []
     tracked: list[MessageStub] = []
 
@@ -779,15 +780,15 @@ async def test_edit_stock_message_publicly_recovers_when_target_was_deleted(
         """Records the replacement cleanup row."""
         tracked.append(message)
 
-    monkeypatch.setattr(stock_views, "forget_public_message", fake_forget)
-    monkeypatch.setattr(stock_views, "track_public_message", fake_track)
+    monkeypatch.setattr(owned_message_views, "forget_public_message", fake_forget)
+    monkeypatch.setattr(owned_message_views, "track_public_message", fake_track)
     interaction = InteractionStub()
     interaction.response.deferred = True
     interaction.message = DeletedMessageStub()
     view = StockPostTradeView(symbol=BCAT_SYMBOL, owner_id=1)
     chart_file = File(fp=BytesIO(b"chart-bytes"), filename="chart.png")
 
-    await stock_views.edit_stock_message(
+    await owned_message_views.edit_owned_public_message(
         interaction=interaction,
         embed=Embed(title="股票交易完成"),
         view=view,
@@ -815,7 +816,7 @@ async def test_stock_public_view_timeout_deletes_bound_message(
         """Records delegated public-message deletion."""
         deleted.append(message)
 
-    monkeypatch.setattr(stock_views, "delete_public_message", fake_delete)
+    monkeypatch.setattr(owned_message_views, "delete_public_message", fake_delete)
     message = MessageStub()
     view = StockPublicView(owner_id=1)
     view.bind_message(message=message)

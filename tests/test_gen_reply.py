@@ -6,6 +6,7 @@ from io import BytesIO
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Literal
+import asyncio
 from datetime import UTC, datetime
 
 from PIL import Image
@@ -14,8 +15,10 @@ from nextcord import File, Embed
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -348,6 +351,37 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
     return cog
+
+
+async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> str:
+    """Routes a message after building the shared reference/current parts."""
+    reference_messages, current_message = await cog._get_reference_and_current(message=message)
+    return await cog._route_message(
+        message=message, reference_messages=reference_messages, current_message=current_message
+    )
+
+
+async def _reply_via_pipeline(
+    cog: ReplyGeneratorCogs,
+    message: FakeMessage,
+    system_prompt: str = "SYS",
+    history_limit: int = 2,
+    memory_enabled: bool = True,
+) -> None:
+    """Drives prepare-context plus answer the way on_message does for the QA route."""
+    parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+    context = await cog._prepare_reply_context(
+        message=message,
+        history_limit=history_limit,
+        memory_enabled=memory_enabled,
+        parts_task=parts_task,
+    )
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt=system_prompt,
+        context=context,
+        memory_enabled=memory_enabled,
+    )
 
 
 def _assert_runtime_time_context(instructions: str, system_prompt: str) -> None:
@@ -713,7 +747,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert await cog._route_message(message=message) == "SUMMARY"
+    assert await _route(cog=cog, message=message) == "SUMMARY"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
@@ -755,8 +789,8 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
     # memory_enabled=False keeps this routing test off the real memory path,
     # which is not isolated here.
-    await cog._handle_message_reply(
-        message=message, system_prompt="system", history_limit=2, memory_enabled=False
+    await _reply_via_pipeline(
+        cog=cog, message=message, system_prompt="system", memory_enabled=False
     )
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
@@ -774,30 +808,47 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
     cog = _cog()
     message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
 
-    assert await cog._route_message(message=message) == "QA"
+    assert await _route(cog=cog, message=message) == "QA"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
 
 @pytest.mark.parametrize(
-    argnames=("route", "expected_call"),
+    argnames=("route", "expected_call", "expected_prep", "expected_flags"),
     argvalues=[
-        ("IMAGE", "_handle_image_reply"),
-        ("VIDEO", "_handle_video_reply"),
-        ("SUMMARY", "_handle_message_reply"),
-        ("QA", "_handle_message_reply"),
+        ("IMAGE", "_handle_image_reply", [(30, True)], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], []),
+        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False]),
+        ("QA", "_handle_message_reply", [(30, True)], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(
-    monkeypatch: pytest.MonkeyPatch, route: str, expected_call: str
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    expected_call: str,
+    expected_prep: list[tuple[int, bool]],
+    expected_flags: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
     calls: list[str] = []
     prompts: list[str] = []
+    prep_requests: list[tuple[int, bool]] = []
+    prepared_context = ReplyContext()
 
-    async def fake_route(message: FakeMessage) -> str:
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> str:
         """Returns the parametrized route."""
+        del reference_messages, current_message
         return route
+
+    async def fake_prepare(
+        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+    ) -> ReplyContext:
+        """Records context requests while staying off the memory and history paths."""
+        del message, parts_task
+        prep_requests.append((history_limit, memory_enabled))
+        return prepared_context
 
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
@@ -817,16 +868,22 @@ async def test_gen_reply_on_message_dispatches_routes(
         calls.append("_handle_video_reply")
 
     memory_flags: list[bool] = []
+    contexts: list[ReplyContext] = []
 
     async def fake_message_handler(
-        message: FakeMessage, system_prompt: str, history_limit: int, memory_enabled: bool = True
+        message: FakeMessage,
+        system_prompt: str,
+        context: ReplyContext,
+        memory_enabled: bool = True,
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
+        contexts.append(context)
 
     monkeypatch.setattr(cog, "_route_message", fake_route)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.update_reaction", fake_reaction)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr(cog, "_handle_video_reply", fake_video_handler)
     monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
@@ -835,13 +892,14 @@ async def test_gen_reply_on_message_dispatches_routes(
     await cog.on_message(message=message)
     assert expected_call in calls
     assert calls[-1] == "reaction:🆗"
+    # The speculative QA context always builds first; SUMMARY rebuilds at its own
+    # history depth without memory, and QA consumes the speculative context as-is.
+    assert prep_requests == expected_prep
+    assert memory_flags == expected_flags
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
-    # Summaries opt out of per-user memory; QA keeps the default.
-    if route == "SUMMARY":
-        assert memory_flags == [False]
-    elif route == "QA":
-        assert memory_flags == [True]
+    else:
+        assert contexts == [prepared_context]
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
@@ -862,14 +920,106 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=dm_empty)
     assert dm_empty.replies[0].content == "?"
 
-    async def boom(message: FakeMessage) -> str:
+    async def boom(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> str:
         """Raises to exercise error handling."""
+        del reference_messages, current_message
         raise RuntimeError("boom")
 
+    async def fake_prepare(
+        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task
+        return ReplyContext()
+
     monkeypatch.setattr(cog, "_route_message", boom)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
     failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
     await cog.on_message(message=failed)
     assert failed.replies[0].content is None
+
+
+async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Advance schedules ordered swaps without blocking; flush waits for the tail."""
+    events: list[tuple[str, str | None]] = []
+
+    async def fake_reaction(
+        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+    ) -> str:
+        """Records each scheduled reaction swap."""
+        del message, bot_user
+        events.append((emoji, previous))
+        return emoji
+
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
+    chain = ReactionStatusChain(
+        message=FakeMessage(content="hi"), bot_user=SimpleNamespace(id=999)
+    )
+    chain.advance(emoji="🔀")
+    chain.advance(emoji="❓")
+    chain.advance(emoji="🆗")
+    assert events == []  # nothing awaited yet: scheduling never blocks the caller
+    await chain.flush()
+    assert events == [("🔀", None), ("❓", "🔀"), ("🆗", "❓")]
+
+
+async def test_on_message_discards_speculative_context_on_image_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-QA route cancels the speculative QA context build."""
+    cog = _cog()
+    cancelled: list[bool] = []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> str:
+        """Routes every message to IMAGE."""
+        del reference_messages, current_message
+        return "IMAGE"
+
+    async def fake_prepare(
+        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+    ) -> ReplyContext:
+        """Blocks until cancelled, recording the cancellation."""
+        del message, history_limit, memory_enabled, parts_task
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return ReplyContext()
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    async def fake_reaction(
+        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+    ) -> str:
+        """Skips real reaction calls."""
+        del message, bot_user, previous
+        return emoji
+
+    monkeypatch.setattr(cog, "_route_message", fake_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
+
+    message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+    assert cancelled == [True]
+
+
+def test_reply_context_message_list_orders_hist_ref_current() -> None:
+    """message_list keeps transcript order: history, reference, current."""
+    context = ReplyContext(
+        hist_messages=[{"role": "system", "content": "hist"}],
+        reference_messages=[{"role": "system", "content": "ref"}],
+        current_message=[{"role": "user", "content": "now"}],
+    )
+    assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
 
 
 def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -969,7 +1119,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
 
     # The selection model declines (no calls), so nothing is injected into the answer.
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # Two requests: selection (non-streaming) then the answer (streaming).
     assert cog.client.responses.create_streams == [False, True]
@@ -1047,7 +1197,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The selection phase still offers the tool even when nobody has stored memory; the
     # answer phase keeps the clean persona and the built-in tools.
@@ -1101,9 +1251,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(
-        message=message, system_prompt="SYS", history_limit=2, memory_enabled=False
-    )
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
 
     # memory_enabled=False runs no selection phase: a single answer request, no tool, no memory.
     assert cog.client.responses.create_streams == [True]
@@ -1227,7 +1375,7 @@ async def test_handle_message_reply_injects_selected_memory_into_answer(
     ]
 
     message = FakeMessage(content="<@999> 我是誰", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # Selection (non-streaming) then the answer (streaming).
     assert cog.client.responses.create_streams == [False, True]
@@ -1276,7 +1424,7 @@ async def test_handle_message_reply_footer_includes_selection_usage(
     ]
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # 100+5 input, 20+6 output summed across the selection and answer requests.
     assert "⬆ 105 ⬇ 26" in (message.replies[0].content or "")
@@ -1299,7 +1447,7 @@ async def test_handle_message_reply_footer_omits_users_without_memory(
     ]
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # Selection ran but the user has no memory, so nothing is injected and no 🧠 line appears.
     assert cog.client.responses.create_streams == [False, True]
@@ -1326,7 +1474,7 @@ async def test_handle_message_reply_skips_memory_when_model_declines(
     ]
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     assert cog.client.responses.create_streams == [False, True]
     assert "機密" not in str(cog.client.responses.create_inputs)
@@ -1357,7 +1505,7 @@ async def test_handle_message_reply_drops_memory_for_non_allowlisted_id(
     ]
 
     message = FakeMessage(content="<@999> 查 42 的記憶", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The allowlist (author 1 only) drops id 42: nothing injected, no leak, no 🧠 line.
     assert "機密外人記憶" not in str(cog.client.responses.create_inputs)
@@ -1395,7 +1543,7 @@ async def test_handle_message_reply_footer_lists_memory_owners_in_order(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     content = message.replies[0].content or ""
     assert "\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶" in content
@@ -1426,7 +1574,7 @@ async def test_handle_message_reply_footer_dedupes_repeat_lookups(
     ]
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     content = message.replies[0].content or ""
     assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in content
@@ -1467,7 +1615,7 @@ async def test_handle_message_reply_resolves_multiple_selection_calls(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     answer_input = str(cog.client.responses.create_inputs[1])
     assert "甲記憶" in answer_input
@@ -1504,7 +1652,7 @@ async def test_handle_message_reply_caps_injected_memories(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     answer_input = str(cog.client.responses.create_inputs[1])
     # First 8 (in selection order) are injected; the 9th and 10th are dropped.
@@ -1531,7 +1679,7 @@ async def test_handle_message_reply_allowlist_includes_reference_author(
     message = FakeMessage(content="<@999> 回覆他", author=FakeAuthor(user_id=1))
     message.reference = FakeReference(resolved=parent)
 
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The selection request (first create) lists the reference author (7) as callable.
     select_input = str(cog.client.responses.create_inputs[0])
@@ -1567,7 +1715,7 @@ async def test_handle_message_reply_continues_when_selection_fails(
     ]
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The answer request still ran and produced a reply, with no memory injected and no 🧠.
     assert (message.replies[0].content or "").startswith("照常回答")
@@ -1624,7 +1772,7 @@ async def test_handle_message_reply_injects_and_schedules_server_memory(
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The server memory rides into the answer request as background context.
     assert "這個社群很愛嘴" in str(cog.client.responses.create_inputs[-1])
@@ -1662,7 +1810,7 @@ async def test_handle_message_reply_skips_server_memory_in_dm(
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.guild = None
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     assert "不該出現" not in str(cog.client.responses.create_inputs[-1])
     assert scheduled == [user_scope(user_id=1)]
@@ -1683,7 +1831,7 @@ async def test_handle_message_reply_skips_server_write_in_private_channel(
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=False)
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # Private channel: the per-user update still runs, but no server-scope update.
     assert scheduled == [user_scope(user_id=1)]
@@ -1720,7 +1868,7 @@ async def test_handle_message_reply_injects_server_memory_into_selection(
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # Selection input carries the server memory, with the callable-users block kept last.
     selection_input = cog.client.responses.create_inputs[0]
@@ -1756,7 +1904,7 @@ async def test_handle_message_reply_widens_allowlist_with_public_nickname_table(
     ]
 
     message = FakeMessage(content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1))
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     # The nickname-table id widened the allowlist, so the outsider's memory is injected.
     assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
@@ -1790,6 +1938,6 @@ async def test_handle_message_reply_keeps_boundary_in_private_channel(
     message = FakeMessage(
         content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1), channel_public=False
     )
-    await cog._handle_message_reply(message=message, system_prompt="SYS", history_limit=2)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])
