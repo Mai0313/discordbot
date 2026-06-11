@@ -236,8 +236,3 @@ def memory_lookup_labels(*, memories: list[UserMemory]) -> list[str]:
     contribute anything to the reply, so surfacing them would be misleading.
     """
     return [memory.username for memory in memories if memory.memory != NO_STORED_MEMORY]
-
-
-def dump_user_memories(*, memories: list[UserMemory]) -> str:
-    """Serializes resolved memories into the tool's function_call_output string."""
-    return json.dumps([memory.model_dump() for memory in memories], ensure_ascii=False)
