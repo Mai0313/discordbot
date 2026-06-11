@@ -973,6 +973,12 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     # Two requests: selection (non-streaming) then the answer (streaming).
     assert cog.client.responses.create_streams == [False, True]
 
+    # Selection runs on the fast tool_model; only the answer pays for slow_model.
+    assert cog.client.responses.create_models == [
+        cog.runtime_models.tool_model.name,
+        cog.runtime_models.slow_model.name,
+    ]
+
     # Selection request offers only get_user_memory + a callable-users block.
     select_tools = [tool.get("name") for tool in cog.client.responses.create_tools[0]]
     assert select_tools == ["get_user_memory"]

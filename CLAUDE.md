@@ -32,7 +32,7 @@ make gen-docs                    # regenerate docs/ from sources
 ## AI Pipeline
 
 - Runtime LLM backend is LiteLLM Proxy behind `OPENAI_BASE_URL`; all runtime conversations use `AsyncOpenAI` and the OpenAI Responses API. Do not switch back to Chat Completions, and do not import provider-native SDKs (`google-genai`, `anthropic`) into runtime request paths; `scripts/prompt_dev.py` is the local-experimentation exception.
-- Runtime model strings live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; keep `slow_model`'s peak-hour dispatch. Provider selection happens through LiteLLM via model strings and `extra_body`.
+- Runtime model strings live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; keep `slow_model`'s peak-hour dispatch. The phase-1 `get_user_memory` selection runs on the fast `tool_model` (off the `slow_model` tier) since it is a lightweight critical-path decision before the answer. Provider selection happens through LiteLLM via model strings and `extra_body`.
 - Streaming SDK objects are named `responses`; loop items are named `response`.
 - AI progress is communicated with reactions on the user's message. Preserve the no-intermediate-message UX.
 - Attachment ingestion is gated by `get_supported_modalities` for the slow model; unsupported attachments are dropped before any LLM call. Images are resized and JPEG re-encoded into `input_image` data URIs; other supported attachments are sent as `input_file`.
