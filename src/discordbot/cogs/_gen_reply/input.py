@@ -2,7 +2,7 @@
 
 import re
 import base64
-from typing import Literal
+from typing import Literal, cast
 import asyncio
 from mimetypes import guess_type
 
@@ -39,6 +39,34 @@ _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 def sanitize_identity(value: str) -> str:
     """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
+
+
+def strip_attachment_parts(
+    messages: list[EasyInputMessageParam],
+) -> list[EasyInputMessageParam]:
+    """Returns copies of input messages with attachment parts reduced to text markers.
+
+    The route and memory-selection preflight calls only need the conversation text plus
+    a hint that an attachment exists; re-uploading the full image/file payloads to those
+    fast calls just adds latency. The answer request keeps the original parts untouched.
+    """
+    stripped: list[EasyInputMessageParam] = []
+    for message in messages:
+        content = message["content"]
+        if isinstance(content, str):
+            stripped.append(message)
+            continue
+        parts: list[ResponseInputTextParam] = []
+        for part in content:
+            part_type = part.get("type")
+            if part_type == "input_text":
+                parts.append(cast("ResponseInputTextParam", part))
+            elif part_type == "input_image":
+                parts.append(ResponseInputTextParam(text="[attachment: image]", type="input_text"))
+            elif part_type == "input_file":
+                parts.append(ResponseInputTextParam(text="[attachment: file]", type="input_text"))
+        stripped.append(EasyInputMessageParam(role=message["role"], content=parts))
+    return stripped
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:

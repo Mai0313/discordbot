@@ -30,6 +30,7 @@ from discordbot.cogs._gen_reply.input import (
     sanitize_identity,
     render_author_identity,
     render_server_identity,
+    strip_attachment_parts,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.context import ReplyContext
@@ -70,6 +71,10 @@ if TYPE_CHECKING:
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
+
+# Memory selection is a lightweight tool-only preflight; past this deadline the reply
+# answers without memory instead of letting a slow proxy stall the whole pipeline.
+MEMORY_SELECT_TIMEOUT_SECONDS = 2.0
 
 
 def _message_has_url(content: str) -> bool:
@@ -442,8 +447,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Besides the handler choice, the route also grades how much reasoning effort the
         answer deserves; QA and SUMMARY override the slow model's effort with it.
+        Attachment parts are reduced to text markers: classification needs the text and
+        the fact that an attachment exists, not the payload bytes.
         """
-        message_list: list[EasyInputMessageParam] = [*reference_messages, *current_message]
+        message_list = strip_attachment_parts(
+            messages=[*reference_messages, *current_message]
+        )
 
         try:
             fast_model = self.runtime_models.fast_model
@@ -489,10 +498,12 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         tool_model = self.runtime_models.tool_model
         # The callable-users block stays last so the model reads it right before deciding;
-        # the server-memory block (if any) leads as earlier background context.
+        # the server-memory block (if any) leads as earlier background context. Attachment
+        # parts are reduced to text markers: picking whose memory to read needs the text,
+        # not the payload bytes, and the smaller request returns faster.
         selection_input: ResponseInputParam = [
             *([server_memory_block] if server_memory_block is not None else []),
-            *message_list,
+            *strip_attachment_parts(messages=message_list),
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.client.responses.create(
@@ -649,12 +660,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 # never turn an answerable message into the generic error path.
                 try:
                     with logfire.span("gen_reply memory selection"):
-                        selection = await self._select_user_memories(
-                            message=message,
-                            message_list=message_list,
-                            allowed=allowed,
-                            server_memory_block=server_memory_block,
-                        )
+                        async with asyncio.timeout(delay=MEMORY_SELECT_TIMEOUT_SECONDS):
+                            selection = await self._select_user_memories(
+                                message=message,
+                                message_list=message_list,
+                                allowed=allowed,
+                                server_memory_block=server_memory_block,
+                            )
+                except TimeoutError:
+                    logfire.warn(
+                        "Memory selection timed out; answering without memory",
+                        timeout_seconds=MEMORY_SELECT_TIMEOUT_SECONDS,
+                    )
                 except Exception:
                     logfire.warn(
                         "Memory selection failed; answering without memory", _exc_info=True
@@ -859,6 +876,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                 else:
                     reactions.advance(emoji="💭")
+                    # Selection still gates the answer here; if this wait ever needs to go,
+                    # the answer could speculatively start without memory and refire when
+                    # selection picks some.
                     context = await prep_task
                     prep_task = None
                     await self._handle_message_reply(
