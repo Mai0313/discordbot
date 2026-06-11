@@ -22,7 +22,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.utils.reactions import update_reaction
+from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
@@ -32,6 +32,7 @@ from discordbot.cogs._gen_reply.input import (
     render_server_identity,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
+from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -114,6 +115,17 @@ async def _no_participant_messages() -> list[Message]:
     the rest of the reply context still loads concurrently in one gather.
     """
     return []
+
+
+async def _discard_task(task: asyncio.Task[ReplyContext]) -> None:
+    """Cancels and drains a speculative context task so its exception is retrieved."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logfire.warn("Speculative reply context build failed off-route", _exc_info=True)
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -410,29 +422,38 @@ class ReplyGeneratorCogs(commands.Cog):
         final_content = f"{message.author.mention} {image_description}"
         await message.reply(content=final_content, file=image_file)
 
-    async def _route_message(self, message: Message) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        """Routes the message to the appropriate handler."""
-        message_list: list[EasyInputMessageParam] = []
-
+    async def _get_reference_and_current(
+        self, message: Message
+    ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
+        """Processes the reference chain and current message once, shared by routing and the answer."""
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
         )
-        message_list.extend(reference_messages)
-        message_list.extend(current_message)
+        return reference_messages, current_message
+
+    async def _route_message(
+        self,
+        message: Message,
+        reference_messages: list[EasyInputMessageParam],
+        current_message: list[EasyInputMessageParam],
+    ) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
+        """Routes the message to the appropriate handler using pre-built context parts."""
+        message_list: list[EasyInputMessageParam] = [*reference_messages, *current_message]
 
         try:
             fast_model = self.runtime_models.fast_model
-            responses = await self.client.responses.parse(
-                model=fast_model.name,
-                instructions=ROUTE_PROMPT,
-                input=cast("ResponseInputParam", message_list),
-                text_format=RouteDecision,
-                reasoning=fast_model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
-            )
+            with logfire.span("gen_reply route"):
+                responses = await self.client.responses.parse(
+                    model=fast_model.name,
+                    instructions=ROUTE_PROMPT,
+                    input=cast("ResponseInputParam", message_list),
+                    text_format=RouteDecision,
+                    reasoning=fast_model.reasoning,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
             if responses.output_parsed is None:
                 return "QA"
             decision = responses.output_parsed.decision
@@ -551,12 +572,21 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
-    async def _handle_message_reply(
-        self, message: Message, system_prompt: str, history_limit: int, memory_enabled: bool = True
-    ) -> None:
-        """Handles generating text replies using history and context."""
+    async def _prepare_reply_context(
+        self,
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+    ) -> ReplyContext:
+        """Builds history, shared parts, server memory, and the memory selection result.
+
+        Runs speculatively as its own task concurrent with routing: everything here only
+        reads (channel history, memory files, the selection request), so a non-QA route
+        can discard it safely.
+        """
         # The allowlist needs raw Message objects (authors + mentions); fetch them in the
-        # same gather so they overlap with the rendered context. SUMMARY
+        # same gather so they overlap with the rendered history. SUMMARY
         # (memory_enabled=False) substitutes an empty fetch to skip the second history
         # read entirely while keeping the gather shape and result types precise.
         collect_participants = (
@@ -564,17 +594,12 @@ class ReplyGeneratorCogs(commands.Cog):
             if memory_enabled and self.bot.user
             else _no_participant_messages()
         )
-        (
-            hist_messages,
-            reference_messages,
-            current_message,
-            participant_messages,
-        ) = await asyncio.gather(
-            self._get_history_message(message=message, limit=history_limit),
-            self._get_reference_message(message=message),
-            self._get_current_message(message=message),
-            collect_participants,
-        )
+        with logfire.span("gen_reply context build"):
+            hist_messages, participant_messages = await asyncio.gather(
+                self._get_history_message(message=message, limit=history_limit),
+                collect_participants,
+            )
+            reference_messages, current_message = await parts_task
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
             *reference_messages,
@@ -595,7 +620,6 @@ class ReplyGeneratorCogs(commands.Cog):
         # streams the answer with the built-in tools always available and any selected
         # memory injected as context. The allowlist (conversation authors + mentioned
         # users, minus the bot) is the permission boundary.
-        slow_model = self.runtime_models.slow_model
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
@@ -620,12 +644,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.
                 try:
-                    selection = await self._select_user_memories(
-                        message=message,
-                        message_list=message_list,
-                        allowed=allowed,
-                        server_memory_block=server_memory_block,
-                    )
+                    with logfire.span("gen_reply memory selection"):
+                        selection = await self._select_user_memories(
+                            message=message,
+                            message_list=message_list,
+                            allowed=allowed,
+                            server_memory_block=server_memory_block,
+                        )
                 except Exception:
                     logfire.warn(
                         "Memory selection failed; answering without memory", _exc_info=True
@@ -637,40 +662,66 @@ class ReplyGeneratorCogs(commands.Cog):
                         memory_block = render_memory_context_block(memories=selection.memories)
                         memory_labels = memory_lookup_labels(memories=selection.memories)
 
+        return ReplyContext(
+            hist_messages=hist_messages,
+            reference_messages=reference_messages,
+            current_message=current_message,
+            server_memory=server_memory,
+            server_memory_block=server_memory_block,
+            memory_block=memory_block,
+            memory_labels=memory_labels,
+            selection_input_tokens=selection_input_tokens,
+            selection_output_tokens=selection_output_tokens,
+        )
+
+    async def _handle_message_reply(
+        self,
+        message: Message,
+        system_prompt: str,
+        context: ReplyContext,
+        memory_enabled: bool = True,
+    ) -> None:
+        """Streams the answer from a pre-built reply context, then schedules memory updates."""
+        slow_model = self.runtime_models.slow_model
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
         # reference but before the current message.
-        answer_input: ResponseInputParam = [*hist_messages, *reference_messages]
+        answer_input: ResponseInputParam = [*context.hist_messages, *context.reference_messages]
         answer_input.extend(
-            block for block in (server_memory_block, memory_block) if block is not None
+            block
+            for block in (context.server_memory_block, context.memory_block)
+            if block is not None
         )
-        answer_input.extend(current_message)
+        answer_input.extend(context.current_message)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
         # reflect both LLM calls; the answer stream sums its own usage on top.
         streamer = ResponseStreamer(
             message=message,
-            memory_lookups=memory_labels,
-            input_tokens=selection_input_tokens,
-            output_tokens=selection_output_tokens,
+            memory_lookups=context.memory_labels,
+            input_tokens=context.selection_input_tokens,
+            output_tokens=context.selection_output_tokens,
         )
-        responses = await self.client.responses.create(
-            model=slow_model.name,
-            instructions=_build_runtime_instructions(system_prompt=system_prompt, message=message),
-            input=answer_input,
-            reasoning=slow_model.reasoning,
-            tools=list(slow_model.tools),
-            stream=True,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
-        )
-        full_reply = await streamer.stream(responses=responses)
+        with logfire.span("gen_reply answer", model=slow_model.name):
+            responses = await self.client.responses.create(
+                model=slow_model.name,
+                instructions=_build_runtime_instructions(
+                    system_prompt=system_prompt, message=message
+                ),
+                input=answer_input,
+                reasoning=slow_model.reasoning,
+                tools=list(slow_model.tools),
+                stream=True,
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
+            )
+            full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
-                hist_messages=hist_messages,
-                reference_messages=reference_messages,
-                current_message=current_message,
+                hist_messages=context.hist_messages,
+                reference_messages=context.reference_messages,
+                current_message=context.current_message,
                 target_user_id=message.author.id,
             )
             schedule_memory_update(
@@ -686,7 +737,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 ),
             )
             self._schedule_server_memory_update(
-                message=message, message_list=message_list, full_reply=full_reply
+                message=message, message_list=context.message_list, full_reply=full_reply
             )
 
     @commands.Cog.listener()
@@ -715,47 +766,15 @@ class ReplyGeneratorCogs(commands.Cog):
             await message.reply(content="?")
             return
 
+        reactions = ReactionStatusChain(message=message, bot_user=self.bot.user)
         try:
-            current_emoji = await update_reaction(
-                message=message, bot_user=self.bot.user, emoji="🔀"
-            )
-            route = await self._route_message(message=message)
-            if route == "IMAGE":
-                current_emoji = await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="🎨", previous=current_emoji
-                )
-                await self._handle_image_reply(message=message, user_prompt=user_prompt)
-            elif route == "VIDEO":
-                current_emoji = await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="🎬", previous=current_emoji
-                )
-                await self._handle_video_reply(message=message, user_prompt=user_prompt)
-            elif route == "SUMMARY":
-                current_emoji = await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="📖", previous=current_emoji
-                )
-                # Summaries digest ~100 channel messages: skip per-user memory
-                # so it neither biases the digest nor floods extraction.
-                await self._handle_message_reply(
-                    message=message,
-                    system_prompt=SUMMARY_PROMPT,
-                    history_limit=100,
-                    memory_enabled=False,
-                )
-            else:
-                current_emoji = await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="❓", previous=current_emoji
-                )
-                await self._handle_message_reply(
-                    message=message, system_prompt=REPLY_PROMPT, history_limit=30
-                )
-            await update_reaction(
-                message=message, bot_user=self.bot.user, emoji="🆗", previous=current_emoji
+            await self._run_reply_pipeline(
+                message=message, user_prompt=user_prompt, reactions=reactions
             )
         except Exception as e:
             logfire.error("Failed to generate reply", user_id=message.author.name, _exc_info=True)
             with contextlib.suppress(Exception):
-                await update_reaction(message=message, bot_user=self.bot.user, emoji="❌")
+                reactions.advance(emoji="❌")
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
@@ -767,6 +786,80 @@ class ReplyGeneratorCogs(commands.Cog):
                     embed=error_embed,
                     **embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message),
                 )
+        finally:
+            await reactions.flush()
+
+    async def _run_reply_pipeline(
+        self, message: Message, user_prompt: str, reactions: ReactionStatusChain
+    ) -> None:
+        """Routes the message and dispatches the matching handler with speculative QA context."""
+        prep_task: asyncio.Task[ReplyContext] | None = None
+        try:
+            with logfire.span("gen_reply pipeline") as pipeline_span:
+                reactions.advance(emoji="🔀")
+                # Reference + current are processed once and shared by routing and the
+                # answer; the QA context (history, server memory, memory selection) builds
+                # speculatively in parallel with the route call since QA is the dominant
+                # route — non-QA routes discard it.
+                parts_task = asyncio.create_task(
+                    coro=self._get_reference_and_current(message=message)
+                )
+                prep_task = asyncio.create_task(
+                    coro=self._prepare_reply_context(
+                        message=message,
+                        history_limit=30,
+                        memory_enabled=True,
+                        parts_task=parts_task,
+                    )
+                )
+                reference_messages, current_message = await parts_task
+                route = await self._route_message(
+                    message=message,
+                    reference_messages=reference_messages,
+                    current_message=current_message,
+                )
+                pipeline_span.set_attribute(key="route", value=route)
+                if route == "IMAGE":
+                    await _discard_task(task=prep_task)
+                    prep_task = None
+                    reactions.advance(emoji="🎨")
+                    await self._handle_image_reply(message=message, user_prompt=user_prompt)
+                elif route == "VIDEO":
+                    await _discard_task(task=prep_task)
+                    prep_task = None
+                    reactions.advance(emoji="🎬")
+                    await self._handle_video_reply(message=message, user_prompt=user_prompt)
+                elif route == "SUMMARY":
+                    await _discard_task(task=prep_task)
+                    prep_task = None
+                    reactions.advance(emoji="📖")
+                    # Summaries digest ~100 channel messages: skip per-user memory
+                    # so it neither biases the digest nor floods extraction. The
+                    # cancelled speculative prep does not cancel `parts_task`, so the
+                    # shared reference/current parts are still reused here.
+                    context = await self._prepare_reply_context(
+                        message=message,
+                        history_limit=100,
+                        memory_enabled=False,
+                        parts_task=parts_task,
+                    )
+                    await self._handle_message_reply(
+                        message=message,
+                        system_prompt=SUMMARY_PROMPT,
+                        context=context,
+                        memory_enabled=False,
+                    )
+                else:
+                    reactions.advance(emoji="❓")
+                    context = await prep_task
+                    prep_task = None
+                    await self._handle_message_reply(
+                        message=message, system_prompt=REPLY_PROMPT, context=context
+                    )
+                reactions.advance(emoji="🆗")
+        finally:
+            if prep_task is not None:
+                await _discard_task(task=prep_task)
 
 
 def setup(bot: commands.Bot) -> None:
