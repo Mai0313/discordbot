@@ -574,8 +574,17 @@ class MessageInputBuilder(BaseModel):
 
     async def process_single_message_text_only(self, message: Message) -> EasyInputMessageParam:
         """Renders a message for the route and memory-selection calls without uploading."""
-        sources = self._supported_sources(sources=self.collect_attachment_sources(message=message))
-        return await self.render_text_only(message=message, sources=sources)
+        try:
+            sources = self._supported_sources(
+                sources=self.collect_attachment_sources(message=message)
+            )
+            return await self.render_text_only(message=message, sources=sources)
+        except Exception:
+            # The route awaits this before dispatching, so a cold-start modality lookup
+            # (or render) failure must degrade to empty text like process_single_message
+            # does, not abort the whole reply through the generic error path.
+            logfire.warn(f"Failed to render message {message.id} for routing", _exc_info=True)
+            return EasyInputMessageParam(role="user", content="")
 
     async def process_single_message(self, message: Message) -> EasyInputMessageParam:
         """Processes a single Discord message into a Responses API input message."""

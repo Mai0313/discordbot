@@ -1041,6 +1041,28 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
+async def test_text_only_render_degrades_when_modality_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold-start modality lookup failure degrades to empty text, not a pipeline abort."""
+    cog = _cog()
+
+    def boom(model_name: str) -> set[str]:
+        """Simulates the LiteLLM model-info fetch failing on a cold cache."""
+        del model_name
+        raise httpx.ConnectError(message="model info unreachable")
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_supported_modalities", boom)
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
+    ]
+
+    rendered = await cog.input_builder.process_single_message_text_only(message=message)
+
+    assert rendered == EasyInputMessageParam(role="user", content="")
+
+
 async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attached image routes the IMAGE handler through images.edit with raw bytes."""
     cog = _cog()
@@ -1174,6 +1196,53 @@ async def test_gen_reply_on_message_dispatches_routes(
         assert contexts == [prepared_context]
 
 
+async def test_prepare_reply_context_shields_shared_parts_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the speculative prep must not cancel the shared upload task.
+
+    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
+    unshielded `await parts_task` inside prep would propagate the cancellation and make
+    the rebuilt summary context fail with CancelledError.
+    """
+    cog = _cog()
+    release = asyncio.Event()
+
+    async def slow_parts() -> tuple[list[object], list[object]]:
+        """Stands in for an upload still activating when the route is decided."""
+        await release.wait()
+        return ([], [])
+
+    async def fake_history(
+        message: FakeMessage, limit: int, with_text_only: bool = False
+    ) -> RenderedHistory:
+        """Returns empty history so prep parks directly on the shared parts task."""
+        del message, limit, with_text_only
+        return RenderedHistory()
+
+    monkeypatch.setattr(cog, "_get_history_message", fake_history)
+    parts_task = asyncio.create_task(coro=slow_parts())
+    prep_task = asyncio.create_task(
+        coro=cog._prepare_reply_context(
+            message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)),
+            history_limit=100,
+            memory_enabled=False,
+            parts_task=parts_task,
+            text_parts=([], []),
+        )
+    )
+    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    await _discard_task(task=prep_task)
+
+    assert not parts_task.cancelled()
+    release.set()
+    reference_messages, current_message = await parts_task
+    assert (reference_messages, current_message) == ([], [])
+
+
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1232,53 +1301,6 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
     chain = ReactionStatusChain(
         message=FakeMessage(content="hi"), bot_user=SimpleNamespace(id=999)
-async def test_prepare_reply_context_shields_shared_parts_task(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Cancelling the speculative prep must not cancel the shared upload task.
-
-    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
-    unshielded `await parts_task` inside prep would propagate the cancellation and make
-    the rebuilt summary context fail with CancelledError.
-    """
-    cog = _cog()
-    release = asyncio.Event()
-
-    async def slow_parts() -> tuple[list[object], list[object]]:
-        """Stands in for an upload still activating when the route is decided."""
-        await release.wait()
-        return ([], [])
-
-    async def fake_history(
-        message: FakeMessage, limit: int, with_text_only: bool = False
-    ) -> RenderedHistory:
-        """Returns empty history so prep parks directly on the shared parts task."""
-        del message, limit, with_text_only
-        return RenderedHistory()
-
-    monkeypatch.setattr(cog, "_get_history_message", fake_history)
-    parts_task = asyncio.create_task(coro=slow_parts())
-    prep_task = asyncio.create_task(
-        coro=cog._prepare_reply_context(
-            message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)),
-            history_limit=100,
-            memory_enabled=False,
-            parts_task=parts_task,
-            text_parts=([], []),
-        )
-    )
-    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    await _discard_task(task=prep_task)
-
-    assert not parts_task.cancelled()
-    release.set()
-    reference_messages, current_message = await parts_task
-    assert (reference_messages, current_message) == ([], [])
-
-
     )
     chain.advance(emoji="🔀")
     chain.advance(emoji="❓")
