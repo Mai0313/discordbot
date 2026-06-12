@@ -1,18 +1,20 @@
 """Builds Responses API input messages from Discord messages."""
 
+import io
 import re
 import time
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from mimetypes import guess_type
 from collections import OrderedDict
 
-from openai import AsyncOpenAI
+from google import genai
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
+from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -106,22 +108,26 @@ class MessageInputBuilder(BaseModel):
     Attributes:
         bot: The Discord bot instance, used to detect the bot's own messages.
         runtime_models: Catalog whose slow model gates attachment modalities.
-        client: LiteLLM-proxy client used to upload attachments to the Files API.
+        gemini_client: Gemini client used to upload attachments to the Files API
+            directly, so each upload can be polled to ACTIVE before it is used; None
+            when `GEMINI_API_KEY` is unconfigured, in which case uploads are dropped.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
-    client: SkipValidation[AsyncOpenAI]
+    gemini_client: SkipValidation[genai.Client] | None
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
     # time, so an edit or a late embed unfurl that swaps a URL without changing the
-    # source count still re-renders. Each entry pairs a monotonic render time with its
-    # Files-API parts so a stale handle is re-uploaded before the file's 48h lifetime.
+    # source count still re-renders. Each entry pairs the files' real expiry (the earliest
+    # Gemini `expiration_time` across the rendered parts) with the parts, so a handle is
+    # re-uploaded just before it actually expires instead of on a guessed fixed TTL.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, tuple[object, ...]], tuple[float, list[ResponseInputFileParam]]
+        tuple[int, datetime | None, tuple[object, ...]],
+        tuple[datetime, list[ResponseInputFileParam]],
     ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
@@ -241,31 +247,56 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
-    async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
-        """Uploads bytes to the Files API and returns a managed file id to reference.
+    async def _upload_file(
+        self, filename: str, data: bytes, content_type: str
+    ) -> tuple[str, datetime] | None:
+        """Uploads bytes to the Gemini Files API, returning the file URI and its expiry.
 
-        Sending attachments by `file_id` instead of inlined base64 keeps oversized
-        payloads under Gemini's ~10MB per-part `inline_data` cap. `target_model_names`
-        names the upload-only `file_model` deployment, not the reply model, so LiteLLM
-        uses it only to pick the Files API credential and never runs inference on it.
+        Sending attachments by file URI instead of inlined base64 keeps oversized
+        payloads under Gemini's ~10MB per-part `inline_data` cap. The upload goes
+        through the Gemini SDK directly (not the LiteLLM proxy) so the file can be
+        polled to an ACTIVE `state` before it is referenced; the proxy's file resource
+        only ever reports a deprecated `uploaded` status, which is why a fresh upload
+        used immediately intermittently 400s with "not in an ACTIVE state".
 
-        The id is used as soon as it is returned. The provider processes a fresh upload
-        asynchronously, but neither the Gemini nor the OpenAI file-input guides poll for
-        readiness, and the proxy exposes no reliable signal (the SDK `status` field is
-        deprecated and stays `uploaded`), so there is no activation check. The upload runs
-        in the background while the route and memory selection calls resolve, and that
-        overlap is the processing slack the answer relies on.
+        The answer request still references the file through the proxy, by the full
+        `uri` (`https://.../files/<id>`): the proxy resolves that to a `fileData.fileUri`
+        part, while the bare `files/<id>` name fails its mime-type lookup. The whole
+        upload + activation poll runs in the background while the route and memory
+        selection calls resolve, so small files (instant ACTIVE) add no latency and only
+        large / video uploads spend any of that overlap window waiting. A file that never
+        reaches ACTIVE within the bound is dropped, like any other failed upload.
+
+        Returns the provider-reported `expiration_time` alongside the URI so the
+        per-message cache can reuse the handle until it actually expires (Gemini files
+        live ~48h) instead of guessing a fixed TTL.
         """
+        if self.gemini_client is None:
+            logfire.warn(f"Gemini Files API unavailable; dropping attachment: {filename}")
+            return None
+        activation_timeout_seconds = 30.0
+        poll_interval_seconds = 0.5
         try:
-            uploaded = await self.client.files.create(
-                file=(filename, data, content_type),
-                purpose="user_data",
-                extra_body={"target_model_names": self.runtime_models.file_model.name},
+            uploaded = await self.gemini_client.aio.files.upload(
+                file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
             )
+            deadline = time.monotonic() + activation_timeout_seconds
+            while uploaded.state == FileState.PROCESSING:
+                if time.monotonic() >= deadline:
+                    logfire.warn(f"Attachment never reached ACTIVE state: {filename}")
+                    return None
+                await asyncio.sleep(poll_interval_seconds)
+                uploaded = await self.gemini_client.aio.files.get(name=uploaded.name)
+            if uploaded.state != FileState.ACTIVE:
+                logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
+                return None
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
             return None
-        return uploaded.id
+        # Fall back to a conservative 47h (under the ~48h lifetime) if the provider omits
+        # the expiry, so a missing field never pins an unbounded cache entry.
+        expires_at = uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
+        return uploaded.uri, expires_at
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
@@ -287,8 +318,8 @@ class MessageInputBuilder(BaseModel):
 
     async def image_to_part(
         self, source: Attachment | StickerItem | str
-    ) -> ResponseInputFileParam | None:
-        """Converts an image source to an uploaded `input_file` content part."""
+    ) -> tuple[ResponseInputFileParam, datetime] | None:
+        """Converts an image source to an uploaded `input_file` part plus its expiry."""
         try:
             file_bytes, content_type = await self._load_image_bytes(source=source)
         except Exception:
@@ -300,17 +331,21 @@ class MessageInputBuilder(BaseModel):
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
-        file_id = await self._upload_file(
+        uploaded = await self._upload_file(
             filename=source_name, data=file_bytes, content_type=content_type
         )
-        if file_id is None:
+        if uploaded is None:
             return None
+        file_id, expires_at = uploaded
         # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
         # attachment marker is derived from message metadata, not from this part.
-        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
+        part = ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
+        return part, expires_at
 
-    async def attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
-        """Converts a file attachment to an uploaded `input_file` content part."""
+    async def attachment_to_part(
+        self, attachment: Attachment
+    ) -> tuple[ResponseInputFileParam, datetime] | None:
+        """Converts a file attachment to an uploaded `input_file` part plus its expiry."""
         content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
         mime_type = content_type.split(";")[0].strip()
         if not mime_type:
@@ -323,14 +358,16 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
-        file_id = await self._upload_file(
+        uploaded = await self._upload_file(
             filename=attachment.filename, data=file_bytes, content_type=mime_type
         )
-        if file_id is None:
+        if uploaded is None:
             return None
-        return ResponseInputFileParam(
+        file_id, expires_at = uploaded
+        part = ResponseInputFileParam(
             type="input_file", file_id=file_id, filename=attachment.filename
         )
+        return part, expires_at
 
     async def get_image_source_bytes(self, message: Message) -> list[bytes]:
         """Returns downscaled bytes of a message's image sources for the IMAGE route.
@@ -391,13 +428,13 @@ class MessageInputBuilder(BaseModel):
 
     async def _render_attachment_parts(
         self, sources: list[AttachmentSource]
-    ) -> list[ResponseInputFileParam | None]:
-        """Renders every supported source to an uploaded part; failures stay as None.
+    ) -> list[tuple[ResponseInputFileParam, datetime] | None]:
+        """Renders every supported source to an uploaded part + expiry; failures stay None.
 
         Each source uploads to the Files API; the uploads run concurrently so a message
         with several attachments pays roughly one upload's latency, not the sum.
         """
-        tasks: list[Coroutine[object, object, ResponseInputFileParam | None]] = []
+        tasks: list[Coroutine[object, object, tuple[ResponseInputFileParam, datetime] | None]] = []
         for source in sources:
             if source.kind == "image":
                 tasks.append(self.image_to_part(source=source.handle))
@@ -424,25 +461,26 @@ class MessageInputBuilder(BaseModel):
         # or an edit that swaps a source URL re-renders even when the count is unchanged.
         source_keys = tuple(source.cache_key for source in sources)
         cache_key = (message.id, message.edited_at, source_keys)
-        # Files API handles live ~48h; re-render before then so a long-lived cache entry
-        # never hands back an expired file_id that the answer request would reject.
-        cache_ttl_seconds = 36 * 3600
+        # Reuse the cached handles until shortly before the files actually expire; the
+        # margin keeps a borderline-expired URI from reaching the answer request, which
+        # has no per-attachment retry and would 400 the whole reply.
+        cache_safety_margin = timedelta(hours=2)
         cached = self._attachment_cache.get(cache_key)
-        if cached is not None and time.monotonic() - cached[0] <= cache_ttl_seconds:
+        if cached is not None and datetime.now(tz=UTC) < cached[0] - cache_safety_margin:
             self._attachment_cache.move_to_end(cache_key)
             # Hand out per-part copies so no caller ever holds the cached dicts; the
             # values are immutable strings, so the copies stay cheap.
             return [part.copy() for part in cached[1]]
 
-        content_parts = await self._render_attachment_parts(sources=sources)
-        resolved = [part for part in content_parts if part is not None]
-        # A None part means a download/convert or upload failed; skip caching so the
-        # next reply retries instead of pinning a degraded render.
-        if None not in content_parts:
-            self._attachment_cache[cache_key] = (
-                time.monotonic(),
-                [part.copy() for part in resolved],
-            )
+        rendered = await self._render_attachment_parts(sources=sources)
+        resolved = [item[0] for item in rendered if item is not None]
+        # A None entry means a download/convert or upload failed; skip caching so the
+        # next reply retries instead of pinning a degraded render. The entry's expiry is
+        # the earliest across its files, so the whole entry re-renders before any handle
+        # in it expires.
+        if None not in rendered:
+            expires_at = min(item[1] for item in rendered if item is not None)
+            self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)
         return resolved

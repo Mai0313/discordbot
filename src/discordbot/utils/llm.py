@@ -1,5 +1,6 @@
-"""Factory for the runtime LiteLLM-proxy OpenAI client."""
+"""Factories for the runtime LiteLLM-proxy OpenAI client and the Gemini upload client."""
 
+from google import genai
 from openai import AsyncOpenAI
 
 from discordbot.typings.llm import LLMConfig
@@ -18,3 +19,20 @@ def create_litellm_client(config: LLMConfig) -> AsyncOpenAI:
         A configured OpenAI-compatible client for the LiteLLM proxy.
     """
     return AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
+
+
+def create_gemini_client(config: LLMConfig) -> genai.Client:
+    """Returns a Gemini client for direct Files API uploads.
+
+    Attachment ingestion uploads through this client (not the LiteLLM proxy) so
+    a fresh upload can be polled to an ACTIVE `state` before it is referenced;
+    the proxy's file resource cannot report that readiness. The answer request
+    still references the uploaded file by its URI through the proxy.
+
+    Args:
+        config: Runtime LLM configuration holding the Google AI Studio key.
+
+    Returns:
+        A Gemini client authenticated with the configured Files API credential.
+    """
+    return genai.Client(api_key=config.gemini_api_key)

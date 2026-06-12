@@ -6,7 +6,6 @@ from functools import cached_property
 import logfire
 import nextcord
 from nextcord import Locale, Interaction
-from pydantic import ValidationError
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_litellm_client
@@ -37,9 +36,11 @@ class StockCogs(commands.Cog):
     @cached_property
     def news_ai(self) -> StockNewsAI | None:
         """Optional AI news generator using the runtime OpenAI-compatible endpoint."""
-        try:
-            config = LLMConfig()
-        except ValidationError:
+        config = LLMConfig()
+        # Credentials now default to empty rather than raising, so detect a missing
+        # proxy by the empty value and fall back to deterministic news instead of
+        # building a client that would error on first request.
+        if not config.base_url or not config.api_key:
             return None
         return StockNewsAI(
             client=create_litellm_client(config=config), model=self.runtime_models.fast_model

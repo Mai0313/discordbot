@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from PIL import Image
 import pytest
 from nextcord import File, Embed
+from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.gen_reply import (
@@ -22,7 +23,7 @@ from discordbot.cogs.gen_reply import (
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -343,32 +344,69 @@ class FakeVideos:
         return SimpleNamespace(content=b"mp4")
 
 
-class FakeFiles:
-    """Fake Files API resource that records uploads and returns managed-style ids."""
+class FakeGeminiFiles:
+    """Fake Gemini Files API resource that records uploads and returns ACTIVE files.
 
-    def __init__(self) -> None:
-        """Initializes upload call records."""
-        self.create_calls: list[tuple[str, str]] = []
+    `processing_rounds` makes `upload` return a PROCESSING file that flips to ACTIVE
+    after that many `get` polls, so the activation poll loop is exercised. A negative
+    `final_state` (e.g. FAILED) lets a test drive the failed-processing branch.
+    """
 
-    async def create(
-        self, file: tuple[str, bytes, str], purpose: str, extra_body: dict[str, str]
-    ) -> SimpleNamespace:
-        """Records an upload and returns a fake file id derived from the filename."""
-        del purpose, extra_body
-        filename, _data, content_type = file
-        self.create_calls.append((filename, content_type))
-        return SimpleNamespace(id=f"file-{filename}")
+    def __init__(
+        self,
+        processing_rounds: int = 0,
+        final_state: FileState = FileState.ACTIVE,
+        expiration_time: datetime = datetime(2099, 1, 1, tzinfo=UTC),
+    ) -> None:
+        """Initializes upload records and the processing-to-active schedule."""
+        self.upload_calls: list[tuple[str, str]] = []
+        self.processing_rounds = processing_rounds
+        self.final_state = final_state
+        self.expiration_time = expiration_time
+        self._remaining = 0
+
+    def _file(self, name: str, state: FileState) -> SimpleNamespace:
+        """Builds a fake uploaded-file object with the URI the answer references."""
+        return SimpleNamespace(
+            name=name,
+            uri=f"https://files.test/{name}",
+            state=state,
+            error=None,
+            expiration_time=self.expiration_time,
+        )
+
+    async def upload(self, file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
+        """Records an upload and returns a file keyed on its display name."""
+        del file
+        display_name = config["display_name"]
+        self.upload_calls.append((display_name, config["mime_type"]))
+        self._remaining = self.processing_rounds
+        state = FileState.PROCESSING if self.processing_rounds else self.final_state
+        return self._file(name=display_name, state=state)
+
+    async def get(self, name: str) -> SimpleNamespace:
+        """Returns the polled file, flipping to the final state once rounds elapse."""
+        self._remaining -= 1
+        state = FileState.PROCESSING if self._remaining > 0 else self.final_state
+        return self._file(name=name, state=state)
+
+
+class FakeGeminiClient:
+    """Fake Gemini client exposing the async Files API used for attachment uploads."""
+
+    def __init__(self, files: FakeGeminiFiles | None = None) -> None:
+        """Initializes the async-namespace file resource."""
+        self.aio = SimpleNamespace(files=files or FakeGeminiFiles())
 
 
 class FakeClient:
-    """Fake OpenAI client with responses, images, videos, and files resources."""
+    """Fake OpenAI client with responses, images, and videos resources."""
 
     def __init__(self) -> None:
         """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
         self.videos = FakeVideos()
-        self.files = FakeFiles()
 
 
 def _png_b64() -> str:
@@ -385,6 +423,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
+    cog.__dict__["gemini_client"] = FakeGeminiClient()
     return cog
 
 
@@ -683,21 +722,24 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert cog.input_builder.required_modality(content_type="audio/mpeg") == "audio"
     assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
 
-    file_part = await cog.input_builder.attachment_to_part(
+    file_rendered = await cog.input_builder.attachment_to_part(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
     )
-    assert file_part is not None
+    assert file_rendered is not None
+    file_part, file_expiry = file_rendered
     assert file_part["type"] == "input_file"
-    assert file_part["file_id"] == "file-note.txt"
+    assert file_part["file_id"] == "https://files.test/note.txt"
+    assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
-    image_part = await cog.input_builder.image_to_part(
+    image_rendered = await cog.input_builder.image_to_part(
         source=FakeAttachment(
             filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
         )
     )
-    assert image_part is not None
+    assert image_rendered is not None
+    image_part, _image_expiry = image_rendered
     assert image_part["type"] == "input_file"
-    assert image_part["file_id"] == "file-pixel.png"
+    assert image_part["file_id"] == "https://files.test/pixel.png"
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -723,6 +765,88 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     )
     parts = await cog.input_builder.get_attachment_parts(message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
+
+
+async def test_upload_file_polls_active_and_drops_unready_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifies the upload polls to ACTIVE and drops files that never become usable."""
+
+    async def _no_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _no_sleep)
+
+    def _builder(files: FakeGeminiFiles) -> MessageInputBuilder:
+        return MessageInputBuilder(
+            bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
+            runtime_models=RuntimeModelCatalog(),
+            gemini_client=FakeGeminiClient(files=files),
+        )
+
+    # PROCESSING for two polls, then ACTIVE: the file URI and its expiry are returned.
+    active = _builder(FakeGeminiFiles(processing_rounds=2))
+    uploaded = await active._upload_file(
+        filename="doc.pdf", data=b"x", content_type="application/pdf"
+    )
+    assert uploaded == ("https://files.test/doc.pdf", datetime(2099, 1, 1, tzinfo=UTC))
+
+    # Terminal non-active state: the file is dropped.
+    failed = _builder(FakeGeminiFiles(final_state=FileState.FAILED))
+    assert (
+        await failed._upload_file(filename="bad.pdf", data=b"x", content_type="application/pdf")
+        is None
+    )
+
+    # Never leaves PROCESSING within the bound: the timeout drops the file. Scripted
+    # times drive deadline -> under-deadline -> past-deadline; a fallback covers any
+    # extra monotonic reads (e.g. logging) so the clock never runs dry mid-call.
+    scripted_times = [0.0, 0.0, 100.0]
+
+    def _fake_monotonic() -> float:
+        return scripted_times.pop(0) if scripted_times else 100.0
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", _fake_monotonic)
+    stuck = _builder(FakeGeminiFiles(processing_rounds=99))
+    assert (
+        await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4") is None
+    )
+
+    # Upload raises: the file is dropped instead of aborting the reply.
+    async def _raise(file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
+        del file, config
+        raise RuntimeError("upload failed")
+
+    boom = _builder(FakeGeminiFiles())
+    monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
+    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+
+    # No Gemini client (GEMINI_API_KEY unconfigured): the file is dropped, not a crash.
+    no_client = MessageInputBuilder(
+        bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
+        runtime_models=RuntimeModelCatalog(),
+        gemini_client=None,
+    )
+    assert (
+        await no_client._upload_file(filename="x.txt", data=b"x", content_type="text/plain")
+        is None
+    )
+
+
+def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment without GEMINI_API_KEY gets a None client, not a hard failure."""
+    cog = _cog()
+    # Drop the injected fake so the real cached_property runs against the factory.
+    del cog.__dict__["gemini_client"]
+    cog.config = SimpleNamespace()
+
+    def _raise(config: object) -> object:
+        """Mimics genai.Client refusing to build without a key."""
+        del config
+        raise ValueError("No API key was provided.")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.create_gemini_client", _raise)
+    assert cog.gemini_client is None
 
 
 async def test_gen_reply_processes_history_reference_and_current_messages(
@@ -1242,7 +1366,6 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert isinstance(catalog.fast_model, ModelSettings)
     assert catalog.image_model.name.endswith("image-preview")
     assert catalog.video_model.name.startswith("veo")
-    assert catalog.file_model.name == "gemini-files"
     assert catalog.slow_model.effort == "high"
     # Code execution is omitted on purpose: it 400s the request on file attachments.
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
@@ -2455,23 +2578,24 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
 
 
 async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cached file_id past the TTL is re-rendered instead of returning a stale handle."""
+    """A cached file_id past its real expiry is re-rendered, not served stale."""
     cog = _cog()
+    builder = cog.input_builder
     message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
-    clock = [1000.0]
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", lambda: clock[0])
 
-    await cog.input_builder.get_attachment_parts(message=message)
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 1
 
-    clock[0] += 3600
-    await cog.input_builder.get_attachment_parts(message=message)
+    # Within expiry: the cached handle is reused, so no second download.
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 1
 
-    clock[0] += 36 * 3600 + 1
-    await cog.input_builder.get_attachment_parts(message=message)
+    # Force the entry past its stored expiry: the next render re-downloads and re-uploads.
+    (cache_key, (_expiry, cached_parts)) = next(iter(builder._attachment_cache.items()))
+    builder._attachment_cache[cache_key] = (datetime(2000, 1, 1, tzinfo=UTC), cached_parts)
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 2
 
 
@@ -2483,11 +2607,11 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     message = FakeMessage(content="link", author=FakeAuthor(user_id=2))
     rendered_urls: list[str] = []
 
-    async def fake_image_to_part(self: object, source: object) -> dict[str, str]:
+    async def fake_image_to_part(self: object, source: object) -> tuple[dict[str, str], datetime]:
         """Records each rendered source instead of hitting the network."""
         del self
         rendered_urls.append(str(source))
-        return {"type": "input_file", "file_id": str(source)}
+        return {"type": "input_file", "file_id": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
