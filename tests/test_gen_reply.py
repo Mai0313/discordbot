@@ -2275,6 +2275,27 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     assert attachment.read_count == 2
 
 
+async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cached file_id past the TTL is re-rendered instead of returning a stale handle."""
+    cog = _cog()
+    message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
+    attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
+    message.attachments = [attachment]
+    clock = [1000.0]
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", lambda: clock[0])
+
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 1
+
+    clock[0] += 3600
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 1
+
+    clock[0] += 36 * 3600 + 1
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 2
+
+
 async def test_attachment_cache_refreshes_on_embed_url_swap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

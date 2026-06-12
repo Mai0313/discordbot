@@ -1,6 +1,7 @@
 """Builds Responses API input messages from Discord messages."""
 
 import re
+import time
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import datetime
@@ -119,10 +120,10 @@ class MessageInputBuilder(BaseModel):
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
     # time, so an edit or a late embed unfurl that swaps a URL without changing the
-    # source count still re-renders. Holds Files-API handles, valid for the file's 48h
-    # lifetime, so cache reuse never outlives the underlying upload.
+    # source count still re-renders. Each entry pairs a monotonic render time with its
+    # Files-API parts so a stale handle is re-uploaded before the file's 48h lifetime.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, tuple[object, ...]], list[ResponseInputFileParam]
+        tuple[int, datetime | None, tuple[object, ...]], tuple[float, list[ResponseInputFileParam]]
     ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
@@ -378,19 +379,25 @@ class MessageInputBuilder(BaseModel):
             ),
         )
         cache_key = (message.id, message.edited_at, sources)
+        # Files API handles live ~48h; re-render before then so a long-lived cache entry
+        # never hands back an expired file_id that the answer request would reject.
+        cache_ttl_seconds = 36 * 3600
         cached = self._attachment_cache.get(cache_key)
-        if cached is not None:
+        if cached is not None and time.monotonic() - cached[0] <= cache_ttl_seconds:
             self._attachment_cache.move_to_end(cache_key)
             # Hand out per-part copies so no caller ever holds the cached dicts; the
             # values are immutable strings, so the copies stay cheap.
-            return [part.copy() for part in cached]
+            return [part.copy() for part in cached[1]]
 
         content_parts = await self._render_attachment_parts(message=message)
         resolved = [part for part in content_parts if part is not None]
         # A None part means a download/convert failed; skip caching so the next reply
         # retries instead of pinning the degraded render.
         if None not in content_parts:
-            self._attachment_cache[cache_key] = [part.copy() for part in resolved]
+            self._attachment_cache[cache_key] = (
+                time.monotonic(),
+                [part.copy() for part in resolved],
+            )
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)
         return resolved
