@@ -102,15 +102,28 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_handle_image_reply`, `_route_message`, `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        Callers: `_handle_image_reply`, `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
 
         Returns:
-            Fast model settings used for routing, image captions, short
-            Discord replies, casino system narrator lines, auto-unmute
-            replies, and stock news generation.
+            Fast model settings used for image captions, short Discord
+            replies, casino system narrator lines, auto-unmute replies,
+            and stock news generation.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
+
+    @property
+    def route_model(self) -> ModelSettings:
+        """The model settings for the route classification decision.
+
+        Callers: `_route_message`.
+
+        Returns:
+            Fast no-reasoning settings for the route + effort grading call. Runs
+            concurrently with the context build, so flash (not flash-lite) buys a
+            more reliable effort grade without stretching the QA critical path.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @property
     def tool_model(self) -> ModelSettings:
@@ -119,12 +132,13 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_select_user_memories`.
 
         Returns:
-            Fastest settings for the "should I read whose long-term memory" tool-call
-            decision that runs on the reply critical path before the answer: it only
-            picks users and fetches their stored memory without transforming it, so
-            the lightest model minimizes latency.
+            Fast no-reasoning settings for the "whose long-term memory to read"
+            tool-call decision on the reply critical path: flash (not flash-lite)
+            because matching spoken community nicknames to user ids needs more
+            language skill than the lite tier reliably delivers, while staying far
+            below answer-model latency.
         """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
+        return ModelSettings(name="gemini-flash-latest", effort="none")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -206,7 +220,11 @@ class RouteDecision(BaseModel):
     )
     effort: Literal["low", "medium", "high"] = Field(
         default="high",
-        description="Reasoning effort the answer model should spend on this message.",
+        description=(
+            "Reasoning effort the answer model should spend: high for any substantive "
+            "question or task, medium for trivial lookups or transforms, low only for "
+            "pure social chatter."
+        ),
     )
 
 
