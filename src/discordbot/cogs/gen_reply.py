@@ -603,13 +603,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 messages=[message, *_walk_reference_chain(message=message), *history.raw],
                 bot_user_id=self.bot.user.id,
             )
-            # Members named in the server's nickname table are askable by alias even when
-            # absent from the conversation: widen the permission boundary with their ids and
-            # enrich participant labels with their community aliases. The table only ever
-            # holds public-channel content, so private guild channels widen too; DMs have
-            # no guild and keep the conversation-only boundary.
+            # Enrich participant labels with their community aliases in every guild channel,
+            # but only widen the boundary with absent members' ids in public channels: the
+            # nickname table is public, yet an absent member's personal memory is not, so
+            # widening in a private channel would leak it. DMs have no guild and keep the
+            # conversation-only boundary.
             if server_memory and message.guild is not None:
-                widen_allowlist_with_aliases(allowed=allowed, memory=server_memory)
+                widen_allowlist_with_aliases(
+                    allowed=allowed,
+                    memory=server_memory,
+                    include_absent=_source_channel_is_public(message=message),
+                )
             if allowed:
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.

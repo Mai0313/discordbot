@@ -1885,13 +1885,34 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
         "* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: "Mai (mai9999)"}
-    widen_allowlist_with_aliases(allowed=allowed, memory=memory)
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
 
     # The conversation label leads and the table row rides behind it on the same line.
     assert allowed[123].startswith("Mai (mai9999)")
     assert "李董" in allowed[123]
     # A member absent from the conversation is added with the table row as label.
     assert "阿伯" in allowed[456]
+
+
+def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
+    """Without include_absent, participants are still enriched but absent members stay out.
+
+    A private channel must not gain read access to an absent member's personal memory by
+    naming a public nickname, even though the nickname table itself is public content.
+    """
+    memory = (
+        "v1\n\n## 成員稱呼\n"
+        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
+        "* Bob(社群暱稱:阿伯)[id: 456]\n"
+    )
+    allowed = {123: "Mai (mai9999)"}
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
+
+    # The present participant is still enriched with community aliases.
+    assert allowed[123].startswith("Mai (mai9999)")
+    assert "李董" in allowed[123]
+    # The absent member is not added, so their personal memory stays unreachable here.
+    assert 456 not in allowed
 
 
 async def test_handle_message_reply_injects_server_memory_into_selection(

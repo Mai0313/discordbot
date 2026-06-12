@@ -143,18 +143,25 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     return allowed
 
 
-def widen_allowlist_with_aliases(*, allowed: dict[int, str], memory: str) -> None:
+def widen_allowlist_with_aliases(
+    *, allowed: dict[int, str], memory: str, include_absent: bool
+) -> None:
     """Merges the server memory's nickname-table ids and aliases into the allowlist in place.
 
-    Members only in the table become callable by alias even when absent from the
-    conversation. A conversation participant already in the allowlist keeps their label
-    and gains the table row as a suffix, so the selection model sees the Discord names
-    and the community aliases on one line instead of joining across context blocks.
+    A conversation participant already in the allowlist keeps their label and gains the
+    table row as a suffix, so the selection model sees the Discord names and the community
+    aliases on one line instead of joining across context blocks. This enrichment grants no
+    new access (the participant is already permitted), so it always applies.
+
+    `include_absent` controls whether members present only in the table are added as new
+    callable ids. That does grant access to an absent member's personal memory, so it must
+    stay public-channel only: the nickname table is public content, but the personal memory
+    it would unlock is not, so widening in a private channel would leak it.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         if user_id in allowed:
             allowed[user_id] = f"{allowed[user_id]} | {label}"
-        else:
+        elif include_absent:
             allowed[user_id] = label
 
 
