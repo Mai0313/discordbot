@@ -18,6 +18,10 @@ class RenderedHistory(BaseModel):
     rendered: SkipValidation[list[EasyInputMessageParam]] = Field(
         default_factory=list, description="History context blocks rendered for the answer input."
     )
+    rendered_text_only: SkipValidation[list[EasyInputMessageParam]] = Field(
+        default_factory=list,
+        description="Same history blocks rendered with attachment markers, for memory selection.",
+    )
     raw: SkipValidation[list[Message]] = Field(
         default_factory=list,
         description="Raw history messages backing the rendered blocks, for the allowlist.",

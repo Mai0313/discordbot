@@ -18,7 +18,7 @@ from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instruc
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, strip_attachment_parts
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -343,8 +343,15 @@ class FakeFiles:
     """Fake Files API resource that records uploads and returns managed-style ids."""
 
     def __init__(self) -> None:
-        """Initializes upload call records."""
+        """Initializes upload call records and activation-poll configuration."""
         self.create_calls: list[tuple[str, str]] = []
+        self.retrieve_calls: list[str] = []
+        # Status the upload returns; "processed" means immediately ACTIVE (no poll).
+        self.create_status: str = "processed"
+        # Statuses returned by successive retrieve() polls; the last value repeats.
+        self.retrieve_statuses: list[str] = []
+        # When set, retrieve() raises it to simulate a proxy without the endpoint.
+        self.retrieve_error: Exception | None = None
 
     async def create(
         self, file: tuple[str, bytes, str], purpose: str, extra_body: dict[str, str]
@@ -353,7 +360,20 @@ class FakeFiles:
         del purpose, extra_body
         filename, _data, content_type = file
         self.create_calls.append((filename, content_type))
-        return SimpleNamespace(id=f"file-{filename}")
+        return SimpleNamespace(id=f"file-{filename}", status=self.create_status)
+
+    async def retrieve(self, file_id: str) -> SimpleNamespace:
+        """Records a poll and returns the next configured activation status."""
+        self.retrieve_calls.append(file_id)
+        if self.retrieve_error is not None:
+            raise self.retrieve_error
+        if len(self.retrieve_statuses) > 1:
+            status = self.retrieve_statuses.pop(0)
+        elif self.retrieve_statuses:
+            status = self.retrieve_statuses[0]
+        else:
+            status = "processed"
+        return SimpleNamespace(id=file_id, status=status)
 
 
 class FakeClient:
@@ -385,8 +405,10 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 
 async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision:
-    """Routes a message after building the shared reference/current parts."""
-    reference_messages, current_message = await cog._get_reference_and_current(message=message)
+    """Routes a message after building the shared text-only reference/current parts."""
+    reference_messages, current_message = await cog._get_reference_and_current_text_only(
+        message=message
+    )
     return await cog._route_message(
         message=message, reference_messages=reference_messages, current_message=current_message
     )
@@ -402,11 +424,13 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+    text_parts = await cog._get_reference_and_current_text_only(message=message)
     context = await cog._prepare_reply_context(
         message=message,
         history_limit=history_limit,
         memory_enabled=memory_enabled,
         parts_task=parts_task,
+        text_parts=text_parts,
     )
     await cog._handle_message_reply(
         message=message,
@@ -834,24 +858,147 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert streamed[-1] is message
 
 
-async def test_uploaded_image_without_extension_marks_as_image() -> None:
-    """An image upload whose filename lacks an image extension still routes as image."""
+async def test_uploaded_image_without_extension_marks_as_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image attachment whose filename lacks an extension still marks as an image."""
     cog = _cog()
-    part = await cog.input_builder.image_to_part(
-        source=FakeAttachment(
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="<@999> see", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
             filename="screenshot",
             content_type="image/png",
             payload=base64.b64decode(_png_b64()),
             url="https://example.test/screenshot",
         )
+    ]
+
+    # Classification is by content_type, not filename, so the marker render needs no upload.
+    rendered = await cog.input_builder.process_single_message_text_only(message=message)
+    parts = rendered["content"]
+    assert isinstance(parts, list)
+    assert parts[-1]["text"] == "[attachment: image]"
+
+
+async def _instant_sleep(delay: float) -> None:
+    """No-op replacement for asyncio.sleep so activation polls run instantly."""
+    del delay
+
+
+async def test_upload_and_activate_returns_id_when_create_ready() -> None:
+    """A create response already ACTIVE returns the id with no retrieve poll."""
+    cog = _cog()
+
+    file_id = await cog.input_builder._upload_and_activate(
+        filename="a.png", data=b"x", content_type="image/png"
     )
-    assert part is not None
-    stripped = strip_attachment_parts(
-        messages=[EasyInputMessageParam(role="user", content=[part])]
+
+    assert file_id == "file-a.png"
+    assert cog.client.files.retrieve_calls == []
+
+
+async def test_upload_and_activate_polls_until_processed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file that uploads as PROCESSING is polled until it reaches ACTIVE."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
+    cog.client.files.create_status = "uploaded"
+    cog.client.files.retrieve_statuses = ["uploaded", "processed"]
+
+    file_id = await cog.input_builder._upload_and_activate(
+        filename="a.png", data=b"x", content_type="image/png"
     )
-    marker = stripped[0]["content"]
-    assert isinstance(marker, list)
-    assert marker[0]["text"] == "[attachment: image]"
+
+    assert file_id == "file-a.png"
+    assert len(cog.client.files.retrieve_calls) == 2
+
+
+async def test_upload_and_activate_drops_failed_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file that errors during processing is dropped instead of being referenced."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
+    cog.client.files.create_status = "uploaded"
+    cog.client.files.retrieve_statuses = ["error"]
+
+    file_id = await cog.input_builder._upload_and_activate(
+        filename="a.png", data=b"x", content_type="image/png"
+    )
+
+    assert file_id is None
+
+
+async def test_upload_and_activate_drops_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file that never reaches ACTIVE within the cap is dropped, not sent un-activated."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.FILE_ACTIVATION_TIMEOUT_SECONDS", 1.0)
+    clock = [0.0]
+
+    def fake_monotonic() -> float:
+        """Advances the clock past the cap within a couple of polls."""
+        clock[0] += 0.5
+        return clock[0]
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", fake_monotonic)
+    cog.client.files.create_status = "uploaded"
+    cog.client.files.retrieve_statuses = ["uploaded"]
+
+    file_id = await cog.input_builder._upload_and_activate(
+        filename="a.png", data=b"x", content_type="image/png"
+    )
+
+    assert file_id is None
+
+
+async def test_upload_and_activate_best_effort_when_retrieve_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the proxy lacks files.retrieve, the id is returned best-effort after one try."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
+    cog.client.files.create_status = "uploaded"
+    cog.client.files.retrieve_error = RuntimeError("404 not found")
+
+    file_id = await cog.input_builder._upload_and_activate(
+        filename="a.png", data=b"x", content_type="image/png"
+    )
+
+    assert file_id == "file-a.png"
+    assert len(cog.client.files.retrieve_calls) == 1
+
+
+async def test_text_only_and_full_render_agree_on_attachment_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The marker render and the upload render keep the same supported-attachment slots."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="<@999> mix", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        ),
+        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
+    ]
+
+    text_only = await cog.input_builder.process_single_message_text_only(message=message)
+    full = await cog.input_builder.process_single_message(message=message)
+
+    text_markers = [
+        part
+        for part in text_only["content"]
+        if isinstance(part, dict) and str(part.get("text", "")).startswith("[attachment:")
+    ]
+    full_files = [
+        part
+        for part in full["content"]
+        if isinstance(part, dict) and part.get("type") == "input_file"
+    ]
+    assert len(text_markers) == len(full_files) == 1
 
 
 async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -918,13 +1065,19 @@ async def test_gen_reply_on_message_dispatches_routes(
     ) -> RouteDecision:
         """Returns the parametrized route."""
         del reference_messages, current_message
+        # Yield like a real route I/O call so the speculative prep task gets scheduled.
+        await asyncio.sleep(0)
         return RouteDecision(decision=route)
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
-        del message, parts_task
+        del message, parts_task, text_parts
         prep_requests.append((history_limit, memory_enabled))
         return prepared_context
 
@@ -1007,10 +1160,14 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         raise RuntimeError("boom")
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task
+        del message, history_limit, memory_enabled, parts_task, text_parts
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_message", boom)
@@ -1056,13 +1213,20 @@ async def test_on_message_discards_speculative_context_on_image_route(
     ) -> str:
         """Routes every message to IMAGE."""
         del reference_messages, current_message
+        # Yield like a real route I/O call so the speculative prep task starts and can
+        # then be cancelled by the IMAGE dispatch.
+        await asyncio.sleep(0)
         return "IMAGE"
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Blocks until cancelled, recording the cancellation."""
-        del message, history_limit, memory_enabled, parts_task
+        del message, history_limit, memory_enabled, parts_task, text_parts
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -2201,39 +2365,6 @@ async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None)
     assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
 
 
-def test_strip_attachment_parts_replaces_payload_parts() -> None:
-    """Image and file parts collapse to text markers; plain text passes through."""
-    payload_message = EasyInputMessageParam(
-        role="user",
-        content=[
-            {"type": "input_text", "text": "user (u) [id: 1]: look"},
-            {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
-            {
-                "type": "input_file",
-                "filename": "a.pdf",
-                "file_data": "data:application/pdf;base64,xxx",
-            },
-            {"type": "input_file", "filename": "photo.png", "file_id": "file-photo.png"},
-        ],
-    )
-    plain_message = EasyInputMessageParam(role="user", content="plain")
-
-    stripped = strip_attachment_parts(messages=[plain_message, payload_message])
-
-    assert stripped[0] is plain_message
-    parts = stripped[1]["content"]
-    assert isinstance(parts, list)
-    assert [part["type"] for part in parts] == ["input_text"] * 4
-    assert parts[1]["text"] == "[attachment: image]"
-    assert parts[2]["text"] == "[attachment: file]"
-    # An uploaded image rides as input_file; its filename keeps the image marker so
-    # image-edit prompts still route to IMAGE.
-    assert parts[3]["text"] == "[attachment: image]"
-    original_parts = payload_message["content"]
-    assert isinstance(original_parts, list)
-    assert original_parts[1]["type"] == "input_image"
-
-
 async def test_route_input_excludes_attachment_payloads() -> None:
     """The route request sees an attachment marker instead of the file payload."""
     cog = _cog()
@@ -2247,8 +2378,8 @@ async def test_route_input_excludes_attachment_payloads() -> None:
     assert "[attachment: file]" in rendered
 
 
-async def test_select_user_memories_strips_attachment_payloads() -> None:
-    """The selection request sees attachment markers instead of image payloads."""
+async def test_select_user_memories_uses_text_only_transcript() -> None:
+    """The selection request carries the text-only transcript verbatim, no payloads."""
     cog = _cog()
     cog.client.responses.select_queue = [[]]
     message_list = [
@@ -2256,11 +2387,7 @@ async def test_select_user_memories_strips_attachment_payloads() -> None:
             role="user",
             content=[
                 {"type": "input_text", "text": "user (u) [id: 1]: look"},
-                {
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,xxx",
-                    "detail": "auto",
-                },
+                {"type": "input_text", "text": "[attachment: image]"},
             ],
         )
     ]
@@ -2271,6 +2398,7 @@ async def test_select_user_memories_strips_attachment_payloads() -> None:
 
     rendered = str(cog.client.responses.create_inputs[-1])
     assert "input_image" not in rendered
+    assert "input_file" not in rendered
     assert "[attachment: image]" in rendered
 
 
@@ -2361,9 +2489,14 @@ async def test_memory_selection_timeout_degrades_to_no_memory(
     monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+    text_parts = await cog._get_reference_and_current_text_only(message=message)
 
     context = await cog._prepare_reply_context(
-        message=message, history_limit=2, memory_enabled=True, parts_task=parts_task
+        message=message,
+        history_limit=2,
+        memory_enabled=True,
+        parts_task=parts_task,
+        text_parts=text_parts,
     )
 
     assert context.memory_block is None

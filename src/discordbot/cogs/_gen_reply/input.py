@@ -5,14 +5,15 @@ import time
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import datetime
-from mimetypes import guess_type, guess_extension
+from mimetypes import guess_type
 from collections import OrderedDict
 
 from openai import AsyncOpenAI
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
-from pydantic import BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
+from openai.types import FileObject
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -22,7 +23,7 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Sequence, Coroutine
 
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
@@ -40,43 +41,30 @@ USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 # authorship signal. Neutralize the lookalike before rendering.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 
+# Gemini processes a freshly uploaded file to ACTIVE asynchronously; referencing the
+# file id before then 400s with "not in an ACTIVE state". The poll below caps the wait
+# so a stuck file cannot wedge a reply, but the wait overlaps the route and memory
+# selection calls so a healthy file is usually ACTIVE before the answer needs it.
+FILE_ACTIVATION_TIMEOUT_SECONDS = 20.0
+
 
 def sanitize_identity(value: str) -> str:
     """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
 
 
-def strip_attachment_parts(messages: list[EasyInputMessageParam]) -> list[EasyInputMessageParam]:
-    """Returns copies of input messages with attachment parts reduced to text markers.
+def _file_status_is_ready(status: str | None) -> bool:
+    """Whether a Files API status means the file is usable in a request.
 
-    The route and memory-selection preflight calls only need the conversation text plus
-    a hint that an attachment exists; re-uploading the full image/file payloads to those
-    fast calls just adds latency. The answer request keeps the original parts untouched.
+    Tolerates both the OpenAI SDK literal (`processed`) and the raw Gemini state
+    (`ACTIVE`) the LiteLLM proxy might surface, since that mapping is unverified.
     """
-    stripped: list[EasyInputMessageParam] = []
-    for message in messages:
-        content = message["content"]
-        if isinstance(content, str):
-            stripped.append(message)
-            continue
-        parts: list[ResponseInputTextParam] = []
-        for part in content:
-            part_type = part.get("type")
-            if part_type == "input_text":
-                parts.append(cast("ResponseInputTextParam", part))
-            elif part_type == "input_image":
-                parts.append(ResponseInputTextParam(text="[attachment: image]", type="input_text"))
-            elif part_type == "input_file":
-                # Uploaded images ride as input_file (file_id) too, so the route still
-                # needs to know an image was attached: classify by the part's filename so
-                # image-edit prompts keep dispatching to IMAGE instead of falling to QA.
-                mime = guess_type(part.get("filename") or "")[0] or ""
-                marker = "image" if mime.startswith("image/") else "file"
-                parts.append(
-                    ResponseInputTextParam(text=f"[attachment: {marker}]", type="input_text")
-                )
-        stripped.append(EasyInputMessageParam(role=message["role"], content=parts))
-    return stripped
+    return (status or "").lower() in {"processed", "active"}
+
+
+def _file_status_is_failed(status: str | None) -> bool:
+    """Whether a Files API status means the upload terminally failed."""
+    return (status or "").lower() in {"error", "failed"}
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:
@@ -100,6 +88,37 @@ def render_server_identity(server_name: str, server_id: int) -> str:
     """
     safe_name = " ".join(sanitize_identity(value=server_name).split())
     return f"{safe_name} [id: {server_id}]"
+
+
+class AttachmentSource(BaseModel):
+    """One renderable attachment source classified from message metadata.
+
+    Collected once per message and shared by the text-only marker render, the
+    Files-API upload, the per-message render cache key, and the IMAGE route's
+    raw-bytes path. Carries only metadata (no bytes, no network) so it is safe to
+    build on the route critical path.
+
+    Attributes:
+        handle: The attachment, sticker, or image URL the loaders consume.
+        kind: Whether the source renders as an image or a generic file.
+        content_type: Resolved MIME type, empty only for unguessable sources.
+        cache_key: Stable identity (attachment/sticker id or chosen embed URL).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    handle: SkipValidation[Attachment | StickerItem | str] = Field(
+        description="The attachment, sticker, or image URL the loaders consume."
+    )
+    kind: Literal["image", "file"] = Field(
+        description="Whether the source renders as an image or a generic file."
+    )
+    content_type: str = Field(
+        description="Resolved MIME type, empty only for unguessable sources."
+    )
+    cache_key: int | str = Field(
+        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache."
+    )
 
 
 class MessageInputBuilder(BaseModel):
@@ -171,16 +190,91 @@ class MessageInputBuilder(BaseModel):
             content = message.system_content
         return content
 
-    async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
-        """Uploads bytes to the Files API and returns a managed file id to reference.
+    def collect_attachment_sources(self, message: Message) -> list[AttachmentSource]:
+        """Classifies every renderable attachment source on a message from metadata.
+
+        One metadata-only pass shared by the text-only marker render, the Files-API
+        upload, the render cache key, and the IMAGE route; does no network or upload
+        work so it is safe to call on the route critical path. Embeds prefer Discord's
+        `proxy_url` (media.discordapp.net) over the origin URL, since sources like the
+        Threads CDN expire and reject requests without specific headers.
+        """
+        sources: list[AttachmentSource] = []
+        for attachment in message.attachments:
+            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            sources.append(
+                AttachmentSource(
+                    handle=attachment,
+                    kind="image" if content_type.startswith("image/") else "file",
+                    content_type=content_type,
+                    cache_key=attachment.id,
+                )
+            )
+        for sticker in message.stickers:
+            sources.append(
+                AttachmentSource(
+                    handle=sticker,
+                    kind="image",
+                    content_type=guess_type(sticker.url)[0] or "image/png",
+                    cache_key=sticker.id,
+                )
+            )
+        for embed in message.embeds:
+            if embed.image and (url := embed.image.proxy_url or embed.image.url):
+                sources.append(
+                    AttachmentSource(
+                        handle=url,
+                        kind="image",
+                        content_type=guess_type(url)[0] or "image/png",
+                        cache_key=url,
+                    )
+                )
+            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
+                sources.append(
+                    AttachmentSource(
+                        handle=url,
+                        kind="image",
+                        content_type=guess_type(url)[0] or "image/png",
+                        cache_key=url,
+                    )
+                )
+        return sources
+
+    def _supported_sources(self, sources: list[AttachmentSource]) -> list[AttachmentSource]:
+        """Drops sources whose required modality the slow model cannot accept.
+
+        Gating once on the shared source list keeps the text-only marker render and the
+        Files-API upload render in agreement: the route never marks an attachment the
+        answer would silently drop, and vice versa.
+        """
+        if not sources:
+            return []
+        model_name = self.runtime_models.slow_model.name
+        modalities = get_supported_modalities(model_name=model_name)
+        supported: list[AttachmentSource] = []
+        for source in sources:
+            required = self.required_modality(content_type=source.content_type)
+            if required not in modalities:
+                logfire.warn(
+                    f"Skipping {required} attachment for {model_name}: {source.cache_key}"
+                )
+                continue
+            supported.append(source)
+        return supported
+
+    async def _upload_file(
+        self, filename: str, data: bytes, content_type: str
+    ) -> FileObject | None:
+        """Uploads bytes to the Files API and returns the created file object.
 
         Sending attachments by `file_id` instead of inlined base64 keeps oversized
         payloads under Gemini's ~10MB per-part `inline_data` cap. `target_model_names`
         names the upload-only `file_model` deployment, not the reply model, so LiteLLM
         uses it only to pick the Files API credential and never runs inference on it.
+        The caller polls the returned object to ACTIVE before using its id.
         """
         try:
-            uploaded = await self.client.files.create(
+            return await self.client.files.create(
                 file=(filename, data, content_type),
                 purpose="user_data",
                 extra_body={"target_model_names": self.runtime_models.file_model.name},
@@ -188,7 +282,48 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
             return None
-        return uploaded.id
+
+    async def _upload_and_activate(
+        self, filename: str, data: bytes, content_type: str
+    ) -> str | None:
+        """Uploads bytes and returns a file id only once the file is usable in a request.
+
+        Gemini processes a freshly uploaded file to ACTIVE asynchronously; referencing
+        the id before then 400s. This polls the file to ready, capped by
+        `FILE_ACTIVATION_TIMEOUT_SECONDS`, so the wait overlaps the route and memory
+        selection calls instead of being paid serially. A file that errors or never
+        activates within the cap is dropped (returns None) so the reply answers without
+        it rather than failing outright. If the proxy does not implement `files.retrieve`
+        the id is returned best-effort, matching the pre-poll behavior.
+        """
+        uploaded = await self._upload_file(filename=filename, data=data, content_type=content_type)
+        if uploaded is None:
+            return None
+        deadline = time.monotonic() + FILE_ACTIVATION_TIMEOUT_SECONDS
+        delay = 0.4
+        # The create response already carries a status, so the first iteration handles a
+        # file that is ACTIVE on upload (no poll); later iterations poll files.retrieve.
+        while True:
+            if _file_status_is_ready(status=uploaded.status):
+                return uploaded.id
+            if _file_status_is_failed(status=uploaded.status):
+                logfire.warn(f"Files API reported a failed upload: {filename}")
+                return None
+            if time.monotonic() >= deadline:
+                logfire.warn(
+                    f"File never reached ACTIVE within {FILE_ACTIVATION_TIMEOUT_SECONDS}s; "
+                    f"dropping attachment: {filename}"
+                )
+                return None
+            await asyncio.sleep(delay=min(delay, 2.0))
+            delay = delay * 2
+            try:
+                uploaded = await self.client.files.retrieve(file_id=uploaded.id)
+            except Exception:
+                logfire.warn(
+                    f"files.retrieve unavailable; using file id without activation poll: {filename}"
+                )
+                return uploaded.id
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
@@ -223,18 +358,14 @@ class MessageInputBuilder(BaseModel):
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
-        file_id = await self._upload_file(
+        file_id = await self._upload_and_activate(
             filename=source_name, data=file_bytes, content_type=content_type
         )
         if file_id is None:
             return None
-        # The part filename only drives the route's attachment marker (the bridge drops
-        # it), so derive its extension from the known image content_type instead of the
-        # upload name: an image uploaded without an image extension must still mark as an
-        # image, not a generic file, or "edit this" prompts fall back to QA.
-        stem = source_name.rsplit(".", 1)[0]
-        part_filename = f"{stem}{guess_extension(content_type) or '.jpg'}"
-        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=part_filename)
+        # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
+        # attachment marker is derived from message metadata, not from this part.
+        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
 
     async def attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
         """Converts a file attachment to an uploaded `input_file` content part."""
@@ -250,7 +381,7 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
-        file_id = await self._upload_file(
+        file_id = await self._upload_and_activate(
             filename=attachment.filename, data=file_bytes, content_type=mime_type
         )
         if file_id is None:
@@ -263,24 +394,15 @@ class MessageInputBuilder(BaseModel):
         """Returns downscaled bytes of a message's image sources for the IMAGE route.
 
         Image editing feeds raw pixels to `images.edit`, so it loads bytes directly
-        rather than reusing the Files-API handles `get_attachment_parts` produces.
-        Only image attachments, stickers, and embed images are collected; non-image
-        files are not editable as images and are skipped.
+        rather than reusing the Files-API handles `get_attachment_parts` produces. Only
+        image sources are collected; non-image files are not editable as images. The
+        IMAGE route runs on the image model, so the slow model's modality gate is not
+        applied here.
         """
-        sources: list[Attachment | StickerItem | str] = []
-        for attachment in message.attachments:
-            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-            if content_type.startswith("image/"):
-                sources.append(attachment)
-        sources.extend(message.stickers)
-        for embed in message.embeds:
-            if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                sources.append(url)
-            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                sources.append(url)
         tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
-        for source in sources:
-            tasks.append(self._load_image_bytes(source=source))
+        for source in self.collect_attachment_sources(message=message):
+            if source.kind == "image":
+                tasks.append(self._load_image_bytes(source=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
         return [item[0] for item in loaded if isinstance(item, tuple)]
 
@@ -326,62 +448,41 @@ class MessageInputBuilder(BaseModel):
         return "image"
 
     async def _render_attachment_parts(
-        self, message: Message
+        self, sources: list[AttachmentSource]
     ) -> list[ResponseInputFileParam | None]:
-        """Renders every attachment source on a message; failures stay as None.
+        """Renders every supported source to an uploaded part; failures stay as None.
 
-        Each source uploads to the Files API; the uploads run concurrently so a message
-        with several attachments pays roughly one upload's latency, not the sum.
+        Each source uploads to the Files API and polls to ACTIVE; the uploads run
+        concurrently so a message with several attachments pays roughly one upload's
+        latency, not the sum.
         """
-        model_name = self.runtime_models.slow_model.name
-        modalities = get_supported_modalities(model_name=model_name)
         tasks: list[Coroutine[object, object, ResponseInputFileParam | None]] = []
-
-        for attachment in message.attachments:
-            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-            required = self.required_modality(content_type=content_type)
-            if required not in modalities:
-                logfire.warn(
-                    f"Skipping {required} attachment for {model_name}: {attachment.filename}"
-                )
-                continue
-            if content_type.startswith("image/"):
-                tasks.append(self.image_to_part(source=attachment))
+        for source in sources:
+            if source.kind == "image":
+                tasks.append(self.image_to_part(source=source.handle))
             else:
-                tasks.append(self.attachment_to_part(attachment=attachment))
-
-        if "image" in modalities:
-            for sticker in message.stickers:
-                tasks.append(self.image_to_part(source=sticker))
-
-            # Prefer Discord's proxy_url (media.discordapp.net) over the original URL, since sources like Threads CDN expire and reject requests without specific headers.
-            for embed in message.embeds:
-                if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                    tasks.append(self.image_to_part(source=url))
-                if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                    tasks.append(self.image_to_part(source=url))
-
+                # Only attachments are ever classified as files; stickers and embeds are images.
+                tasks.append(self.attachment_to_part(attachment=cast("Attachment", source.handle)))
         return list(await asyncio.gather(*tasks))
 
-    async def get_attachment_parts(self, message: Message) -> list[ResponseInputFileParam]:
-        """Extracts attachment content parts from a message, with a per-message cache."""
-        if not (message.attachments or message.stickers or message.embeds):
+    async def get_attachment_parts(
+        self, message: Message, sources: list[AttachmentSource] | None = None
+    ) -> list[ResponseInputFileParam]:
+        """Extracts attachment content parts from a message, with a per-message cache.
+
+        Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
+        they are collected and gated here so direct callers keep working.
+        """
+        if sources is None:
+            sources = self._supported_sources(
+                sources=self.collect_attachment_sources(message=message)
+            )
+        if not sources:
             return []
-        # Identify the exact sources `_render_attachment_parts` reads: attachment and
-        # sticker ids plus each embed's chosen image/thumbnail URL. A late unfurl or an
-        # embed URL swap changes this even when the source counts stay the same.
-        sources: tuple[object, ...] = (
-            tuple(attachment.id for attachment in message.attachments),
-            tuple(sticker.id for sticker in message.stickers),
-            tuple(
-                (
-                    embed.image.proxy_url or embed.image.url if embed.image else None,
-                    embed.thumbnail.proxy_url or embed.thumbnail.url if embed.thumbnail else None,
-                )
-                for embed in message.embeds
-            ),
-        )
-        cache_key = (message.id, message.edited_at, sources)
+        # Key on the exact sources rendered plus the edit time, so a late embed unfurl
+        # or an edit that swaps a source URL re-renders even when the count is unchanged.
+        source_keys = tuple(source.cache_key for source in sources)
+        cache_key = (message.id, message.edited_at, source_keys)
         # Files API handles live ~48h; re-render before then so a long-lived cache entry
         # never hands back an expired file_id that the answer request would reject.
         cache_ttl_seconds = 36 * 3600
@@ -392,10 +493,10 @@ class MessageInputBuilder(BaseModel):
             # values are immutable strings, so the copies stay cheap.
             return [part.copy() for part in cached[1]]
 
-        content_parts = await self._render_attachment_parts(message=message)
+        content_parts = await self._render_attachment_parts(sources=sources)
         resolved = [part for part in content_parts if part is not None]
-        # A None part means a download/convert failed; skip caching so the next reply
-        # retries instead of pinning the degraded render.
+        # A None part means a download/convert/activation failed; skip caching so the
+        # next reply retries instead of pinning a degraded or never-activated render.
         if None not in content_parts:
             self._attachment_cache[cache_key] = (
                 time.monotonic(),
@@ -405,42 +506,83 @@ class MessageInputBuilder(BaseModel):
                 self._attachment_cache.popitem(last=False)
         return resolved
 
+    def _assemble_input_message(
+        self,
+        message: Message,
+        content: str,
+        parts: "Sequence[ResponseInputTextParam | ResponseInputFileParam]",
+        has_attachments: bool,
+    ) -> EasyInputMessageParam:
+        """Assembles one input message, sharing role and prefix rules across renders.
+
+        `has_attachments` is decided from the message's sources, not from `parts`, so
+        the text-only render (markers) and the full render (uploaded files) agree on
+        role and message shape even when every upload is dropped.
+        """
+        is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
+
+        # Bot's own history without attachments → role=assistant carries identity, so the
+        # sender-prefix is dropped here. Without this, the model sees its own past replies
+        # prefixed with `Bot (bot) [id: ...]:` and learns to mimic that header.
+        if is_bot and not has_attachments:
+            return EasyInputMessageParam(role="assistant", content=content)
+
+        prefixed = (
+            f"{sanitize_identity(value=message.author.display_name)} "
+            f"({sanitize_identity(value=message.author.name)}) "
+            f"[id: {message.author.id}]: {content}"
+        )
+
+        # No attachments → use EasyInputMessageParam's string-content shorthand. The SDK
+        # serializes it as `input_text` for role=user, which satisfies the strict rule
+        # about content-part types per role.
+        if not has_attachments:
+            return EasyInputMessageParam(role="user", content=prefixed)
+
+        # Has attachments → must use a content list. role=assistant cannot carry
+        # `input_file` (only output_text/refusal), so bot replies that include generated
+        # images fall back to role=user; the author prefix above preserves bot identity.
+        return EasyInputMessageParam(
+            role="user", content=[ResponseInputTextParam(text=prefixed, type="input_text"), *parts]
+        )
+
+    async def render_text_only(
+        self, message: Message, sources: list[AttachmentSource]
+    ) -> EasyInputMessageParam:
+        """Renders a message as cleaned text plus `[attachment: kind]` markers.
+
+        Pure metadata plus the already-cheap cleaned content; performs no upload, so the
+        route and memory-selection calls never wait on the Files API. Mirrors
+        `process_single_message`'s role and prefix rules so the route sees the same shape
+        the answer will, minus the payload bytes.
+        """
+        content = await self.get_cleaned_content(message=message)
+        markers: list[ResponseInputTextParam] = [
+            ResponseInputTextParam(text=f"[attachment: {source.kind}]", type="input_text")
+            for source in sources
+        ]
+        return self._assemble_input_message(
+            message=message, content=content, parts=markers, has_attachments=bool(sources)
+        )
+
+    async def process_single_message_text_only(self, message: Message) -> EasyInputMessageParam:
+        """Renders a message for the route and memory-selection calls without uploading."""
+        sources = self._supported_sources(sources=self.collect_attachment_sources(message=message))
+        return await self.render_text_only(message=message, sources=sources)
+
     async def process_single_message(self, message: Message) -> EasyInputMessageParam:
         """Processes a single Discord message into a Responses API input message."""
         try:
             content = await self.get_cleaned_content(message=message)
-            attachment_parts = await self.get_attachment_parts(message=message)
-            is_bot = bool(self.bot.user and message.author.id == self.bot.user.id)
-
-            # Bot's own history without attachments → role=assistant carries identity,
-            # so the sender-prefix is dropped here. Without this, the model sees its
-            # own past replies prefixed with `Bot (bot) [id: ...]:` and learns to mimic
-            # that header, which leaks into output despite the prompt-level guard.
-            if is_bot and not attachment_parts:
-                return EasyInputMessageParam(role="assistant", content=content)
-
-            prefixed = (
-                f"{sanitize_identity(value=message.author.display_name)} "
-                f"({sanitize_identity(value=message.author.name)}) "
-                f"[id: {message.author.id}]: {content}"
+            sources = self._supported_sources(
+                sources=self.collect_attachment_sources(message=message)
             )
-
-            # No attachments → use EasyInputMessageParam's string-content shorthand.
-            # The SDK serializes it as `input_text` for role=user, which satisfies
-            # GPT-5.4's strict rule about content-part types per role.
-            if not attachment_parts:
-                return EasyInputMessageParam(role="user", content=prefixed)
-
-            # Has attachments → must use a content list with input_text/input_file.
-            # role=assistant cannot carry `input_file` (only output_text/refusal),
-            # so bot replies that include generated images (from _handle_image_reply)
-            # fall back to role=user; the author prefix above preserves bot identity.
-            return EasyInputMessageParam(
-                role="user",
-                content=[
-                    ResponseInputTextParam(text=prefixed, type="input_text"),
-                    *attachment_parts,
-                ],
+            attachment_parts = await self.get_attachment_parts(message=message, sources=sources)
+            return self._assemble_input_message(
+                message=message,
+                content=content,
+                parts=attachment_parts,
+                has_attachments=bool(sources),
             )
         except Exception:
             logfire.warn(f"Failed to process message {message.id}", _exc_info=True)
