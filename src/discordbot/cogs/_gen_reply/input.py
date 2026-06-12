@@ -3,6 +3,7 @@
 import io
 import re
 import time
+import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,7 @@ from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
+from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import get_image_data, shrink_image_bytes
 from discordbot.typings.models import RuntimeModelCatalog
@@ -25,6 +27,12 @@ from discordbot.utils.model_pricing import get_supported_modalities
 
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
+
+# A rendered attachment content part. The Gemini answer model reads a Files-API handle
+# (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
+# attachments are inlined per type instead: images as input_image base64, PDFs as input_file
+# base64 file_data, and text/code files as input_text.
+type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
 
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
@@ -126,8 +134,7 @@ class MessageInputBuilder(BaseModel):
     # Gemini `expiration_time` across the rendered parts) with the parts, so a handle is
     # re-uploaded just before it actually expires instead of on a guessed fixed TTL.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, tuple[object, ...]],
-        tuple[datetime, list[ResponseInputFileParam]],
+        tuple[int, datetime | None, tuple[object, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
@@ -316,10 +323,37 @@ class MessageInputBuilder(BaseModel):
             shrink_image_bytes, payload=file_bytes, content_type=content_type
         )
 
+    def _answer_model_is_gemini(self) -> bool:
+        """Whether the answer model reads Gemini Files-API URIs.
+
+        Only Gemini resolves the uploaded file URI; OpenAI / Anthropic answer models reject
+        it (the proxy mistranslates it), so their attachments are inlined instead. The Gemini
+        Files API is kept because Gemini also ingests video and hits inline limits more easily.
+        """
+        return "gemini" in self.runtime_models.slow_model.name
+
+    @staticmethod
+    def _inline_expiry() -> datetime:
+        """Cache validity for a self-contained inlined part.
+
+        Inlined bytes never expire, but the cache key cannot see a Discord CDN re-host of
+        the same source, so the render is refreshed periodically as a cheap safety net.
+        """
+        return datetime.now(tz=UTC) + timedelta(hours=12)
+
+    @staticmethod
+    def _data_uri(data: bytes, mime_type: str) -> str:
+        """Builds a base64 data URI for inlining bytes into a content part."""
+        return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
+
     async def image_to_part(
         self, source: Attachment | StickerItem | str
-    ) -> tuple[ResponseInputFileParam, datetime] | None:
-        """Converts an image source to an uploaded `input_file` part plus its expiry."""
+    ) -> tuple[RenderedPart, datetime] | None:
+        """Converts an image source to a content part plus its cache expiry.
+
+        Gemini answer models reference an uploaded Files-API handle; other providers inline
+        the already-downscaled image as a base64 `input_image` part.
+        """
         try:
             file_bytes, content_type = await self._load_image_bytes(source=source)
         except Exception:
@@ -331,6 +365,12 @@ class MessageInputBuilder(BaseModel):
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
+        if not self._answer_model_is_gemini():
+            image_part = ResponseInputImageParam(
+                type="input_image",
+                image_url=self._data_uri(data=file_bytes, mime_type=content_type),
+            )
+            return image_part, self._inline_expiry()
         uploaded = await self._upload_file(
             filename=source_name, data=file_bytes, content_type=content_type
         )
@@ -344,8 +384,12 @@ class MessageInputBuilder(BaseModel):
 
     async def attachment_to_part(
         self, attachment: Attachment
-    ) -> tuple[ResponseInputFileParam, datetime] | None:
-        """Converts a file attachment to an uploaded `input_file` part plus its expiry."""
+    ) -> tuple[RenderedPart, datetime] | None:
+        """Converts a file attachment to a content part plus its cache expiry.
+
+        Gemini answer models reference an uploaded Files-API handle; other providers inline
+        the file (text/code as `input_text`, PDF as base64 `input_file`, else dropped).
+        """
         content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
         mime_type = content_type.split(";")[0].strip()
         if not mime_type:
@@ -358,6 +402,10 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
+        if not self._answer_model_is_gemini():
+            return self._inline_file_part(
+                filename=attachment.filename, data=file_bytes, mime_type=mime_type
+            )
         uploaded = await self._upload_file(
             filename=attachment.filename, data=file_bytes, content_type=mime_type
         )
@@ -368,6 +416,34 @@ class MessageInputBuilder(BaseModel):
             type="input_file", file_id=file_id, filename=attachment.filename
         )
         return part, expires_at
+
+    def _inline_file_part(
+        self, filename: str, data: bytes, mime_type: str
+    ) -> tuple[RenderedPart, datetime] | None:
+        """Inlines a non-image file for a non-Gemini answer model, or drops it.
+
+        PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
+        inline); UTF-8-decodable files inline as `input_text` with a filename header; anything
+        else (non-text binaries the Gemini Files path would have uploaded) is dropped.
+        """
+        if mime_type == "application/pdf":
+            pdf_part = ResponseInputFileParam(
+                type="input_file",
+                filename=filename,
+                file_data=self._data_uri(data=data, mime_type=mime_type),
+            )
+            return pdf_part, self._inline_expiry()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            logfire.warn(
+                f"Dropping non-text, non-PDF attachment for a non-Gemini model: {filename}"
+            )
+            return None
+        text_part = ResponseInputTextParam(
+            type="input_text", text=f"[attached file: {filename}]\n{text}"
+        )
+        return text_part, self._inline_expiry()
 
     async def get_image_source_bytes(self, message: Message) -> list[bytes]:
         """Returns downscaled bytes of a message's image sources for the IMAGE route.
@@ -428,13 +504,13 @@ class MessageInputBuilder(BaseModel):
 
     async def _render_attachment_parts(
         self, sources: list[AttachmentSource]
-    ) -> list[tuple[ResponseInputFileParam, datetime] | None]:
-        """Renders every supported source to an uploaded part + expiry; failures stay None.
+    ) -> list[tuple[RenderedPart, datetime] | None]:
+        """Renders every supported source to a content part + expiry; failures stay None.
 
-        Each source uploads to the Files API; the uploads run concurrently so a message
-        with several attachments pays roughly one upload's latency, not the sum.
+        Each source renders concurrently, so a message with several attachments pays
+        roughly one upload's latency (Gemini) or one download's latency (inline), not the sum.
         """
-        tasks: list[Coroutine[object, object, tuple[ResponseInputFileParam, datetime] | None]] = []
+        tasks: list[Coroutine[object, object, tuple[RenderedPart, datetime] | None]] = []
         for source in sources:
             if source.kind == "image":
                 tasks.append(self.image_to_part(source=source.handle))
@@ -445,7 +521,7 @@ class MessageInputBuilder(BaseModel):
 
     async def get_attachment_parts(
         self, message: Message, sources: list[AttachmentSource] | None = None
-    ) -> list[ResponseInputFileParam]:
+    ) -> list[RenderedPart]:
         """Extracts attachment content parts from a message, with a per-message cache.
 
         Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
@@ -489,7 +565,7 @@ class MessageInputBuilder(BaseModel):
         self,
         message: Message,
         content: str,
-        parts: "Sequence[ResponseInputTextParam | ResponseInputFileParam]",
+        parts: "Sequence[RenderedPart]",
         has_attachments: bool,
     ) -> EasyInputMessageParam:
         """Assembles one input message, sharing role and prefix rules across renders.

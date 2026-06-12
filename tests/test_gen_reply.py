@@ -789,6 +789,63 @@ def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatc
     assert cog.gemini_client is None
 
 
+async def test_non_gemini_answer_model_inlines_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-Gemini answer model inlines attachments instead of using the Gemini Files API."""
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    cog = _cog()
+    builder = cog.input_builder
+    monkeypatch.setattr(builder, "_answer_model_is_gemini", lambda: False)
+
+    # Image -> base64 input_image (no Files API upload).
+    image_rendered = await builder.image_to_part(
+        source=FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
+    )
+    assert image_rendered is not None
+    image_part, _image_expiry = image_rendered
+    assert image_part["type"] == "input_image"
+    assert image_part["image_url"].startswith("data:image/")
+    assert ";base64," in image_part["image_url"]
+    assert not builder.gemini_client.aio.files.upload_calls
+
+    # Text/code file -> inlined as input_text with a filename header.
+    text_rendered = await builder.attachment_to_part(
+        attachment=FakeAttachment(
+            filename="notes.txt", content_type="text/plain", payload=b"hello world"
+        )
+    )
+    assert text_rendered is not None
+    text_part, _text_expiry = text_rendered
+    assert text_part["type"] == "input_text"
+    assert "hello world" in text_part["text"]
+    assert "notes.txt" in text_part["text"]
+
+    # PDF -> inlined as base64 input_file file_data (not a Files-API file_id).
+    pdf_rendered = await builder.attachment_to_part(
+        attachment=FakeAttachment(
+            filename="doc.pdf", content_type="application/pdf", payload=b"%PDF-1.4 fake"
+        )
+    )
+    assert pdf_rendered is not None
+    pdf_part, _pdf_expiry = pdf_rendered
+    assert pdf_part["type"] == "input_file"
+    assert pdf_part["file_data"].startswith("data:application/pdf;base64,")
+    assert "file_id" not in pdf_part
+
+    # Non-text, non-PDF binary -> dropped.
+    binary_rendered = await builder.attachment_to_part(
+        attachment=FakeAttachment(
+            filename="blob.bin", content_type="application/octet-stream", payload=b"\x00\x01\xff"
+        )
+    )
+    assert binary_rendered is None
+
+
 async def test_gen_reply_processes_history_reference_and_current_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
