@@ -339,14 +339,32 @@ class FakeVideos:
         return SimpleNamespace(content=b"mp4")
 
 
+class FakeFiles:
+    """Fake Files API resource that records uploads and returns managed-style ids."""
+
+    def __init__(self) -> None:
+        """Initializes upload call records."""
+        self.create_calls: list[tuple[str, str]] = []
+
+    async def create(
+        self, file: tuple[str, bytes, str], purpose: str, extra_body: dict[str, str]
+    ) -> SimpleNamespace:
+        """Records an upload and returns a fake file id derived from the filename."""
+        del purpose, extra_body
+        filename, _data, content_type = file
+        self.create_calls.append((filename, content_type))
+        return SimpleNamespace(id=f"file-{filename}")
+
+
 class FakeClient:
-    """Fake OpenAI client with responses, images, and videos resources."""
+    """Fake OpenAI client with responses, images, videos, and files resources."""
 
     def __init__(self) -> None:
         """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
         self.videos = FakeVideos()
+        self.files = FakeFiles()
 
 
 def _png_b64() -> str:
@@ -661,7 +679,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
     )
     assert file_part is not None
-    assert file_part["file_data"] == "data:text/plain;base64,YWJj"
+    assert file_part["type"] == "input_file"
+    assert file_part["file_id"] == "file-note.txt"
 
     image_part = await cog.input_builder.image_to_part(
         source=FakeAttachment(
@@ -669,7 +688,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         )
     )
     assert image_part is not None
-    assert image_part["type"] == "input_image"
+    assert image_part["type"] == "input_file"
+    assert image_part["file_id"] == "file-pixel.png"
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -690,10 +710,11 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     img_embed.set_image(url="https://example.test/image.png")
     message.embeds = [img_embed]
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_image_data", lambda image_file: _png_b64()
+        "discordbot.cogs._gen_reply.input.get_image_data",
+        lambda image_file, use_b64=True: base64.b64decode(_png_b64()),
     )
     parts = await cog.input_builder.get_attachment_parts(message=message)
-    assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
+    assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
 async def test_gen_reply_processes_history_reference_and_current_messages(
@@ -811,6 +832,45 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     )
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
+
+
+async def test_uploaded_image_without_extension_marks_as_image() -> None:
+    """An image upload whose filename lacks an image extension still routes as image."""
+    cog = _cog()
+    part = await cog.input_builder.image_to_part(
+        source=FakeAttachment(
+            filename="screenshot",
+            content_type="image/png",
+            payload=base64.b64decode(_png_b64()),
+            url="https://example.test/screenshot",
+        )
+    )
+    assert part is not None
+    stripped = strip_attachment_parts(
+        messages=[EasyInputMessageParam(role="user", content=[part])]
+    )
+    marker = stripped[0]["content"]
+    assert isinstance(marker, list)
+    assert marker[0]["text"] == "[attachment: image]"
+
+
+async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An attached image routes the IMAGE handler through images.edit with raw bytes."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
+    ]
+
+    await cog._handle_image_reply(message=message, user_prompt="make it blue")
+
+    assert cog.client.images.edit_calls == 1
+    assert cog.client.images.generate_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -1051,6 +1111,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert isinstance(catalog.fast_model, ModelSettings)
     assert catalog.image_model.name.endswith("image-preview")
     assert catalog.video_model.name.startswith("veo")
+    assert catalog.file_model.name == "gemini-files"
     assert catalog.slow_model.effort == "high"
     assert ModelSettings(name="gemini-test").tools == [
         {"googleSearch": {}},
@@ -2156,6 +2217,7 @@ def test_strip_attachment_parts_replaces_payload_parts() -> None:
                 "filename": "a.pdf",
                 "file_data": "data:application/pdf;base64,xxx",
             },
+            {"type": "input_file", "filename": "photo.png", "file_id": "file-photo.png"},
         ],
     )
     plain_message = EasyInputMessageParam(role="user", content="plain")
@@ -2165,9 +2227,12 @@ def test_strip_attachment_parts_replaces_payload_parts() -> None:
     assert stripped[0] is plain_message
     parts = stripped[1]["content"]
     assert isinstance(parts, list)
-    assert [part["type"] for part in parts] == ["input_text", "input_text", "input_text"]
+    assert [part["type"] for part in parts] == ["input_text"] * 4
     assert parts[1]["text"] == "[attachment: image]"
     assert parts[2]["text"] == "[attachment: file]"
+    # An uploaded image rides as input_file; its filename keeps the image marker so
+    # image-edit prompts still route to IMAGE.
+    assert parts[3]["text"] == "[attachment: image]"
     original_parts = payload_message["content"]
     assert isinstance(original_parts, list)
     assert original_parts[1]["type"] == "input_image"
@@ -2231,6 +2296,27 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     assert attachment.read_count == 2
 
 
+async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cached file_id past the TTL is re-rendered instead of returning a stale handle."""
+    cog = _cog()
+    message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
+    attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
+    message.attachments = [attachment]
+    clock = [1000.0]
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", lambda: clock[0])
+
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 1
+
+    clock[0] += 3600
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 1
+
+    clock[0] += 36 * 3600 + 1
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 2
+
+
 async def test_attachment_cache_refreshes_on_embed_url_swap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2243,7 +2329,7 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
         """Records each rendered source instead of hitting the network."""
         del self
         rendered_urls.append(str(source))
-        return {"image_url": str(source), "detail": "auto", "type": "input_image"}
+        return {"type": "input_file", "file_id": str(source)}
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
