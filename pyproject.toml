@@ -69,6 +69,7 @@ authors = [
 dependencies = [
     "nextcord[speed,voice]>=3.1.1",
     "openai>=2.30.0",
+    "google-genai>=2.7.0",
     "pillow>=12.2.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
@@ -95,7 +96,6 @@ update = "discordbot.cli:update"
 [dependency-groups]
 dev = [
     "anthropic",
-    "google-genai",
     "ipykernel",
     "ipywidgets",
     "notebook",

@@ -109,14 +109,15 @@ class MessageInputBuilder(BaseModel):
         bot: The Discord bot instance, used to detect the bot's own messages.
         runtime_models: Catalog whose slow model gates attachment modalities.
         gemini_client: Gemini client used to upload attachments to the Files API
-            directly, so each upload can be polled to ACTIVE before it is used.
+            directly, so each upload can be polled to ACTIVE before it is used; None
+            when `GEMINI_API_KEY` is unconfigured, in which case uploads are dropped.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
-    gemini_client: SkipValidation[genai.Client]
+    gemini_client: SkipValidation[genai.Client] | None
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
@@ -270,6 +271,9 @@ class MessageInputBuilder(BaseModel):
         per-message cache can reuse the handle until it actually expires (Gemini files
         live ~48h) instead of guessing a fixed TTL.
         """
+        if self.gemini_client is None:
+            logfire.warn(f"Gemini Files API unavailable; dropping attachment: {filename}")
+            return None
         activation_timeout_seconds = 30.0
         poll_interval_seconds = 0.5
         try:

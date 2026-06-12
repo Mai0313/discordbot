@@ -821,6 +821,33 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
 
+    # No Gemini client (GEMINI_API_KEY unconfigured): the file is dropped, not a crash.
+    no_client = MessageInputBuilder(
+        bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
+        runtime_models=RuntimeModelCatalog(),
+        gemini_client=None,
+    )
+    assert (
+        await no_client._upload_file(filename="x.txt", data=b"x", content_type="text/plain")
+        is None
+    )
+
+
+def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment without GEMINI_API_KEY gets a None client, not a hard failure."""
+    cog = _cog()
+    # Drop the injected fake so the real cached_property runs against the factory.
+    del cog.__dict__["gemini_client"]
+    cog.config = SimpleNamespace()
+
+    def _raise(config: object) -> object:
+        """Mimics genai.Client refusing to build without a key."""
+        del config
+        raise ValueError("No API key was provided.")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.create_gemini_client", _raise)
+    assert cog.gemini_client is None
+
 
 async def test_gen_reply_processes_history_reference_and_current_messages(
     monkeypatch: pytest.MonkeyPatch,

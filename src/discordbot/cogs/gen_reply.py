@@ -206,14 +206,23 @@ class ReplyGeneratorCogs(commands.Cog):
         return create_litellm_client(config=self.config)
 
     @cached_property
-    def gemini_client(self) -> genai.Client:
+    def gemini_client(self) -> genai.Client | None:
         """The cached Gemini client for direct Files API attachment uploads.
 
+        Built defensively: `genai.Client` raises when `GEMINI_API_KEY` is unset, so a
+        deployment that only configured the OpenAI/LiteLLM proxy still serves text and
+        non-attachment replies. A missing client degrades to dropping attachment uploads
+        (handled in `MessageInputBuilder._upload_file`), never a hard failure on the
+        `on_message` path that builds `input_builder` before it knows about attachments.
+
         Returns:
-            A Gemini client reused across uploads so attachments can be polled
-            to ACTIVE before the answer references them.
+            A Gemini client reused across uploads, or None when no key is configured.
         """
-        return create_gemini_client(config=self.config)
+        try:
+            return create_gemini_client(config=self.config)
+        except Exception:
+            logfire.warn("Gemini Files API disabled: GEMINI_API_KEY not configured")
+            return None
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
