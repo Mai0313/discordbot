@@ -8,12 +8,11 @@ from datetime import datetime
 from mimetypes import guess_type
 from collections import OrderedDict
 
-from openai import AsyncOpenAI, NotFoundError
+from openai import AsyncOpenAI
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
-from openai.types import FileObject
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -41,30 +40,10 @@ USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 # authorship signal. Neutralize the lookalike before rendering.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 
-# Gemini processes a freshly uploaded file to ACTIVE asynchronously; referencing the
-# file id before then 400s with "not in an ACTIVE state". The poll below caps the wait
-# so a stuck file cannot wedge a reply, but the wait overlaps the route and memory
-# selection calls so a healthy file is usually ACTIVE before the answer needs it.
-FILE_ACTIVATION_TIMEOUT_SECONDS = 20.0
-
 
 def sanitize_identity(value: str) -> str:
     """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
     return _ID_PREFIX_LOOKALIKE_RE.sub("[id-", value)
-
-
-def _file_status_is_ready(status: str | None) -> bool:
-    """Whether a Files API status means the file is usable in a request.
-
-    Tolerates both the OpenAI SDK literal (`processed`) and the raw Gemini state
-    (`ACTIVE`) the LiteLLM proxy might surface, since that mapping is unverified.
-    """
-    return (status or "").lower() in {"processed", "active"}
-
-
-def _file_status_is_failed(status: str | None) -> bool:
-    """Whether a Files API status means the upload terminally failed."""
-    return (status or "").lower() in {"error", "failed"}
 
 
 def render_author_identity(display_name: str, username: str, user_id: int) -> str:
@@ -262,19 +241,23 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
-    async def _upload_file(
-        self, filename: str, data: bytes, content_type: str
-    ) -> FileObject | None:
-        """Uploads bytes to the Files API and returns the created file object.
+    async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
+        """Uploads bytes to the Files API and returns a managed file id to reference.
 
         Sending attachments by `file_id` instead of inlined base64 keeps oversized
         payloads under Gemini's ~10MB per-part `inline_data` cap. `target_model_names`
         names the upload-only `file_model` deployment, not the reply model, so LiteLLM
         uses it only to pick the Files API credential and never runs inference on it.
-        The caller polls the returned object to ACTIVE before using its id.
+
+        The id is used as soon as it is returned. The provider processes a fresh upload
+        asynchronously, but neither the Gemini nor the OpenAI file-input guides poll for
+        readiness, and the proxy exposes no reliable signal (the SDK `status` field is
+        deprecated and stays `uploaded`), so there is no activation check. The upload runs
+        in the background while the route and memory selection calls resolve, and that
+        overlap is the processing slack the answer relies on.
         """
         try:
-            return await self.client.files.create(
+            uploaded = await self.client.files.create(
                 file=(filename, data, content_type),
                 purpose="user_data",
                 extra_body={"target_model_names": self.runtime_models.file_model.name},
@@ -282,55 +265,7 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
             return None
-
-    async def _upload_and_activate(
-        self, filename: str, data: bytes, content_type: str
-    ) -> str | None:
-        """Uploads bytes and returns a file id only once the file is usable in a request.
-
-        Gemini processes a freshly uploaded file to ACTIVE asynchronously; referencing
-        the id before then 400s. This polls the file to ready, capped by
-        `FILE_ACTIVATION_TIMEOUT_SECONDS`, so the wait overlaps the route and memory
-        selection calls instead of being paid serially. A file that errors or never
-        activates within the cap is dropped (returns None) so the reply answers without
-        it rather than failing outright. If the proxy does not implement `files.retrieve`
-        the id is returned best-effort, matching the pre-poll behavior.
-        """
-        uploaded = await self._upload_file(filename=filename, data=data, content_type=content_type)
-        if uploaded is None:
-            return None
-        deadline = time.monotonic() + FILE_ACTIVATION_TIMEOUT_SECONDS
-        delay = 0.4
-        # The create response already carries a status, so the first iteration handles a
-        # file that is ACTIVE on upload (no poll); later iterations poll files.retrieve.
-        while True:
-            if _file_status_is_ready(status=uploaded.status):
-                return uploaded.id
-            if _file_status_is_failed(status=uploaded.status):
-                logfire.warn(f"Files API reported a failed upload: {filename}")
-                return None
-            if time.monotonic() >= deadline:
-                logfire.warn(
-                    f"File never reached ACTIVE within {FILE_ACTIVATION_TIMEOUT_SECONDS}s; "
-                    f"dropping attachment: {filename}"
-                )
-                return None
-            await asyncio.sleep(delay=min(delay, 2.0))
-            delay = delay * 2
-            try:
-                uploaded = await self.client.files.retrieve(file_id=uploaded.id)
-            except NotFoundError:
-                # The proxy does not expose files.retrieve at all (404); fall back to the
-                # best-effort id, matching pre-poll behavior, rather than polling to the cap.
-                logfire.warn(
-                    f"files.retrieve unavailable; using file id without activation poll: {filename}"
-                )
-                return uploaded.id
-            except Exception:
-                # A transient poll failure (timeout / 5xx / 429) while the file may still be
-                # processing: keep the last status and retry until the deadline instead of
-                # handing back an id that is not ACTIVE yet.
-                logfire.warn(f"files.retrieve poll failed; retrying until cap: {filename}")
+        return uploaded.id
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
@@ -365,7 +300,7 @@ class MessageInputBuilder(BaseModel):
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
-        file_id = await self._upload_and_activate(
+        file_id = await self._upload_file(
             filename=source_name, data=file_bytes, content_type=content_type
         )
         if file_id is None:
@@ -388,7 +323,7 @@ class MessageInputBuilder(BaseModel):
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
-        file_id = await self._upload_and_activate(
+        file_id = await self._upload_file(
             filename=attachment.filename, data=file_bytes, content_type=mime_type
         )
         if file_id is None:
@@ -459,9 +394,8 @@ class MessageInputBuilder(BaseModel):
     ) -> list[ResponseInputFileParam | None]:
         """Renders every supported source to an uploaded part; failures stay as None.
 
-        Each source uploads to the Files API and polls to ACTIVE; the uploads run
-        concurrently so a message with several attachments pays roughly one upload's
-        latency, not the sum.
+        Each source uploads to the Files API; the uploads run concurrently so a message
+        with several attachments pays roughly one upload's latency, not the sum.
         """
         tasks: list[Coroutine[object, object, ResponseInputFileParam | None]] = []
         for source in sources:
@@ -502,8 +436,8 @@ class MessageInputBuilder(BaseModel):
 
         content_parts = await self._render_attachment_parts(sources=sources)
         resolved = [part for part in content_parts if part is not None]
-        # A None part means a download/convert/activation failed; skip caching so the
-        # next reply retries instead of pinning a degraded or never-activated render.
+        # A None part means a download/convert or upload failed; skip caching so the
+        # next reply retries instead of pinning a degraded render.
         if None not in content_parts:
             self._attachment_cache[cache_key] = (
                 time.monotonic(),

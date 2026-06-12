@@ -10,8 +10,6 @@ import asyncio
 from datetime import UTC, datetime
 
 from PIL import Image
-import httpx
-from openai import NotFoundError
 import pytest
 from nextcord import File, Embed
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -349,15 +347,8 @@ class FakeFiles:
     """Fake Files API resource that records uploads and returns managed-style ids."""
 
     def __init__(self) -> None:
-        """Initializes upload call records and activation-poll configuration."""
+        """Initializes upload call records."""
         self.create_calls: list[tuple[str, str]] = []
-        self.retrieve_calls: list[str] = []
-        # Status the upload returns; "processed" means immediately ACTIVE (no poll).
-        self.create_status: str = "processed"
-        # Statuses returned by successive retrieve() polls; the last value repeats.
-        self.retrieve_statuses: list[str] = []
-        # When set, retrieve() raises it to simulate a proxy without the endpoint.
-        self.retrieve_error: Exception | None = None
 
     async def create(
         self, file: tuple[str, bytes, str], purpose: str, extra_body: dict[str, str]
@@ -366,20 +357,7 @@ class FakeFiles:
         del purpose, extra_body
         filename, _data, content_type = file
         self.create_calls.append((filename, content_type))
-        return SimpleNamespace(id=f"file-{filename}", status=self.create_status)
-
-    async def retrieve(self, file_id: str) -> SimpleNamespace:
-        """Records a poll and returns the next configured activation status."""
-        self.retrieve_calls.append(file_id)
-        if self.retrieve_error is not None:
-            raise self.retrieve_error
-        if len(self.retrieve_statuses) > 1:
-            status = self.retrieve_statuses.pop(0)
-        elif self.retrieve_statuses:
-            status = self.retrieve_statuses[0]
-        else:
-            status = "processed"
-        return SimpleNamespace(id=file_id, status=status)
+        return SimpleNamespace(id=f"file-{filename}")
 
 
 class FakeClient:
@@ -889,126 +867,6 @@ async def test_uploaded_image_without_extension_marks_as_image(
     assert parts[-1]["text"] == "[attachment: image]"
 
 
-async def _instant_sleep(delay: float) -> None:
-    """No-op replacement for asyncio.sleep so activation polls run instantly."""
-    del delay
-
-
-async def test_upload_and_activate_returns_id_when_create_ready() -> None:
-    """A create response already ACTIVE returns the id with no retrieve poll."""
-    cog = _cog()
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id == "file-a.png"
-    assert cog.client.files.retrieve_calls == []
-
-
-async def test_upload_and_activate_polls_until_processed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A file that uploads as PROCESSING is polled until it reaches ACTIVE."""
-    cog = _cog()
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
-    cog.client.files.create_status = "uploaded"
-    cog.client.files.retrieve_statuses = ["uploaded", "processed"]
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id == "file-a.png"
-    assert len(cog.client.files.retrieve_calls) == 2
-
-
-async def test_upload_and_activate_drops_failed_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A file that errors during processing is dropped instead of being referenced."""
-    cog = _cog()
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
-    cog.client.files.create_status = "uploaded"
-    cog.client.files.retrieve_statuses = ["error"]
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id is None
-
-
-async def test_upload_and_activate_drops_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A file that never reaches ACTIVE within the cap is dropped, not sent un-activated."""
-    cog = _cog()
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.FILE_ACTIVATION_TIMEOUT_SECONDS", 1.0)
-    clock = [0.0]
-
-    def fake_monotonic() -> float:
-        """Advances the clock past the cap within a couple of polls."""
-        clock[0] += 0.5
-        return clock[0]
-
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", fake_monotonic)
-    cog.client.files.create_status = "uploaded"
-    cog.client.files.retrieve_statuses = ["uploaded"]
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id is None
-
-
-def _not_found_error() -> NotFoundError:
-    """Builds a 404 NotFoundError as the proxy would raise for a missing files endpoint."""
-    request = httpx.Request(method="GET", url="https://proxy/files/file-a.png")
-    response = httpx.Response(status_code=404, request=request)
-    return NotFoundError(message="not found", response=response, body=None)
-
-
-async def test_upload_and_activate_best_effort_when_retrieve_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 404 from files.retrieve means the proxy lacks it; the id is returned best-effort."""
-    cog = _cog()
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
-    cog.client.files.create_status = "uploaded"
-    cog.client.files.retrieve_error = _not_found_error()
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id == "file-a.png"
-    assert len(cog.client.files.retrieve_calls) == 1
-
-
-async def test_upload_and_activate_retries_after_transient_retrieve_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A transient retrieve failure keeps polling instead of using an un-activated id."""
-    cog = _cog()
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _instant_sleep)
-    cog.client.files.create_status = "uploaded"
-
-    statuses = ["processed"]
-
-    async def flaky_retrieve(file_id: str) -> SimpleNamespace:
-        """Fails once transiently, then reports the file as ACTIVE."""
-        cog.client.files.retrieve_calls.append(file_id)
-        if len(cog.client.files.retrieve_calls) == 1:
-            raise httpx.ConnectError(message="connection reset")
-        return SimpleNamespace(id=file_id, status=statuses.pop(0))
-
-    monkeypatch.setattr(cog.client.files, "retrieve", flaky_retrieve)
-
-    file_id = await cog.input_builder._upload_and_activate(
-        filename="a.png", data=b"x", content_type="image/png"
-    )
-
-    assert file_id == "file-a.png"
-    assert len(cog.client.files.retrieve_calls) == 2
-
-
 async def test_text_only_and_full_render_agree_on_attachment_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1050,7 +908,7 @@ async def test_text_only_render_degrades_when_modality_lookup_fails(
     def boom(model_name: str) -> set[str]:
         """Simulates the LiteLLM model-info fetch failing on a cold cache."""
         del model_name
-        raise httpx.ConnectError(message="model info unreachable")
+        raise RuntimeError("model info unreachable")
 
     monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_supported_modalities", boom)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
