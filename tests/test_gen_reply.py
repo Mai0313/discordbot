@@ -353,18 +353,26 @@ class FakeGeminiFiles:
     """
 
     def __init__(
-        self, processing_rounds: int = 0, final_state: FileState = FileState.ACTIVE
+        self,
+        processing_rounds: int = 0,
+        final_state: FileState = FileState.ACTIVE,
+        expiration_time: datetime = datetime(2099, 1, 1, tzinfo=UTC),
     ) -> None:
         """Initializes upload records and the processing-to-active schedule."""
         self.upload_calls: list[tuple[str, str]] = []
         self.processing_rounds = processing_rounds
         self.final_state = final_state
+        self.expiration_time = expiration_time
         self._remaining = 0
 
     def _file(self, name: str, state: FileState) -> SimpleNamespace:
         """Builds a fake uploaded-file object with the URI the answer references."""
         return SimpleNamespace(
-            name=name, uri=f"https://files.test/{name}", state=state, error=None
+            name=name,
+            uri=f"https://files.test/{name}",
+            state=state,
+            error=None,
+            expiration_time=self.expiration_time,
         )
 
     async def upload(self, file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
@@ -714,19 +722,22 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert cog.input_builder.required_modality(content_type="audio/mpeg") == "audio"
     assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
 
-    file_part = await cog.input_builder.attachment_to_part(
+    file_rendered = await cog.input_builder.attachment_to_part(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
     )
-    assert file_part is not None
+    assert file_rendered is not None
+    file_part, file_expiry = file_rendered
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "https://files.test/note.txt"
+    assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
-    image_part = await cog.input_builder.image_to_part(
+    image_rendered = await cog.input_builder.image_to_part(
         source=FakeAttachment(
             filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
         )
     )
-    assert image_part is not None
+    assert image_rendered is not None
+    image_part, _image_expiry = image_rendered
     assert image_part["type"] == "input_file"
     assert image_part["file_id"] == "https://files.test/pixel.png"
 
@@ -773,10 +784,12 @@ async def test_upload_file_polls_active_and_drops_unready_files(
             gemini_client=FakeGeminiClient(files=files),
         )
 
-    # PROCESSING for two polls, then ACTIVE: the file URI is returned.
+    # PROCESSING for two polls, then ACTIVE: the file URI and its expiry are returned.
     active = _builder(FakeGeminiFiles(processing_rounds=2))
-    uri = await active._upload_file(filename="doc.pdf", data=b"x", content_type="application/pdf")
-    assert uri == "https://files.test/doc.pdf"
+    uploaded = await active._upload_file(
+        filename="doc.pdf", data=b"x", content_type="application/pdf"
+    )
+    assert uploaded == ("https://files.test/doc.pdf", datetime(2099, 1, 1, tzinfo=UTC))
 
     # Terminal non-active state: the file is dropped.
     failed = _builder(FakeGeminiFiles(final_state=FileState.FAILED))
@@ -2538,23 +2551,24 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
 
 
 async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A cached file_id past the TTL is re-rendered instead of returning a stale handle."""
+    """A cached file_id past its real expiry is re-rendered, not served stale."""
     cog = _cog()
+    builder = cog.input_builder
     message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
-    clock = [1000.0]
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", lambda: clock[0])
 
-    await cog.input_builder.get_attachment_parts(message=message)
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 1
 
-    clock[0] += 3600
-    await cog.input_builder.get_attachment_parts(message=message)
+    # Within expiry: the cached handle is reused, so no second download.
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 1
 
-    clock[0] += 36 * 3600 + 1
-    await cog.input_builder.get_attachment_parts(message=message)
+    # Force the entry past its stored expiry: the next render re-downloads and re-uploads.
+    (cache_key, (_expiry, cached_parts)) = next(iter(builder._attachment_cache.items()))
+    builder._attachment_cache[cache_key] = (datetime(2000, 1, 1, tzinfo=UTC), cached_parts)
+    await builder.get_attachment_parts(message=message)
     assert attachment.read_count == 2
 
 
@@ -2566,11 +2580,11 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     message = FakeMessage(content="link", author=FakeAuthor(user_id=2))
     rendered_urls: list[str] = []
 
-    async def fake_image_to_part(self: object, source: object) -> dict[str, str]:
+    async def fake_image_to_part(self: object, source: object) -> tuple[dict[str, str], datetime]:
         """Records each rendered source instead of hitting the network."""
         del self
         rendered_urls.append(str(source))
-        return {"type": "input_file", "file_id": str(source)}
+        return {"type": "input_file", "file_id": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
