@@ -23,7 +23,7 @@ from discordbot.cogs.gen_reply import (
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, PendingUpload, MessageInputBuilder
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -663,7 +663,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
 
     file_rendered = await cog.input_builder.attachment_to_part(
-        attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
+        attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc"),
+        cache_key="note.txt",
     )
     assert file_rendered is not None
     file_part, file_expiry = file_rendered
@@ -674,7 +675,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     image_rendered = await cog.input_builder.image_to_part(
         source=FakeAttachment(
             filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
+        ),
+        cache_key="pixel.png",
     )
     assert image_rendered is not None
     image_part, _image_expiry = image_rendered
@@ -748,9 +750,10 @@ async def test_upload_file_polls_active_and_drops_unready_files(
 
     monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", _fake_monotonic)
     stuck = _builder(FakeGeminiFiles(processing_rounds=99))
-    assert (
-        await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4") is None
-    )
+    pending = await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4")
+    assert isinstance(pending, PendingUpload)
+    assert pending.name == "slow.mp4"
+    assert pending.uri == "https://files.test/slow.mp4"
 
     # Upload raises: the file is dropped instead of aborting the reply.
     async def _raise(file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
@@ -771,6 +774,58 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         await no_client._upload_file(filename="x.txt", data=b"x", content_type="text/plain")
         is None
     )
+
+
+async def test_resolve_file_upload_recovers_pending_on_next_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out upload is cached as pending and re-polled, not re-uploaded, next time."""
+
+    async def _no_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.asyncio.sleep", _no_sleep)
+
+    scripted_times = [0.0, 0.0, 100.0]
+
+    def _fake_monotonic() -> float:
+        return scripted_times.pop(0) if scripted_times else 100.0
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.time.monotonic", _fake_monotonic)
+
+    files = FakeGeminiFiles(processing_rounds=99)
+    builder = MessageInputBuilder(
+        bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
+        runtime_models=RuntimeModelCatalog(),
+        gemini_client=FakeGeminiClient(files=files),
+    )
+
+    # First reference times out while still PROCESSING: dropped for now, cached as pending.
+    first = await builder._resolve_file_upload(
+        cache_key="vid", filename="v.mp4", data=b"x", content_type="video/mp4"
+    )
+    assert first is None
+    assert "vid" in builder._pending_uploads
+    assert files.upload_calls == [("v.mp4", "video/mp4")]
+
+    # The file finished processing in the background; the next reference re-polls the same
+    # file once and adopts it, without uploading the bytes again.
+    async def _active_get(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            uri=f"https://files.test/{name}",
+            state=FileState.ACTIVE,
+            error=None,
+            expiration_time=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(files, "get", _active_get)
+    second = await builder._resolve_file_upload(
+        cache_key="vid", filename="v.mp4", data=b"x", content_type="video/mp4"
+    )
+    assert second == ("https://files.test/v.mp4", datetime(2099, 1, 1, tzinfo=UTC))
+    assert "vid" not in builder._pending_uploads
+    assert files.upload_calls == [("v.mp4", "video/mp4")]
 
 
 def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -804,7 +859,8 @@ async def test_non_gemini_answer_model_inlines_attachments(
     image_rendered = await builder.image_to_part(
         source=FakeAttachment(
             filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
+        ),
+        cache_key="pic.png",
     )
     assert image_rendered is not None
     image_part, _image_expiry = image_rendered
@@ -817,7 +873,8 @@ async def test_non_gemini_answer_model_inlines_attachments(
     text_rendered = await builder.attachment_to_part(
         attachment=FakeAttachment(
             filename="notes.txt", content_type="text/plain", payload=b"hello world"
-        )
+        ),
+        cache_key="notes.txt",
     )
     assert text_rendered is not None
     text_part, _text_expiry = text_rendered
@@ -829,7 +886,8 @@ async def test_non_gemini_answer_model_inlines_attachments(
     pdf_rendered = await builder.attachment_to_part(
         attachment=FakeAttachment(
             filename="doc.pdf", content_type="application/pdf", payload=b"%PDF-1.4 fake"
-        )
+        ),
+        cache_key="doc.pdf",
     )
     assert pdf_rendered is not None
     pdf_part, _pdf_expiry = pdf_rendered
@@ -841,7 +899,8 @@ async def test_non_gemini_answer_model_inlines_attachments(
     binary_rendered = await builder.attachment_to_part(
         attachment=FakeAttachment(
             filename="blob.bin", content_type="application/octet-stream", payload=b"\x00\x01\xff"
-        )
+        ),
+        cache_key="blob.bin",
     )
     assert binary_rendered is None
 
@@ -2604,11 +2663,13 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     message = FakeMessage(content="link", author=FakeAuthor(user_id=2))
     rendered_urls: list[str] = []
 
-    async def fake_image_to_part(self: object, source: object) -> tuple[dict[str, str], datetime]:
+    async def fake_image_to_part(
+        self: object, source: object, cache_key: object
+    ) -> tuple[dict[str, str], datetime]:
         """Records each rendered source instead of hitting the network."""
-        del self
+        del self, cache_key
         rendered_urls.append(str(source))
-        return {"type": "input_file", "file_id": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
+        return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
