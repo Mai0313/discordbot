@@ -5,7 +5,7 @@ import time
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import datetime
-from mimetypes import guess_type
+from mimetypes import guess_type, guess_extension
 from collections import OrderedDict
 
 from openai import AsyncOpenAI
@@ -219,19 +219,23 @@ class MessageInputBuilder(BaseModel):
             logfire.warn("Failed to convert this image")
             return None
         if isinstance(source, str):
-            # URL sources re-encode to JPEG; give them an image extension so the route's
-            # attachment marker is classified as an image, not a generic file.
-            filename = "image.jpg"
+            source_name = "image"
         else:
-            filename = (
+            source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
         file_id = await self._upload_file(
-            filename=filename, data=file_bytes, content_type=content_type
+            filename=source_name, data=file_bytes, content_type=content_type
         )
         if file_id is None:
             return None
-        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=filename)
+        # The part filename only drives the route's attachment marker (the bridge drops
+        # it), so derive its extension from the known image content_type instead of the
+        # upload name: an image uploaded without an image extension must still mark as an
+        # image, not a generic file, or "edit this" prompts fall back to QA.
+        stem = source_name.rsplit(".", 1)[0]
+        part_filename = f"{stem}{guess_extension(content_type) or '.jpg'}"
+        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=part_filename)
 
     async def attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
         """Converts a file attachment to an uploaded `input_file` content part."""

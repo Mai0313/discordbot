@@ -834,6 +834,26 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert streamed[-1] is message
 
 
+async def test_uploaded_image_without_extension_marks_as_image() -> None:
+    """An image upload whose filename lacks an image extension still routes as image."""
+    cog = _cog()
+    part = await cog.input_builder.image_to_part(
+        source=FakeAttachment(
+            filename="screenshot",
+            content_type="image/png",
+            payload=base64.b64decode(_png_b64()),
+            url="https://example.test/screenshot",
+        )
+    )
+    assert part is not None
+    stripped = strip_attachment_parts(
+        messages=[EasyInputMessageParam(role="user", content=[part])]
+    )
+    marker = stripped[0]["content"]
+    assert isinstance(marker, list)
+    assert marker[0]["text"] == "[attachment: image]"
+
+
 async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attached image routes the IMAGE handler through images.edit with raw bytes."""
     cog = _cog()
