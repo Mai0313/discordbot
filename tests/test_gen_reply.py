@@ -1971,10 +1971,15 @@ async def test_handle_message_reply_widens_allowlist_with_nickname_table(
     assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
 
 
-async def test_handle_message_reply_widens_allowlist_in_private_channel(
+async def test_handle_message_reply_does_not_widen_absent_member_in_private_channel(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A private guild channel widens too: the nickname table only holds public content."""
+    """A private channel must not read an absent member's personal memory via the nickname table.
+
+    The nickname table is public content, but the personal memory it would unlock is not, so
+    the allowlist stays conversation-only here: even when the selection model requests the
+    absent id, `resolve_user_memories` drops it and the secret never reaches the answer.
+    """
     del economy_isolated_db
     cog = _cog()
     write_main_memory(
@@ -2001,7 +2006,7 @@ async def test_handle_message_reply_widens_allowlist_in_private_channel(
     )
     await _reply_via_pipeline(cog=cog, message=message)
 
-    assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
+    assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])
 
 
 async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
