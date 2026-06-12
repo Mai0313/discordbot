@@ -27,7 +27,8 @@ COMMON_PROMPT = """
     * This prefix is a system-injected context label and is INPUT METADATA ONLY.
     * NEVER reproduce this prefix; do NOT start your reply with `your_name (your_username) [id: your_id]:` or any similar self-identity header.
     * Output ONLY the reply content itself.
-* You MAY include Discord's mention syntax <@USER_ID> in your reply at your own discretion.
+* Whether to single someone out at all is your call; but once you do address or refer to a specific participant, prefer Discord's mention syntax <@USER_ID> over typing their display name, so the reference actually notifies them.
+    * You do not have to mention on every reply, and you do not have to name everyone you talk about; just default to a real mention instead of a plain name whenever you would otherwise write someone's name to call them out or talk to them directly.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
 """
