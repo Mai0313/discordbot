@@ -19,4 +19,9 @@ def parse_decimal_amount(raw: str | None) -> int | None:
     normalized = (raw or "").replace(",", "").strip()
     if not normalized.isdecimal():
         return None
-    return int(normalized)
+    try:
+        return int(normalized)
+    except ValueError:
+        # A digit string past CPython's int-conversion limit passes isdecimal()
+        # but int() rejects it; treat it as invalid input, not a crash.
+        return None
