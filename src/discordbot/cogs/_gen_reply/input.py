@@ -1,5 +1,6 @@
 """Builds Responses API input messages from Discord messages."""
 
+import io
 import re
 import time
 from typing import TYPE_CHECKING, Literal, cast
@@ -8,11 +9,12 @@ from datetime import datetime
 from mimetypes import guess_type
 from collections import OrderedDict
 
-from openai import AsyncOpenAI
+from google import genai
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
+from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -106,14 +108,15 @@ class MessageInputBuilder(BaseModel):
     Attributes:
         bot: The Discord bot instance, used to detect the bot's own messages.
         runtime_models: Catalog whose slow model gates attachment modalities.
-        client: LiteLLM-proxy client used to upload attachments to the Files API.
+        gemini_client: Gemini client used to upload attachments to the Files API
+            directly, so each upload can be polled to ACTIVE before it is used.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
-    client: SkipValidation[AsyncOpenAI]
+    gemini_client: SkipValidation[genai.Client]
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
@@ -242,30 +245,43 @@ class MessageInputBuilder(BaseModel):
         return supported
 
     async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
-        """Uploads bytes to the Files API and returns a managed file id to reference.
+        """Uploads bytes to the Gemini Files API and returns the file URI to reference.
 
-        Sending attachments by `file_id` instead of inlined base64 keeps oversized
-        payloads under Gemini's ~10MB per-part `inline_data` cap. `target_model_names`
-        names the upload-only `file_model` deployment, not the reply model, so LiteLLM
-        uses it only to pick the Files API credential and never runs inference on it.
+        Sending attachments by file URI instead of inlined base64 keeps oversized
+        payloads under Gemini's ~10MB per-part `inline_data` cap. The upload goes
+        through the Gemini SDK directly (not the LiteLLM proxy) so the file can be
+        polled to an ACTIVE `state` before it is referenced; the proxy's file resource
+        only ever reports a deprecated `uploaded` status, which is why a fresh upload
+        used immediately intermittently 400s with "not in an ACTIVE state".
 
-        The id is used as soon as it is returned. The provider processes a fresh upload
-        asynchronously, but neither the Gemini nor the OpenAI file-input guides poll for
-        readiness, and the proxy exposes no reliable signal (the SDK `status` field is
-        deprecated and stays `uploaded`), so there is no activation check. The upload runs
-        in the background while the route and memory selection calls resolve, and that
-        overlap is the processing slack the answer relies on.
+        The answer request still references the file through the proxy, by the full
+        `uri` (`https://.../files/<id>`): the proxy resolves that to a `fileData.fileUri`
+        part, while the bare `files/<id>` name fails its mime-type lookup. The whole
+        upload + activation poll runs in the background while the route and memory
+        selection calls resolve, so small files (instant ACTIVE) add no latency and only
+        large / video uploads spend any of that overlap window waiting. A file that never
+        reaches ACTIVE within the bound is dropped, like any other failed upload.
         """
+        activation_timeout_seconds = 30.0
+        poll_interval_seconds = 0.5
         try:
-            uploaded = await self.client.files.create(
-                file=(filename, data, content_type),
-                purpose="user_data",
-                extra_body={"target_model_names": self.runtime_models.file_model.name},
+            uploaded = await self.gemini_client.aio.files.upload(
+                file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
             )
+            deadline = time.monotonic() + activation_timeout_seconds
+            while uploaded.state == FileState.PROCESSING:
+                if time.monotonic() >= deadline:
+                    logfire.warn(f"Attachment never reached ACTIVE state: {filename}")
+                    return None
+                await asyncio.sleep(poll_interval_seconds)
+                uploaded = await self.gemini_client.aio.files.get(name=uploaded.name)
+            if uploaded.state != FileState.ACTIVE:
+                logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
+                return None
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
             return None
-        return uploaded.id
+        return uploaded.uri
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.

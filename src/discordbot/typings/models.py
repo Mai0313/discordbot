@@ -102,19 +102,6 @@ class RuntimeModelCatalog(BaseModel):
         return video_model
 
     @property
-    def file_model(self) -> ModelSettings:
-        """The deployment name used to route Files API uploads, not for inference.
-
-        Callers: `MessageInputBuilder._upload_file`.
-
-        Returns:
-            A dedicated upload-only LiteLLM deployment; the proxy uses its name
-            only to pick the Files API credential, so attachments never reach a
-            real reply model just to be uploaded.
-        """
-        return ModelSettings(name="gemini-files")
-
-    @property
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 

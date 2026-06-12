@@ -8,6 +8,7 @@ import asyncio
 from functools import cached_property
 import contextlib
 
+from google import genai
 from openai import AsyncOpenAI
 import logfire
 from nextcord import File, Embed, Message
@@ -17,7 +18,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_litellm_client
+from discordbot.utils.llm import create_gemini_client, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
@@ -205,6 +206,16 @@ class ReplyGeneratorCogs(commands.Cog):
         return create_litellm_client(config=self.config)
 
     @cached_property
+    def gemini_client(self) -> genai.Client:
+        """The cached Gemini client for direct Files API attachment uploads.
+
+        Returns:
+            A Gemini client reused across uploads so attachments can be polled
+            to ACTIVE before the answer references them.
+        """
+        return create_gemini_client(config=self.config)
+
+    @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
         """The cached per-user memory extraction service.
 
@@ -243,10 +254,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """The cached Discord-message-to-Responses-API input builder.
 
         Returns:
-            A builder bound to this bot, runtime model catalog, and proxy client.
+            A builder bound to this bot, runtime model catalog, and the Gemini
+            client that uploads attachments to the Files API.
         """
         return MessageInputBuilder(
-            bot=self.bot, runtime_models=self.runtime_models, client=self.client
+            bot=self.bot, runtime_models=self.runtime_models, gemini_client=self.gemini_client
         )
 
     async def _get_history_message(
@@ -434,8 +446,8 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
         """Renders the reference chain and current message with uploaded attachment parts.
 
-        This is the answer-path render (uploads + activation); it runs in the background
-        so only the answer awaits the Files API.
+        This is the answer-path render (uploads + activation poll to ACTIVE); it runs in
+        the background so only the answer awaits the Files API.
         """
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
