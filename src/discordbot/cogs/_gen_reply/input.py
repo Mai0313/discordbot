@@ -8,7 +8,7 @@ from datetime import datetime
 from mimetypes import guess_type
 from collections import OrderedDict
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, NotFoundError
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
@@ -319,11 +319,18 @@ class MessageInputBuilder(BaseModel):
             delay = delay * 2
             try:
                 uploaded = await self.client.files.retrieve(file_id=uploaded.id)
-            except Exception:
+            except NotFoundError:
+                # The proxy does not expose files.retrieve at all (404); fall back to the
+                # best-effort id, matching pre-poll behavior, rather than polling to the cap.
                 logfire.warn(
                     f"files.retrieve unavailable; using file id without activation poll: {filename}"
                 )
                 return uploaded.id
+            except Exception:
+                # A transient poll failure (timeout / 5xx / 429) while the file may still be
+                # processing: keep the last status and retry until the deadline instead of
+                # handing back an id that is not ACTIVE yet.
+                logfire.warn(f"files.retrieve poll failed; retrying until cap: {filename}")
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
