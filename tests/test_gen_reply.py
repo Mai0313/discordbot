@@ -27,6 +27,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     parse_user_id_list,
     resolve_user_memories,
     build_memory_allowlist,
+    widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
@@ -763,7 +764,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
-    assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
+    assert cog.client.responses.parse_models[0] == cog.runtime_models.route_model.name
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -826,7 +827,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
     routed = await _route(cog=cog, message=message)
     assert routed.decision == "QA"
-    assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
+    assert cog.client.responses.parse_models[0] == cog.runtime_models.route_model.name
 
 
 @pytest.mark.parametrize(
@@ -1876,6 +1877,44 @@ def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
     assert 789 not in allowed
 
 
+def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
+    """A participant keeps their label and gains aliases; absent members are added."""
+    memory = (
+        "v1\n\n## 成員稱呼\n"
+        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
+        "* Bob(社群暱稱:阿伯)[id: 456]\n"
+    )
+    allowed = {123: "Mai (mai9999)"}
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
+
+    # The conversation label leads and the table row rides behind it on the same line.
+    assert allowed[123].startswith("Mai (mai9999)")
+    assert "李董" in allowed[123]
+    # A member absent from the conversation is added with the table row as label.
+    assert "阿伯" in allowed[456]
+
+
+def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
+    """Without include_absent, participants are still enriched but absent members stay out.
+
+    A private channel must not gain read access to an absent member's personal memory by
+    naming a public nickname, even though the nickname table itself is public content.
+    """
+    memory = (
+        "v1\n\n## 成員稱呼\n"
+        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
+        "* Bob(社群暱稱:阿伯)[id: 456]\n"
+    )
+    allowed = {123: "Mai (mai9999)"}
+    widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
+
+    # The present participant is still enriched with community aliases.
+    assert allowed[123].startswith("Mai (mai9999)")
+    assert "李董" in allowed[123]
+    # The absent member is not added, so their personal memory stays unreachable here.
+    assert 456 not in allowed
+
+
 async def test_handle_message_reply_injects_server_memory_into_selection(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1899,10 +1938,10 @@ async def test_handle_message_reply_injects_server_memory_into_selection(
     assert "Tester (tester)" in str(selection_input[-1])
 
 
-async def test_handle_message_reply_widens_allowlist_with_public_nickname_table(
+async def test_handle_message_reply_widens_allowlist_with_nickname_table(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """In a public channel a member named only in the nickname table is askable by alias."""
+    """A member named only in the nickname table is askable by alias."""
     del economy_isolated_db
     cog = _cog()
     # User 42 never speaks in the conversation, but the server nickname table names them.
@@ -1932,10 +1971,15 @@ async def test_handle_message_reply_widens_allowlist_with_public_nickname_table(
     assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
 
 
-async def test_handle_message_reply_keeps_boundary_in_private_channel(
+async def test_handle_message_reply_does_not_widen_absent_member_in_private_channel(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A private channel does not widen the allowlist: outsider memory stays unreachable."""
+    """A private channel must not read an absent member's personal memory via the nickname table.
+
+    The nickname table is public content, but the personal memory it would unlock is not, so
+    the allowlist stays conversation-only here: even when the selection model requests the
+    absent id, `resolve_user_memories` drops it and the secret never reaches the answer.
+    """
     del economy_isolated_db
     cog = _cog()
     write_main_memory(

@@ -56,7 +56,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
-    allowlist_ids_from_server_memory,
+    widen_allowlist_with_aliases,
 )
 from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
@@ -74,7 +74,7 @@ _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 
 # Memory selection is a lightweight tool-only preflight; past this deadline the reply
 # answers without memory instead of letting a slow proxy stall the whole pipeline.
-MEMORY_SELECT_TIMEOUT_SECONDS = 2.0
+MEMORY_SELECT_TIMEOUT_SECONDS = 3.0
 
 # Hard ceiling on the video-generation polling loop so a hung provider job cannot
 # leave the message handler waiting forever.
@@ -423,14 +423,14 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list = strip_attachment_parts(messages=[*reference_messages, *current_message])
 
         try:
-            fast_model = self.runtime_models.fast_model
+            route_model = self.runtime_models.route_model
             with logfire.span("gen_reply route"):
                 responses = await self.client.responses.parse(
-                    model=fast_model.name,
+                    model=route_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteDecision,
-                    reasoning=fast_model.reasoning,
+                    reasoning=route_model.reasoning,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                     extra_body={"mock_testing_fallbacks": False},
@@ -603,18 +603,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 messages=[message, *_walk_reference_chain(message=message), *history.raw],
                 bot_user_id=self.bot.user.id,
             )
-            # In a public channel, members named in the server's nickname table are askable
-            # by alias even when absent from the conversation: widen the permission boundary
-            # with their ids. Conversation participant labels still win on conflict.
-            if (
-                server_memory
-                and message.guild is not None
-                and _source_channel_is_public(message=message)
-            ):
-                for user_id, label in allowlist_ids_from_server_memory(
-                    memory=server_memory
-                ).items():
-                    allowed.setdefault(user_id, label)
+            # Enrich participant labels with their community aliases in every guild channel,
+            # but only widen the boundary with absent members' ids in public channels: the
+            # nickname table is public, yet an absent member's personal memory is not, so
+            # widening in a private channel would leak it. DMs have no guild and keep the
+            # conversation-only boundary.
+            if server_memory and message.guild is not None:
+                widen_allowlist_with_aliases(
+                    allowed=allowed,
+                    memory=server_memory,
+                    include_absent=_source_channel_is_public(message=message),
+                )
             if allowed:
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.

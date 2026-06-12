@@ -122,9 +122,9 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     """Parses askable user ids out of a server memory's `## 成員稱呼` nickname table.
 
     Each table row maps a member to the aliases the community uses and carries that
-    member's `[id: USER_ID]`. In a public channel these ids widen the lookup allowlist so a
-    member can be asked about by nickname even when absent from the conversation. The row
-    minus its id token becomes the label, escaped so a stored name can never inject a ping.
+    member's `[id: USER_ID]`. These ids widen the lookup allowlist so a member can be
+    asked about by nickname even when absent from the conversation. The row minus its
+    id token becomes the label, escaped so a stored name can never inject a ping.
     Returns an empty map when the section is absent.
     """
     section = _MEMBER_ALIAS_SECTION_RE.search(memory)
@@ -141,6 +141,28 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
         label = _MEMBER_ALIAS_ID_RE.sub("", line).strip().lstrip("*").strip()
         allowed[user_id] = escape_mentions(label) or str(user_id)
     return allowed
+
+
+def widen_allowlist_with_aliases(
+    *, allowed: dict[int, str], memory: str, include_absent: bool
+) -> None:
+    """Merges the server memory's nickname-table ids and aliases into the allowlist in place.
+
+    A conversation participant already in the allowlist keeps their label and gains the
+    table row as a suffix, so the selection model sees the Discord names and the community
+    aliases on one line instead of joining across context blocks. This enrichment grants no
+    new access (the participant is already permitted), so it always applies.
+
+    `include_absent` controls whether members present only in the table are added as new
+    callable ids. That does grant access to an absent member's personal memory, so it must
+    stay public-channel only: the nickname table is public content, but the personal memory
+    it would unlock is not, so widening in a private channel would leak it.
+    """
+    for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
+        if user_id in allowed:
+            allowed[user_id] = f"{allowed[user_id]} | {label}"
+        elif include_absent:
+            allowed[user_id] = label
 
 
 def render_callable_users_block(*, allowed: dict[int, str]) -> EasyInputMessageParam:

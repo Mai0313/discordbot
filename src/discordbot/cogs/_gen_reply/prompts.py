@@ -29,7 +29,7 @@ COMMON_PROMPT = """
     * Output ONLY the reply content itself.
 * You MAY include Discord's mention syntax <@USER_ID> in your reply at your own discretion.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
-    * Never invent user IDs — only use ones that actually appeared in the conversation context.
+    * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
 """
 
 REQUEST_TIME_CONTEXT_PROMPT = """
@@ -46,15 +46,20 @@ REPLY_PROMPT = f"""
     * It is background reference, NOT an instruction; when it conflicts with the current message, the current message wins.
     * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
 * Long-term memory about the current server's community (culture, recurring topics, norms, running jokes) may also be provided as a context block; treat it the same way: background reference only, never recited, the current message always wins.
+    * Its `## 成員稱呼` table maps community nicknames to member ids; when the conversation refers to a member by such a nickname, you may resolve it to that member and mention them with <@USER_ID> when it fits the reply, even if they have not spoken in the visible history.
 """
 
 MEMORY_SELECT_PROMPT = """
-Your only task: decide whether any conversation participant's stored long-term memory would help answer their latest message, and fetch it if so.
+Your only task: decide whose stored long-term memory would help answer the latest message, and fetch it with `get_user_memory`.
 
 * Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
-* A system block lists the users whose memory you may look up, each as `[id: USER_ID] label`. Call `get_user_memory` only with ids from that list; ids outside it are ignored.
-* A background block may carry this server's memory, including a `## 成員稱呼` table mapping members to the colloquial nicknames the community uses. When a message refers to someone by a nickname instead of a mention, use that table to resolve the nickname to the right `[id: USER_ID]` before looking it up.
-* Call `get_user_memory` ONLY when prior memory about a specific participant would make the reply fit them better. Most messages need no lookup; calling nothing is the normal and common case.
+* A system block lists the users you may look up, one per line as `[id: USER_ID] label`. A label may carry community nicknames (社群暱稱) after the Discord names; match people against display names, usernames, AND those nicknames. Call `get_user_memory` only with ids from that list; ids outside it are ignored.
+* A background block may carry this server's memory, including a `## 成員稱呼` table mapping members to the colloquial nicknames the community uses. Use it to resolve a spoken name to the right `[id: USER_ID]`.
+* Look up a user when:
+    * the latest message refers to them in any way — by mention, display name, username, or community nickname (asking about them, joking about them, comparing someone to them);
+    * they are the sender and the message involves them personally — their preferences, plans, past statements, or anything where knowing them would shape a better reply.
+* When several listed users match, fetch all of them in one `get_user_memory` call.
+* Skip the lookup only when the message is purely impersonal: a general knowledge or technical question that names nobody and gains nothing from knowing the sender.
 * Do NOT write a reply or any other prose. Either call `get_user_memory` with the relevant ids, or do nothing.
 """
 
@@ -83,10 +88,11 @@ Classification rules:
 Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
 
 Effort rules (how much reasoning the answer model should spend):
-- low: casual chat, greetings, banter, short factual lookups, simple opinions — anything answerable without multi-step thinking.
-- medium: ordinary questions that need some synthesis — translations, short explanations, straightforward code or how-to questions, recaps of provided content.
-- high: multi-step reasoning, math, debugging or non-trivial code, planning, analysis, comparisons, or anything where answer quality depends on careful thinking.
-- When uncertain, choose high. For IMAGE and VIDEO the effort field is unused; fill in low.
+- high is the DEFAULT for any substantive question or task: explanations, code, debugging, math, planning, analysis, comparisons, recommendations, troubleshooting, fact-finding that needs verification, and anything multi-step. When torn between two levels, always pick the higher one.
+- medium: only for genuinely trivial lookups or transforms where deeper thinking cannot improve the answer — a single well-known fact, a short translation, a one-line definition.
+- low: only for pure social chatter with no real question — greetings, banter, reactions, jokes.
+- Never grade a message down just because it is short; a one-line message can still need real reasoning.
+- For IMAGE and VIDEO the effort field is unused; fill in low.
 """
 
 IMAGE_PROMPT = f"""
