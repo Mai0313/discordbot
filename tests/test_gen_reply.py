@@ -180,8 +180,10 @@ class FakeAttachment:
         content_type: str | None = "text/plain",
         payload: bytes = b"hello",
         url: str = "https://example.test/file.txt",
+        attachment_id: int = 555,
     ) -> None:
         """Initializes attachment metadata and payload bytes."""
+        self.id = attachment_id
         self.filename = filename
         self.content_type = content_type
         self._payload = payload
@@ -2183,6 +2185,39 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     message.edited_at = datetime.now(tz=UTC)
     await cog.input_builder.get_attachment_parts(message=message)
     assert attachment.read_count == 2
+
+
+async def test_attachment_cache_refreshes_on_embed_url_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late embed unfurl swapping an image URL at constant count re-renders."""
+    cog = _cog()
+    message = FakeMessage(content="link", author=FakeAuthor(user_id=2))
+    rendered_urls: list[str] = []
+
+    async def fake_image_to_part(self: object, source: object) -> dict[str, str]:
+        """Records each rendered source instead of hitting the network."""
+        del self
+        rendered_urls.append(str(source))
+        return {"image_url": str(source), "detail": "auto", "type": "input_image"}
+
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
+    )
+
+    def _embed(url: str) -> SimpleNamespace:
+        """Builds a fake embed whose image carries a swappable proxy URL."""
+        return SimpleNamespace(image=SimpleNamespace(proxy_url=url, url=url), thumbnail=None)
+
+    message.embeds = [_embed("https://media.test/a.png")]
+    await cog.input_builder.get_attachment_parts(message=message)
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert rendered_urls == ["https://media.test/a.png"]
+
+    # Same embed count, different image URL: the cache must not serve the stale part.
+    message.embeds = [_embed("https://media.test/b.png")]
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 
 async def test_memory_selection_timeout_degrades_to_no_memory(

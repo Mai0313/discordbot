@@ -106,9 +106,11 @@ class MessageInputBuilder(BaseModel):
     runtime_models: RuntimeModelCatalog
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-download and re-encode the same history attachments every time. Keyed
-    # on edit time and source counts so an edit or a late embed unfurl re-renders.
+    # on the exact sources rendered (attachment + sticker ids, embed image/thumbnail
+    # URLs) plus edit time, so an edit or a late embed unfurl that swaps a URL without
+    # changing the source count still re-renders.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, int, int, int],
+        tuple[int, datetime | None, tuple[object, ...]],
         list[ResponseInputImageParam | ResponseInputFileParam],
     ] = PrivateAttr(default_factory=OrderedDict)
 
@@ -288,13 +290,21 @@ class MessageInputBuilder(BaseModel):
         """Extracts attachment content parts from a message, with a per-message cache."""
         if not (message.attachments or message.stickers or message.embeds):
             return []
-        cache_key = (
-            message.id,
-            message.edited_at,
-            len(message.attachments),
-            len(message.stickers),
-            len(message.embeds),
+        # Identify the exact sources `_render_attachment_parts` reads: attachment and
+        # sticker ids plus each embed's chosen image/thumbnail URL. A late unfurl or an
+        # embed URL swap changes this even when the source counts stay the same.
+        sources: tuple[object, ...] = (
+            tuple(attachment.id for attachment in message.attachments),
+            tuple(sticker.id for sticker in message.stickers),
+            tuple(
+                (
+                    embed.image.proxy_url or embed.image.url if embed.image else None,
+                    embed.thumbnail.proxy_url or embed.thumbnail.url if embed.thumbnail else None,
+                )
+                for embed in message.embeds
+            ),
         )
+        cache_key = (message.id, message.edited_at, sources)
         cached = self._attachment_cache.get(cache_key)
         if cached is not None:
             self._attachment_cache.move_to_end(cache_key)
