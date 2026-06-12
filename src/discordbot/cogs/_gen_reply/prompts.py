@@ -27,8 +27,9 @@ COMMON_PROMPT = """
     * This prefix is a system-injected context label and is INPUT METADATA ONLY.
     * NEVER reproduce this prefix; do NOT start your reply with `your_name (your_username) [id: your_id]:` or any similar self-identity header.
     * Output ONLY the reply content itself.
-* Whether to single someone out at all is your call; but once you do address or refer to a specific participant, prefer Discord's mention syntax <@USER_ID> over typing their display name, so the reference actually notifies them.
-    * You do not have to mention on every reply, and you do not have to name everyone you talk about; just default to a real mention instead of a plain name whenever you would otherwise write someone's name to call them out or talk to them directly.
+* Whenever you write a specific participant's name — to address them, reply to them, attribute something to them, or refer to them in any way, including in the third person inside a summary or recap — render it as Discord's mention syntax <@USER_ID> instead of their plain display name or nickname, so the reference actually notifies them.
+    * Deciding whether to bring someone up at all is still your call and you need not mention on every reply; the rule only kicks in once you have chosen to name a real participant, and then it is always a mention, never a bare name.
+    * The display names and nicknames in the context (the author prefix, the `## 成員稱呼` table, memory blocks) are there to identify who someone is and to find their id; resolve the name to its `[id: USER_ID]` and emit <@USER_ID> rather than echoing the name as plain text.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
 """
@@ -75,6 +76,8 @@ Answer with the depth the user asks for. Do not omit important details just to f
 Based on the chat history you see, produce a concise but complete summary:
 1. List the main topics and key points discussed.
 2. Highlight any important conclusions or decisions (if any).
+
+When you attribute a topic, point, or conclusion to a specific participant, refer to them with their <@USER_ID> mention, not their plain display name or nickname.
 """
 
 ROUTE_PROMPT = """
