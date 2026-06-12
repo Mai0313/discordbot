@@ -1,13 +1,13 @@
 """Builds Responses API input messages from Discord messages."""
 
 import re
-import base64
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import datetime
 from mimetypes import guess_type
 from collections import OrderedDict
 
+from openai import AsyncOpenAI
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import BaseModel, ConfigDict, PrivateAttr, SkipValidation
@@ -15,11 +15,13 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import get_image_data, shrink_image_bytes, convert_base64_to_data_uri
+from discordbot.utils.images import get_image_data, shrink_image_bytes
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
@@ -98,20 +100,22 @@ class MessageInputBuilder(BaseModel):
     Attributes:
         bot: The Discord bot instance, used to detect the bot's own messages.
         runtime_models: Catalog whose slow model gates attachment modalities.
+        client: LiteLLM-proxy client used to upload attachments to the Files API.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bot: SkipValidation[commands.Bot]
     runtime_models: RuntimeModelCatalog
+    client: SkipValidation[AsyncOpenAI]
     # Rendered attachment parts per message, so replying repeatedly in the same channel
-    # does not re-download and re-encode the same history attachments every time. Keyed
-    # on the exact sources rendered (attachment + sticker ids, embed image/thumbnail
-    # URLs) plus edit time, so an edit or a late embed unfurl that swaps a URL without
-    # changing the source count still re-renders.
+    # does not re-upload the same history attachments every time. Keyed on the exact
+    # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit
+    # time, so an edit or a late embed unfurl that swaps a URL without changing the
+    # source count still re-renders. Holds Files-API handles, valid for the file's 48h
+    # lifetime, so cache reuse never outlives the underlying upload.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, tuple[object, ...]],
-        list[ResponseInputImageParam | ResponseInputFileParam],
+        tuple[int, datetime | None, tuple[object, ...]], list[ResponseInputFileParam]
     ] = PrivateAttr(default_factory=OrderedDict)
 
     async def get_user_prompt(self, content: str) -> str:
@@ -159,55 +163,113 @@ class MessageInputBuilder(BaseModel):
             content = message.system_content
         return content
 
+    async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
+        """Uploads bytes to the provider Files API and returns a managed file id.
+
+        Referencing attachments by `file_id` instead of inlining their base64 keeps
+        oversized payloads under the provider's per-part `inline_data` cap (Gemini
+        rejects parts over ~10MB): the proxy resolves the id to a `fileData.fileUri`
+        rather than carrying the bytes in the request. `target_model_names` routes the
+        upload to the same provider that answers, so the handle is usable there.
+        """
+        try:
+            uploaded = await self.client.files.create(
+                file=(filename, data, content_type),
+                purpose="user_data",
+                extra_body={"target_model_names": self.runtime_models.slow_model.name},
+            )
+        except Exception:
+            logfire.warn(f"Failed to upload attachment to Files API: {filename}")
+            return None
+        return uploaded.id
+
+    async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
+        """Fetches and downscales an image source to upload-ready bytes and MIME type.
+
+        URL sources fetch over the network and attachments decode/re-encode, so the
+        blocking work runs off the event loop. Raises on any fetch/decode failure.
+        """
+        if isinstance(source, str):
+            file_bytes = await asyncio.to_thread(get_image_data, image_file=source, use_b64=False)
+            return file_bytes, "image/jpeg"
+        if isinstance(source, Attachment):
+            content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
+        else:
+            content_type = guess_type(source.url)[0] or "image/png"
+        file_bytes = await source.read()
+        return await asyncio.to_thread(
+            shrink_image_bytes, payload=file_bytes, content_type=content_type
+        )
+
     async def image_to_part(
         self, source: Attachment | StickerItem | str
-    ) -> ResponseInputImageParam | None:
-        """Converts an image source to a content part for the API."""
+    ) -> ResponseInputFileParam | None:
+        """Converts an image source to an uploaded `input_file` content part."""
         try:
-            if isinstance(source, str):
-                # A URL source fetches over the network inside get_image_data, so
-                # keep that blocking work off the event loop.
-                b64_data = await asyncio.to_thread(get_image_data, image_file=source)
-                data_uri = convert_base64_to_data_uri(base64_image=b64_data)
-                return ResponseInputImageParam(
-                    image_url=data_uri, detail="auto", type="input_image"
-                )
-            if isinstance(source, Attachment):
-                content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
-            else:
-                content_type = guess_type(source.url)[0] or "image/png"
-            file_bytes = await source.read()
-            # Downscale and re-encode off the event loop so an oversized photo never
-            # rides into the request as a multi-MB base64 payload.
-            file_bytes, content_type = await asyncio.to_thread(
-                shrink_image_bytes, payload=file_bytes, content_type=content_type
-            )
-            b64_data = base64.b64encode(file_bytes).decode("utf-8")
-            data_uri = f"data:{content_type};base64,{b64_data}"
-            return ResponseInputImageParam(image_url=data_uri, detail="auto", type="input_image")
+            file_bytes, content_type = await self._load_image_bytes(source=source)
         except Exception:
             logfire.warn("Failed to convert this image")
             return None
+        if isinstance(source, str):
+            filename = "image"
+        else:
+            filename = (
+                getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
+            )
+        file_id = await self._upload_file(
+            filename=filename, data=file_bytes, content_type=content_type
+        )
+        if file_id is None:
+            return None
+        return ResponseInputFileParam(type="input_file", file_id=file_id, filename=filename)
 
     async def attachment_to_part(self, attachment: Attachment) -> ResponseInputFileParam | None:
-        """Converts a file attachment to a content part for the API."""
-        try:
-            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-            file_bytes = await attachment.read()
-            b64_data = base64.b64encode(file_bytes).decode()
-            mime_type = content_type.split(";")[0].strip()
-            if not mime_type:
-                logfire.warn(
-                    f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
-                )
-                return None
-            data_uri = f"data:{mime_type};base64,{b64_data}"
-            return ResponseInputFileParam(
-                filename=attachment.filename, file_data=data_uri, type="input_file"
+        """Converts a file attachment to an uploaded `input_file` content part."""
+        content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+        mime_type = content_type.split(";")[0].strip()
+        if not mime_type:
+            logfire.warn(
+                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
             )
+            return None
+        try:
+            file_bytes = await attachment.read()
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
+        file_id = await self._upload_file(
+            filename=attachment.filename, data=file_bytes, content_type=mime_type
+        )
+        if file_id is None:
+            return None
+        return ResponseInputFileParam(
+            type="input_file", file_id=file_id, filename=attachment.filename
+        )
+
+    async def get_image_source_bytes(self, message: Message) -> list[bytes]:
+        """Returns downscaled bytes of a message's image sources for the IMAGE route.
+
+        Image editing feeds raw pixels to `images.edit`, so it loads bytes directly
+        rather than reusing the Files-API handles `get_attachment_parts` produces.
+        Only image attachments, stickers, and embed images are collected; non-image
+        files are not editable as images and are skipped.
+        """
+        sources: list[Attachment | StickerItem | str] = []
+        for attachment in message.attachments:
+            content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
+            if content_type.startswith("image/"):
+                sources.append(attachment)
+        sources.extend(message.stickers)
+        for embed in message.embeds:
+            if embed.image and (url := embed.image.proxy_url or embed.image.url):
+                sources.append(url)
+            if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
+                sources.append(url)
+        tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
+        for source in sources:
+            tasks.append(self._load_image_bytes(source=source))
+        loaded = await asyncio.gather(*tasks, return_exceptions=True)
+        return [item[0] for item in loaded if isinstance(item, tuple)]
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
@@ -252,41 +314,43 @@ class MessageInputBuilder(BaseModel):
 
     async def _render_attachment_parts(
         self, message: Message
-    ) -> list[ResponseInputImageParam | ResponseInputFileParam | None]:
-        """Renders every attachment source on a message; failures stay as None."""
-        slow_model = self.runtime_models.slow_model
-        modalities = get_supported_modalities(model_name=slow_model.name)
-        content_parts: list[ResponseInputImageParam | ResponseInputFileParam | None] = []
+    ) -> list[ResponseInputFileParam | None]:
+        """Renders every attachment source on a message; failures stay as None.
+
+        Each source uploads to the Files API; the uploads run concurrently so a message
+        with several attachments pays roughly one upload's latency, not the sum.
+        """
+        model_name = self.runtime_models.slow_model.name
+        modalities = get_supported_modalities(model_name=model_name)
+        tasks: list[Coroutine[object, object, ResponseInputFileParam | None]] = []
 
         for attachment in message.attachments:
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             required = self.required_modality(content_type=content_type)
-            if required in modalities:
-                if content_type.startswith("image/"):
-                    content_parts.append(await self.image_to_part(source=attachment))
-                else:
-                    content_parts.append(await self.attachment_to_part(attachment=attachment))
-            else:
+            if required not in modalities:
                 logfire.warn(
-                    f"Skipping {required} attachment for {slow_model.name}: {attachment.filename}"
+                    f"Skipping {required} attachment for {model_name}: {attachment.filename}"
                 )
+                continue
+            if content_type.startswith("image/"):
+                tasks.append(self.image_to_part(source=attachment))
+            else:
+                tasks.append(self.attachment_to_part(attachment=attachment))
 
         if "image" in modalities:
             for sticker in message.stickers:
-                content_parts.append(await self.image_to_part(source=sticker))
+                tasks.append(self.image_to_part(source=sticker))
 
             # Prefer Discord's proxy_url (media.discordapp.net) over the original URL, since sources like Threads CDN expire and reject requests without specific headers.
             for embed in message.embeds:
                 if embed.image and (url := embed.image.proxy_url or embed.image.url):
-                    content_parts.append(await self.image_to_part(source=url))
+                    tasks.append(self.image_to_part(source=url))
                 if embed.thumbnail and (url := embed.thumbnail.proxy_url or embed.thumbnail.url):
-                    content_parts.append(await self.image_to_part(source=url))
+                    tasks.append(self.image_to_part(source=url))
 
-        return content_parts
+        return list(await asyncio.gather(*tasks))
 
-    async def get_attachment_parts(
-        self, message: Message
-    ) -> list[ResponseInputImageParam | ResponseInputFileParam]:
+    async def get_attachment_parts(self, message: Message) -> list[ResponseInputFileParam]:
         """Extracts attachment content parts from a message, with a per-message cache."""
         if not (message.attachments or message.stickers or message.embeds):
             return []
@@ -348,8 +412,8 @@ class MessageInputBuilder(BaseModel):
             if not attachment_parts:
                 return EasyInputMessageParam(role="user", content=prefixed)
 
-            # Has attachments → must use a content list with input_text/input_image.
-            # role=assistant cannot carry `input_image` (only output_text/refusal),
+            # Has attachments → must use a content list with input_text/input_file.
+            # role=assistant cannot carry `input_file` (only output_text/refusal),
             # so bot replies that include generated images (from _handle_image_reply)
             # fall back to role=user; the author prefix above preserves bot identity.
             return EasyInputMessageParam(

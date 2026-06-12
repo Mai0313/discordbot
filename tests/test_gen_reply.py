@@ -339,14 +339,32 @@ class FakeVideos:
         return SimpleNamespace(content=b"mp4")
 
 
+class FakeFiles:
+    """Fake Files API resource that records uploads and returns managed-style ids."""
+
+    def __init__(self) -> None:
+        """Initializes upload call records."""
+        self.create_calls: list[tuple[str, str]] = []
+
+    async def create(
+        self, file: tuple[str, bytes, str], purpose: str, extra_body: dict[str, str]
+    ) -> SimpleNamespace:
+        """Records an upload and returns a fake file id derived from the filename."""
+        del purpose, extra_body
+        filename, _data, content_type = file
+        self.create_calls.append((filename, content_type))
+        return SimpleNamespace(id=f"file-{filename}")
+
+
 class FakeClient:
-    """Fake OpenAI client with responses, images, and videos resources."""
+    """Fake OpenAI client with responses, images, videos, and files resources."""
 
     def __init__(self) -> None:
         """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
         self.videos = FakeVideos()
+        self.files = FakeFiles()
 
 
 def _png_b64() -> str:
@@ -661,7 +679,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc")
     )
     assert file_part is not None
-    assert file_part["file_data"] == "data:text/plain;base64,YWJj"
+    assert file_part["type"] == "input_file"
+    assert file_part["file_id"] == "file-note.txt"
 
     image_part = await cog.input_builder.image_to_part(
         source=FakeAttachment(
@@ -669,7 +688,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         )
     )
     assert image_part is not None
-    assert image_part["type"] == "input_image"
+    assert image_part["type"] == "input_file"
+    assert image_part["file_id"] == "file-pixel.png"
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
@@ -690,10 +710,11 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     img_embed.set_image(url="https://example.test/image.png")
     message.embeds = [img_embed]
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_image_data", lambda image_file: _png_b64()
+        "discordbot.cogs._gen_reply.input.get_image_data",
+        lambda image_file, use_b64=True: base64.b64decode(_png_b64()),
     )
     parts = await cog.input_builder.get_attachment_parts(message=message)
-    assert [part["type"] for part in parts] == ["input_image", "input_image", "input_image"]
+    assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
 async def test_gen_reply_processes_history_reference_and_current_messages(
@@ -811,6 +832,25 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     )
     assert cog.client.responses.create_streams[-1] is True
     assert streamed[-1] is message
+
+
+async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An attached image routes the IMAGE handler through images.edit with raw bytes."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
+    ]
+
+    await cog._handle_image_reply(message=message, user_prompt="make it blue")
+
+    assert cog.client.images.edit_calls == 1
+    assert cog.client.images.generate_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -2243,7 +2283,7 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
         """Records each rendered source instead of hitting the network."""
         del self
         rendered_urls.append(str(source))
-        return {"image_url": str(source), "detail": "auto", "type": "input_image"}
+        return {"type": "input_file", "file_id": str(source)}
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part

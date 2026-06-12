@@ -19,7 +19,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.images import get_image_data, convert_base64_to_data_uri
+from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
@@ -214,9 +214,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """The cached Discord-message-to-Responses-API input builder.
 
         Returns:
-            A builder bound to this bot and runtime model catalog.
+            A builder bound to this bot, runtime model catalog, and proxy client.
         """
-        return MessageInputBuilder(bot=self.bot, runtime_models=self.runtime_models)
+        return MessageInputBuilder(
+            bot=self.bot, runtime_models=self.runtime_models, client=self.client
+        )
 
     async def _get_history_message(self, message: Message, limit: int) -> RenderedHistory:
         """Retrieves channel history once, returning rendered context plus raw messages."""
@@ -322,24 +324,15 @@ class ReplyGeneratorCogs(commands.Cog):
         """Handles image generation or editing requests."""
         image_model = self.runtime_models.image_model
         if message.reference and isinstance(message.reference.resolved, Message):
-            own_parts, ref_parts = await asyncio.gather(
-                self.input_builder.get_attachment_parts(message=message),
-                self.input_builder.get_attachment_parts(message=message.reference.resolved),
+            own_bytes, ref_bytes = await asyncio.gather(
+                self.input_builder.get_image_source_bytes(message=message),
+                self.input_builder.get_image_source_bytes(message=message.reference.resolved),
             )
-            attachment_parts = own_parts + ref_parts
+            image_bytes_list = own_bytes + ref_bytes
         else:
-            attachment_parts = await self.input_builder.get_attachment_parts(message=message)
+            image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
-        data_uris: list[str] = []
-        for part in attachment_parts:
-            if part.get("type") == "input_image" and (image_url := part.get("image_url")):
-                data_uris.append(image_url)
-
-        if data_uris:
-            tasks = []
-            for uri in data_uris:
-                tasks.append(asyncio.to_thread(get_image_data, image_file=uri, use_b64=False))
-            image_bytes_list: list[bytes] = list(await asyncio.gather(*tasks))
+        if image_bytes_list:
             result = await self.client.images.edit(
                 image=image_bytes_list,
                 prompt=user_prompt or "請依照附件內容進行編輯或優化。",
