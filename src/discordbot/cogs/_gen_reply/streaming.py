@@ -14,7 +14,6 @@ from openai.types.responses import ResponseStreamEvent
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
-from discordbot.utils.reactions import update_reaction
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._economy.presentation import currency_text
@@ -67,9 +66,6 @@ class ResponseStreamer(BaseModel):
     )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
-    used_web_search: bool = Field(
-        default=False, description="Whether the reply used a native web-search / grounding tool."
-    )
     memory_lookups: list[str] = Field(
         default_factory=list,
         description="Labels of users whose stored memory was injected, for the footer.",
@@ -224,7 +220,7 @@ class ResponseStreamer(BaseModel):
         self._ensure_editor_started()
 
     async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
-        """Streams the reply, accumulating text, usage, and web-search state onto the instance.
+        """Streams the reply, accumulating text and usage onto the instance.
 
         Only accumulates state; the snapshot editor task renders it to Discord, so this
         loop never blocks on a Discord edit between deltas.
@@ -238,13 +234,6 @@ class ResponseStreamer(BaseModel):
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
                     self.output_tokens += response.response.usage.output_tokens
-            elif response.type in {
-                "response.web_search_call.in_progress",
-                "response.web_search_call.searching",
-                "response.web_search_call.completed",
-                "response.output_text.annotation.added",
-            }:
-                self.used_web_search = True
             elif response.type == "response.reasoning_summary_text.delta":
                 self._on_reasoning_delta(delta=response.delta)
             elif response.type == "response.output_text.delta":
@@ -297,9 +286,6 @@ class ResponseStreamer(BaseModel):
             reply=self.reply, content=self.stored_content, footer=usage_footer
         )
         self.stored_content += usage_footer
-
-        if self.used_web_search:
-            await update_reaction(message=self.message, bot_user=None, emoji="🌐")
 
         return self.stored_content
 

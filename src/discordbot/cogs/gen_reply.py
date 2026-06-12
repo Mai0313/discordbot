@@ -663,6 +663,9 @@ class ReplyGeneratorCogs(commands.Cog):
         # streams the answer with the built-in tools always available and any selected
         # memory injected as context. The allowlist (conversation authors + mentioned
         # users, minus the bot) is the permission boundary.
+        # The split is a Gemini constraint, not a hard requirement: OpenAI / Claude answer
+        # models allow mixing function and built-in tools in one request, so this stays
+        # correct (just one extra request) if the answer model is switched off Gemini.
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
