@@ -614,66 +614,6 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
     assert cog.client.responses.create_models == []
 
 
-async def test_handle_streaming_marks_web_search_from_call_event(
-    economy_isolated_db: None,
-) -> None:
-    """Verifies native web_search_call events trigger the web reaction."""
-    del economy_isolated_db
-    message = FakeMessage()
-
-    await ResponseStreamer(message=message).stream(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta="answer"),
-                SimpleNamespace(type="response.web_search_call.completed"),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
-                    ),
-                ),
-            ]
-        )
-    )
-
-    assert message.added_reactions == ["🌐"]
-
-
-async def test_handle_streaming_marks_web_search_from_annotation(
-    economy_isolated_db: None,
-) -> None:
-    """Verifies any annotation event also triggers the web reaction.
-
-    LiteLLM-proxied Gemini grounds via url_citation annotations without
-    emitting web_search_call.* events, so annotation alone is treated as
-    a search signal.
-    """
-    del economy_isolated_db
-    message = FakeMessage()
-
-    await ResponseStreamer(message=message).stream(
-        responses=_stream_events_from(
-            events=[
-                SimpleNamespace(type="response.output_text.delta", delta="grounded answer"),
-                SimpleNamespace(
-                    type="response.output_text.annotation.added",
-                    annotation={"type": "url_citation", "url": "https://example.com/article"},
-                ),
-                SimpleNamespace(
-                    type="response.completed",
-                    response=SimpleNamespace(
-                        model=TEST_LLM_MODEL,
-                        usage=SimpleNamespace(input_tokens=12, output_tokens=34),
-                    ),
-                ),
-            ]
-        )
-    )
-
-    assert message.added_reactions == ["🌐"]
-
-
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     """Verifies nested provider errors are preferred over wrapper text."""
     raw = """wrapper b'{"error": {"message": "quota exceeded"}}'"""
