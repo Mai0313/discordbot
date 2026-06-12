@@ -1111,6 +1111,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert isinstance(catalog.fast_model, ModelSettings)
     assert catalog.image_model.name.endswith("image-preview")
     assert catalog.video_model.name.startswith("veo")
+    assert catalog.file_model.name == "gemini-files"
     assert catalog.slow_model.effort == "high"
     assert ModelSettings(name="gemini-test").tools == [
         {"googleSearch": {}},

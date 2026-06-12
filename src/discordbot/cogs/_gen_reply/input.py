@@ -172,19 +172,18 @@ class MessageInputBuilder(BaseModel):
         return content
 
     async def _upload_file(self, filename: str, data: bytes, content_type: str) -> str | None:
-        """Uploads bytes to the provider Files API and returns a managed file id.
+        """Uploads bytes to the Files API and returns a managed file id to reference.
 
-        Referencing attachments by `file_id` instead of inlining their base64 keeps
-        oversized payloads under the provider's per-part `inline_data` cap (Gemini
-        rejects parts over ~10MB): the proxy resolves the id to a `fileData.fileUri`
-        rather than carrying the bytes in the request. `target_model_names` routes the
-        upload to the same provider that answers, so the handle is usable there.
+        Sending attachments by `file_id` instead of inlined base64 keeps oversized
+        payloads under Gemini's ~10MB per-part `inline_data` cap. `target_model_names`
+        names the upload-only `file_model` deployment, not the reply model, so LiteLLM
+        uses it only to pick the Files API credential and never runs inference on it.
         """
         try:
             uploaded = await self.client.files.create(
                 file=(filename, data, content_type),
                 purpose="user_data",
-                extra_body={"target_model_names": self.runtime_models.slow_model.name},
+                extra_body={"target_model_names": self.runtime_models.file_model.name},
             )
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
