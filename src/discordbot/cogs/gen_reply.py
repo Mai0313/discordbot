@@ -655,7 +655,12 @@ class ReplyGeneratorCogs(commands.Cog):
         memory_enabled: bool = True,
         effort: Literal["low", "medium", "high"] = "high",
     ) -> None:
-        """Streams the answer from a pre-built reply context, then schedules memory updates."""
+        """Streams the answer from a pre-built reply context, then schedules memory updates.
+
+        The per-user update is gated by `memory_enabled`; the per-server update always runs
+        (subject to its own guild / public-channel guards), so the SUMMARY route still records
+        community memory even though it carries `memory_enabled=False`.
+        """
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
@@ -711,9 +716,13 @@ class ReplyGeneratorCogs(commands.Cog):
                     user_id=message.author.id,
                 ),
             )
-            self._schedule_server_memory_update(
-                message=message, message_list=context.message_list, full_reply=full_reply
-            )
+        # Server memory is not gated by `memory_enabled`: the SUMMARY route runs with it
+        # off (no per-user memory) yet its ~100-message digest is high-quality community
+        # signal worth recording. DMs and non-public channels are dropped by the guards
+        # inside `_schedule_server_memory_update`.
+        self._schedule_server_memory_update(
+            message=message, message_list=context.message_list, full_reply=full_reply
+        )
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -810,9 +819,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     prep_task = None
                     reactions.advance(emoji="📖")
                     # Summaries digest ~100 channel messages: skip per-user memory
-                    # so it neither biases the digest nor floods extraction. The
-                    # cancelled speculative prep does not cancel `parts_task`, so the
-                    # shared reference/current parts are still reused here.
+                    # so it neither biases the digest nor floods extraction, but the
+                    # per-server memory is still recorded since the digest is rich
+                    # community signal. The cancelled speculative prep does not cancel
+                    # `parts_task`, so the shared reference/current parts are reused here.
                     context = await self._prepare_reply_context(
                         message=message,
                         history_limit=100,
