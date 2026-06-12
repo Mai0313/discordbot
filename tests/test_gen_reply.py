@@ -14,12 +14,16 @@ import pytest
 from nextcord import File, Embed
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
+from discordbot.cogs.gen_reply import (
+    ReplyGeneratorCogs,
+    _discard_task,
+    _build_runtime_instructions,
+)
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
-from discordbot.cogs._gen_reply.context import ReplyContext
+from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -1192,6 +1196,53 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
     chain = ReactionStatusChain(
         message=FakeMessage(content="hi"), bot_user=SimpleNamespace(id=999)
+async def test_prepare_reply_context_shields_shared_parts_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the speculative prep must not cancel the shared upload task.
+
+    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
+    unshielded `await parts_task` inside prep would propagate the cancellation and make
+    the rebuilt summary context fail with CancelledError.
+    """
+    cog = _cog()
+    release = asyncio.Event()
+
+    async def slow_parts() -> tuple[list[object], list[object]]:
+        """Stands in for an upload still activating when the route is decided."""
+        await release.wait()
+        return ([], [])
+
+    async def fake_history(
+        message: FakeMessage, limit: int, with_text_only: bool = False
+    ) -> RenderedHistory:
+        """Returns empty history so prep parks directly on the shared parts task."""
+        del message, limit, with_text_only
+        return RenderedHistory()
+
+    monkeypatch.setattr(cog, "_get_history_message", fake_history)
+    parts_task = asyncio.create_task(coro=slow_parts())
+    prep_task = asyncio.create_task(
+        coro=cog._prepare_reply_context(
+            message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)),
+            history_limit=100,
+            memory_enabled=False,
+            parts_task=parts_task,
+            text_parts=([], []),
+        )
+    )
+    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    await _discard_task(task=prep_task)
+
+    assert not parts_task.cancelled()
+    release.set()
+    reference_messages, current_message = await parts_task
+    assert (reference_messages, current_message) == ([], [])
+
+
     )
     chain.advance(emoji="🔀")
     chain.advance(emoji="❓")

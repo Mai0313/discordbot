@@ -622,7 +622,10 @@ class ReplyGeneratorCogs(commands.Cog):
             history = await self._get_history_message(
                 message=message, limit=history_limit, with_text_only=memory_enabled
             )
-            reference_messages, current_message = await parts_task
+            # Shielded so cancelling this speculative prep (non-QA routes) does not
+            # propagate into the shared upload task: a SUMMARY route cancels prep while
+            # still reusing `parts_task`, and an unshielded `await` would cancel it too.
+            reference_messages, current_message = await asyncio.shield(parts_task)
         hist_messages = history.rendered
 
         # The bot's own per-server memory is read once here and shared by both phases: it
@@ -883,9 +886,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     prep_task = None
                     reactions.advance(emoji="📖")
                     # Summaries digest ~100 channel messages: skip per-user memory
-                    # so it neither biases the digest nor floods extraction. The
-                    # cancelled speculative prep does not cancel `parts_task`, so the
-                    # shared reference/current parts are still reused here.
+                    # so it neither biases the digest nor floods extraction. Cancelling
+                    # the speculative prep leaves `parts_task` running (prep awaits it
+                    # through asyncio.shield), so the shared reference/current parts are
+                    # still reused here.
                     context = await self._prepare_reply_context(
                         message=message,
                         history_limit=100,
