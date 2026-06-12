@@ -30,7 +30,6 @@ from discordbot.cogs._gen_reply.input import (
     sanitize_identity,
     render_author_identity,
     render_server_identity,
-    strip_attachment_parts,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
@@ -137,8 +136,38 @@ def _walk_reference_chain(message: Message) -> list[Message]:
     return chain
 
 
-async def _discard_task(task: asyncio.Task[ReplyContext]) -> None:
-    """Cancels and drains a speculative context task so its exception is retrieved."""
+def _reference_header(ref: Message) -> EasyInputMessageParam:
+    """Builds the system separator that precedes one reference-chain message."""
+    return EasyInputMessageParam(
+        role="system",
+        content=[
+            ResponseInputTextParam(
+                text=(
+                    f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
+                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}] that might be helpful "
+                    "for answering. ===="
+                ),
+                type="input_text",
+            )
+        ],
+    )
+
+
+def _current_header(message: Message) -> EasyInputMessageParam:
+    """Builds the system separator that precedes the current message."""
+    return EasyInputMessageParam(
+        role="system",
+        content=[
+            ResponseInputTextParam(
+                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}]. ====",
+                type="input_text",
+            )
+        ],
+    )
+
+
+async def _discard_task[TaskResultT](task: asyncio.Task[TaskResultT]) -> None:
+    """Cancels and drains a speculative task so its exception is retrieved."""
     task.cancel()
     try:
         await task
@@ -220,81 +249,91 @@ class ReplyGeneratorCogs(commands.Cog):
             bot=self.bot, runtime_models=self.runtime_models, client=self.client
         )
 
-    async def _get_history_message(self, message: Message, limit: int) -> RenderedHistory:
-        """Retrieves channel history once, returning rendered context plus raw messages."""
+    async def _get_history_message(
+        self, message: Message, limit: int, with_text_only: bool = False
+    ) -> RenderedHistory:
+        """Retrieves channel history once, returning rendered context plus raw messages.
+
+        The full render (uploaded attachment parts) always feeds the answer; the
+        text-only render is built only when `with_text_only`, since just the memory
+        selection call reads it and the SUMMARY route should not pay for a second pass.
+        """
         messages: list[EasyInputMessageParam] = []
+        text_only_messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
 
         if hist_messages:
-            tasks: list[Awaitable[EasyInputMessageParam]] = []
+            full_tasks: list[Awaitable[EasyInputMessageParam]] = []
             for hist_msg in hist_messages:
-                task = self.input_builder.process_single_message(message=hist_msg)
-                tasks.append(task)
-            processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
-
-            messages.append(
-                EasyInputMessageParam(
-                    role="system",
-                    content=[
-                        ResponseInputTextParam(
-                            text="==== Chat History that might be helpful for answering. ====",
-                            type="input_text",
-                        )
-                    ],
-                )
+                full_tasks.append(self.input_builder.process_single_message(message=hist_msg))
+            text_tasks: list[Awaitable[EasyInputMessageParam]] = []
+            if with_text_only:
+                for hist_msg in hist_messages:
+                    text_tasks.append(
+                        self.input_builder.process_single_message_text_only(message=hist_msg)
+                    )
+            processed, processed_text = await asyncio.gather(
+                asyncio.gather(*full_tasks), asyncio.gather(*text_tasks)
             )
+
+            header = EasyInputMessageParam(
+                role="system",
+                content=[
+                    ResponseInputTextParam(
+                        text="==== Chat History that might be helpful for answering. ====",
+                        type="input_text",
+                    )
+                ],
+            )
+            messages.append(header)
             messages.extend(processed)
+            if with_text_only:
+                text_only_messages.append(header)
+                text_only_messages.extend(processed_text)
 
-        return RenderedHistory(rendered=messages, raw=hist_messages)
+        return RenderedHistory(
+            rendered=messages, rendered_text_only=text_only_messages, raw=hist_messages
+        )
 
-    async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
-        """Walks the reference chain up to depth 3 and renders each link as context."""
+    async def _get_reference_message(
+        self, message: Message, text_only: bool = False
+    ) -> list[EasyInputMessageParam]:
+        """Walks the reference chain up to depth 3 and renders each link as context.
+
+        `text_only` emits attachment markers instead of uploaded file parts, for the
+        route and memory-selection calls that must not wait on the Files API.
+        """
         chain = _walk_reference_chain(message=message)
         if not chain:
             return []
 
         tasks: list[Awaitable[EasyInputMessageParam]] = []
         for ref in chain:
-            task = self.input_builder.process_single_message(message=ref)
-            tasks.append(task)
+            if text_only:
+                tasks.append(self.input_builder.process_single_message_text_only(message=ref))
+            else:
+                tasks.append(self.input_builder.process_single_message(message=ref))
         processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
 
         messages: list[EasyInputMessageParam] = []
         for ref, processed_ref in zip(reversed(chain), reversed(processed), strict=True):
-            messages.append(
-                EasyInputMessageParam(
-                    role="system",
-                    content=[
-                        ResponseInputTextParam(
-                            text=(
-                                f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-                                f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}] that might be helpful "
-                                "for answering. ===="
-                            ),
-                            type="input_text",
-                        )
-                    ],
-                )
-            )
+            messages.append(_reference_header(ref=ref))
             messages.append(processed_ref)
         return messages
 
-    async def _get_current_message(self, message: Message) -> list[EasyInputMessageParam]:
+    async def _get_current_message(
+        self, message: Message, text_only: bool = False
+    ) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
-        messages: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(
-                role="system",
-                content=[
-                    ResponseInputTextParam(
-                        text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}]. ====",
-                        type="input_text",
-                    )
-                ],
+        messages: list[EasyInputMessageParam] = [_current_header(message=message)]
+        if text_only:
+            current_msg = await self.input_builder.process_single_message_text_only(
+                message=message
             )
-        ]
-        current_msg = await self.input_builder.process_single_message(message=message)
+        else:
+            current_msg = await self.input_builder.process_single_message(message=message)
         messages.append(current_msg)
         return messages
 
@@ -393,10 +432,24 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_reference_and_current(
         self, message: Message
     ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Processes the reference chain and current message once, shared by routing and the answer."""
+        """Renders the reference chain and current message with uploaded attachment parts.
+
+        This is the answer-path render (uploads + activation); it runs in the background
+        so only the answer awaits the Files API.
+        """
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
+        )
+        return reference_messages, current_message
+
+    async def _get_reference_and_current_text_only(
+        self, message: Message
+    ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
+        """Renders reference + current as attachment markers for route and memory selection."""
+        reference_messages, current_message = await asyncio.gather(
+            self._get_reference_message(message=message, text_only=True),
+            self._get_current_message(message=message, text_only=True),
         )
         return reference_messages, current_message
 
@@ -409,11 +462,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """Routes the message to the appropriate handler using pre-built context parts.
 
         Besides the handler choice, the route also grades how much reasoning effort the
-        answer deserves; QA and SUMMARY override the slow model's effort with it.
-        Attachment parts are reduced to text markers: classification needs the text and
-        the fact that an attachment exists, not the payload bytes.
+        answer deserves; QA and SUMMARY override the slow model's effort with it. The
+        reference + current parts arrive already text-only (attachment markers, no file
+        ids), so the route classifies on the text without reading or waiting on uploads.
         """
-        message_list = strip_attachment_parts(messages=[*reference_messages, *current_message])
+        message_list = [*reference_messages, *current_message]
 
         try:
             route_model = self.runtime_models.route_model
@@ -459,12 +512,12 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         tool_model = self.runtime_models.tool_model
         # The callable-users block stays last so the model reads it right before deciding;
-        # the server-memory block (if any) leads as earlier background context. Attachment
-        # parts are reduced to text markers: picking whose memory to read needs the text,
-        # not the payload bytes, and the smaller request returns faster.
+        # the server-memory block (if any) leads as earlier background context. The caller
+        # passes an already text-only transcript (attachment markers, no file ids), so this
+        # request neither re-reads the uploaded payloads nor waits on their upload.
         selection_input: ResponseInputParam = [
             *([server_memory_block] if server_memory_block is not None else []),
-            *strip_attachment_parts(messages=message_list),
+            *message_list,
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.client.responses.create(
@@ -554,22 +607,26 @@ class ReplyGeneratorCogs(commands.Cog):
         history_limit: int,
         memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
     ) -> ReplyContext:
         """Builds history, shared parts, server memory, and the memory selection result.
 
         Runs speculatively as its own task concurrent with routing: everything here only
         reads (channel history, memory files, the selection request), so a non-QA route
-        can discard it safely.
+        can discard it safely. `parts_task` carries the answer-path reference/current
+        renders (uploaded files); `text_parts` carries their text-only twins so the memory
+        selection call never re-reads or waits on the uploads.
         """
+        text_reference, text_current = text_parts
         with logfire.span("gen_reply context build"):
-            history = await self._get_history_message(message=message, limit=history_limit)
-            reference_messages, current_message = await parts_task
+            history = await self._get_history_message(
+                message=message, limit=history_limit, with_text_only=memory_enabled
+            )
+            # Shielded so cancelling this speculative prep (non-QA routes) does not
+            # propagate into the shared upload task: a SUMMARY route cancels prep while
+            # still reusing `parts_task`, and an unshielded `await` would cancel it too.
+            reference_messages, current_message = await asyncio.shield(parts_task)
         hist_messages = history.rendered
-        message_list: list[EasyInputMessageParam] = [
-            *hist_messages,
-            *reference_messages,
-            *current_message,
-        ]
 
         # The bot's own per-server memory is read once here and shared by both phases: it
         # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
@@ -608,6 +665,13 @@ class ReplyGeneratorCogs(commands.Cog):
                     include_absent=_source_channel_is_public(message=message),
                 )
             if allowed:
+                # Selection runs on the text-only transcript (markers, no file ids) so it
+                # neither re-reads the uploaded files nor blocks on their upload.
+                selection_message_list: list[EasyInputMessageParam] = [
+                    *history.rendered_text_only,
+                    *text_reference,
+                    *text_current,
+                ]
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.
                 try:
@@ -615,7 +679,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         async with asyncio.timeout(delay=MEMORY_SELECT_TIMEOUT_SECONDS):
                             selection = await self._select_user_memories(
                                 message=message,
-                                message_list=message_list,
+                                message_list=selection_message_list,
                                 allowed=allowed,
                                 server_memory_block=server_memory_block,
                             )
@@ -778,15 +842,22 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
         prep_task: asyncio.Task[ReplyContext] | None = None
+        parts_task: (
+            asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]] | None
+        ) = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 reactions.advance(emoji="🔀")
-                # Reference + current are processed once and shared by routing and the
-                # answer; the QA context (history, server memory, memory selection) builds
-                # speculatively in parallel with the route call since QA is the dominant
-                # route — non-QA routes discard it.
+                # The reference + current attachment uploads (and their activation polls)
+                # run in the background and only the answer awaits them. The route and the
+                # memory selection use the text-only renders, so neither waits on the Files
+                # API. The QA context builds speculatively in parallel with the route call
+                # since QA is the dominant route — non-QA routes discard it.
                 parts_task = asyncio.create_task(
                     coro=self._get_reference_and_current(message=message)
+                )
+                text_reference, text_current = await self._get_reference_and_current_text_only(
+                    message=message
                 )
                 prep_task = asyncio.create_task(
                     coro=self._prepare_reply_context(
@@ -794,41 +865,48 @@ class ReplyGeneratorCogs(commands.Cog):
                         history_limit=30,
                         memory_enabled=True,
                         parts_task=parts_task,
+                        text_parts=(text_reference, text_current),
                     )
                 )
-                reference_messages, current_message = await parts_task
                 route = await self._route_message(
                     message=message,
-                    reference_messages=reference_messages,
-                    current_message=current_message,
+                    reference_messages=text_reference,
+                    current_message=text_current,
                 )
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 pipeline_span.set_attribute(key="effort", value=route.effort)
                 if route.decision == "IMAGE":
                     await _discard_task(task=prep_task)
                     prep_task = None
+                    # IMAGE loads raw bytes itself, so the background uploads are wasted.
+                    await _discard_task(task=parts_task)
+                    parts_task = None
                     reactions.advance(emoji="🎨")
                     await self._handle_image_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "VIDEO":
                     await _discard_task(task=prep_task)
                     prep_task = None
+                    await _discard_task(task=parts_task)
+                    parts_task = None
                     reactions.advance(emoji="🎬")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="📖")
-                    # Summaries digest ~100 channel messages: skip per-user memory
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
-                    # community signal. The cancelled speculative prep does not cancel
-                    # `parts_task`, so the shared reference/current parts are reused here.
+                    # community signal. Cancelling the speculative prep leaves `parts_task`
+                    # running (prep awaits it through asyncio.shield), so the shared
+                    # reference/current parts are still reused here.
                     context = await self._prepare_reply_context(
                         message=message,
                         history_limit=100,
                         memory_enabled=False,
                         parts_task=parts_task,
+                        text_parts=(text_reference, text_current),
                     )
+                    parts_task = None
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=SUMMARY_PROMPT,
@@ -843,6 +921,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     # selection picks some.
                     context = await prep_task
                     prep_task = None
+                    parts_task = None
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=REPLY_PROMPT,
@@ -853,6 +932,8 @@ class ReplyGeneratorCogs(commands.Cog):
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task)
+            if parts_task is not None:
+                await _discard_task(task=parts_task)
 
 
 def setup(bot: commands.Bot) -> None:

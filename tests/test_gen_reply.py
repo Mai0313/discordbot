@@ -14,12 +14,16 @@ import pytest
 from nextcord import File, Embed
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
+from discordbot.cogs.gen_reply import (
+    ReplyGeneratorCogs,
+    _discard_task,
+    _build_runtime_instructions,
+)
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, strip_attachment_parts
-from discordbot.cogs._gen_reply.context import ReplyContext
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -385,8 +389,10 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 
 async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision:
-    """Routes a message after building the shared reference/current parts."""
-    reference_messages, current_message = await cog._get_reference_and_current(message=message)
+    """Routes a message after building the shared text-only reference/current parts."""
+    reference_messages, current_message = await cog._get_reference_and_current_text_only(
+        message=message
+    )
     return await cog._route_message(
         message=message, reference_messages=reference_messages, current_message=current_message
     )
@@ -402,11 +408,13 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+    text_parts = await cog._get_reference_and_current_text_only(message=message)
     context = await cog._prepare_reply_context(
         message=message,
         history_limit=history_limit,
         memory_enabled=memory_enabled,
         parts_task=parts_task,
+        text_parts=text_parts,
     )
     await cog._handle_message_reply(
         message=message,
@@ -834,24 +842,83 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert streamed[-1] is message
 
 
-async def test_uploaded_image_without_extension_marks_as_image() -> None:
-    """An image upload whose filename lacks an image extension still routes as image."""
+async def test_uploaded_image_without_extension_marks_as_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An image attachment whose filename lacks an extension still marks as an image."""
     cog = _cog()
-    part = await cog.input_builder.image_to_part(
-        source=FakeAttachment(
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="<@999> see", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
             filename="screenshot",
             content_type="image/png",
             payload=base64.b64decode(_png_b64()),
             url="https://example.test/screenshot",
         )
+    ]
+
+    # Classification is by content_type, not filename, so the marker render needs no upload.
+    rendered = await cog.input_builder.process_single_message_text_only(message=message)
+    parts = rendered["content"]
+    assert isinstance(parts, list)
+    assert parts[-1]["text"] == "[attachment: image]"
+
+
+async def test_text_only_and_full_render_agree_on_attachment_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The marker render and the upload render keep the same supported-attachment slots."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
-    assert part is not None
-    stripped = strip_attachment_parts(
-        messages=[EasyInputMessageParam(role="user", content=[part])]
-    )
-    marker = stripped[0]["content"]
-    assert isinstance(marker, list)
-    assert marker[0]["text"] == "[attachment: image]"
+    message = FakeMessage(content="<@999> mix", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        ),
+        FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
+    ]
+
+    text_only = await cog.input_builder.process_single_message_text_only(message=message)
+    full = await cog.input_builder.process_single_message(message=message)
+
+    text_markers = [
+        part
+        for part in text_only["content"]
+        if isinstance(part, dict) and str(part.get("text", "")).startswith("[attachment:")
+    ]
+    full_files = [
+        part
+        for part in full["content"]
+        if isinstance(part, dict) and part.get("type") == "input_file"
+    ]
+    assert len(text_markers) == len(full_files) == 1
+
+
+async def test_text_only_render_degrades_when_modality_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold-start modality lookup failure degrades to empty text, not a pipeline abort."""
+    cog = _cog()
+
+    def boom(model_name: str) -> set[str]:
+        """Simulates the LiteLLM model-info fetch failing on a cold cache."""
+        del model_name
+        raise RuntimeError("model info unreachable")
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_supported_modalities", boom)
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
+    ]
+
+    rendered = await cog.input_builder.process_single_message_text_only(message=message)
+
+    assert rendered == EasyInputMessageParam(role="user", content="")
 
 
 async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -918,13 +985,19 @@ async def test_gen_reply_on_message_dispatches_routes(
     ) -> RouteDecision:
         """Returns the parametrized route."""
         del reference_messages, current_message
+        # Yield like a real route I/O call so the speculative prep task gets scheduled.
+        await asyncio.sleep(0)
         return RouteDecision(decision=route)
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
-        del message, parts_task
+        del message, parts_task, text_parts
         prep_requests.append((history_limit, memory_enabled))
         return prepared_context
 
@@ -981,6 +1054,53 @@ async def test_gen_reply_on_message_dispatches_routes(
         assert contexts == [prepared_context]
 
 
+async def test_prepare_reply_context_shields_shared_parts_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the speculative prep must not cancel the shared upload task.
+
+    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
+    unshielded `await parts_task` inside prep would propagate the cancellation and make
+    the rebuilt summary context fail with CancelledError.
+    """
+    cog = _cog()
+    release = asyncio.Event()
+
+    async def slow_parts() -> tuple[list[object], list[object]]:
+        """Stands in for an upload still activating when the route is decided."""
+        await release.wait()
+        return ([], [])
+
+    async def fake_history(
+        message: FakeMessage, limit: int, with_text_only: bool = False
+    ) -> RenderedHistory:
+        """Returns empty history so prep parks directly on the shared parts task."""
+        del message, limit, with_text_only
+        return RenderedHistory()
+
+    monkeypatch.setattr(cog, "_get_history_message", fake_history)
+    parts_task = asyncio.create_task(coro=slow_parts())
+    prep_task = asyncio.create_task(
+        coro=cog._prepare_reply_context(
+            message=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1)),
+            history_limit=100,
+            memory_enabled=False,
+            parts_task=parts_task,
+            text_parts=([], []),
+        )
+    )
+    # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    await _discard_task(task=prep_task)
+
+    assert not parts_task.cancelled()
+    release.set()
+    reference_messages, current_message = await parts_task
+    assert (reference_messages, current_message) == ([], [])
+
+
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1007,10 +1127,14 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         raise RuntimeError("boom")
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task
+        del message, history_limit, memory_enabled, parts_task, text_parts
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_message", boom)
@@ -1056,13 +1180,20 @@ async def test_on_message_discards_speculative_context_on_image_route(
     ) -> str:
         """Routes every message to IMAGE."""
         del reference_messages, current_message
+        # Yield like a real route I/O call so the speculative prep task starts and can
+        # then be cancelled by the IMAGE dispatch.
+        await asyncio.sleep(0)
         return "IMAGE"
 
     async def fake_prepare(
-        message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
     ) -> ReplyContext:
         """Blocks until cancelled, recording the cancellation."""
-        del message, history_limit, memory_enabled, parts_task
+        del message, history_limit, memory_enabled, parts_task, text_parts
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -2268,39 +2399,6 @@ async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None)
     assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
 
 
-def test_strip_attachment_parts_replaces_payload_parts() -> None:
-    """Image and file parts collapse to text markers; plain text passes through."""
-    payload_message = EasyInputMessageParam(
-        role="user",
-        content=[
-            {"type": "input_text", "text": "user (u) [id: 1]: look"},
-            {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
-            {
-                "type": "input_file",
-                "filename": "a.pdf",
-                "file_data": "data:application/pdf;base64,xxx",
-            },
-            {"type": "input_file", "filename": "photo.png", "file_id": "file-photo.png"},
-        ],
-    )
-    plain_message = EasyInputMessageParam(role="user", content="plain")
-
-    stripped = strip_attachment_parts(messages=[plain_message, payload_message])
-
-    assert stripped[0] is plain_message
-    parts = stripped[1]["content"]
-    assert isinstance(parts, list)
-    assert [part["type"] for part in parts] == ["input_text"] * 4
-    assert parts[1]["text"] == "[attachment: image]"
-    assert parts[2]["text"] == "[attachment: file]"
-    # An uploaded image rides as input_file; its filename keeps the image marker so
-    # image-edit prompts still route to IMAGE.
-    assert parts[3]["text"] == "[attachment: image]"
-    original_parts = payload_message["content"]
-    assert isinstance(original_parts, list)
-    assert original_parts[1]["type"] == "input_image"
-
-
 async def test_route_input_excludes_attachment_payloads() -> None:
     """The route request sees an attachment marker instead of the file payload."""
     cog = _cog()
@@ -2314,8 +2412,8 @@ async def test_route_input_excludes_attachment_payloads() -> None:
     assert "[attachment: file]" in rendered
 
 
-async def test_select_user_memories_strips_attachment_payloads() -> None:
-    """The selection request sees attachment markers instead of image payloads."""
+async def test_select_user_memories_uses_text_only_transcript() -> None:
+    """The selection request carries the text-only transcript verbatim, no payloads."""
     cog = _cog()
     cog.client.responses.select_queue = [[]]
     message_list = [
@@ -2323,11 +2421,7 @@ async def test_select_user_memories_strips_attachment_payloads() -> None:
             role="user",
             content=[
                 {"type": "input_text", "text": "user (u) [id: 1]: look"},
-                {
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,xxx",
-                    "detail": "auto",
-                },
+                {"type": "input_text", "text": "[attachment: image]"},
             ],
         )
     ]
@@ -2338,6 +2432,7 @@ async def test_select_user_memories_strips_attachment_payloads() -> None:
 
     rendered = str(cog.client.responses.create_inputs[-1])
     assert "input_image" not in rendered
+    assert "input_file" not in rendered
     assert "[attachment: image]" in rendered
 
 
@@ -2428,9 +2523,14 @@ async def test_memory_selection_timeout_degrades_to_no_memory(
     monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+    text_parts = await cog._get_reference_and_current_text_only(message=message)
 
     context = await cog._prepare_reply_context(
-        message=message, history_limit=2, memory_enabled=True, parts_task=parts_task
+        message=message,
+        history_limit=2,
+        memory_enabled=True,
+        parts_task=parts_task,
+        text_parts=text_parts,
     )
 
     assert context.memory_block is None
