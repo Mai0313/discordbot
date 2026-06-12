@@ -56,15 +56,6 @@ CREATE TABLE IF NOT EXISTS messages (
 )
 """
 
-# Migration for DBs that predate the bot-message logging change — they have the
-# table but no discord_message_id column. The PRAGMA pre-check in
-# `_write_row_sync` keeps the ALTER from being attempted on already-migrated DBs
-# so we never need a savepoint to recover from "duplicate column" inside the
-# same transaction as the CREATE TABLE.
-_ADD_DISCORD_MESSAGE_ID_COLUMN_SQL: Final[str] = (
-    "ALTER TABLE messages ADD COLUMN discord_message_id TEXT"
-)
-
 _CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS ix_messages_created_at ON messages(created_at)",
     "CREATE INDEX IF NOT EXISTS ix_messages_channel_id_created_at "
@@ -137,12 +128,6 @@ def _write_row_sync(row: dict[str, str]) -> None:
     with _sql_engine.begin() as conn:
         if needs_create:
             conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
-            existing_columns = {
-                row_info[1]
-                for row_info in conn.execute(statement=text(text="PRAGMA table_info(messages)"))
-            }
-            if "discord_message_id" not in existing_columns:
-                conn.execute(statement=text(text=_ADD_DISCORD_MESSAGE_ID_COLUMN_SQL))
             for statement in _CREATE_MESSAGES_INDEX_SQL:
                 conn.execute(statement=text(text=statement))
         conn.execute(statement=text(text=_INSERT_MESSAGE_SQL), parameters=row)

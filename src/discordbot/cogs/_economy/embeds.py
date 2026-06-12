@@ -1,7 +1,7 @@
 """Embed and text builders for economy command and view responses."""
 
 from nextcord import Embed
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.typings.colors import TRANSFER_COLOR
@@ -59,8 +59,8 @@ class TransferParticipant(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mention: str
-    display_name: str
+    mention: str = Field(description="Discord mention string (<@user_id>) shown in the embed.")
+    display_name: str = Field(description="Display name shown next to the mention.")
 
 
 class LoanParty(BaseModel):
@@ -68,9 +68,9 @@ class LoanParty(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mention: str
-    display_name: str = ""
-    avatar_url: str = ""
+    mention: str = Field(description="Discord mention string (<@user_id>) shown in the embed.")
+    display_name: str = Field(default="", description="Display name shown next to the mention.")
+    avatar_url: str = Field(default="", description="Avatar URL for the embed thumbnail.")
 
 
 def _vip_perk_lines(checkin_streak: int = 1) -> str:

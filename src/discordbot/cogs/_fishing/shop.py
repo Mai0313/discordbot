@@ -1,6 +1,7 @@
 """Pure helpers for the fishing shop: quantity parsing and gear partitioning."""
 
 from discordbot.typings.fishing import MAX_BAIT_PER_PURCHASE, GearType, GearView
+from discordbot.utils.amount_parsing import parse_decimal_amount
 
 SELECT_OPTION_LABEL_LIMIT = 100
 
@@ -11,11 +12,8 @@ def parse_bait_quantity(raw_quantity: str | None) -> int | None:
     Returns the integer quantity when it is a positive number within the per
     purchase cap, or None when the input is malformed or out of range.
     """
-    normalized = (raw_quantity or "").replace(",", "").strip()
-    if not normalized.isdecimal():
-        return None
-    quantity = int(normalized)
-    if quantity < 1 or quantity > MAX_BAIT_PER_PURCHASE:
+    quantity = parse_decimal_amount(raw=raw_quantity)
+    if quantity is None or quantity < 1 or quantity > MAX_BAIT_PER_PURCHASE:
         return None
     return quantity
 

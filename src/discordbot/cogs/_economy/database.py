@@ -110,7 +110,7 @@ from discordbot.typings.economy import (
     OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
-from discordbot.utils.sqlite_config import configure_sqlite_connection
+from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.cogs._economy.boards import invalidate_economy_board_cache
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
@@ -159,18 +159,6 @@ def _configure_sqlite_on_checkout(
 ) -> None:
     """Configures pooled connections from test-swapped engines."""
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _ensure_sqlite_hooks(engine: AsyncEngine) -> None:
-    """Installs SQLite connection hooks on the active engine."""
-    if not event.contains(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite):
-        event.listen(target=engine.sync_engine, identifier="connect", fn=_configure_sqlite)
-    if not event.contains(
-        target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
-    ):
-        event.listen(
-            target=engine.sync_engine, identifier="checkout", fn=_configure_sqlite_on_checkout
-        )
 
 
 class Base(DeclarativeBase):
@@ -522,7 +510,11 @@ def _current_loan_accept_lock() -> asyncio.Lock:
 async def _ensure_schema() -> None:
     """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    _ensure_sqlite_hooks(engine=_engine)
+    ensure_sqlite_hooks(
+        engine=_engine,
+        on_connect_fn=_configure_sqlite,
+        on_checkout_fn=_configure_sqlite_on_checkout,
+    )
     if _schema_ready_for is _engine:
         return
     async with _current_schema_lock():
@@ -564,7 +556,11 @@ def open_session() -> AsyncSession:
     Returns:
         An `AsyncSession` using the current module-level `_engine`.
     """
-    _ensure_sqlite_hooks(engine=_engine)
+    ensure_sqlite_hooks(
+        engine=_engine,
+        on_connect_fn=_configure_sqlite,
+        on_checkout_fn=_configure_sqlite_on_checkout,
+    )
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 

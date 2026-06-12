@@ -79,7 +79,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• Analyze attached images and files\n"
                     "• Generate images and short videos on request\n"
                     "• I slowly build a long-term memory of your preferences from our chats\n"
-                    "• To fit a reply I may recall what I remember about people in the chat, marked with a 🧠 note\n\n"
+                    "• To fit a reply I may recall what I remember about people in the chat, marked with a 🧠 note\n"
+                    "• While I think through a harder answer, the reasoning streams live as small `-#` lines; the real reply replaces it the moment it starts\n\n"
                     "**`/memory show`** — see what I remember about you (private, paged when long)\n"
                     "**`/memory regenerate`** — schedule a background rebuild of what I remember about you, from scratch using only my observation log\n"
                     "**`/memory server show`** — see what I remember about this server's community (private, paged when long)"
@@ -116,10 +117,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/casino` — casino system ledger\n"
                     "`/pocat` — bot player wallet\n\n"
                     "**Loans**\n"
-                    "`/credit` — personal loans\n"
-                    "`/central_bank` — central-bank loans\n\n"
+                    "`/credit` — personal loans (`borrow`, `repay`, `call`, `status`)\n"
+                    "`/central_bank` — central-bank loans (`borrow`, `repay`, `call`, `status`)\n\n"
                     "**Admin**\n"
-                    "`/admin` — admin balance adjustments (comma-formatted amounts)"
+                    "`/admin` — admin balance adjustments (`refund_tax`, `collect_tax`; comma-formatted amounts)"
                 ),
             ),
             "stocks": HelpSection(
@@ -161,7 +162,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• 分析附上的圖片和檔案\n"
                     "• 依需求生成圖片或短影片\n"
                     "• 我會從對話中慢慢累積對你偏好的長期記憶\n"
-                    "• 為了讓回覆更貼合，我可能會參考我記得的對話成員資訊，並用 🧠 標註\n\n"
+                    "• 為了讓回覆更貼合，我可能會參考我記得的對話成員資訊，並用 🧠 標註\n"
+                    "• 思考較難的問題時，會先用 `-#` 小字即時顯示思考過程，正文一出現就會整段覆蓋\n\n"
                     "**`/memory show`** — 查看我對你記住了什麼（僅自己可見，過長會分頁）\n"
                     "**`/memory regenerate`** — 排程在背景只根據觀察記錄，從頭重建我對你的長期記憶\n"
                     "**`/memory server show`** — 查看我對這個伺服器社群記住了什麼（僅自己可見，過長會分頁）"
@@ -198,10 +200,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/casino` — 賭場系統 ledger\n"
                     "`/pocat` — 機器人玩家錢包\n\n"
                     "**借貸**\n"
-                    "`/credit` — 個人借貸\n"
-                    "`/central_bank` — 央行借貸\n\n"
+                    "`/credit` — 個人借貸（`borrow`、`repay`、`call`、`status`）\n"
+                    "`/central_bank` — 央行借貸（`borrow`、`repay`、`call`、`status`）\n\n"
                     "**管理**\n"
-                    "`/admin` — admin 餘額調整（amount 支援逗號格式）"
+                    "`/admin` — admin 餘額調整（`refund_tax`、`collect_tax`，amount 支援逗號格式）"
                 ),
             ),
             "stocks": HelpSection(
@@ -243,7 +245,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "• 添付画像やファイルの分析\n"
                     "• リクエストに応じた画像・短い動画の生成\n"
                     "• 会話からあなたの好みを長期記憶として少しずつ蓄積します\n"
-                    "• 返信を最適化するため、会話の参加者について覚えていることを参照し、🧠 で示すことがあります\n\n"
+                    "• 返信を最適化するため、会話の参加者について覚えていることを参照し、🧠 で示すことがあります\n"
+                    "• 難しい質問では思考過程を `-#` の小さな文字でリアルタイム表示し、本文が始まると置き換わります\n\n"
                     "**`/memory show`** — 記憶している内容を表示（本人のみ閲覧可、長い場合はページ表示）\n"
                     "**`/memory regenerate`** — 観察ログだけを使って、あなたに関する記憶を一から作り直す処理をバックグラウンドで予約します\n"
                     "**`/memory server show`** — このサーバーのコミュニティについて覚えている内容を表示（本人のみ閲覧可、長い場合はページ表示）"
@@ -280,10 +283,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/casino` — casino system ledger\n"
                     "`/pocat` — bot player wallet\n\n"
                     "**ローン**\n"
-                    "`/credit` — 個人ローン\n"
-                    "`/central_bank` — 中央銀行ローン\n\n"
+                    "`/credit` — 個人ローン（`borrow`・`repay`・`call`・`status`）\n"
+                    "`/central_bank` — 中央銀行ローン（`borrow`・`repay`・`call`・`status`）\n\n"
                     "**管理**\n"
-                    "`/admin` — admin による残高調整（カンマ付き金額対応）"
+                    "`/admin` — admin による残高調整（`refund_tax`・`collect_tax`、カンマ付き金額対応）"
                 ),
             ),
             "stocks": HelpSection(

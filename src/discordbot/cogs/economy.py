@@ -24,6 +24,7 @@ from discordbot.cogs._economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.cogs._stock.database import get_stock_portfolio
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.cogs._economy.database import (
     top_n,
     buy_vip,
@@ -59,14 +60,8 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 def _parse_positive_amount(raw_amount: str | None) -> int | None:
     """Parses user-entered positive amount text with optional comma separators."""
-    normalized = (raw_amount or "").replace(",", "").strip()
-    if not normalized.isdecimal():
-        return None
-    try:
-        amount = int(normalized)
-    except ValueError:
-        return None
-    if amount <= 0:
+    amount = parse_decimal_amount(raw=raw_amount)
+    if amount is None or amount <= 0:
         return None
     return amount
 
@@ -77,12 +72,12 @@ def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
     Returns ``(is_valid, amount)`` where ``amount`` is ``None`` when collecting
     everything owed. ``is_valid`` is ``False`` only for malformed text.
     """
-    normalized = (raw_amount or "").replace(",", "").strip()
-    if not normalized:
+    if not (raw_amount or "").strip():
         return True, None
-    if not normalized.isdecimal():
+    amount = parse_decimal_amount(raw=raw_amount)
+    if amount is None:
         return False, None
-    return True, int(normalized) or None
+    return True, amount or None
 
 
 class EconomyCogs(commands.Cog):
@@ -378,7 +373,7 @@ class EconomyCogs(commands.Cog):
     @nextcord.slash_command(
         name="give",
         description=f"Transfer your {CURRENCY_NAME} to another member or bot.",
-        name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "虛擬歡樂豆送付"},
+        name_localizations={Locale.zh_TW: "轉帳", Locale.ja: "送金"},
         description_localizations={
             Locale.zh_TW: f"把你的{CURRENCY_NAME}轉給其他成員或 bot",
             Locale.ja: f"他のメンバーまたは bot に{CURRENCY_NAME}を送ります。",
@@ -401,7 +396,7 @@ class EconomyCogs(commands.Cog):
         amount: str = SlashOption(
             name="amount",
             description=f"How much {CURRENCY_NAME} to transfer (must be positive). Commas are allowed.",
-            name_localizations={Locale.zh_TW: "虛擬歡樂豆", Locale.ja: "虛擬歡樂豆"},
+            name_localizations={Locale.zh_TW: "金額", Locale.ja: "金額"},
             description_localizations={
                 Locale.zh_TW: f"要轉的{CURRENCY_NAME} (必須大於 0)，可加逗號",
                 Locale.ja: f"送る{CURRENCY_NAME} (1以上)。カンマ可。",

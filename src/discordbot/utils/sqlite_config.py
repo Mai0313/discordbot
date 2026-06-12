@@ -8,6 +8,10 @@ engines additionally register the integer-aware UDFs.
 
 from typing import Any
 import contextlib
+from collections.abc import Callable
+
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from discordbot.utils.stored_integer import configure_sqlite_stored_integer_functions
 
@@ -36,3 +40,22 @@ def configure_sqlite_connection(
             cursor.execute("PRAGMA foreign_keys=ON")
     if register_stored_integer:
         configure_sqlite_stored_integer_functions(dbapi_connection=dbapi_connection)
+
+
+def ensure_sqlite_hooks(
+    engine: AsyncEngine, on_connect_fn: Callable[..., None], on_checkout_fn: Callable[..., None]
+) -> None:
+    """Installs the connect and checkout listeners on an engine exactly once.
+
+    Session factories call this on every open because tests swap the module-level
+    engines; `event.contains` keeps repeat calls from stacking duplicate listeners.
+
+    Args:
+        engine: The async engine whose sync engine receives the listeners.
+        on_connect_fn: The module's `connect` event callback.
+        on_checkout_fn: The module's `checkout` event callback.
+    """
+    if not event.contains(target=engine.sync_engine, identifier="connect", fn=on_connect_fn):
+        event.listen(target=engine.sync_engine, identifier="connect", fn=on_connect_fn)
+    if not event.contains(target=engine.sync_engine, identifier="checkout", fn=on_checkout_fn):
+        event.listen(target=engine.sync_engine, identifier="checkout", fn=on_checkout_fn)

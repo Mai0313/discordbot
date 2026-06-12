@@ -12,12 +12,13 @@ from datetime import UTC, datetime
 from PIL import Image
 import pytest
 from nextcord import File, Embed
+from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.gen_reply import ReplyGeneratorCogs, _build_runtime_instructions
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, strip_attachment_parts
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -82,10 +83,12 @@ class FakeReply:
         self.files: list[File] | None = None
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
+        self.edits: list[str] = []
 
     async def edit(self, content: str) -> None:
         """Records the replacement content passed to edit."""
         self.content = content
+        self.edits.append(content)
 
     async def reply(self, content: str) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
@@ -127,6 +130,7 @@ class FakeMessage:
         self.mentions: list[FakeAuthor] = []
         self.id = 987
         self.created_at = FAKE_MESSAGE_CREATED_AT
+        self.edited_at: datetime | None = None
         self.system_content = ""
         self.added_reactions: list[str] = []
         self.removed_reactions: list[tuple[str, FakeAuthor]] = []
@@ -176,15 +180,19 @@ class FakeAttachment:
         content_type: str | None = "text/plain",
         payload: bytes = b"hello",
         url: str = "https://example.test/file.txt",
+        attachment_id: int = 555,
     ) -> None:
         """Initializes attachment metadata and payload bytes."""
+        self.id = attachment_id
         self.filename = filename
         self.content_type = content_type
         self._payload = payload
         self.url = url
+        self.read_count = 0
 
     async def read(self) -> bytes:
         """Returns the configured attachment bytes."""
+        self.read_count += 1
         return self._payload
 
 
@@ -198,9 +206,11 @@ class FakeResponses:
         self.create_instructions: list[str] = []
         self.create_inputs: list[ResponseInputParam | str] = []
         self.create_tools: list[list[object] | None] = []
+        self.create_reasonings: list[dict[str, str]] = []
         self.parse_models: list[str] = []
+        self.parse_inputs: list[object] = []
         self.output_text = "caption"
-        self.output_parsed = SimpleNamespace(decision="SUMMARY")
+        self.output_parsed = RouteDecision(decision="SUMMARY")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
         # Each entry is the `.output` item list for one non-streaming (memory selection)
@@ -222,7 +232,8 @@ class FakeResponses:
         tools: list[object] | None = None,
     ) -> object:
         """Records the call; returns a streamed event iterator or non-stream output."""
-        del reasoning, service_tier, extra_headers, extra_body
+        del service_tier, extra_headers, extra_body
+        self.create_reasonings.append(reasoning)
         self.create_models.append(model)
         self.create_instructions.append(instructions)
         self.create_inputs.append(input)
@@ -251,6 +262,7 @@ class FakeResponses:
     ) -> SimpleNamespace:
         """Records the route model and returns configured parsed output."""
         self.parse_models.append(model)
+        self.parse_inputs.append(input)
         return SimpleNamespace(output_parsed=self.output_parsed)
 
 
@@ -353,7 +365,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     return cog
 
 
-async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> str:
+async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision:
     """Routes a message after building the shared reference/current parts."""
     reference_messages, current_message = await cog._get_reference_and_current(message=message)
     return await cog._route_message(
@@ -361,12 +373,13 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> str:
     )
 
 
-async def _reply_via_pipeline(
+async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply's signature
     cog: ReplyGeneratorCogs,
     message: FakeMessage,
     system_prompt: str = "SYS",
     history_limit: int = 2,
     memory_enabled: bool = True,
+    effort: Literal["low", "medium", "high"] = "high",
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
@@ -381,6 +394,7 @@ async def _reply_via_pipeline(
         system_prompt=system_prompt,
         context=context,
         memory_enabled=memory_enabled,
+        effort=effort,
     )
 
 
@@ -713,8 +727,9 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
     history = await cog._get_history_message(message=current, limit=30)
-    assert len(history) == 3
-    assert history[0]["role"] == "system"
+    assert len(history.rendered) == 3
+    assert history.rendered[0]["role"] == "system"
+    assert [m.content for m in history.raw] == ["hello", "bot answer"]
 
     parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
     grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
@@ -747,7 +762,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert await _route(cog=cog, message=message) == "SUMMARY"
+    assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
@@ -775,9 +790,10 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -808,7 +824,8 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
     cog = _cog()
     message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
 
-    assert await _route(cog=cog, message=message) == "QA"
+    routed = await _route(cog=cog, message=message)
+    assert routed.decision == "QA"
     assert cog.client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
 
@@ -837,10 +854,10 @@ async def test_gen_reply_on_message_dispatches_routes(
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
-    ) -> str:
+    ) -> RouteDecision:
         """Returns the parametrized route."""
         del reference_messages, current_message
-        return route
+        return RouteDecision(decision=route)
 
     async def fake_prepare(
         message: FakeMessage, history_limit: int, memory_enabled: bool, parts_task: object
@@ -875,6 +892,7 @@ async def test_gen_reply_on_message_dispatches_routes(
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
+        effort: str = "high",
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
@@ -1098,9 +1116,10 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1177,9 +1196,10 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1231,9 +1251,10 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
             memory_lookups: list[str] | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
+            model_effort: str = "",
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens
+            del memory_lookups, input_tokens, output_tokens, model_effort
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -1741,9 +1762,10 @@ class _ServerMemoryResponder:
         memory_lookups: list[str] | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        model_effort: str = "",
     ) -> None:
         """Stores the streaming target message and ignores usage seeds."""
-        del memory_lookups, input_tokens, output_tokens
+        del memory_lookups, input_tokens, output_tokens, model_effort
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -1941,3 +1963,282 @@ async def test_handle_message_reply_keeps_boundary_in_private_channel(
     await _reply_via_pipeline(cog=cog, message=message)
 
     assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])
+
+
+async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
+    """The reasoning preview renders as -# subtext and real content replaces it in place."""
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    streamer.reasoning_content = "first thought\n\nsecond thought"
+
+    await streamer._write_preview_snapshot()
+    assert len(message.replies) == 1
+    preview = message.replies[0].content
+    assert isinstance(preview, str)
+    assert preview.splitlines()[0] == "-# 💭 思考中..."
+    assert "-# first thought" in preview
+    assert "-# second thought" in preview
+
+    streamer.content_started = True
+    streamer.stored_content = "real answer"
+    await streamer._write_preview_snapshot()
+    assert len(message.replies) == 1
+    assert message.replies[0].content == "real answer"
+
+
+def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
+    """A long think keeps only its newest tail lines under the Discord limit."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "\n".join(f"thought line {i} " + "x" * 80 for i in range(60))
+
+    preview = streamer._render_preview()
+
+    assert len(preview) <= DISCORD_MESSAGE_LIMIT
+    lines = preview.splitlines()
+    assert lines[0] == "-# 💭 思考中..."
+    assert all(line.startswith("-# ") for line in lines)
+    assert "thought line 59" in preview
+    assert "thought line 9 " not in preview
+
+
+def test_streamer_reasoning_preview_escapes_mentions() -> None:
+    """Transient thought text can never ping people or roles."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "should I ping @everyone or <@123456789012345678>?"
+
+    preview = streamer._render_preview()
+
+    assert "@everyone" not in preview
+    assert "<@123456789012345678>" not in preview
+
+
+async def test_streamer_strips_leading_newlines_from_first_reasoning_delta(
+    economy_isolated_db: None,
+) -> None:
+    """Gemini's leading reasoning newlines are dropped like content newlines."""
+    del economy_isolated_db
+    events = [
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\n\n"),
+        SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\nthought"),
+        _text_event(delta="answer"),
+        _completed_event(input_tokens=1, output_tokens=1),
+    ]
+    streamer = ResponseStreamer(message=FakeMessage())
+
+    await streamer.stream(responses=_stream_events_from(events=events))
+
+    assert streamer.reasoning_content == "thought"
+
+
+async def test_streamer_edits_are_time_throttled(economy_isolated_db: None) -> None:
+    """The snapshot editor writes far fewer Discord edits than stream deltas."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    async def _events() -> AsyncIterator[SimpleNamespace]:
+        yield SimpleNamespace(type="response.reasoning_summary_text.delta", delta="thinking hard")
+        await asyncio.sleep(0.06)
+        for index in range(40):
+            yield SimpleNamespace(type="response.output_text.delta", delta=f"chunk{index} ")
+            await asyncio.sleep(0.002)
+        yield _completed_event(input_tokens=1, output_tokens=1)
+
+    streamer = ResponseStreamer(message=message, preview_interval_seconds=0.02)
+    result = await streamer.stream(responses=_events())
+
+    assert len(message.replies) == 1
+    reply = message.replies[0]
+    assert 1 + len(reply.edits) < 40
+    assert result.startswith("chunk0 ")
+    assert isinstance(reply.content, str)
+    assert reply.content.startswith("chunk0 ")
+
+
+async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> None:
+    """The usage footer labels the model with the route-decided effort."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message, model_effort="low").stream(
+        responses=_stream_events()
+    )
+
+    assert f"\n\n-# {TEST_LLM_MODEL} (low) · ⬆ 12 ⬇ 34" in result
+    assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
+
+
+async def test_route_message_carries_effort_and_defaults_high() -> None:
+    """The route result carries the model's effort; unparsed output falls back to high."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteDecision(decision="QA", effort="low")
+    message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
+    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="low")
+
+    cog.client.responses.output_parsed = None
+    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="high")
+
+
+async def test_route_url_summary_downgrade_keeps_effort() -> None:
+    """The URL-summary-to-QA downgrade preserves the graded effort."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteDecision(decision="SUMMARY", effort="medium")
+    message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
+
+    routed = await _route(cog=cog, message=message)
+
+    assert routed == RouteDecision(decision="QA", effort="medium")
+
+
+async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None) -> None:
+    """The answer request's reasoning effort follows the route decision."""
+    del economy_isolated_db
+    cog = _cog()
+    message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
+
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False, effort="low")
+
+    assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
+
+
+def test_strip_attachment_parts_replaces_payload_parts() -> None:
+    """Image and file parts collapse to text markers; plain text passes through."""
+    payload_message = EasyInputMessageParam(
+        role="user",
+        content=[
+            {"type": "input_text", "text": "user (u) [id: 1]: look"},
+            {"type": "input_image", "image_url": "data:image/png;base64,xxx", "detail": "auto"},
+            {
+                "type": "input_file",
+                "filename": "a.pdf",
+                "file_data": "data:application/pdf;base64,xxx",
+            },
+        ],
+    )
+    plain_message = EasyInputMessageParam(role="user", content="plain")
+
+    stripped = strip_attachment_parts(messages=[plain_message, payload_message])
+
+    assert stripped[0] is plain_message
+    parts = stripped[1]["content"]
+    assert isinstance(parts, list)
+    assert [part["type"] for part in parts] == ["input_text", "input_text", "input_text"]
+    assert parts[1]["text"] == "[attachment: image]"
+    assert parts[2]["text"] == "[attachment: file]"
+    original_parts = payload_message["content"]
+    assert isinstance(original_parts, list)
+    assert original_parts[1]["type"] == "input_image"
+
+
+async def test_route_input_excludes_attachment_payloads() -> None:
+    """The route request sees an attachment marker instead of the file payload."""
+    cog = _cog()
+    message = FakeMessage(content="<@999> see", author=FakeAuthor(user_id=1))
+    message.attachments = [FakeAttachment(filename="note.txt", content_type="text/plain")]
+
+    await _route(cog=cog, message=message)
+
+    rendered = str(cog.client.responses.parse_inputs[-1])
+    assert "input_file" not in rendered
+    assert "[attachment: file]" in rendered
+
+
+async def test_select_user_memories_strips_attachment_payloads() -> None:
+    """The selection request sees attachment markers instead of image payloads."""
+    cog = _cog()
+    cog.client.responses.select_queue = [[]]
+    message_list = [
+        EasyInputMessageParam(
+            role="user",
+            content=[
+                {"type": "input_text", "text": "user (u) [id: 1]: look"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,xxx",
+                    "detail": "auto",
+                },
+            ],
+        )
+    ]
+
+    await cog._select_user_memories(
+        message=FakeMessage(), message_list=message_list, allowed={1: "u"}
+    )
+
+    rendered = str(cog.client.responses.create_inputs[-1])
+    assert "input_image" not in rendered
+    assert "[attachment: image]" in rendered
+
+
+async def test_attachment_parts_cached_until_message_changes() -> None:
+    """Rendered attachment parts are cached per message and refresh on edit."""
+    cog = _cog()
+    message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
+    attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
+    message.attachments = [attachment]
+
+    first = await cog.input_builder.get_attachment_parts(message=message)
+    again = await cog.input_builder.get_attachment_parts(message=message)
+
+    assert attachment.read_count == 1
+    assert again == first
+
+    message.edited_at = datetime.now(tz=UTC)
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert attachment.read_count == 2
+
+
+async def test_attachment_cache_refreshes_on_embed_url_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late embed unfurl swapping an image URL at constant count re-renders."""
+    cog = _cog()
+    message = FakeMessage(content="link", author=FakeAuthor(user_id=2))
+    rendered_urls: list[str] = []
+
+    async def fake_image_to_part(self: object, source: object) -> dict[str, str]:
+        """Records each rendered source instead of hitting the network."""
+        del self
+        rendered_urls.append(str(source))
+        return {"image_url": str(source), "detail": "auto", "type": "input_image"}
+
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.MessageInputBuilder.image_to_part", fake_image_to_part
+    )
+
+    def _embed(url: str) -> SimpleNamespace:
+        """Builds a fake embed whose image carries a swappable proxy URL."""
+        return SimpleNamespace(image=SimpleNamespace(proxy_url=url, url=url), thumbnail=None)
+
+    message.embeds = [_embed("https://media.test/a.png")]
+    await cog.input_builder.get_attachment_parts(message=message)
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert rendered_urls == ["https://media.test/a.png"]
+
+    # Same embed count, different image URL: the cache must not serve the stale part.
+    message.embeds = [_embed("https://media.test/b.png")]
+    await cog.input_builder.get_attachment_parts(message=message)
+    assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
+
+
+async def test_memory_selection_timeout_degrades_to_no_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung selection request times out and the context carries no memory."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_TIMEOUT_SECONDS", 0.01)
+
+    async def slow_selection(**kwargs: object) -> None:
+        """Simulates a proxy hang far past the selection deadline."""
+        del kwargs
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
+
+    context = await cog._prepare_reply_context(
+        message=message, history_limit=2, memory_enabled=True, parts_task=parts_task
+    )
+
+    assert context.memory_block is None
+    assert context.memory_labels == []

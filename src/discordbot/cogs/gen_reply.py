@@ -30,9 +30,10 @@ from discordbot.cogs._gen_reply.input import (
     sanitize_identity,
     render_author_identity,
     render_server_identity,
+    strip_attachment_parts,
 )
 from discordbot.cogs._memory.pipeline import schedule_memory_update
-from discordbot.cogs._gen_reply.context import ReplyContext
+from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
@@ -70,6 +71,14 @@ if TYPE_CHECKING:
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
+
+# Memory selection is a lightweight tool-only preflight; past this deadline the reply
+# answers without memory instead of letting a slow proxy stall the whole pipeline.
+MEMORY_SELECT_TIMEOUT_SECONDS = 2.0
+
+# Hard ceiling on the video-generation polling loop so a hung provider job cannot
+# leave the message handler waiting forever.
+VIDEO_GENERATION_TIMEOUT_SECONDS = 600.0
 
 
 def _message_has_url(content: str) -> bool:
@@ -110,11 +119,22 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     return f"{request_time_context}\n\n{system_prompt}"
 
 
-async def _no_participant_messages() -> list[Message]:
-    """Empty stand-in for the participant fetch so the SUMMARY route can skip it while
-    the rest of the reply context still loads concurrently in one gather.
-    """
-    return []
+def _walk_reference_chain(message: Message) -> list[Message]:
+    """Walks the reply-reference chain up to depth 3, oldest link last."""
+    chain: list[Message] = []
+    visited: set[int] = {message.id}
+    current = message
+    while (
+        len(chain) < 3
+        and current.reference
+        and isinstance(current.reference.resolved, Message)
+        and current.reference.resolved.id not in visited
+    ):
+        ref = current.reference.resolved
+        visited.add(ref.id)
+        chain.append(ref)
+        current = ref
+    return chain
 
 
 async def _discard_task(task: asyncio.Task[ReplyContext]) -> None:
@@ -198,10 +218,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return MessageInputBuilder(bot=self.bot, runtime_models=self.runtime_models)
 
-    async def _get_history_message(
-        self, message: Message, limit: int
-    ) -> list[EasyInputMessageParam]:
-        """Retrieves and processes channel history as context."""
+    async def _get_history_message(self, message: Message, limit: int) -> RenderedHistory:
+        """Retrieves channel history once, returning rendered context plus raw messages."""
         messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -227,24 +245,11 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             messages.extend(processed)
 
-        return messages
+        return RenderedHistory(rendered=messages, raw=hist_messages)
 
     async def _get_reference_message(self, message: Message) -> list[EasyInputMessageParam]:
         """Walks the reference chain up to depth 3 and renders each link as context."""
-        chain: list[Message] = []
-        visited: set[int] = {message.id}
-        current = message
-        while (
-            len(chain) < 3
-            and current.reference
-            and isinstance(current.reference.resolved, Message)
-            and current.reference.resolved.id not in visited
-        ):
-            ref = current.reference.resolved
-            visited.add(ref.id)
-            chain.append(ref)
-            current = ref
-
+        chain = _walk_reference_chain(message=message)
         if not chain:
             return []
 
@@ -291,37 +296,6 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _collect_participant_messages(
-        self, message: Message, history_limit: int
-    ) -> list[Message]:
-        """Collects the raw current, reference, and history messages for the memory allowlist.
-
-        The rendered Responses input drops the underlying `Message` objects, but the
-        allowlist needs each message's `.author` and `.mentions`. This re-walks the same
-        reference chain (depth 3) and channel history the `_get_*` helpers render.
-        """
-        messages: list[Message] = [message]
-
-        visited: set[int] = {message.id}
-        current = message
-        while (
-            len(messages) < 4
-            and current.reference
-            and isinstance(current.reference.resolved, Message)
-            and current.reference.resolved.id not in visited
-        ):
-            ref = current.reference.resolved
-            visited.add(ref.id)
-            messages.append(ref)
-            current = ref
-
-        async for hist_msg in message.channel.history(
-            limit=history_limit, before=message, oldest_first=True
-        ):
-            messages.append(hist_msg)
-
-        return messages
-
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
@@ -330,11 +304,12 @@ class ReplyGeneratorCogs(commands.Cog):
             prompt=user_prompt or "請依照訊息內容生成一段影片。",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
-        while video.status not in ("completed", "failed"):
-            await asyncio.sleep(5)
-            video = await self.client.videos.retrieve(
-                video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
-            )
+        async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
+            while video.status not in ("completed", "failed"):
+                await asyncio.sleep(5)
+                video = await self.client.videos.retrieve(
+                    video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
+                )
         if video.status != "completed":
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(
@@ -437,9 +412,15 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
-    ) -> Literal["IMAGE", "QA", "SUMMARY", "VIDEO"]:
-        """Routes the message to the appropriate handler using pre-built context parts."""
-        message_list: list[EasyInputMessageParam] = [*reference_messages, *current_message]
+    ) -> RouteDecision:
+        """Routes the message to the appropriate handler using pre-built context parts.
+
+        Besides the handler choice, the route also grades how much reasoning effort the
+        answer deserves; QA and SUMMARY override the slow model's effort with it.
+        Attachment parts are reduced to text markers: classification needs the text and
+        the fact that an attachment exists, not the payload bytes.
+        """
+        message_list = strip_attachment_parts(messages=[*reference_messages, *current_message])
 
         try:
             fast_model = self.runtime_models.fast_model
@@ -455,16 +436,16 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_body={"mock_testing_fallbacks": False},
                 )
             if responses.output_parsed is None:
-                return "QA"
-            decision = responses.output_parsed.decision
-            if decision == "SUMMARY" and _message_has_url(content=message.content):
-                return "QA"
-            return decision
+                return RouteDecision(decision="QA")
+            route = responses.output_parsed
+            if route.decision == "SUMMARY" and _message_has_url(content=message.content):
+                return RouteDecision(decision="QA", effort=route.effort)
+            return route
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
             logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
-            return "QA"
+            return RouteDecision(decision="QA")
 
     async def _select_user_memories(
         self,
@@ -485,10 +466,12 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         tool_model = self.runtime_models.tool_model
         # The callable-users block stays last so the model reads it right before deciding;
-        # the server-memory block (if any) leads as earlier background context.
+        # the server-memory block (if any) leads as earlier background context. Attachment
+        # parts are reduced to text markers: picking whose memory to read needs the text,
+        # not the payload bytes, and the smaller request returns faster.
         selection_input: ResponseInputParam = [
             *([server_memory_block] if server_memory_block is not None else []),
-            *message_list,
+            *strip_attachment_parts(messages=message_list),
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.client.responses.create(
@@ -585,21 +568,10 @@ class ReplyGeneratorCogs(commands.Cog):
         reads (channel history, memory files, the selection request), so a non-QA route
         can discard it safely.
         """
-        # The allowlist needs raw Message objects (authors + mentions); fetch them in the
-        # same gather so they overlap with the rendered history. SUMMARY
-        # (memory_enabled=False) substitutes an empty fetch to skip the second history
-        # read entirely while keeping the gather shape and result types precise.
-        collect_participants = (
-            self._collect_participant_messages(message=message, history_limit=history_limit)
-            if memory_enabled and self.bot.user
-            else _no_participant_messages()
-        )
         with logfire.span("gen_reply context build"):
-            hist_messages, participant_messages = await asyncio.gather(
-                self._get_history_message(message=message, limit=history_limit),
-                collect_participants,
-            )
+            history = await self._get_history_message(message=message, limit=history_limit)
             reference_messages, current_message = await parts_task
+        hist_messages = history.rendered
         message_list: list[EasyInputMessageParam] = [
             *hist_messages,
             *reference_messages,
@@ -625,8 +597,11 @@ class ReplyGeneratorCogs(commands.Cog):
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
         if memory_enabled and self.bot.user:
+            # The allowlist needs raw Message objects (authors + mentions): the current
+            # message, its reference chain, and the raw side of the shared history fetch.
             allowed = build_memory_allowlist(
-                messages=participant_messages, bot_user_id=self.bot.user.id
+                messages=[message, *_walk_reference_chain(message=message), *history.raw],
+                bot_user_id=self.bot.user.id,
             )
             # In a public channel, members named in the server's nickname table are askable
             # by alias even when absent from the conversation: widen the permission boundary
@@ -645,12 +620,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 # never turn an answerable message into the generic error path.
                 try:
                     with logfire.span("gen_reply memory selection"):
-                        selection = await self._select_user_memories(
-                            message=message,
-                            message_list=message_list,
-                            allowed=allowed,
-                            server_memory_block=server_memory_block,
-                        )
+                        async with asyncio.timeout(delay=MEMORY_SELECT_TIMEOUT_SECONDS):
+                            selection = await self._select_user_memories(
+                                message=message,
+                                message_list=message_list,
+                                allowed=allowed,
+                                server_memory_block=server_memory_block,
+                            )
+                except TimeoutError:
+                    logfire.warn(
+                        "Memory selection timed out; answering without memory",
+                        timeout_seconds=MEMORY_SELECT_TIMEOUT_SECONDS,
+                    )
                 except Exception:
                     logfire.warn(
                         "Memory selection failed; answering without memory", _exc_info=True
@@ -680,9 +661,10 @@ class ReplyGeneratorCogs(commands.Cog):
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
+        effort: Literal["low", "medium", "high"] = "high",
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates."""
-        slow_model = self.runtime_models.slow_model
+        slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
         # reference but before the current message.
@@ -701,6 +683,7 @@ class ReplyGeneratorCogs(commands.Cog):
             memory_lookups=context.memory_labels,
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
+            model_effort=effort,
         )
         with logfire.span("gen_reply answer", model=slow_model.name):
             responses = await self.client.responses.create(
@@ -818,18 +801,19 @@ class ReplyGeneratorCogs(commands.Cog):
                     reference_messages=reference_messages,
                     current_message=current_message,
                 )
-                pipeline_span.set_attribute(key="route", value=route)
-                if route == "IMAGE":
+                pipeline_span.set_attribute(key="route", value=route.decision)
+                pipeline_span.set_attribute(key="effort", value=route.effort)
+                if route.decision == "IMAGE":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="🎨")
                     await self._handle_image_reply(message=message, user_prompt=user_prompt)
-                elif route == "VIDEO":
+                elif route.decision == "VIDEO":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="🎬")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
-                elif route == "SUMMARY":
+                elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None
                     reactions.advance(emoji="📖")
@@ -848,13 +832,20 @@ class ReplyGeneratorCogs(commands.Cog):
                         system_prompt=SUMMARY_PROMPT,
                         context=context,
                         memory_enabled=False,
+                        effort=route.effort,
                     )
                 else:
-                    reactions.advance(emoji="❓")
+                    reactions.advance(emoji="💭")
+                    # Selection still gates the answer here; if this wait ever needs to go,
+                    # the answer could speculatively start without memory and refire when
+                    # selection picks some.
                     context = await prep_task
                     prep_task = None
                     await self._handle_message_reply(
-                        message=message, system_prompt=REPLY_PROMPT, context=context
+                        message=message,
+                        system_prompt=REPLY_PROMPT,
+                        context=context,
+                        effort=route.effort,
                     )
                 reactions.advance(emoji="🆗")
         finally:

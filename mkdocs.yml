@@ -50,8 +50,10 @@ nav:
                   - shoe: Reference/discordbot/cogs/_games/shoe.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
+                  - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
+                  - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
               - _help:
@@ -69,6 +71,7 @@ nav:
                   - extraction: Reference/discordbot/cogs/_memory/extraction.md
                   - pipeline: Reference/discordbot/cogs/_memory/pipeline.md
                   - prompts: Reference/discordbot/cogs/_memory/prompts.md
+                  - server_prompts: Reference/discordbot/cogs/_memory/server_prompts.md
                   - store: Reference/discordbot/cogs/_memory/store.md
                   - views: Reference/discordbot/cogs/_memory/views.md
               - _stock:
@@ -101,6 +104,7 @@ nav:
               - models: Reference/discordbot/typings/models.md
               - stock: Reference/discordbot/typings/stock.md
           - utils:
+              - amount_parsing: Reference/discordbot/utils/amount_parsing.md
               - avatars: Reference/discordbot/utils/avatars.md
               - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
@@ -110,6 +114,7 @@ nav:
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
+              - owned_message_views: Reference/discordbot/utils/owned_message_views.md
               - pil_text: Reference/discordbot/utils/pil_text.md
               - reactions: Reference/discordbot/utils/reactions.md
               - sqlite_config: Reference/discordbot/utils/sqlite_config.md
