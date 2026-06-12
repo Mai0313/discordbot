@@ -1289,10 +1289,10 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert scheduled == [user_scope(user_id=1), server_scope(bot_id=999, server_id=1)]
 
 
-async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
+async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies memory_enabled=False (summary route) bypasses injection and extraction."""
+    """Verifies memory_enabled=False (summary route) skips user memory but still records server."""
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
@@ -1337,7 +1337,8 @@ async def test_handle_message_reply_memory_disabled_arg_skips_pipeline(
     assert "不該被注入" not in str(cog.client.responses.create_inputs[-1])
     assert "get_user_memory" not in str(cog.client.responses.create_tools[-1])
     assert "get_user_memory" not in str(cog.client.responses.create_inputs[-1])
-    assert scheduled == []
+    # The per-user update is skipped, but the server-scope update still runs in a public guild.
+    assert scheduled == [server_scope(bot_id=999, server_id=1)]
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(
@@ -1915,6 +1916,72 @@ async def test_handle_message_reply_skips_server_write_in_private_channel(
 
     # Private channel: the per-user update still runs, but no server-scope update.
     assert scheduled == [user_scope(user_id=1)]
+
+
+async def test_handle_message_reply_records_server_memory_on_summary_route(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SUMMARY route (memory_enabled=False) records server memory but not user memory."""
+    cog = _cog()
+    scheduled: list[dict[str, object]] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled memory update."""
+        scheduled.append(kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> 總結", author=FakeAuthor(user_id=1))
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+
+    # Only the server-scope update is scheduled; the per-user one is skipped.
+    assert [update["scope"] for update in scheduled] == [server_scope(bot_id=999, server_id=1)]
+    assert scheduled[0]["subject"] == "target_server_id: 1"
+    assert scheduled[0]["extractor"] is cog.server_memory_extractor
+
+
+async def test_handle_message_reply_summary_in_dm_records_nothing(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SUMMARY in a DM has no guild, so neither user nor server memory is recorded."""
+    cog = _cog()
+    scheduled: list[object] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled scope."""
+        scheduled.append(kwargs["scope"])
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> 總結", author=FakeAuthor(user_id=1))
+    message.guild = None
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+
+    assert scheduled == []
+
+
+async def test_handle_message_reply_summary_in_private_channel_records_nothing(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SUMMARY in a non-public channel never feeds the server-wide memory."""
+    cog = _cog()
+    scheduled: list[object] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled scope."""
+        scheduled.append(kwargs["scope"])
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(
+        content="<@999> 總結", author=FakeAuthor(user_id=1), channel_public=False
+    )
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+
+    assert scheduled == []
 
 
 def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
