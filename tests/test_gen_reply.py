@@ -1113,15 +1113,11 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert catalog.video_model.name.startswith("veo")
     assert catalog.file_model.name == "gemini-files"
     assert catalog.slow_model.effort == "high"
-    assert ModelSettings(name="gemini-test").tools == [
-        {"googleSearch": {}},
-        {"urlContext": {}},
-        {"codeExecution": {}},
-    ]
+    # Code execution is omitted on purpose: it 400s the request on file attachments.
+    assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
     assert ModelSettings(name="claude-test").tools == [
         {"type": "web_search_20260209", "name": "web_search"},
         {"type": "web_fetch_20260209", "name": "web_fetch"},
-        {"type": "code_execution_20250825", "name": "code_execution"},
     ]
     assert ModelSettings(name="openai-test").tools == [{"type": "web_search"}]
 

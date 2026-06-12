@@ -40,19 +40,22 @@ class ModelSettings(BaseModel):
     def tools(self) -> list[ToolParam]:
         """Built-in tool payloads for this model's provider.
 
+        Code execution is intentionally omitted: Gemini and Claude validate every
+        uploaded file part against code execution's narrow MIME allowlist and 400 the
+        whole request on video / audio / GIF-as-video attachments, so it cannot coexist
+        with the attachment ingestion path. Search / url grounding have no such limit.
+
         Returns:
-            Gemini models receive googleSearch, urlContext, and codeExecution
-            tools. Claude models receive web_search, web_fetch, and
-            code_execution tools. Other models receive the OpenAI web_search
-            tool.
+            Gemini models receive googleSearch and urlContext tools. Claude models
+            receive web_search and web_fetch tools. Other models receive the OpenAI
+            web_search tool.
         """
         if "gemini" in self.name:
-            return [{"googleSearch": {}}, {"urlContext": {}}, {"codeExecution": {}}]
+            return [{"googleSearch": {}}, {"urlContext": {}}]
         if "claude" in self.name:
             return [
                 {"type": "web_search_20260209", "name": "web_search"},
                 {"type": "web_fetch_20260209", "name": "web_fetch"},
-                {"type": "code_execution_20250825", "name": "code_execution"},
             ]
         return [{"type": "web_search"}]
 
