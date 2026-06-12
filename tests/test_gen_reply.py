@@ -2196,6 +2196,7 @@ def test_strip_attachment_parts_replaces_payload_parts() -> None:
                 "filename": "a.pdf",
                 "file_data": "data:application/pdf;base64,xxx",
             },
+            {"type": "input_file", "filename": "photo.png", "file_id": "file-photo.png"},
         ],
     )
     plain_message = EasyInputMessageParam(role="user", content="plain")
@@ -2205,9 +2206,12 @@ def test_strip_attachment_parts_replaces_payload_parts() -> None:
     assert stripped[0] is plain_message
     parts = stripped[1]["content"]
     assert isinstance(parts, list)
-    assert [part["type"] for part in parts] == ["input_text", "input_text", "input_text"]
+    assert [part["type"] for part in parts] == ["input_text"] * 4
     assert parts[1]["text"] == "[attachment: image]"
     assert parts[2]["text"] == "[attachment: file]"
+    # An uploaded image rides as input_file; its filename keeps the image marker so
+    # image-edit prompts still route to IMAGE.
+    assert parts[3]["text"] == "[attachment: image]"
     original_parts = payload_message["content"]
     assert isinstance(original_parts, list)
     assert original_parts[1]["type"] == "input_image"

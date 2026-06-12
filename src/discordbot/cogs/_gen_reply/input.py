@@ -66,7 +66,14 @@ def strip_attachment_parts(messages: list[EasyInputMessageParam]) -> list[EasyIn
             elif part_type == "input_image":
                 parts.append(ResponseInputTextParam(text="[attachment: image]", type="input_text"))
             elif part_type == "input_file":
-                parts.append(ResponseInputTextParam(text="[attachment: file]", type="input_text"))
+                # Uploaded images ride as input_file (file_id) too, so the route still
+                # needs to know an image was attached: classify by the part's filename so
+                # image-edit prompts keep dispatching to IMAGE instead of falling to QA.
+                mime = guess_type(part.get("filename") or "")[0] or ""
+                marker = "image" if mime.startswith("image/") else "file"
+                parts.append(
+                    ResponseInputTextParam(text=f"[attachment: {marker}]", type="input_text")
+                )
         stripped.append(EasyInputMessageParam(role=message["role"], content=parts))
     return stripped
 
@@ -211,7 +218,9 @@ class MessageInputBuilder(BaseModel):
             logfire.warn("Failed to convert this image")
             return None
         if isinstance(source, str):
-            filename = "image"
+            # URL sources re-encode to JPEG; give them an image extension so the route's
+            # attachment marker is classified as an image, not a generic file.
+            filename = "image.jpg"
         else:
             filename = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
