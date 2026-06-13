@@ -81,6 +81,7 @@ class HelpView(View):
         )
 
     @nextcord.ui.string_select(
+        custom_id="help_category",
         placeholder="…",
         min_values=1,
         max_values=1,
