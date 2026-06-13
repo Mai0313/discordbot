@@ -70,50 +70,75 @@ class ThreadsCogs(commands.Cog):
         embed.set_footer(text=" | ".join(footer_parts))
         return embed
 
+    def _build_post_embeds(
+        self, output: ThreadsOutput, color: Color, image_count: int, is_target: bool
+    ) -> list[Embed]:
+        """Builds the embeds for one post, showing `image_count` of its images.
+
+        The main embed carries the post text plus its first shown image; further shown
+        images become bare image embeds reusing the post URL so Discord merges them into
+        one gallery. `image_count == 0` yields a single text-only context embed.
+        """
+        main_embed = self._build_post_embed(output=output, color=color)
+        embeds = [main_embed]
+        if image_count > 0:
+            main_embed.set_image(url=output.image_urls[0])
+            for img_url in output.image_urls[1:image_count]:
+                extra = Embed(url=output.url)
+                extra.set_image(url=img_url)
+                embeds.append(extra)
+        # Target videos are downloaded and attached as files; ancestor videos are not,
+        # so surface a link hint — otherwise a video-only parent shows as an empty embed.
+        if not is_target and output.video_urls and output.url:
+            hint = f"\n\n🎬 [點此觀看影片]({output.url})"
+            main_embed.description = (main_embed.description or "") + hint
+        return embeds
+
     def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
         """Builds a list of embeds for a Threads reply chain.
 
         Args:
             results: Ordered chain `[root, ..., direct_parent, target]`.
         """
-        # Discord caps a single message at 10 embeds. We always keep the target post's main
-        # embed; the rest of the budget is split between ancestor context (oldest → newest)
-        # and extra image embeds for the target. Context wins over extra images when the
-        # chain is deep — that's the whole point of fetching the chain.
+        # Discord caps a single message at 10 embeds, one image each. The posted URL is
+        # the target (last item) and owns the message, so its images claim slots first,
+        # then the direct parent's, on up the chain; a post that loses the image race
+        # still earns a text-only context embed, but only from slots no image needed.
         max_embeds = 10
-        embeds: list[Embed] = []
-        *parents, target = results
+        # A chain deeper than the embed cap can't show every post; keep the target and its
+        # nearest ancestors, which are the most relevant context.
+        if len(results) > max_embeds:
+            results = results[-max_embeds:]
         chain_depth = len(results)
 
-        for i, parent in enumerate(parents):
-            if len(embeds) >= max_embeds - 1:  # leave one slot for the target post's main embed
+        priority = list(reversed(range(chain_depth)))  # target, direct parent, ..., root
+        image_count = [0] * chain_depth
+        budget = max_embeds
+        for index in priority:
+            take = min(len(results[index].image_urls), budget)
+            image_count[index] = take
+            budget -= take
+
+        keep_text = [False] * chain_depth
+        for index in priority:
+            if budget <= 0:
                 break
-            parent_embed = self._build_post_embed(
-                output=parent, color=self._gradient_color(index=i, total=chain_depth)
+            if image_count[index] == 0:
+                keep_text[index] = True
+                budget -= 1
+
+        embeds: list[Embed] = []
+        for index, output in enumerate(results):
+            if image_count[index] == 0 and not keep_text[index]:
+                continue
+            embeds.extend(
+                self._build_post_embeds(
+                    output=output,
+                    color=self._gradient_color(index=index, total=chain_depth),
+                    image_count=image_count[index],
+                    is_target=index == chain_depth - 1,
+                )
             )
-            if parent.image_urls:
-                parent_embed.set_image(url=parent.image_urls[0])
-            if parent.video_urls and parent.url:
-                # Parent videos aren't downloaded (see ThreadsDownloader.parse), so surface a
-                # link hint — otherwise a video-only parent shows as an empty embed.
-                hint = f"\n\n🎬 [點此觀看影片]({parent.url})"
-                parent_embed.description = (parent_embed.description or "") + hint
-            embeds.append(parent_embed)
-
-        main_embed = self._build_post_embed(
-            output=target, color=self._gradient_color(index=chain_depth - 1, total=chain_depth)
-        )
-        if target.image_urls:
-            main_embed.set_image(url=target.image_urls[0])
-        embeds.append(main_embed)
-
-        # Subsequent images of the target post share the same URL so Discord visually groups them.
-        remaining = max_embeds - len(embeds)
-        for img_url in target.image_urls[1 : 1 + remaining]:
-            extra = Embed(url=target.url)
-            extra.set_image(url=img_url)
-            embeds.append(extra)
-
         return embeds
 
     @commands.Cog.listener()
@@ -155,11 +180,10 @@ class ThreadsCogs(commands.Cog):
                 guild_limit = message.guild.filesize_limit if message.guild else 25 * 1024 * 1024
                 max_size = guild_limit - 1024 * 1024
 
-                if (
-                    total_size > max_size
-                    or len(target.video_paths) + len(target.image_urls) > 10
-                    or len(target.text) > 4096
-                ):
+                # Image count is no longer guarded here: _build_embeds caps the message at
+                # 10 embeds and shows as many images as fit, so an oversized carousel
+                # degrades to its first images instead of refusing the whole post.
+                if total_size > max_size or len(target.text) > 4096:
                     await update_reaction(
                         message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
                     )

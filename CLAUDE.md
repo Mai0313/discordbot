@@ -136,7 +136,7 @@ make gen-docs                    # regenerate docs/ from sources
 
 ## Other Cogs
 
-- `parse_threads.py` watches `threads.net` / `threads.com` URLs and uses reactions for status; no extra reward.
+- `parse_threads.py` watches `threads.net` / `threads.com` URLs and uses reactions for status; no extra reward. A reply URL expands the whole reply chain into one message: every post (ancestors and target) renders as a same-`url` image gallery so all its images show, not just the first. `_build_embeds` fills the 10-embed cap target-first (the posted URL's images win the budget, then the direct parent on up the chain), then spends any leftover slot on a text-only context embed for an image-less post. There is no media-count guard; an oversized carousel degrades to its first images rather than refusing the post (`total_size` and the 4096-char text guard stay).
 - `video.py` keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
 - Temporary media downloads (`video.py`, `parse_threads.py`, `utils/downloader.py`, `utils/threads.py`) write to the project-root `tmp/` scratch folder (gitignored, removed by `make clean`) and delete the files after delivery. Do not put scratch downloads under `data/`.
 - `auto_unmute.py` clears timeouts applied to the bot, finds the moderator from recent audit log entries, and replies in the last active human channel or the guild system channel.
