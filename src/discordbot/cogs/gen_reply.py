@@ -19,7 +19,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_gemini_client, create_litellm_client
+from discordbot.utils.llm import litellm_call_kwargs, create_gemini_client, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
@@ -73,9 +73,13 @@ if TYPE_CHECKING:
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 
-# Memory selection is a lightweight tool-only preflight; past this deadline the reply
-# answers without memory instead of letting a slow proxy stall the whole pipeline.
-MEMORY_SELECT_TIMEOUT_SECONDS = 3.0
+# Memory selection overlaps the route call for free: the QA path joins the speculative
+# prep task only after the route returns, so selection runs unbounded while the route is
+# still in flight. Once the route completes, a still-running selection gets only this grace
+# before the reply answers without memory, so a slow selection can never stall the pipeline
+# yet a selection that finishes within the (route-dominant) window is never thrown away.
+# Tune against the `gen_reply memory selection done` latency log.
+MEMORY_SELECT_GRACE_SECONDS = 5.0
 
 # Hard ceiling on the video-generation polling loop so a hung provider job cannot
 # leave the message handler waiting forever.
@@ -435,7 +439,11 @@ class ReplyGeneratorCogs(commands.Cog):
         image_b64 = result.data[0].b64_json
         if image_b64 is None:
             raise ValueError("Image operation returned no b64_json")
-        image_url = convert_base64_to_data_uri(image_b64)
+        # Send the generated image immediately so the user sees it without waiting on the
+        # caption round-trip; the caption is edited into the same message once it returns.
+        image_file = File(fp=BytesIO(base64.b64decode(image_b64)), filename="generated.png")
+        reply = await message.reply(content=message.author.mention, file=image_file)
+
         image_description_input: list[EasyInputMessageParam] = [
             EasyInputMessageParam(
                 role="user",
@@ -445,26 +453,29 @@ class ReplyGeneratorCogs(commands.Cog):
                         type="input_text",
                     ),
                     ResponseInputImageParam(
-                        image_url=image_url, detail="auto", type="input_image"
+                        image_url=convert_base64_to_data_uri(image_b64),
+                        detail="auto",
+                        type="input_image",
                     ),
                 ],
             )
         ]
         fast_model = self.runtime_models.fast_model
-        image_responses = await self.client.responses.create(
-            model=fast_model.name,
-            instructions=IMAGE_PROMPT,
-            input=cast("ResponseInputParam", image_description_input),
-            reasoning=fast_model.reasoning,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
-        )
-        image_description = (image_responses.output_text or "").strip()
-        image_bytes = BytesIO(base64.b64decode(image_b64))
-        image_file = File(fp=image_bytes, filename="generated.png")
-        final_content = f"{message.author.mention} {image_description}"
-        await message.reply(content=final_content, file=image_file)
+        try:
+            image_responses = await self.client.responses.create(
+                model=fast_model.name,
+                instructions=IMAGE_PROMPT,
+                input=cast("ResponseInputParam", image_description_input),
+                reasoning=fast_model.reasoning,
+                **litellm_call_kwargs(end_user_id=message.author.name),
+            )
+            image_description = (image_responses.output_text or "").strip()
+        except Exception:
+            # The image is already delivered; a caption failure must not surface as an error.
+            logfire.warn("Image caption failed; leaving image uncaptioned", _exc_info=True)
+            image_description = ""
+        if image_description:
+            await reply.edit(content=f"{message.author.mention} {image_description}")
 
     async def _get_reference_and_current(
         self, message: Message
@@ -522,9 +533,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteDecision,
                     reasoning=route_model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id=message.author.name),
                 )
             parsed = responses.output_parsed
             if parsed is None:
@@ -582,9 +591,7 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning=tool_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
             stream=False,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
+            **litellm_call_kwargs(end_user_id=message.author.name),
         )
         memories: list[UserMemory] = []
         seen: set[str] = set()
@@ -656,13 +663,40 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
-    async def _prepare_reply_context(
+    async def _await_selection_gated(
+        self, *, selection_task: "asyncio.Task[MemorySelection]", route_done: asyncio.Event
+    ) -> MemorySelection:
+        """Awaits memory selection, bounded by the route call instead of a fixed timeout.
+
+        Selection overlaps the route for free, so while the route is still in flight it may
+        run unbounded; once the route completes a still-running selection gets only
+        `MEMORY_SELECT_GRACE_SECONDS` more before this raises TimeoutError and the reply
+        answers without memory. The selection task is always cancelled on exit so it never
+        orphans (e.g. when the speculative prep task is discarded on a non-QA route).
+        """
+        route_wait = asyncio.create_task(coro=route_done.wait())
+        try:
+            await asyncio.wait({selection_task, route_wait}, return_when=asyncio.FIRST_COMPLETED)
+            if selection_task.done():
+                return selection_task.result()
+            return await asyncio.wait_for(fut=selection_task, timeout=MEMORY_SELECT_GRACE_SECONDS)
+        finally:
+            route_wait.cancel()
+            with contextlib.suppress(BaseException):
+                await route_wait
+            if not selection_task.done():
+                selection_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await selection_task
+
+    async def _prepare_reply_context(  # noqa: PLR0913 -- speculative prep needs the turn payload plus the route-done signal
         self,
         message: Message,
         history_limit: int,
         memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
     ) -> ReplyContext:
         """Builds history, shared parts, server memory, and the memory selection result.
 
@@ -741,17 +775,21 @@ class ReplyGeneratorCogs(commands.Cog):
                 selection_started = time.monotonic()
                 try:
                     with logfire.span("gen_reply memory selection"):
-                        async with asyncio.timeout(delay=MEMORY_SELECT_TIMEOUT_SECONDS):
-                            selection = await self._select_user_memories(
+                        selection_task = asyncio.create_task(
+                            coro=self._select_user_memories(
                                 message=message,
                                 message_list=selection_message_list,
                                 allowed=allowed,
                                 server_memory_block=server_memory_block,
                             )
+                        )
+                        selection = await self._await_selection_gated(
+                            selection_task=selection_task, route_done=route_done
+                        )
                 except TimeoutError:
                     logfire.warn(
-                        "Memory selection timed out; answering without memory",
-                        timeout_seconds=MEMORY_SELECT_TIMEOUT_SECONDS,
+                        "Memory selection exceeded the post-route grace; answering without memory",
+                        grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                     )
                 except Exception:
                     logfire.warn(
@@ -773,7 +811,6 @@ class ReplyGeneratorCogs(commands.Cog):
             hist_messages=hist_messages,
             reference_messages=reference_messages,
             current_message=current_message,
-            server_memory=server_memory,
             server_memory_block=server_memory_block,
             memory_block=memory_block,
             memory_labels=memory_labels,
@@ -826,9 +863,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 reasoning=slow_model.reasoning,
                 tools=list(slow_model.tools),
                 stream=True,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
+                **litellm_call_kwargs(end_user_id=message.author.name),
             )
             full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
@@ -907,7 +942,7 @@ class ReplyGeneratorCogs(commands.Cog):
         finally:
             await reactions.flush()
 
-    async def _run_reply_pipeline(
+    async def _run_reply_pipeline(  # noqa: PLR0915 -- orchestrates route, speculative prep, and per-route dispatch in sequence
         self, message: Message, user_prompt: str, reactions: ReactionStatusChain
     ) -> None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
@@ -930,6 +965,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 text_reference, text_current = await self._get_reference_and_current_text_only(
                     message=message
                 )
+                # Signals memory selection that the route has returned: selection runs
+                # unbounded while this is clear and gets only a short grace once it is set.
+                route_done = asyncio.Event()
                 prep_task = asyncio.create_task(
                     coro=self._prepare_reply_context(
                         message=message,
@@ -937,6 +975,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         memory_enabled=True,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),
+                        route_done=route_done,
                     )
                 )
                 route = await self._route_message(
@@ -944,6 +983,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     reference_messages=text_reference,
                     current_message=text_current,
                 )
+                route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 pipeline_span.set_attribute(key="effort", value=route.effort)
                 if route.decision == "IMAGE":
@@ -976,6 +1016,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         memory_enabled=False,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),
+                        route_done=route_done,
                     )
                     parts_task = None
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)

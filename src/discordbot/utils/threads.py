@@ -545,82 +545,6 @@ class ThreadsDownloader(BaseModel):
         return None, []
 
     @staticmethod
-    def _collect_threads(data: dict | list) -> list[ThreadData]:
-        """Collects every `thread_items` list found in a parsed SJS payload."""
-        threads: list[ThreadData] = []
-        for raw_items in ThreadsDownloader._find_keys(obj=data, key="thread_items"):
-            if isinstance(raw_items, list):
-                threads.append(ThreadData(thread_items=raw_items))
-        return threads
-
-    @staticmethod
-    def _locate_target(threads: list[ThreadData], post_code: str) -> tuple[Post | None, int]:
-        """Returns the target post and the index of the thread that contains it."""
-        for i, thread in enumerate(threads):
-            post, _ = thread.find_post_with_parents(post_code=post_code)
-            if post:
-                return post, i
-        return None, -1
-
-    @staticmethod
-    def _collect_direct_replies(
-        threads: list[ThreadData], target_idx: int, target_author: str
-    ) -> list[Post]:
-        """Returns the first post of each non-target branch whose reply is to `target_author`."""
-        replies: list[Post] = []
-        for i, thread in enumerate(threads):
-            if i == target_idx:
-                continue
-            for item in thread.thread_items:
-                if item.post is None:
-                    continue
-                if item.post.reply_to_username == target_author:
-                    replies.append(item.post)
-                break
-        return replies
-
-    def _parse_post_with_replies_from_html(
-        self, html: str, post_code: str
-    ) -> tuple[Post | None, list[Post]]:
-        """Parses the target post and its direct replies from the SJS script tags.
-
-        Threads renders a single SJS block per post page that contains every
-        relevant `thread_items` list: one for the chain ending at the target,
-        and one per branch of replies. A branch's first post is a reply whose
-        `reply_to_author` identifies what it is replying to. We rely on this
-        to filter out siblings (which point to the target's parent) when the
-        target is itself a reply.
-
-        Args:
-            html: The full HTML of the Threads page.
-            post_code: The short code of the target post.
-
-        Returns:
-            A tuple containing:
-                - The target Post instance if found, else None.
-                - A list of direct reply Post instances, in page order.
-        """
-        for match in _SJS_PATTERN.finditer(string=html):
-            text = match.group(1)
-            if "thread_items" not in text:
-                continue
-            try:
-                data = json.loads(s=text)
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-            threads = self._collect_threads(data=data)
-            target_post, target_idx = self._locate_target(threads=threads, post_code=post_code)
-            if target_post is None:
-                continue
-            replies = self._collect_direct_replies(
-                threads=threads, target_idx=target_idx, target_author=target_post.author_name
-            )
-            return target_post, replies
-
-        return None, []
-
-    @staticmethod
     def _determine_extension(media_url: str) -> str:
         """Determines the file extension from a media URL."""
         path_lower = urlparse(media_url).path.lower()
@@ -755,37 +679,6 @@ class ThreadsDownloader(BaseModel):
         finally:
             for output in results:
                 output.unlink()
-
-    def list_all(self, url: str) -> list[ThreadsOutput]:
-        """Returns the target post followed by every direct reply to it.
-
-        The first element is the target; subsequent elements are direct replies
-        in the order Threads renders them on the page (newest first). Nested
-        replies (replies to replies) are deliberately omitted. No videos are
-        downloaded by this method; callers that need local video files should
-        invoke `parse` on the specific reply URL instead.
-
-        Args:
-            url: The Threads post URL.
-
-        Returns:
-            Ordered list `[target, reply_1, reply_2, ...]`. Empty when the
-            target post cannot be found.
-        """
-        threads_url = ThreadsURL(raw_url=url)
-        html = self._fetch_html(url=threads_url.clean_url)
-        target_post, reply_posts = self._parse_post_with_replies_from_html(
-            html=html, post_code=threads_url.post_code
-        )
-        results: list[ThreadsOutput] = []
-        if target_post is None:
-            return results
-        results.append(self._build_output(post=target_post, url=url, download=False))
-        for reply in reply_posts:
-            results.append(
-                self._build_output(post=reply, url=self._post_url(post=reply), download=False)
-            )
-        return results
 
 
 if __name__ == "__main__":

@@ -36,14 +36,14 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
+from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.cogs._games.blackjack import hand_value
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _schema_ready_for: AsyncEngine | None = None
-_schema_lock: asyncio.Lock | None = None
-_schema_lock_loop: asyncio.AbstractEventLoop | None = None
+_schema_lock = LoopLocalLock()
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
@@ -98,13 +98,8 @@ class BlackjackRoundResult(Base):
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns a schema bootstrap lock bound to the current event loop."""
-    global _schema_lock, _schema_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
-    loop = asyncio.get_running_loop()
-    if _schema_lock is None or _schema_lock_loop is not loop:
-        _schema_lock = asyncio.Lock()
-        _schema_lock_loop = loop
-    return _schema_lock
+    """Returns the schema bootstrap lock bound to the current event loop."""
+    return _schema_lock.get()
 
 
 async def _ensure_schema() -> None:

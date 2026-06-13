@@ -100,7 +100,6 @@ from discordbot.typings.economy import (
     LoanContractStatus,
     LoanProposalStatus,
     CasinoLedgerSnapshot,
-    CentralBankerAccount,
     LossLeaderboardEntry,
     RoundSettlementResult,
     BalanceAdjustmentResult,
@@ -110,6 +109,7 @@ from discordbot.typings.economy import (
     OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
+from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.cogs._economy.boards import invalidate_economy_board_cache
 from discordbot.utils.stored_integer import StoredInteger
@@ -430,8 +430,7 @@ def _jackpot_seed_amount(game_id: str) -> int:
 # race under concurrent first use, so schema creation is serialized with
 # loop-local locks.
 _schema_ready_for: AsyncEngine | None = None
-_schema_lock: asyncio.Lock | None = None
-_schema_lock_loop: asyncio.AbstractEventLoop | None = None
+_schema_lock = LoopLocalLock()
 _loan_accept_lock: asyncio.Lock | None = None
 _loan_accept_lock_loop: asyncio.AbstractEventLoop | None = None
 type _TopNCacheKey = tuple[int, int | None, tuple[int, ...], bool]
@@ -488,13 +487,8 @@ def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns a schema bootstrap lock bound to the current event loop."""
-    global _schema_lock, _schema_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
-    loop = asyncio.get_running_loop()
-    if _schema_lock is None or _schema_lock_loop is not loop:
-        _schema_lock = asyncio.Lock()
-        _schema_lock_loop = loop
-    return _schema_lock
+    """Returns the schema bootstrap lock bound to the current event loop."""
+    return _schema_lock.get()
 
 
 def _current_loan_accept_lock() -> asyncio.Lock:
@@ -2234,18 +2228,6 @@ async def set_central_banker(
         )
         await session.commit()
         return result.scalar_one_or_none() is not None
-
-
-async def list_central_bankers() -> list[CentralBankerAccount]:
-    """Returns all central bankers ordered by user ID."""
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(UserAccount.user_id, UserAccount.name)
-            .where(UserAccount.is_central_banker.is_(True))
-            .order_by(UserAccount.user_id)
-        )
-        return [CentralBankerAccount(user_id=row[0], name=row[1]) for row in result.all()]
 
 
 async def get_account(user_id: int) -> AccountSnapshot | None:

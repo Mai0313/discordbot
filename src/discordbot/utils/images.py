@@ -7,7 +7,6 @@ the bot actually uses: `http(s)://` URLs and `data:image/...;base64,...` URIs.
 from io import BytesIO
 import re
 import base64
-from typing import Literal, overload
 
 from PIL import Image
 import requests
@@ -86,43 +85,28 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
         return payload, content_type
 
 
-@overload
-def get_image_data(image_file: str, use_b64: Literal[True] = ...) -> str:  # noqa: D418
-    """Returns image data as a base64 string."""
-    ...
-
-
-@overload
-def get_image_data(image_file: str, use_b64: Literal[False]) -> bytes:  # noqa: D418
-    """Returns image data as raw bytes."""
-    ...
-
-
-def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
-    """Returns the underlying bytes of an image (or base64-encoded form).
+def get_image_data(image_file: str) -> bytes:
+    """Returns the underlying bytes of an image.
 
     Fast path: when `image_file` is already a `data:image/<mime>;base64,...`
-    URI, the embedded payload is returned as-is — no PIL decode/encode round
-    trip, no format change. JPEG stays JPEG, PNG stays PNG.
+    URI, the embedded payload is decoded and returned as-is — no PIL
+    decode/encode round trip, no format change. JPEG stays JPEG, PNG stays PNG.
 
     Slow path: anything else is fetched / decoded via :func:`get_pil_image`,
     downscaled to the provider's effective resolution, and re-encoded as JPEG.
 
     Args:
         image_file: URL or data URI.
-        use_b64: When `True` (default) return a base64 `str`; when `False`
-            return raw `bytes`.
 
     Returns:
-        Base64-encoded image data when `use_b64` is True, otherwise raw image
-        bytes.
+        Raw image bytes.
 
     Raises:
         ValueError: `image_file` is not a supported URL or image data URI.
     """
     if match := _DATA_URI_RE.match(string=image_file):
         payload = image_file[match.end() :]
-        return payload if use_b64 else base64.b64decode(s=payload)
+        return base64.b64decode(s=payload)
 
     image = get_pil_image(image_file=image_file)
     image.thumbnail(
@@ -130,10 +114,7 @@ def get_image_data(image_file: str, use_b64: bool = True) -> bytes | str:
     )
     buffered = BytesIO()
     image.save(fp=buffered, format="JPEG", quality=95)
-    content = buffered.getvalue()
-    if use_b64:
-        return base64.b64encode(s=content).decode(encoding="utf-8")
-    return content
+    return buffered.getvalue()
 
 
 def convert_base64_to_data_uri(base64_image: str) -> str:

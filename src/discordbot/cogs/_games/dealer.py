@@ -8,6 +8,7 @@ import logfire
 from pydantic import BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.utils.llm import litellm_call_kwargs
 from discordbot.typings.games import GameKind, SettleOutcome
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import (
@@ -55,9 +56,7 @@ class SystemNarrator(BaseModel):
                         [EasyInputMessageParam(role="user", content=user_text)],
                     ),
                     reasoning=self.model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id=end_user_id),
                 )
         except TimeoutError:
             logfire.warn(

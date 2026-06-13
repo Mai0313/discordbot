@@ -66,6 +66,7 @@ from discordbot.cogs._stock.prompts import (
     STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
 )
+from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
@@ -75,8 +76,7 @@ if TYPE_CHECKING:
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/stock.db")
 _schema_ready_for: AsyncEngine | None = None
-_schema_lock: asyncio.Lock | None = None
-_schema_lock_loop: asyncio.AbstractEventLoop | None = None
+_schema_lock = LoopLocalLock()
 _operation_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _operation_lock_refcounts: dict[tuple[int, str], int] = {}
 _operation_locks_loop: asyncio.AbstractEventLoop | None = None
@@ -316,13 +316,8 @@ def _configure_sqlite_on_checkout(
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns a schema lock bound to the current event loop."""
-    global _schema_lock, _schema_lock_loop  # noqa: PLW0603 -- loop-local singleton
-    loop = asyncio.get_running_loop()
-    if _schema_lock is None or _schema_lock_loop is not loop:
-        _schema_lock = asyncio.Lock()
-        _schema_lock_loop = loop
-    return _schema_lock
+    """Returns the schema bootstrap lock bound to the current event loop."""
+    return _schema_lock.get()
 
 
 def _current_news_generation_lock() -> asyncio.Lock:

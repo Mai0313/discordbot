@@ -91,15 +91,6 @@ class AdminAccount(BaseModel):
     name: str = Field(description="Last-seen Discord account name.")
 
 
-class CentralBankerAccount(BaseModel):
-    """Read-only central banker account row."""
-
-    model_config = ConfigDict(frozen=True)
-
-    user_id: int = Field(description="Discord user ID of the central banker account.")
-    name: str = Field(description="Last-seen Discord account name.")
-
-
 class LeaderboardEntry(BaseModel):
     """One account row in the balance leaderboard."""
 
@@ -521,7 +512,6 @@ __all__ = [
     "CasinoDailyStats",
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
-    "CentralBankerAccount",
     "CheckinResult",
     "CreditResult",
     "JackpotSettlementBatchResult",

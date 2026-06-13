@@ -48,10 +48,6 @@ class ReplyContext(BaseModel):
         default_factory=list,
         description="Header plus the processed current message; stays last in the answer input.",
     )
-    server_memory: str = Field(
-        default="",
-        description="Raw per-guild server memory, empty when absent or memory-disabled.",
-    )
     server_memory_block: SkipValidation[EasyInputMessageParam | None] = Field(
         default=None, description="Rendered server-memory context block, if any."
     )

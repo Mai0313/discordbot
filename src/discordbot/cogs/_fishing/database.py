@@ -60,6 +60,7 @@ from discordbot.typings.fishing import (
     FishGradeConfigUpsert,
 )
 from discordbot.cogs._fishing.catch import roll_catch
+from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger, stored_int_to_text
 from discordbot.cogs._economy.database import (
@@ -70,8 +71,7 @@ from discordbot.cogs._economy.database import (
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _schema_ready_for: AsyncEngine | None = None
-_schema_lock: asyncio.Lock | None = None
-_schema_lock_loop: asyncio.AbstractEventLoop | None = None
+_schema_lock = LoopLocalLock()
 _angler_locks: dict[int, asyncio.Lock] = {}
 _angler_lock_refcounts: dict[int, int] = {}
 _angler_locks_loop: asyncio.AbstractEventLoop | None = None
@@ -97,13 +97,8 @@ def _configure_sqlite_on_checkout(
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns a schema bootstrap lock bound to the current event loop."""
-    global _schema_lock, _schema_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
-    loop = asyncio.get_running_loop()
-    if _schema_lock is None or _schema_lock_loop is not loop:
-        _schema_lock = asyncio.Lock()
-        _schema_lock_loop = loop
-    return _schema_lock
+    """Returns the schema bootstrap lock bound to the current event loop."""
+    return _schema_lock.get()
 
 
 @asynccontextmanager
