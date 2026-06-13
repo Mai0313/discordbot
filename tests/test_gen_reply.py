@@ -800,16 +800,22 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         gemini_client=FakeGeminiClient(files=files),
     )
 
+    load_calls = 0
+
+    async def _load() -> tuple[bytes, str]:
+        nonlocal load_calls
+        load_calls += 1
+        return b"x", "video/mp4"
+
     # First reference times out while still PROCESSING: dropped for now, cached as pending.
-    first = await builder._resolve_file_upload(
-        cache_key="vid", filename="v.mp4", data=b"x", content_type="video/mp4"
-    )
+    first = await builder._resolve_file_upload(cache_key="vid", filename="v.mp4", load_data=_load)
     assert first is None
     assert "vid" in builder._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]
+    assert load_calls == 1  # downloaded once for the fresh upload
 
     # The file finished processing in the background; the next reference re-polls the same
-    # file once and adopts it, without uploading the bytes again.
+    # file once and adopts it, without re-downloading or re-uploading the bytes.
     async def _active_get(name: str) -> SimpleNamespace:
         return SimpleNamespace(
             name=name,
@@ -820,12 +826,11 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         )
 
     monkeypatch.setattr(files, "get", _active_get)
-    second = await builder._resolve_file_upload(
-        cache_key="vid", filename="v.mp4", data=b"x", content_type="video/mp4"
-    )
+    second = await builder._resolve_file_upload(cache_key="vid", filename="v.mp4", load_data=_load)
     assert second == ("https://files.test/v.mp4", datetime(2099, 1, 1, tzinfo=UTC))
     assert "vid" not in builder._pending_uploads
-    assert files.upload_calls == [("v.mp4", "video/mp4")]
+    assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
+    assert load_calls == 1  # adopt path did not re-download the source
 
 
 def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,13 +26,17 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Coroutine
+    from collections.abc import Callable, Sequence, Awaitable, Coroutine
 
 # A rendered attachment content part. The Gemini answer model reads a Files-API handle
 # (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
 # attachments are inlined per type instead: images as input_image base64, PDFs as input_file
 # base64 file_data, and text/code files as input_text.
 type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
+
+# Lazily fetches a source's bytes and mime type. Awaited only when a fresh Gemini upload is
+# needed, so adopting an already-uploaded pending file never re-downloads the source.
+type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
@@ -285,7 +289,7 @@ class MessageInputBuilder(BaseModel):
         return supported
 
     async def _resolve_file_upload(
-        self, cache_key: int | str, filename: str, data: bytes, content_type: str
+        self, cache_key: int | str, filename: str, load_data: "FileBytesLoader"
     ) -> tuple[str, datetime] | None:
         """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
 
@@ -295,6 +299,12 @@ class MessageInputBuilder(BaseModel):
         re-uploading from scratch, so a large-but-processable attachment becomes usable on
         a later reply rather than being re-uploaded and re-dropped every time. Only an
         ACTIVE file is ever returned, so the answer never references a not-yet-ready uri.
+
+        `load_data` fetches the source bytes (and their mime type) and is awaited only
+        when a fresh upload is actually needed: adopting a now-ACTIVE pending upload, or
+        dropping one still PROCESSING, never re-downloads the source. So a borderline file
+        keeps being adopted even after its Discord CDN url has expired and a re-download
+        would fail.
         """
         pending = self._pending_uploads.get(cache_key)
         if pending is not None and self.gemini_client is not None:
@@ -315,6 +325,11 @@ class MessageInputBuilder(BaseModel):
                         return None
                     # Terminal non-active state: drop it and re-upload below.
                     self._pending_uploads.pop(cache_key, None)
+        try:
+            data, content_type = await load_data()
+        except Exception:
+            logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+            return None
         result = await self._upload_file(filename=filename, data=data, content_type=content_type)
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result
@@ -432,36 +447,37 @@ class MessageInputBuilder(BaseModel):
         """Converts an image source to a content part plus its cache expiry.
 
         Gemini answer models reference an uploaded Files-API handle (re-polled via
-        `cache_key` if a prior upload is still pending); other providers inline the
-        already-downscaled image as a base64 `input_image` part.
+        `cache_key` if a prior upload is still pending, before any re-download); other
+        providers inline the already-downscaled image as a base64 `input_image` part.
         """
-        try:
-            file_bytes, content_type = await self._load_image_bytes(source=source)
-        except Exception:
-            logfire.warn("Failed to convert this image")
-            return None
         if isinstance(source, str):
             source_name = "image"
         else:
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
             )
-        if not self._answer_model_is_gemini():
-            image_part = ResponseInputImageParam(
-                type="input_image",
-                image_url=self._data_uri(data=file_bytes, mime_type=content_type),
+        if self._answer_model_is_gemini():
+            uploaded = await self._resolve_file_upload(
+                cache_key=cache_key,
+                filename=source_name,
+                load_data=lambda: self._load_image_bytes(source=source),
             )
-            return image_part, self._inline_expiry()
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key, filename=source_name, data=file_bytes, content_type=content_type
-        )
-        if uploaded is None:
+            if uploaded is None:
+                return None
+            file_id, expires_at = uploaded
+            # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
+            # attachment marker is derived from message metadata, not from this part.
+            part = ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
+            return part, expires_at
+        try:
+            file_bytes, content_type = await self._load_image_bytes(source=source)
+        except Exception:
+            logfire.warn("Failed to convert this image")
             return None
-        file_id, expires_at = uploaded
-        # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
-        # attachment marker is derived from message metadata, not from this part.
-        part = ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
-        return part, expires_at
+        image_part = ResponseInputImageParam(
+            type="input_image", image_url=self._data_uri(data=file_bytes, mime_type=content_type)
+        )
+        return image_part, self._inline_expiry()
 
     async def attachment_to_part(
         self, attachment: Attachment, cache_key: int | str
@@ -469,8 +485,9 @@ class MessageInputBuilder(BaseModel):
         """Converts a file attachment to a content part plus its cache expiry.
 
         Gemini answer models reference an uploaded Files-API handle (re-polled via
-        `cache_key` if a prior upload is still pending); other providers inline the file
-        (text/code as `input_text`, PDF as base64 `input_file`, else dropped).
+        `cache_key` before any re-download if a prior upload is still pending); other
+        providers inline the file (text/code as `input_text`, PDF as base64 `input_file`,
+        else dropped).
         """
         content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
         mime_type = content_type.split(";")[0].strip()
@@ -479,28 +496,29 @@ class MessageInputBuilder(BaseModel):
                 f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
             )
             return None
+
+        async def _load() -> tuple[bytes, str]:
+            return await attachment.read(), mime_type
+
+        if self._answer_model_is_gemini():
+            uploaded = await self._resolve_file_upload(
+                cache_key=cache_key, filename=attachment.filename, load_data=_load
+            )
+            if uploaded is None:
+                return None
+            file_id, expires_at = uploaded
+            part = ResponseInputFileParam(
+                type="input_file", file_id=file_id, filename=attachment.filename
+            )
+            return part, expires_at
         try:
-            file_bytes = await attachment.read()
+            file_bytes, _ = await _load()
         except Exception:
             logfire.warn(f"Failed to download this attachment: {attachment.url}")
             return None
-        if not self._answer_model_is_gemini():
-            return self._inline_file_part(
-                filename=attachment.filename, data=file_bytes, mime_type=mime_type
-            )
-        uploaded = await self._resolve_file_upload(
-            cache_key=cache_key,
-            filename=attachment.filename,
-            data=file_bytes,
-            content_type=mime_type,
+        return self._inline_file_part(
+            filename=attachment.filename, data=file_bytes, mime_type=mime_type
         )
-        if uploaded is None:
-            return None
-        file_id, expires_at = uploaded
-        part = ResponseInputFileParam(
-            type="input_file", file_id=file_id, filename=attachment.filename
-        )
-        return part, expires_at
 
     def _inline_file_part(
         self, filename: str, data: bytes, mime_type: str
