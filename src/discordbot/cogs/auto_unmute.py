@@ -11,7 +11,7 @@ from nextcord import User, Guild, Member, Message, AuditLogAction
 from nextcord.ext import commands
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.utils.llm import create_litellm_client
+from discordbot.utils.llm import litellm_call_kwargs, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._auto_unmute.prompts import UNMUTE_PROMPT
@@ -178,9 +178,7 @@ class AutoUnmuteCogs(commands.Cog):
             instructions=UNMUTE_PROMPT,
             input=cast("ResponseInputParam", message_list),
             reasoning=fast_model.reasoning,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": "auto-unmute"},
-            extra_body={"mock_testing_fallbacks": False},
+            **litellm_call_kwargs(end_user_id="auto-unmute"),
         )
         return (responses.output_text or "").strip()
 

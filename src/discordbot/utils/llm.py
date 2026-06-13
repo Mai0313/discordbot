@@ -1,9 +1,28 @@
 """Factories for the runtime LiteLLM-proxy OpenAI client and the Gemini upload client."""
 
+from typing import Any
+
 from google import genai
 from openai import AsyncOpenAI
 
 from discordbot.typings.llm import LLMConfig
+
+
+def litellm_call_kwargs(end_user_id: str) -> dict[str, Any]:
+    """Returns the shared kwargs every runtime Responses call passes to the LiteLLM proxy.
+
+    Centralizes the auto service tier, the per-end-user header LiteLLM keys spend and
+    rate-limit tracking on, and the flag that disables the proxy's mock fallbacks, so a
+    proxy-wide change lives here instead of being re-typed at every `responses.*` call site.
+    Spread it as `**litellm_call_kwargs(end_user_id=...)` next to the per-call model,
+    instructions, input, and reasoning. Returns a fresh dict each call so a caller can never
+    mutate shared state.
+    """
+    return {
+        "service_tier": "auto",
+        "extra_headers": {"x-litellm-end-user-id": end_user_id},
+        "extra_body": {"mock_testing_fallbacks": False},
+    }
 
 
 def create_litellm_client(config: LLMConfig) -> AsyncOpenAI:

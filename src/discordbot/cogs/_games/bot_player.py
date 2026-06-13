@@ -20,6 +20,7 @@ import logfire
 from pydantic import BaseModel, ConfigDict
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.utils.llm import litellm_call_kwargs
 from discordbot.typings.games import (
     Card,
     BotAction,
@@ -909,9 +910,7 @@ class BotPlayerAI(BaseModel):
                     ),
                     text_format=BotPlayerActionDecision,
                     reasoning=self.model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _ACTION_END_USER_ID},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id=_ACTION_END_USER_ID),
                 )
         except TimeoutError:
             logfire.warn(
@@ -960,9 +959,7 @@ class BotPlayerAI(BaseModel):
                     ),
                     text_format=BotPlayerInsuranceDecision,
                     reasoning=self.model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": _INSURANCE_END_USER_ID},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id=_INSURANCE_END_USER_ID),
                 )
         except TimeoutError:
             logfire.warn(

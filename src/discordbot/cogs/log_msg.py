@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
 
+from discordbot.utils.sqlite_config import configure_sqlite_connection
+
 CONTROL_CHARS_RE = re.compile(pattern=r"\x00")
 
 # Single shared engine — putting create_engine() on a per-message
@@ -30,11 +32,7 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
     in WAL: every commit fsyncs the WAL frame; the main file is fsynced on
     checkpoint, not on every write.
     """
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    cursor.close()
+    configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
 
 
 _MESSAGES_TABLE_LOCK = threading.Lock()

@@ -12,6 +12,8 @@ from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
 from sqlalchemy.engine import Connection
 
+from discordbot.utils.sqlite_config import configure_sqlite_connection
+
 PUBLIC_MESSAGE_TTL_SECONDS = 180
 _PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
 _pending_engine: Engine | None = None
@@ -57,11 +59,7 @@ class PendingPublicMessage(BaseModel):
 
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
     """Sets WAL mode and a tolerant busy timeout for cleanup persistence."""
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    cursor.close()
+    configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
 
 
 def _pending_db_engine() -> Engine:

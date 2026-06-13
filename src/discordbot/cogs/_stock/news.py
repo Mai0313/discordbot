@@ -8,6 +8,7 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.utils.llm import litellm_call_kwargs
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT
@@ -67,9 +68,7 @@ class StockNewsAI(BaseModel):
                     ),
                     text_format=StockNewsDraft,
                     reasoning=self.model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": "stock_news"},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id="stock_news"),
                 )
         except TimeoutError:
             logfire.warn(
