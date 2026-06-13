@@ -84,9 +84,7 @@ async def gen_reply_agy(user_prompt: str) -> RunResult:
 
 
 if __name__ == "__main__":
+    # import asyncio
     # gen_reply_oai(user_prompt="為何 37 是質數?")
-    # gen_reply_gemini(user_prompt="為何 37 是質數?")
-
-    import asyncio
-
-    asyncio.run(gen_reply_agy(user_prompt="為何 37 是質數?"))
+    gen_reply_gemini(user_prompt="為何 37 是質數?")
+    # asyncio.run(gen_reply_agy(user_prompt="為何 37 是質數?"))
