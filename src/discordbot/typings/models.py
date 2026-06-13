@@ -122,11 +122,11 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_route_message`.
 
         Returns:
-            Fast no-reasoning settings for the route + effort grading call. Runs
-            concurrently with the context build, so flash (not flash-lite) buys a
-            more reliable effort grade without stretching the QA critical path.
+            Fast no-reasoning settings for the route + effort grading call. The route's
+            main job is classification and the effort grade follows simple complexity
+            rules, so flash-lite is enough here and keeps the QA critical path short.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="none")
+        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
 
     @property
     def tool_model(self) -> ModelSettings:

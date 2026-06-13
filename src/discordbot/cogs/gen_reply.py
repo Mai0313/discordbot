@@ -2,6 +2,7 @@
 
 from io import BytesIO
 import re
+import time
 import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
@@ -178,6 +179,15 @@ async def _discard_task[TaskResultT](task: asyncio.Task[TaskResultT]) -> None:
         logfire.warn("Speculative reply context build failed off-route", _exc_info=True)
 
 
+def _log_pre_answer_latency(started: float, decision: str) -> None:
+    """Logs total time from pipeline start to answer dispatch (the user's 'router stage')."""
+    logfire.info(
+        "gen_reply pre-answer latency",
+        elapsed_seconds=time.monotonic() - started,
+        decision=decision,
+    )
+
+
 class ReplyGeneratorCogs(commands.Cog):
     """Generates AI replies for Discord messages.
 
@@ -279,6 +289,7 @@ class ReplyGeneratorCogs(commands.Cog):
         text-only render is built only when `with_text_only`, since just the memory
         selection call reads it and the SUMMARY route should not pay for a second pass.
         """
+        started = time.monotonic()
         messages: list[EasyInputMessageParam] = []
         text_only_messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
@@ -314,6 +325,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 text_only_messages.append(header)
                 text_only_messages.extend(processed_text)
 
+        logfire.info(
+            "gen_reply history render done",
+            elapsed_seconds=time.monotonic() - started,
+            message_count=len(hist_messages),
+        )
         return RenderedHistory(
             rendered=messages, rendered_text_only=text_only_messages, raw=hist_messages
         )
@@ -458,9 +474,16 @@ class ReplyGeneratorCogs(commands.Cog):
         This is the answer-path render (uploads + activation poll to ACTIVE); it runs in
         the background so only the answer awaits the Files API.
         """
+        started = time.monotonic()
         reference_messages, current_message = await asyncio.gather(
             self._get_reference_message(message=message),
             self._get_current_message(message=message),
+        )
+        logfire.info(
+            "gen_reply attachment render done",
+            elapsed_seconds=time.monotonic() - started,
+            reference_count=len(reference_messages),
+            current_count=len(current_message),
         )
         return reference_messages, current_message
 
@@ -489,8 +512,9 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
+        route_model = self.runtime_models.route_model
+        started = time.monotonic()
         try:
-            route_model = self.runtime_models.route_model
             with logfire.span("gen_reply route"):
                 responses = await self.client.responses.parse(
                     model=route_model.name,
@@ -502,17 +526,27 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                     extra_body={"mock_testing_fallbacks": False},
                 )
-            if responses.output_parsed is None:
-                return RouteDecision(decision="QA")
-            route = responses.output_parsed
-            if route.decision == "SUMMARY" and _message_has_url(content=message.content):
-                return RouteDecision(decision="QA", effort=route.effort)
-            return route
+            parsed = responses.output_parsed
+            if parsed is None:
+                route = RouteDecision(decision="QA")
+            elif parsed.decision == "SUMMARY" and _message_has_url(content=message.content):
+                route = RouteDecision(decision="QA", effort=parsed.effort)
+            else:
+                route = parsed
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
             logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
-            return RouteDecision(decision="QA")
+            route = RouteDecision(decision="QA")
+        # Route-call latency is logged on every path: this is the prime suspect for slow
+        # replies, so the log file must show its duration directly, not just a span start.
+        logfire.info(
+            "gen_reply route done",
+            elapsed_seconds=time.monotonic() - started,
+            decision=route.decision,
+            effort=route.effort,
+        )
+        return route
 
     async def _select_user_memories(
         self,
@@ -639,6 +673,7 @@ class ReplyGeneratorCogs(commands.Cog):
         selection call never re-reads or waits on the uploads.
         """
         text_reference, text_current = text_parts
+        build_started = time.monotonic()
         with logfire.span("gen_reply context build"):
             history = await self._get_history_message(
                 message=message, limit=history_limit, with_text_only=memory_enabled
@@ -647,6 +682,11 @@ class ReplyGeneratorCogs(commands.Cog):
             # propagate into the shared upload task: a SUMMARY route cancels prep while
             # still reusing `parts_task`, and an unshielded `await` would cancel it too.
             reference_messages, current_message = await asyncio.shield(parts_task)
+        # Covers the history fetch/render plus waiting on the shared attachment upload, so
+        # the log separates pre-answer attachment cost from the route-call cost.
+        logfire.info(
+            "gen_reply context build done", elapsed_seconds=time.monotonic() - build_started
+        )
         hist_messages = history.rendered
 
         # The bot's own per-server memory is read once here and shared by both phases: it
@@ -698,6 +738,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 ]
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
                 # never turn an answerable message into the generic error path.
+                selection_started = time.monotonic()
                 try:
                     with logfire.span("gen_reply memory selection"):
                         async with asyncio.timeout(delay=MEMORY_SELECT_TIMEOUT_SECONDS):
@@ -722,6 +763,11 @@ class ReplyGeneratorCogs(commands.Cog):
                     if selection.memories:
                         memory_block = render_memory_context_block(memories=selection.memories)
                         memory_labels = memory_lookup_labels(memories=selection.memories)
+                    logfire.info(
+                        "gen_reply memory selection done",
+                        elapsed_seconds=time.monotonic() - selection_started,
+                        selected=len(selection.memories),
+                    )
 
         return ReplyContext(
             hist_messages=hist_messages,
@@ -871,6 +917,7 @@ class ReplyGeneratorCogs(commands.Cog):
         ) = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
+                pipeline_started = time.monotonic()
                 reactions.advance(emoji="🔀")
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route and the
@@ -931,6 +978,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         text_parts=(text_reference, text_current),
                     )
                     parts_task = None
+                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=SUMMARY_PROMPT,
@@ -946,6 +994,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     context = await prep_task
                     prep_task = None
                     parts_task = None
+                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=REPLY_PROMPT,
