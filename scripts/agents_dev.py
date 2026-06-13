@@ -71,7 +71,9 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
 
 async def gen_reply_agy(user_prompt: str) -> RunResult:
     agent_config = antigravity.LocalAgentConfig(
-        system_instructions=REPLY_PROMPT, api_key=config.gemini_api_key
+        system_instructions=REPLY_PROMPT,
+        tools=[{"type": "google_search"}, {"type": "url_context"}],
+        api_key=config.gemini_api_key,
     )
     async with antigravity.Agent(config=agent_config) as agent:
         response = await agent.chat(prompt=user_prompt)
