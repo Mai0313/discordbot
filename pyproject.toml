@@ -96,6 +96,8 @@ update = "discordbot.cli:update"
 [dependency-groups]
 dev = [
     "anthropic",
+    "boto3>=1.43.29",
+    "botocore>=1.43.29",
     "ipykernel",
     "ipywidgets",
     "notebook",

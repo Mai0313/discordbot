@@ -62,7 +62,7 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
         console.print(event)
         responses.append(event.model_dump())
     with open("./data/agent_response.json", "wb") as f:
-        f.write(orjson.dumps(responses))
+        f.write(orjson.dumps(responses, option=orjson.OPT_INDENT_2))
 
 
 if __name__ == "__main__":
