@@ -8,7 +8,6 @@ from random import Random, SystemRandom
 from typing import TYPE_CHECKING, Any, Final
 import asyncio
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
 
 import logfire
 from pydantic import BaseModel, ConfigDict
@@ -66,27 +65,22 @@ from discordbot.cogs._stock.prompts import (
     STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
 )
-from discordbot.utils.asyncio_locks import LoopLocalLock
+from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager, LoopLocalSemaphore
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable, AsyncIterator
+    from contextlib import AbstractAsyncContextManager
+    from collections.abc import Callable, Awaitable
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/stock.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
-_operation_locks: dict[tuple[int, str], asyncio.Lock] = {}
-_operation_lock_refcounts: dict[tuple[int, str], int] = {}
-_operation_locks_loop: asyncio.AbstractEventLoop | None = None
-_market_locks: dict[str, asyncio.Lock] = {}
-_market_lock_refcounts: dict[str, int] = {}
-_market_locks_loop: asyncio.AbstractEventLoop | None = None
-_news_generation_lock: asyncio.Lock | None = None
-_news_generation_lock_loop: asyncio.AbstractEventLoop | None = None
-_news_provider_semaphore: asyncio.Semaphore | None = None
-_news_provider_semaphore_loop: asyncio.AbstractEventLoop | None = None
+_operation_locks = KeyedLockManager[tuple[int, str]]()
+_market_locks = KeyedLockManager[str]()
+_news_generation_lock = LoopLocalLock()
+_news_provider_semaphore = LoopLocalSemaphore(capacity_provider=lambda: _NEWS_PROVIDER_CONCURRENCY)
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 _NEWS_PROVIDER_CONCURRENCY: Final[int] = 4
 _STOCK_PORTFOLIO_CACHE_TTL_SECONDS: Final[float] = 5.0
@@ -322,86 +316,22 @@ def _current_schema_lock() -> asyncio.Lock:
 
 def _current_news_generation_lock() -> asyncio.Lock:
     """Returns the process-local stock news generation lock for this event loop."""
-    global _news_generation_lock, _news_generation_lock_loop  # noqa: PLW0603 -- loop-local singleton
-    loop = asyncio.get_running_loop()
-    if _news_generation_lock is None or _news_generation_lock_loop is not loop:
-        _news_generation_lock = asyncio.Lock()
-        _news_generation_lock_loop = loop
-    return _news_generation_lock
+    return _news_generation_lock.get()
 
 
 def _current_news_provider_semaphore() -> asyncio.Semaphore:
     """Returns the stock news provider concurrency limiter for this event loop."""
-    global _news_provider_semaphore, _news_provider_semaphore_loop  # noqa: PLW0603 -- loop-local singleton
-    loop = asyncio.get_running_loop()
-    if _news_provider_semaphore is None or _news_provider_semaphore_loop is not loop:
-        _news_provider_semaphore = asyncio.Semaphore(_NEWS_PROVIDER_CONCURRENCY)
-        _news_provider_semaphore_loop = loop
-    return _news_provider_semaphore
+    return _news_provider_semaphore.get()
 
 
-@asynccontextmanager
-async def _operation_lock(user_id: int, symbol: str) -> AsyncIterator[None]:
+def _operation_lock(user_id: int, symbol: str) -> AbstractAsyncContextManager[None]:
     """Returns a per-user stock operation lock bound to the current event loop."""
-    global _operation_locks_loop  # noqa: PLW0603 -- loop-local lock map
-    loop = asyncio.get_running_loop()
-    if _operation_locks_loop is not loop:
-        _operation_locks.clear()
-        _operation_lock_refcounts.clear()
-        _operation_locks_loop = loop
-    key = (user_id, symbol)
-    lock = _operation_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _operation_locks[key] = lock
-    _operation_lock_refcounts[key] = _operation_lock_refcounts.get(key, 0) + 1
-    acquired = False
-    try:
-        await lock.acquire()
-        acquired = True
-        yield
-    finally:
-        if acquired:
-            lock.release()
-        refcount = _operation_lock_refcounts.get(key, 1) - 1
-        if refcount <= 0:
-            _operation_lock_refcounts.pop(key, None)
-            if _operation_locks.get(key) is lock:
-                _operation_locks.pop(key, None)
-        else:
-            _operation_lock_refcounts[key] = refcount
+    return _operation_locks.hold(key=(user_id, symbol))
 
 
-@asynccontextmanager
-async def _market_lock(symbol: str) -> AsyncIterator[None]:
+def _market_lock(symbol: str) -> AbstractAsyncContextManager[None]:
     """Returns a per-symbol market advancement lock bound to the current event loop."""
-    global _market_locks_loop  # noqa: PLW0603 -- loop-local lock map
-    loop = asyncio.get_running_loop()
-    if _market_locks_loop is not loop:
-        _market_locks.clear()
-        _market_lock_refcounts.clear()
-        _market_locks_loop = loop
-    key = symbol.upper()
-    lock = _market_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _market_locks[key] = lock
-    _market_lock_refcounts[key] = _market_lock_refcounts.get(key, 0) + 1
-    acquired = False
-    try:
-        await lock.acquire()
-        acquired = True
-        yield
-    finally:
-        if acquired:
-            lock.release()
-        refcount = _market_lock_refcounts.get(key, 1) - 1
-        if refcount <= 0:
-            _market_lock_refcounts.pop(key, None)
-            if _market_locks.get(key) is lock:
-                _market_locks.pop(key, None)
-        else:
-            _market_lock_refcounts[key] = refcount
+    return _market_locks.hold(key=symbol.upper())
 
 
 def open_stock_session() -> AsyncSession:

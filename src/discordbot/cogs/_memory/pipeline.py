@@ -29,6 +29,7 @@ from discordbot.cogs._memory.store import (
     detail_file_bytes,
     write_main_memory,
 )
+from discordbot.utils.asyncio_locks import LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.cogs._memory.constants import (
     MEMORY_GLOBAL_CONCURRENCY,
     RAW_CONSOLIDATION_MAX_BYTES,
@@ -96,24 +97,19 @@ _last_regeneration: dict[str, float] = {}
 # background without blocking the command, and a second request while one is
 # still running cannot double-schedule the whole-file rewrite. Kept separate
 # from `_inflight_tasks` because regeneration is a distinct, user-triggered job.
-_regeneration_tasks: dict[str, asyncio.Task[_RegenerationResult]] = {}
-_regeneration_loop: asyncio.AbstractEventLoop | None = None
+_regeneration_tasks: LoopLocalRegistry[str, asyncio.Task[_RegenerationResult]] = (
+    LoopLocalRegistry()
+)
 
-# Loop-keyed process-wide semaphore capping concurrent background memory
-# updates so a busy server cannot fan out unbounded LLM work. Shared across
-# flavors, so per-user and per-server updates draw from the same budget.
-_memory_semaphore_obj: asyncio.Semaphore | None = None
-_memory_semaphore_loop: asyncio.AbstractEventLoop | None = None
+# Process-wide semaphore capping concurrent background memory updates so a busy server
+# cannot fan out unbounded LLM work; shared across flavors and rebuilt per loop. The cap
+# is read at build time so a test that lowers MEMORY_GLOBAL_CONCURRENCY first still applies.
+_memory_semaphore_holder = LoopLocalSemaphore(capacity_provider=lambda: MEMORY_GLOBAL_CONCURRENCY)
 
 
 def _memory_semaphore() -> asyncio.Semaphore:
     """Returns the process-wide semaphore, rebuilt when the event loop changes."""
-    global _memory_semaphore_obj, _memory_semaphore_loop  # noqa: PLW0603 -- loop-keyed singleton
-    loop = asyncio.get_running_loop()
-    if _memory_semaphore_loop is not loop or _memory_semaphore_obj is None:
-        _memory_semaphore_obj = asyncio.Semaphore(MEMORY_GLOBAL_CONCURRENCY)
-        _memory_semaphore_loop = loop
-    return _memory_semaphore_obj
+    return _memory_semaphore_holder.get()
 
 
 def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) plus the turn payload
@@ -325,18 +321,13 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
     caller can report "still rebuilding" instead of double-scheduling the
     whole-file rewrite); True when a fresh background task was started.
     """
-    global _regeneration_loop  # noqa: PLW0603 -- process task de-dupe
-    loop = asyncio.get_running_loop()
-    if _regeneration_loop is not loop:
-        _regeneration_tasks.clear()
-        _regeneration_loop = loop
-    running = _regeneration_tasks.get(scope)
+    running = _regeneration_tasks.get(key=scope)
     if running is not None and not running.done():
         return False
     task = asyncio.create_task(
         regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
     )
-    _regeneration_tasks[scope] = task
+    _regeneration_tasks.set(key=scope, value=task)
     task.add_done_callback(
         lambda finished: _finish_memory_regeneration(scope=scope, task=finished)
     )
@@ -345,8 +336,8 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
 
 def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResult]) -> None:
     """Clears the in-flight slot and logs failures of a background rebuild."""
-    if _regeneration_tasks.get(scope) is task:
-        _regeneration_tasks.pop(scope, None)
+    if _regeneration_tasks.get(key=scope) is task:
+        _regeneration_tasks.pop(key=scope)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
         # CancelledError out of this callback, and an aborted rebuild leaves the

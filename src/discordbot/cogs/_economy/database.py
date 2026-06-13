@@ -431,8 +431,7 @@ def _jackpot_seed_amount(game_id: str) -> int:
 # loop-local locks.
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
-_loan_accept_lock: asyncio.Lock | None = None
-_loan_accept_lock_loop: asyncio.AbstractEventLoop | None = None
+_loan_accept_lock = LoopLocalLock()
 type _TopNCacheKey = tuple[int, int | None, tuple[int, ...], bool]
 type _TopLosersCacheKey = tuple[int, int, tuple[int, ...], bool, datetime]
 _top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
@@ -493,12 +492,7 @@ def _current_schema_lock() -> asyncio.Lock:
 
 def _current_loan_accept_lock() -> asyncio.Lock:
     """Serializes loan approval so central-bank capacity is consumed once."""
-    global _loan_accept_lock, _loan_accept_lock_loop  # noqa: PLW0603 -- module-level loop-local lock
-    loop = asyncio.get_running_loop()
-    if _loan_accept_lock is None or _loan_accept_lock_loop is not loop:
-        _loan_accept_lock = asyncio.Lock()
-        _loan_accept_lock_loop = loop
-    return _loan_accept_lock
+    return _loan_accept_lock.get()
 
 
 async def _ensure_schema() -> None:
