@@ -68,39 +68,35 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
         )
 
     def __gt__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
+        return (
             int_compare_text(
                 column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
-            > 0,
+            > 0
         )
 
     def __ge__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
+        return (
             int_compare_text(
                 column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
-            >= 0,
+            >= 0
         )
 
     def __lt__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
+        return (
             int_compare_text(
                 column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
-            < 0,
+            < 0
         )
 
     def __le__(self, other: object) -> ColumnElement[bool]:
-        return cast(
-            "ColumnElement[bool]",
+        return (
             int_compare_text(
                 column=cast("ColumnElement[Any]", self.expr), value=stored_int_to_int(value=other)
             )
-            <= 0,
+            <= 0
         )
 
 

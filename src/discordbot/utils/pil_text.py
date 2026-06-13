@@ -37,7 +37,7 @@ def load_font(size: int, bold: bool) -> Font:
 def text_width(draw: ImageDraw.ImageDraw, text: str, font: Font) -> int:
     """Returns the rendered pixel width of `text`."""
     bbox = draw.textbbox(xy=(0, 0), text=text, font=font)
-    return bbox[2] - bbox[0]
+    return int(bbox[2] - bbox[0])
 
 
 def fit_text(draw: ImageDraw.ImageDraw, text: str, font: Font, max_width: int) -> str:

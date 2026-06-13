@@ -1,6 +1,6 @@
 import dotenv
-from pydantic import Field, ConfigDict, AliasChoices
-from pydantic_settings import BaseSettings
+from pydantic import Field, AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 dotenv.load_dotenv()
 
@@ -15,7 +15,7 @@ class LLMConfig(BaseSettings):
             the Gemini Files API directly, so uploads can be polled to ACTIVE.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
     # All credentials default to empty so tests never have to supply env vars; a real
     # deployment provides them via .env, and an empty value fails at the API call.
     base_url: str = Field(

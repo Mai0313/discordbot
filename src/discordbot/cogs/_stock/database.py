@@ -1113,7 +1113,7 @@ async def _recent_pressure_bps(
         )
     )
     return _recent_pressure_bps_from_rows(
-        pressure_rows=tuple(result.all()), at=at, liquidity_shares=liquidity_shares
+        pressure_rows=tuple(result.tuples().all()), at=at, liquidity_shares=liquidity_shares
     )
 
 

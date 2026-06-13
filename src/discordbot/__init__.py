@@ -1,6 +1,6 @@
 import re
 import sys
-from typing import TextIO
+from typing import TextIO, cast
 from pathlib import Path
 from datetime import datetime
 import warnings
@@ -79,6 +79,6 @@ def setup_logging() -> None:
             include_timestamps=True,
             verbose=True,
             min_log_level="debug",
-            output=_TeeStream(console=sys.stdout, file=log_file),
+            output=cast("TextIO", _TeeStream(console=sys.stdout, file=log_file)),
         ),
     )

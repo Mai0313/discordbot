@@ -487,7 +487,9 @@ class MessageInputBuilder(BaseModel):
             logfire.warn("Failed to convert this image")
             return None
         image_part = ResponseInputImageParam(
-            type="input_image", image_url=self._data_uri(data=file_bytes, mime_type=content_type)
+            type="input_image",
+            image_url=self._data_uri(data=file_bytes, mime_type=content_type),
+            detail="auto",
         )
         return image_part, self._inline_expiry()
 

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, cast
 from datetime import UTC, datetime
 
 from pydantic import Field, BaseModel, computed_field
@@ -51,12 +51,15 @@ class ModelSettings(BaseModel):
             web_search tool.
         """
         if "gemini" in self.name:
-            return [{"googleSearch": {}}, {"urlContext": {}}]
+            return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
         if "claude" in self.name:
-            return [
-                {"type": "web_search_20260209", "name": "web_search"},
-                {"type": "web_fetch_20260209", "name": "web_fetch"},
-            ]
+            return cast(
+                "list[ToolParam]",
+                [
+                    {"type": "web_search_20260209", "name": "web_search"},
+                    {"type": "web_fetch_20260209", "name": "web_fetch"},
+                ],
+            )
         return [{"type": "web_search"}]
 
 
