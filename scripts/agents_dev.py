@@ -48,7 +48,7 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
 
 def gen_reply_gemini(user_prompt: str) -> RunResult:
     client = genai.Client()
-    stream = client.interactions.create(
+    responses = client.interactions.create(
         agent="antigravity-preview-05-2026",
         system_instruction=REPLY_PROMPT,
         input=user_prompt,
@@ -57,12 +57,16 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
         tools=[{"type": "google_search"}, {"type": "url_context"}],
         agent_config={"type": "dynamic"},
     )
-    responses = []
-    for event in stream:
-        console.print(event)
-        responses.append(event.model_dump())
+    responses_list = []
+    for response in responses:
+        if response.event_type == "step.delta":
+            if response.delta.type == "thought_summary":
+                console.print(f"[dim]{response.delta.content.text}[/dim]", end="")
+            else:
+                console.print(response.delta.text, end="")
+        responses_list.append(response.model_dump())
     with open("./data/agent_response.json", "wb") as f:
-        f.write(orjson.dumps(responses, option=orjson.OPT_INDENT_2))
+        f.write(orjson.dumps(responses_list, option=orjson.OPT_INDENT_2))
 
 
 if __name__ == "__main__":
