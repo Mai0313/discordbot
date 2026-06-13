@@ -1,7 +1,7 @@
 """Local OpenAI Agents smoke test for the Discord reply prompt."""
 
 from agents import Agent, Runner, set_tracing_disabled
-from google import genai
+from google import genai, antigravity
 import orjson
 from rich.console import Console
 from agents.result import RunResult
@@ -69,6 +69,22 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
         f.write(orjson.dumps(responses_list, option=orjson.OPT_INDENT_2))
 
 
+async def gen_reply_agy(user_prompt: str) -> RunResult:
+    agent_config = antigravity.LocalAgentConfig(
+        system_instructions=REPLY_PROMPT, api_key=config.gemini_api_key
+    )
+    async with antigravity.Agent(config=agent_config) as agent:
+        response = await agent.chat(prompt=user_prompt)
+        async for thought in response.thoughts:
+            console.print(f"[dim]{thought}[/dim]", end="")
+        response_content = await response.text()
+        console.print(response_content)
+
+
 if __name__ == "__main__":
     # gen_reply_oai(user_prompt="為何 37 是質數?")
-    gen_reply_gemini(user_prompt="為何 37 是質數?")
+    # gen_reply_gemini(user_prompt="為何 37 是質數?")
+
+    import asyncio
+
+    asyncio.run(gen_reply_agy(user_prompt="為何 37 是質數?"))
