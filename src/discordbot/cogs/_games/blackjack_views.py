@@ -193,27 +193,6 @@ def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
     return "保險待決定"
 
 
-def _format_player_block(
-    player: BlackjackPlayerHand, active_hand_index: int | None, insurance_status: str | None
-) -> str:
-    """Formats one player's hands and wager metadata for the table embed."""
-    lines: list[str] = []
-    is_split = len(player.hands) > 1
-    for index, hand in enumerate(player.hands):
-        is_active = active_hand_index == index
-        if is_split:
-            lines.append(_split_hand_header(index=index, total=len(player.hands)))
-        summary = _hand_summary_line(
-            cards=hand.cards, suffix=_hand_status_suffix(hand=hand, is_active=is_active)
-        )
-        meta = _hand_metadata_text(hand=hand, participant=player.participant)
-        lines.append(summary)
-        lines.append(metadata_line(text=meta))
-    if insurance_status:
-        lines.append(metadata_line(text=insurance_status))
-    return "\n".join(lines)
-
-
 def _participant_lines(participants: list[GameParticipant]) -> str:
     """Formats lobby participants in join order."""
     lines: list[str] = []
@@ -249,19 +228,6 @@ def build_blackjack_lobby_embed(
         embed.set_thumbnail(url=owner.avatar_url)
     embed.set_footer(text=f"基本下注 {currency_text(amount=requested_bet, compact=True)}")
     return embed
-
-
-def _footer_status(round_state: BlackjackRound) -> str:
-    """Returns the in-progress footer status text."""
-    if round_state.phase == "insurance":
-        undecided = sum(1 for player in round_state.players if not player.insurance_resolved)
-        return f"保險決定中 · 莊家明牌 A · 等待 {undecided} 位玩家決定"
-    active = round_state.active_player()
-    if active is None:
-        return "準備結算"
-    if len(active.hands) > 1:
-        return f"輪到 {active.participant.display_name} 第 {round_state.current_hand_index + 1} 手"
-    return f"輪到 {active.participant.display_name}"
 
 
 def _dealer_in_progress_color(round_state: BlackjackRound) -> int:

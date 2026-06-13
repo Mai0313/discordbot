@@ -266,10 +266,6 @@ class BlackjackHandState(BaseModel):
         """Returns whether this sub-hand has busted."""
         return is_bust(cards=self.cards)
 
-    def soft_total(self) -> tuple[bool, int]:
-        """Returns `(is_soft, total)` for this sub-hand."""
-        return is_soft_total(cards=self.cards)
-
 
 class BlackjackPlayerHand(BaseModel):
     """Container for one participant's hands at a multiplayer table.
@@ -816,10 +812,6 @@ class BlackjackRound(BaseModel):
     def dealer_visible_value(self) -> int:
         """Returns the visible dealer card value for hint prompts."""
         return dealer_visible_value(dealer=self.dealer)
-
-    def dealer_is_soft_total(self) -> tuple[bool, int]:
-        """Returns `(is_soft, total)` for the dealer hand."""
-        return is_soft_total(cards=self.dealer)
 
     def dealer_is_soft_17(self) -> bool:
         """Returns whether the dealer hand is currently a soft 17."""
