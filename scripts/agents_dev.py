@@ -1,6 +1,8 @@
 """Local OpenAI Agents smoke test for the Discord reply prompt."""
 
 from agents import Agent, Runner, set_tracing_disabled
+from google import genai
+import orjson
 from rich.console import Console
 from agents.result import RunResult
 from agents.extensions.models.litellm_model import LitellmModel
@@ -17,7 +19,7 @@ config = LLMConfig()
 AGENT_MODEL = ModelSettings(name="gemini/gemini-flash-latest", effort="none")
 
 
-def gen_reply(user_prompt: str) -> RunResult:
+def gen_reply_oai(user_prompt: str) -> RunResult:
     """Runs a dev reply through OpenAI Agents with the LiteLLM model adapter.
 
     Mirrors the local dev scripts by keeping the model setting near the top and
@@ -44,5 +46,25 @@ def gen_reply(user_prompt: str) -> RunResult:
     return result
 
 
+def gen_reply_gemini(user_prompt: str) -> RunResult:
+    client = genai.Client()
+    stream = client.interactions.create(
+        agent="antigravity-preview-05-2026",
+        system_instruction=REPLY_PROMPT,
+        input=user_prompt,
+        environment="remote",
+        stream=True,
+        tools=[{"type": "google_search"}, {"type": "url_context"}],
+        agent_config={"type": "dynamic"},
+    )
+    responses = []
+    for event in stream:
+        console.print(event)
+        responses.append(event.model_dump())
+    with open("./data/agent_response.json", "wb") as f:
+        f.write(orjson.dumps(responses))
+
+
 if __name__ == "__main__":
-    result = gen_reply(user_prompt="為何 37 是質數?")
+    # gen_reply_oai(user_prompt="為何 37 是質數?")
+    gen_reply_gemini(user_prompt="為何 37 是質數?")
