@@ -99,6 +99,19 @@ async def test_help_select_options_fit_discord_limits() -> None:
             assert len(option.description or "") <= _SELECT_DESCRIPTION_LIMIT
 
 
+async def test_help_select_carries_a_custom_id() -> None:
+    """The category select must serialize a non-empty custom_id or Discord rejects the send (50035)."""
+    view = HelpView(
+        locale=Locale.zh_TW,
+        requester_name="tester",
+        requester_avatar_url="https://example.com/avatar.png",
+    )
+    assert isinstance(view._select.custom_id, str)
+    assert view._select.custom_id
+    component = view.to_components()[0]["components"][0]
+    assert component.get("custom_id"), "select component is missing custom_id"
+
+
 async def test_help_select_marks_active_category() -> None:
     """Selecting a category rebuilds options with that category as the default."""
     view = HelpView(

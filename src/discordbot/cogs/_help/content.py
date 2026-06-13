@@ -65,25 +65,23 @@ class HelpGuide(BaseModel):
 HELP_CONTENT: dict[Locale | str, HelpGuide] = {
     "default": HelpGuide(
         title="🤖 Bot Guide",
-        intro="Pick a category from the menu below to see its full commands.",
+        intro="Pick a category below for its full commands; to use me directly, just mention or DM me.",
         select_placeholder="Choose a category…",
         overview_label="Overview",
         sections={
             "ai": HelpSection(
                 emoji="💬",
                 label="AI Chat",
-                summary="Mention or DM me to chat, analyze, and generate",
+                summary="Mention or DM me to chat, read images and files, and generate",
                 detail=(
-                    "Mention me or DM me to get started.\n"
-                    "• Chat, answer questions, and summarize articles\n"
-                    "• Analyze attached images and files\n"
-                    "• Generate images and short videos on request\n"
-                    "• I slowly build a long-term memory of your preferences from our chats\n"
-                    "• To fit a reply I may recall what I remember about people in the chat, marked with a 🧠 note\n"
-                    "• While I think through a harder answer, the reasoning streams live as small `-#` lines; the real reply replaces it the moment it starts\n\n"
-                    "**`/memory show`** — see what I remember about you (private, paged when long)\n"
-                    "**`/memory regenerate`** — schedule a background rebuild of what I remember about you, from scratch using only my observation log\n"
-                    "**`/memory server show`** — see what I remember about this server's community (private, paged when long)"
+                    "Mention me or DM me to get started: chat, answer questions, summarize "
+                    "articles, read your images and files, and generate images or short videos "
+                    "on request. I slowly learn your preferences and may use them in a reply, "
+                    "marked with a 🧠 note.\n\n"
+                    "Memory\n"
+                    "`/memory show` — see what I remember about you\n"
+                    "`/memory regenerate` — rebuild my memory of you in the background\n"
+                    "`/memory server show` — see what I remember about this server"
                 ),
             ),
             "games": HelpSection(
@@ -91,36 +89,34 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="Casino Games",
                 summary="Blackjack, Dragon Gate, and Fishing",
                 detail=(
-                    "**`/games blackjack`**\n"
-                    "Start a Blackjack table. Five-card non-bust hands win, and five-or-more-card 21 keeps its system-funded bonus. The shoe carries over between rounds in the same channel and reshuffles once it runs low. `bet` accepts comma-formatted numbers, and `0` means all in — though any single bet is still capped at 1,000,000.\n\n"
-                    "**`/games blackjack_history [member] [count]`**\n"
-                    "Publicly post a player's recent Blackjack rounds as a shared table: hands, bets, dealer hands, and results. Defaults to yourself and the last 10 rounds (up to 50).\n\n"
-                    "**`/games dragon_gate`**\n"
-                    "Start a Dragon Gate jackpot table.\n\n"
-                    "**`/games fishing`**\n"
-                    "Open your fishing panel: buy a rod and bait, cast for graded fish (N to UR), and climb the biggest-catch leaderboard. It is a net sink that recycles currency back out of circulation."
+                    "Games\n"
+                    "`/games blackjack` — open a Blackjack table; a five-card non-bust hand wins\n"
+                    "`/games dragon_gate` — open a Dragon Gate table with a shared jackpot\n"
+                    "`/games fishing` — open the fishing panel: buy a rod and bait, then cast\n\n"
+                    "History\n"
+                    "`/games blackjack_history [member] [count]` — recent Blackjack rounds"
                 ),
             ),
             "economy": HelpSection(
                 emoji="💰",
                 label=f"{CURRENCY_NAME} / Economy",
-                summary="Balance, transfers, check-in, loans, boards",
+                summary="Balance, transfers, check-in, loans, and boards",
                 detail=(
-                    "**Daily & status**\n"
-                    "`/balance [member]` — balance, loans, holdings, net worth, VIP\n"
-                    "`/checkin` — daily reward and streak bonus\n"
-                    "`/vip` — buy or check VIP (boosts check-in and Blackjack rewards)\n\n"
-                    "**Transfers & boards**\n"
-                    "`/give` — transfer to members or bots (a 5% transfer tax is burned)\n"
-                    "`/leaderboard` — balance board\n"
-                    "`/loss_leaderboard` — today's loss board\n"
-                    "`/casino` — casino system ledger\n"
-                    "`/pocat` — bot player wallet\n\n"
-                    "**Loans**\n"
-                    "`/credit` — personal loans (`borrow`, `repay`, `call`, `status`)\n"
-                    "`/central_bank` — central-bank loans (`borrow`, `repay`, `call`, `status`)\n\n"
-                    "**Admin**\n"
-                    "`/admin` — admin balance adjustments (`refund_tax`, `collect_tax`; comma-formatted amounts)"
+                    "Daily\n"
+                    "`/balance` — balance, holdings, and net worth\n"
+                    "`/checkin` — daily reward\n"
+                    "`/vip` — buy VIP (boosts check-in and Blackjack)\n\n"
+                    "Transfers & boards\n"
+                    "`/give` — send to someone (5% transfer tax)\n"
+                    "`/leaderboard` — wealth board\n"
+                    "`/loss_leaderboard` — today's biggest losses\n"
+                    "`/casino` — casino system profit and loss\n"
+                    "`/pocat` — the bot player's wallet\n\n"
+                    "Loans\n"
+                    "`/credit` — personal loans: borrow, repay, or collect\n"
+                    "`/central_bank` — central-bank loans: borrow or repay\n\n"
+                    "Admin\n"
+                    "`/admin` — admin balance adjustments"
                 ),
             ),
             "stocks": HelpSection(
@@ -128,60 +124,55 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="Simulated Stocks",
                 summary="Trade and track virtual companies",
                 detail=(
-                    "**`/stock`**\n"
-                    "Open the market board UI: prices, market-context news, top-holder and recent-trade summaries, positions, and 7D charts. Buy and short within supply caps (long capped at 49% of float), then sell or cover to exit. Share counts show in lots when possible."
+                    "`/stock` — open the market panel: prices, news, your positions, and charts. "
+                    "Buy, short, sell, or cover right from the panel."
                 ),
             ),
             "tools": HelpSection(
                 emoji="🧰",
                 label="Tools",
-                summary="Video, MapleStory, Threads, ping",
+                summary="Video download, MapleStory lookup, Threads, ping",
                 detail=(
-                    "`/download_video` — download videos from supported platforms (optional quality)\n"
-                    "`/maplestory` — search monsters, equipment, scrolls, NPCs, quests, maps, items, and stats\n"
+                    "`/download_video` — download a video from supported platforms\n"
+                    "`/maplestory` — look up MapleStory monsters, equipment, scrolls, NPCs, "
+                    "quests, maps, and items\n"
                     "`/ping` — check the bot's response latency\n\n"
-                    "**Threads parser**\n"
-                    "Paste a Threads.net or Threads.com URL and I'll extract posts, replies, and media."
+                    "Threads parser\n"
+                    "Paste a Threads link and I'll pull the posts, replies, and media."
                 ),
             ),
         },
     ),
     Locale.zh_TW: HelpGuide(
         title="🤖 機器人使用指南",
-        intro="從下方選單挑一個分類，看完整指令。",
+        intro="從下方選單選一個分類看完整指令;想直接用,tag 我或私訊我就行。",
         select_placeholder="選擇分類…",
         overview_label="總覽",
         sections={
             "ai": HelpSection(
                 emoji="💬",
                 label="AI 對話",
-                summary="tag 或私訊我聊天、分析、生成",
+                summary="tag 或私訊我就能聊天、看圖看檔、生成圖片",
                 detail=(
-                    "tag 我或私訊我就能開始。\n"
-                    "• 聊天、回答問題、摘要文章\n"
-                    "• 分析附上的圖片和檔案\n"
-                    "• 依需求生成圖片或短影片\n"
-                    "• 我會從對話中慢慢累積對你偏好的長期記憶\n"
-                    "• 為了讓回覆更貼合，我可能會參考我記得的對話成員資訊，並用 🧠 標註\n"
-                    "• 思考較難的問題時，會先用 `-#` 小字即時顯示思考過程，正文一出現就會整段覆蓋\n\n"
-                    "**`/memory show`** — 查看我對你記住了什麼（僅自己可見，過長會分頁）\n"
-                    "**`/memory regenerate`** — 排程在背景只根據觀察記錄，從頭重建我對你的長期記憶\n"
-                    "**`/memory server show`** — 查看我對這個伺服器社群記住了什麼（僅自己可見，過長會分頁）"
+                    "tag 我或私訊我就能開始:聊天、回答問題、摘要文章、分析你附上的圖片和檔案,"
+                    "也能依需求生成圖片或短影片。我會慢慢記住你的偏好,回覆時可能參考並用 🧠 標註。\n\n"
+                    "記憶\n"
+                    "`/memory show` — 看我記得你什麼\n"
+                    "`/memory regenerate` — 在背景重建我對你的記憶\n"
+                    "`/memory server show` — 看我記得這個伺服器什麼"
                 ),
             ),
             "games": HelpSection(
                 emoji="🎰",
                 label="賭場遊戲",
-                summary="Blackjack、射龍門與釣魚",
+                summary="Blackjack、射龍門、釣魚",
                 detail=(
-                    "**`/games blackjack`**\n"
-                    "開 21 點桌，五張未爆直接贏，五張或以上 21 保留 system-funded bonus；同一頻道的牌靴會跨局延續，剩牌不足時才重新洗牌；`bet` 可輸入含逗號的數字，`0` 就是 all in（但單注一樣最多 100 萬，餘額更高也只押到上限）。\n\n"
-                    "**`/games blackjack_history [member] [count]`**\n"
-                    "公開貼出某位玩家近期的 21 點對局表格：手牌、下注、莊家手牌與結果；預設查自己、近 10 場（最多 50）。\n\n"
-                    "**`/games dragon_gate`**\n"
-                    "開射龍門 jackpot 桌。\n\n"
-                    "**`/games fishing`**\n"
-                    "打開釣魚面板：買釣竿與魚餌，拋竿釣 N 到 UR 不同稀有度的魚，挑戰最大單筆漁獲排行榜；這是會把歡樂豆回收出流通的淨 sink 玩法。"
+                    "遊戲\n"
+                    "`/games blackjack` — 開 21 點賭桌,五張未爆直接贏\n"
+                    "`/games dragon_gate` — 開射龍門,共享 jackpot 彩池\n"
+                    "`/games fishing` — 開釣魚面板:買竿買餌,拋竿釣魚\n\n"
+                    "紀錄\n"
+                    "`/games blackjack_history [member] [count]` — 查近期 21 點對局"
                 ),
             ),
             "economy": HelpSection(
@@ -189,67 +180,64 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label=f"{CURRENCY_NAME} / 經濟",
                 summary="餘額、轉帳、簽到、借貸、排行榜",
                 detail=(
-                    "**查詢與日常**\n"
-                    "`/balance [member]` — 餘額、借貸、持股、淨資產、VIP\n"
-                    "`/checkin` — 每日簽到與 streak bonus\n"
-                    "`/vip` — 購買或查看 VIP（加成 check-in 與 Blackjack reward）\n\n"
-                    "**轉帳與排行**\n"
-                    "`/give` — 轉帳給成員或 bot（收取 5% 轉帳稅並銷毀）\n"
-                    "`/leaderboard` — 餘額排行榜\n"
-                    "`/loss_leaderboard` — 今日輸錢榜\n"
-                    "`/casino` — 賭場系統 ledger\n"
-                    "`/pocat` — 機器人玩家錢包\n\n"
-                    "**借貸**\n"
-                    "`/credit` — 個人借貸（`borrow`、`repay`、`call`、`status`）\n"
-                    "`/central_bank` — 央行借貸（`borrow`、`repay`、`call`、`status`）\n\n"
-                    "**管理**\n"
-                    "`/admin` — admin 餘額調整（`refund_tax`、`collect_tax`，amount 支援逗號格式）"
+                    "日常\n"
+                    "`/balance` — 查餘額、持股、淨資產\n"
+                    "`/checkin` — 每日簽到領獎勵\n"
+                    "`/vip` — 購買 VIP(簽到與 Blackjack 加成)\n\n"
+                    "轉帳與排行\n"
+                    "`/give` — 轉給其他人(扣 5% 稅)\n"
+                    "`/leaderboard` — 財富排行榜\n"
+                    "`/loss_leaderboard` — 今日輸最多榜\n"
+                    "`/casino` — 賭場系統盈虧\n"
+                    "`/pocat` — 機器人玩家的錢包\n\n"
+                    "借貸\n"
+                    "`/credit` — 個人借貸:跟其他人借、還、催收\n"
+                    "`/central_bank` — 央行借貸:跟系統借、還\n\n"
+                    "管理\n"
+                    "`/admin` — 管理員餘額調整"
                 ),
             ),
             "stocks": HelpSection(
                 emoji="📈",
                 label="模擬股市",
-                summary="股票交易與行情",
+                summary="買賣與追蹤虛擬公司",
                 detail=(
-                    "**`/stock`**\n"
-                    "開啟 market board UI：價格、market context news、top-holder 與 recent-trade summary、position、7D chart。可在 supply cap 內 buy / short（long 受單人 49% float 限制），或 sell / cover 出場；股數可用時以張顯示。"
+                    "`/stock` — 開啟股市面板:看股價、新聞、持股與走勢圖,"
+                    "在面板上買進、放空、賣出或回補。"
                 ),
             ),
             "tools": HelpSection(
                 emoji="🧰",
                 label="實用工具",
-                summary="影片下載、楓之谷、Threads、ping",
+                summary="影片下載、楓之谷查詢、Threads、ping",
                 detail=(
-                    "`/download_video` — 從支援的平台下載影片（可選 quality）\n"
-                    "`/maplestory` — 查怪物、裝備、卷軸、NPC、任務、地圖、物品和 stats\n"
-                    "`/ping` — 檢查 bot response latency\n\n"
-                    "**Threads 解析**\n"
-                    "貼上 Threads.net 或 Threads.com URL，我會擷取貼文、回覆和媒體。"
+                    "`/download_video` — 從支援的平台下載影片\n"
+                    "`/maplestory` — 查楓之谷的怪物、裝備、卷軸、NPC、任務、地圖、物品\n"
+                    "`/ping` — 看機器人的回應延遲\n\n"
+                    "Threads 解析\n"
+                    "貼上 Threads 連結,我會自動擷取貼文、回覆和媒體。"
                 ),
             ),
         },
     ),
     Locale.ja: HelpGuide(
         title="🤖 ボット利用ガイド",
-        intro="下のメニューからカテゴリを選ぶと、詳しいコマンドを表示します。",
+        intro="下のメニューからカテゴリを選ぶと詳しいコマンドを表示します。直接使うにはメンションかDMでどうぞ。",
         select_placeholder="カテゴリを選択…",
         overview_label="概要",
         sections={
             "ai": HelpSection(
                 emoji="💬",
                 label="AI チャット",
-                summary="メンションやDMで会話・分析・生成",
+                summary="メンションやDMで会話・画像/ファイル読取・生成",
                 detail=(
-                    "メンションまたはDMで始められます。\n"
-                    "• 会話、質問への回答、記事の要約\n"
-                    "• 添付画像やファイルの分析\n"
-                    "• リクエストに応じた画像・短い動画の生成\n"
-                    "• 会話からあなたの好みを長期記憶として少しずつ蓄積します\n"
-                    "• 返信を最適化するため、会話の参加者について覚えていることを参照し、🧠 で示すことがあります\n"
-                    "• 難しい質問では思考過程を `-#` の小さな文字でリアルタイム表示し、本文が始まると置き換わります\n\n"
-                    "**`/memory show`** — 記憶している内容を表示（本人のみ閲覧可、長い場合はページ表示）\n"
-                    "**`/memory regenerate`** — 観察ログだけを使って、あなたに関する記憶を一から作り直す処理をバックグラウンドで予約します\n"
-                    "**`/memory server show`** — このサーバーのコミュニティについて覚えている内容を表示（本人のみ閲覧可、長い場合はページ表示）"
+                    "メンションまたはDMで始められます:会話、質問への回答、記事の要約、"
+                    "添付画像やファイルの読み取り、リクエストに応じた画像・短い動画の生成。"
+                    "あなたの好みを少しずつ覚え、返信時に参照して 🧠 で示すことがあります。\n\n"
+                    "メモリー\n"
+                    "`/memory show` — 覚えている内容を表示\n"
+                    "`/memory regenerate` — バックグラウンドで記憶を作り直す\n"
+                    "`/memory server show` — このサーバーについて覚えている内容を表示"
                 ),
             ),
             "games": HelpSection(
@@ -257,14 +245,12 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="ゲーム",
                 summary="Blackjack、Dragon Gate、釣り",
                 detail=(
-                    "**`/games blackjack`**\n"
-                    "Blackjack テーブルを開始。5枚で bust していなければ勝ち、5枚以上の 21 は system-funded bonus を維持します。シューは同じチャンネルでラウンドをまたいで引き継がれ、残りが少なくなるとシャッフルし直します。`bet` はカンマ付き数字に対応し、`0` は all in ですが、1ベットの上限は100万です（残高がそれ以上でも上限まで）。\n\n"
-                    "**`/games blackjack_history [member] [count]`**\n"
-                    "プレイヤーの最近のブラックジャックの対局を共有テーブルで公開投稿：手札、賭け金、ディーラーの手札、結果。既定は自分・直近 10 件（最大 50）。\n\n"
-                    "**`/games dragon_gate`**\n"
-                    "Dragon Gate jackpot テーブルを開始します。\n\n"
-                    "**`/games fishing`**\n"
-                    "釣りパネルを開く：竿と餌を買い、N から UR のレア度の魚を釣り、最大の釣果ランキングを目指します。通貨を流通から回収する net sink です。"
+                    "ゲーム\n"
+                    "`/games blackjack` — Blackjack テーブルを開く(5枚で未バーストなら勝ち)\n"
+                    "`/games dragon_gate` — 共有ジャックポットの Dragon Gate を開く\n"
+                    "`/games fishing` — 釣りパネルを開く:竿と餌を買って釣る\n\n"
+                    "履歴\n"
+                    "`/games blackjack_history [member] [count]` — 最近の Blackjack 対局"
                 ),
             ),
             "economy": HelpSection(
@@ -272,42 +258,43 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label=f"{CURRENCY_NAME} / Economy",
                 summary="残高・送金・チェックイン・ローン・ランキング",
                 detail=(
-                    "**日常・ステータス**\n"
-                    "`/balance [member]` — balance、loan、holdings、net worth、VIP\n"
-                    "`/checkin` — daily reward と streak bonus\n"
-                    "`/vip` — VIP の購入・確認（check-in と Blackjack reward を強化）\n\n"
-                    "**送金・ランキング**\n"
-                    "`/give` — メンバーや bot への送金（5% の送金税を徴収して焼却）\n"
-                    "`/leaderboard` — 残高ランキング\n"
-                    "`/loss_leaderboard` — 本日の loss ランキング\n"
-                    "`/casino` — casino system ledger\n"
-                    "`/pocat` — bot player wallet\n\n"
-                    "**ローン**\n"
-                    "`/credit` — 個人ローン（`borrow`・`repay`・`call`・`status`）\n"
-                    "`/central_bank` — 中央銀行ローン（`borrow`・`repay`・`call`・`status`）\n\n"
-                    "**管理**\n"
-                    "`/admin` — admin による残高調整（`refund_tax`・`collect_tax`、カンマ付き金額対応）"
+                    "日常\n"
+                    "`/balance` — 残高・保有・純資産\n"
+                    "`/checkin` — 毎日のチェックイン報酬\n"
+                    "`/vip` — VIP を購入(チェックインと Blackjack を強化)\n\n"
+                    "送金・ランキング\n"
+                    "`/give` — 誰かに送金(5% の送金税)\n"
+                    "`/leaderboard` — 資産ランキング\n"
+                    "`/loss_leaderboard` — 本日の負けランキング\n"
+                    "`/casino` — カジノ全体の損益\n"
+                    "`/pocat` — ボットプレイヤーの財布\n\n"
+                    "ローン\n"
+                    "`/credit` — 個人ローン:借りる・返す・取り立て\n"
+                    "`/central_bank` — 中央銀行ローン:借りる・返す\n\n"
+                    "管理\n"
+                    "`/admin` — 管理者による残高調整"
                 ),
             ),
             "stocks": HelpSection(
                 emoji="📈",
                 label="シミュレーション株式",
-                summary="仮想銘柄の取引と相場",
+                summary="仮想銘柄の取引と相場確認",
                 detail=(
-                    "**`/stock`**\n"
-                    "market board UI を開きます：price、market context news、top-holder / recent-trade summary、position、7D chart。supply cap 内で buy / short（long は float の 49% 上限）、sell / cover で決済できます。Share counts は可能なら lots 表示になります。"
+                    "`/stock` — 株式パネルを開く:株価・ニュース・保有・チャートを確認し、"
+                    "パネルから買い・空売り・売り・買い戻しができます。"
                 ),
             ),
             "tools": HelpSection(
                 emoji="🧰",
                 label="ツール",
-                summary="動画DL・MapleStory・Threads・ping",
+                summary="動画DL・MapleStory検索・Threads・ping",
                 detail=(
-                    "`/download_video` — 対応サイトから動画をダウンロード（quality 選択可）\n"
-                    "`/maplestory` — monster、equip、scroll、NPC、quest、map、item、stats を検索\n"
-                    "`/ping` — bot の応答遅延を確認\n\n"
-                    "**Threads パーサー**\n"
-                    "Threads.net または Threads.com の URL を貼ると、投稿・返信・メディアを取得します。"
+                    "`/download_video` — 対応サイトから動画をダウンロード\n"
+                    "`/maplestory` — MapleStory のモンスター・装備・巻物・NPC・"
+                    "クエスト・マップ・アイテムを検索\n"
+                    "`/ping` — ボットの応答遅延を確認\n\n"
+                    "Threads パーサー\n"
+                    "Threads のリンクを貼ると、投稿・返信・メディアを取得します。"
                 ),
             ),
         },

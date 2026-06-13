@@ -77,14 +77,14 @@ async def gen_reply_agy(user_prompt: str) -> RunResult:
         response = await agent.chat(prompt=user_prompt)
         async for thought in response.thoughts:
             console.print(f"[dim]{thought}[/dim]", end="")
-        response_content = await response.text()
-        console.print(response_content)
+        async for delta in response:
+            console.print(delta, end="")
+        # response_content = await response.text()
+        # console.print(response_content)
 
 
 if __name__ == "__main__":
+    # import asyncio
     # gen_reply_oai(user_prompt="為何 37 是質數?")
-    # gen_reply_gemini(user_prompt="為何 37 是質數?")
-
-    import asyncio
-
-    asyncio.run(gen_reply_agy(user_prompt="為何 37 是質數?"))
+    gen_reply_gemini(user_prompt="為何 37 是質數?")
+    # asyncio.run(gen_reply_agy(user_prompt="為何 37 是質數?"))
