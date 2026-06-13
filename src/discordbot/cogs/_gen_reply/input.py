@@ -161,7 +161,7 @@ class MessageInputBuilder(BaseModel):
     # Gemini `expiration_time` across the rendered parts) with the parts, so a handle is
     # re-uploaded just before it actually expires instead of on a guessed fixed TTL.
     _attachment_cache: OrderedDict[
-        tuple[int, datetime | None, tuple[object, ...]], tuple[datetime, list[RenderedPart]]
+        tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
     # (attachment/sticker id or embed url). The next reference to that source re-polls the
@@ -339,7 +339,7 @@ class MessageInputBuilder(BaseModel):
             return None
         return result
 
-    async def _upload_file(
+    async def _upload_file(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
         self, filename: str, data: bytes, content_type: str
     ) -> tuple[str, datetime] | PendingUpload | None:
         """Uploads bytes to the Gemini Files API, polling to ACTIVE within the bound.
@@ -373,32 +373,44 @@ class MessageInputBuilder(BaseModel):
             uploaded = await self.gemini_client.aio.files.upload(
                 file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
             )
+            # The SDK types name/uri as Optional; in practice both are assigned at upload
+            # time. Capture the stable resource name once (guarded) so the poll loop and
+            # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
+            file_name = uploaded.name
+            if file_name is None:
+                logfire.warn(f"Gemini upload returned no resource name; dropping: {filename}")
+                return None
             deadline = time.monotonic() + activation_timeout_seconds
             while uploaded.state == FileState.PROCESSING:
                 if time.monotonic() >= deadline:
                     logfire.warn(
                         f"Attachment still processing; will retry on next reference: {filename}"
                     )
+                    if uploaded.uri is None:
+                        logfire.warn(f"Pending upload has no uri; dropping: {filename}")
+                        return None
                     # Hand back the in-flight upload so the caller can re-poll it later
                     # instead of re-uploading the same bytes from scratch.
                     expires_at = uploaded.expiration_time or (
                         datetime.now(tz=UTC) + timedelta(hours=47)
                     )
-                    return PendingUpload(
-                        name=uploaded.name, uri=uploaded.uri, expires_at=expires_at
-                    )
+                    return PendingUpload(name=file_name, uri=uploaded.uri, expires_at=expires_at)
                 await asyncio.sleep(poll_interval_seconds)
-                uploaded = await self.gemini_client.aio.files.get(name=uploaded.name)
+                uploaded = await self.gemini_client.aio.files.get(name=file_name)
             if uploaded.state != FileState.ACTIVE:
                 logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
                 return None
         except Exception:
             logfire.warn(f"Failed to upload attachment to Files API: {filename}")
             return None
+        file_uri = uploaded.uri
+        if file_uri is None:
+            logfire.warn(f"Active upload has no uri; dropping: {filename}")
+            return None
         # Fall back to a conservative 47h (under the ~48h lifetime) if the provider omits
         # the expiry, so a missing field never pins an unbounded cache entry.
         expires_at = uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
-        return uploaded.uri, expires_at
+        return file_uri, expires_at
 
     async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
@@ -407,7 +419,7 @@ class MessageInputBuilder(BaseModel):
         blocking work runs off the event loop. Raises on any fetch/decode failure.
         """
         if isinstance(source, str):
-            file_bytes = await asyncio.to_thread(get_image_data, image_file=source, use_b64=False)
+            file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
             return file_bytes, "image/jpeg"
         if isinstance(source, Attachment):
             content_type = source.content_type or guess_type(source.filename)[0] or "image/png"

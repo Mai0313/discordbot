@@ -460,12 +460,15 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
     text_parts = await cog._get_reference_and_current_text_only(message=message)
+    route_done = asyncio.Event()
+    route_done.set()
     context = await cog._prepare_reply_context(
         message=message,
         history_limit=history_limit,
         memory_enabled=memory_enabled,
         parts_task=parts_task,
         text_parts=text_parts,
+        route_done=route_done,
     )
     await cog._handle_message_reply(
         message=message,
@@ -715,7 +718,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     message.embeds = [img_embed]
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.input.get_image_data",
-        lambda image_file, use_b64=True: base64.b64decode(_png_b64()),
+        lambda image_file: base64.b64decode(_png_b64()),
     )
     parts = await cog.input_builder.get_attachment_parts(message=message)
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
@@ -1186,15 +1189,16 @@ async def test_gen_reply_on_message_dispatches_routes(
         await asyncio.sleep(0)
         return RouteDecision(decision=route)
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
         history_limit: int,
         memory_enabled: bool,
         parts_task: object,
         text_parts: object,
+        route_done: object,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
-        del message, parts_task, text_parts
+        del message, parts_task, text_parts, route_done
         prep_requests.append((history_limit, memory_enabled))
         return prepared_context
 
@@ -1284,6 +1288,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
             memory_enabled=False,
             parts_task=parts_task,
             text_parts=([], []),
+            route_done=asyncio.Event(),
         )
     )
     # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
@@ -1323,15 +1328,16 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         del reference_messages, current_message
         raise RuntimeError("boom")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
         history_limit: int,
         memory_enabled: bool,
         parts_task: object,
         text_parts: object,
+        route_done: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_message", boom)
@@ -1382,15 +1388,16 @@ async def test_on_message_discards_speculative_context_on_image_route(
         await asyncio.sleep(0)
         return "IMAGE"
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
         history_limit: int,
         memory_enabled: bool,
         parts_task: object,
         text_parts: object,
+        route_done: object,
     ) -> ReplyContext:
         """Blocks until cancelled, recording the cancellation."""
-        del message, history_limit, memory_enabled, parts_task, text_parts
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -2452,12 +2459,12 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
 async def test_memory_selection_timeout_degrades_to_no_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A hung selection request times out and the context carries no memory."""
+    """A selection slower than the post-route grace is dropped and the context has no memory."""
     cog = _cog()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_GRACE_SECONDS", 0.01)
 
     async def slow_selection(**kwargs: object) -> None:
-        """Simulates a proxy hang far past the selection deadline."""
+        """Simulates a proxy hang far past the selection grace."""
         del kwargs
         await asyncio.sleep(1)
 
@@ -2465,6 +2472,9 @@ async def test_memory_selection_timeout_degrades_to_no_memory(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
     text_parts = await cog._get_reference_and_current_text_only(message=message)
+    # The route has already returned, so selection gets only the tiny grace before it is dropped.
+    route_done = asyncio.Event()
+    route_done.set()
 
     context = await cog._prepare_reply_context(
         message=message,
@@ -2472,6 +2482,7 @@ async def test_memory_selection_timeout_degrades_to_no_memory(
         memory_enabled=True,
         parts_task=parts_task,
         text_parts=text_parts,
+        route_done=route_done,
     )
 
     assert context.memory_block is None

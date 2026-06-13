@@ -1,7 +1,7 @@
 """LLM extraction and consolidation for per-user long-term memory."""
 
 import re
-from typing import Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 import asyncio
 
 from openai import AsyncOpenAI
@@ -9,6 +9,7 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
+from discordbot.utils.llm import litellm_call_kwargs
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
@@ -23,6 +24,9 @@ from discordbot.cogs._memory.constants import (
     MEMORY_EXTRACT_TIMEOUT_SECONDS,
     MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
 )
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 _OutputT = TypeVar("_OutputT", bound=BaseModel)
 
@@ -67,6 +71,10 @@ _SECRET_PATTERNS = (
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
 _STRUCTURED_KEY_RE = re.compile(r"^\s*-\s*normalized_key:\s*(?P<key>\S+)\s*$", flags=re.MULTILINE)
+# Column-0 transcript block marker (`[message N | role]`). Used to realign a middle-
+# truncated tail to a trusted block boundary so a sliced indent never leaves user
+# content at column 0, where the marker scheme reserves the trusted authorship signal.
+_BLOCK_MARKER_RE = re.compile(r"^\[message \d+ \| ", flags=re.MULTILINE)
 _REJECTED_EVIDENCE_KINDS = frozenset({
     "casual_mention",
     "hypothetical",
@@ -147,6 +155,9 @@ class ConsolidatedMemory(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    # Kept for the prompt's no-op contract (the model emits changed=false with empty
+    # memory_markdown for a no-op); the runtime consolidation path intentionally ignores
+    # this bool and decides off memory_markdown's well-formedness, so do not branch on it.
     changed: bool = Field(
         description="Whether the consolidated memory file materially changed from the existing one"
     )
@@ -238,9 +249,8 @@ class MemoryExtractorAI(BaseModel):
         )
         if result is None:
             return None
-        return ConsolidatedMemory(
-            changed=result.changed,
-            memory_markdown=redact_secrets(text=result.memory_markdown).strip(),
+        return result.model_copy(
+            update={"memory_markdown": redact_secrets(text=result.memory_markdown).strip()}
         )
 
     async def _parse(  # noqa: PLR0913 -- one shared Responses call surface for both phases
@@ -264,9 +274,7 @@ class MemoryExtractorAI(BaseModel):
                     ),
                     text_format=text_format,
                     reasoning=model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_label},
-                    extra_body={"mock_testing_fallbacks": False},
+                    **litellm_call_kwargs(end_user_id=end_user_label),
                 )
         except TimeoutError:
             logfire.warn(
@@ -526,21 +534,31 @@ def _message_text(message: EasyInputMessageParam) -> str:
         return content.strip()
     parts: list[str] = []
     for part in content:
-        part_dict = cast("dict[str, object]", part)
-        if part_dict.get("type") != "input_text":
+        if part.get("type") != "input_text":
             continue
-        text_value = part_dict.get("text")
-        if isinstance(text_value, str):
-            parts.append(text_value)
+        # Narrow to the concrete text part type after the runtime type check, so the
+        # `text` key reads as str instead of widening every part to dict[str, object].
+        text_part = cast("ResponseInputTextParam", part)
+        parts.append(text_part["text"])
     return "\n".join(parts).strip()
 
 
 def _truncate_middle(text: str, max_chars: int) -> str:
-    """Keeps the head and tail of an oversized transcript, dropping the middle."""
+    """Keeps the head and tail of an oversized transcript, dropping the middle.
+
+    The tail is realigned forward to the next column-0 block marker so the resumed
+    region always starts at a trusted `[message N | role]` boundary; without this a
+    cut landing inside an indented body could leave user content at column 0 and forge
+    a block boundary. When no marker lands inside the tail it is returned as a best
+    effort (mirrors `store.read_detail_tail`).
+    """
     if len(text) <= max_chars:
         return text
     marker = "\n\n[... transcript truncated ...]\n\n"
     budget = max_chars - len(marker)
     head = budget * 2 // 3
     tail = budget - head
-    return f"{text[:head]}{marker}{text[len(text) - tail :]}"
+    raw_tail = text[len(text) - tail :]
+    aligned = _BLOCK_MARKER_RE.search(raw_tail)
+    tail_text = raw_tail[aligned.start() :] if aligned else raw_tail
+    return f"{text[:head]}{marker}{tail_text}"
