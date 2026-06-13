@@ -48,7 +48,6 @@ from discordbot.cogs._memory.prompts import (
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.constants import (
-    MEMORY_MAX_OUTPUT_TOKENS,
     MAIN_COMPACTION_TARGET_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
@@ -131,7 +130,7 @@ class FakeMemoryResponses:
         self.parse_models: list[str] = []
         self.parse_instructions: list[str] = []
         self.parse_inputs: list[list[dict[str, str]]] = []
-        self.parse_max_output_tokens: list[int] = []
+        self.parse_extra_kwargs: list[dict[str, object]] = []
         self.output_parsed: BaseModel | None = None
         self.status: str = "completed"
         self.raises: Exception | None = None
@@ -143,17 +142,22 @@ class FakeMemoryResponses:
         input: list[dict[str, str]],  # noqa: A002 -- SDK parameter
         text_format: type[BaseModel],
         reasoning: dict[str, str],
-        max_output_tokens: int,
         service_tier: str,
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
+        **unexpected: object,
     ) -> SimpleNamespace:
-        """Records the call and returns or raises the configured result."""
+        """Records the call and returns or raises the configured result.
+
+        `**unexpected` captures any kwarg the memory calls are not expected to
+        pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
+        memory path leaves the output budget to the backend.
+        """
         del text_format, reasoning, service_tier, extra_headers, extra_body
         self.parse_models.append(model)
         self.parse_instructions.append(instructions)
         self.parse_inputs.append(input)
-        self.parse_max_output_tokens.append(max_output_tokens)
+        self.parse_extra_kwargs.append(unexpected)
         if self.raises is not None:
             raise self.raises
         return SimpleNamespace(
@@ -1895,7 +1899,9 @@ async def test_extract_returns_none_on_incomplete_response() -> None:
     assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
-async def test_memory_calls_set_max_output_tokens() -> None:
+async def test_memory_calls_omit_max_output_tokens() -> None:
+    # The memory calls intentionally set no explicit output cap so the backend
+    # uses the model's own ceiling; only the `incomplete` guard bounds output.
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
     await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
@@ -1903,10 +1909,7 @@ async def test_memory_calls_set_max_output_tokens() -> None:
     await extractor.consolidate(
         existing_main="", raw_entries="x", recent_detail="", today="2026-06-06", compact=False
     )
-    assert fake_client.responses.parse_max_output_tokens == [
-        MEMORY_MAX_OUTPUT_TOKENS,
-        MEMORY_MAX_OUTPUT_TOKENS,
-    ]
+    assert fake_client.responses.parse_extra_kwargs == [{}, {}]
 
 
 async def test_pipeline_rejects_drastically_shrunken_rewrite(
