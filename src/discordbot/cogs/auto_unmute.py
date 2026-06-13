@@ -1,6 +1,5 @@
 """Cog that clears self-timeouts and posts an AI-generated moderator reply."""
 
-from typing import cast
 from datetime import UTC, datetime
 from functools import cached_property
 
@@ -9,12 +8,15 @@ import logfire
 import nextcord
 from nextcord import User, Guild, Member, Message, AuditLogAction
 from nextcord.ext import commands
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.utils.llm import litellm_call_kwargs, create_litellm_client
+from discordbot.utils.llm import create_text_or_none, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._auto_unmute.prompts import UNMUTE_PROMPT
+
+# Auto-unmute replies are off the critical path; bound the call so a hung provider never
+# leaves the best-effort post-timeout reply pending forever.
+AUTO_UNMUTE_AI_TIMEOUT_SECONDS = 10.0
 
 
 class AutoUnmuteCogs(commands.Cog):
@@ -152,7 +154,7 @@ class AutoUnmuteCogs(commands.Cog):
 
     async def _generate_reply(
         self, guild_name: str, moderator: Member | User | None, reason: str | None, until: datetime
-    ) -> str:
+    ) -> str | None:
         """Builds a single user-role prompt and asks the model for one Discord reply."""
         remaining = until - datetime.now(tz=UTC)
         minutes = max(int(remaining.total_seconds()) // 60, 0)
@@ -169,18 +171,14 @@ class AutoUnmuteCogs(commands.Cog):
             f"Timeout duration: {minutes} minute(s)\n"
             f"Reason: {readable_reason}"
         )
-        message_list: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(role="user", content=user_text)
-        ]
-        fast_model = self.runtime_models.fast_model
-        responses = await self.client.responses.create(
-            model=fast_model.name,
+        return await create_text_or_none(
+            client=self.client,
+            model=self.runtime_models.fast_model,
             instructions=UNMUTE_PROMPT,
-            input=cast("ResponseInputParam", message_list),
-            reasoning=fast_model.reasoning,
-            **litellm_call_kwargs(end_user_id="auto-unmute"),
+            user_text=user_text,
+            end_user_id="auto-unmute",
+            timeout_seconds=AUTO_UNMUTE_AI_TIMEOUT_SECONDS,
         )
-        return (responses.output_text or "").strip()
 
 
 def setup(bot: commands.Bot) -> None:

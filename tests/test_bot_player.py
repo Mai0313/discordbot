@@ -287,7 +287,9 @@ class _FakeResponses:
     async def parse(self, **kwargs: object) -> SimpleNamespace:
         """Returns the configured parsed response."""
         self.calls.append(kwargs)
-        return SimpleNamespace(output_parsed=self.output_parsed)
+        return SimpleNamespace(
+            output_parsed=self.output_parsed, status="completed", incomplete_details=None
+        )
 
 
 class _FakeClient:

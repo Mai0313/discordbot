@@ -1,14 +1,11 @@
 """Casino system narrator that produces short neutral lines for the games."""
 
-from typing import Final, cast
-import asyncio
+from typing import Final
 
 from openai import AsyncOpenAI
-import logfire
 from pydantic import BaseModel, ConfigDict, SkipValidation
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.utils.llm import litellm_call_kwargs
+from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.games import GameKind, SettleOutcome
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._games.prompts import (
@@ -46,28 +43,14 @@ class SystemNarrator(BaseModel):
         self, instructions: str, user_text: str, fallback: str, end_user_id: str
     ) -> str:
         """Calls the LLM and returns the trimmed text, falling back on any error."""
-        try:
-            async with asyncio.timeout(delay=NARRATOR_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.create(
-                    model=self.model.name,
-                    instructions=instructions,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id=end_user_id),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "System narrator request timed out; using fallback line",
-                timeout_seconds=NARRATOR_AI_TIMEOUT_SECONDS,
-            )
-            return fallback
-        except Exception:
-            logfire.warn("System narrator request failed; using fallback line", _exc_info=True)
-            return fallback
-        text = (responses.output_text or "").strip()
+        text = await create_text_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=instructions,
+            user_text=user_text,
+            end_user_id=end_user_id,
+            timeout_seconds=NARRATOR_AI_TIMEOUT_SECONDS,
+        )
         return text or fallback
 
     async def taunt_bet(

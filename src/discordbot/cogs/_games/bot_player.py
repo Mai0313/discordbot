@@ -12,15 +12,13 @@ let the model reason from the actual table state rather than fall back on a
 prescriptive script.
 """
 
-from typing import Final, cast
-import asyncio
+from typing import Final
 
 from openai import AsyncOpenAI
 import logfire
 from pydantic import BaseModel, ConfigDict
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.utils.llm import litellm_call_kwargs
+from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.games import (
     Card,
     BotAction,
@@ -899,31 +897,16 @@ class BotPlayerAI(BaseModel):
             f"allowed_actions: [{', '.join(request.allowed_actions)}]\n\n"
             f"{format_action_context(context=request.action_context)}"
         )
-        try:
-            async with asyncio.timeout(delay=BOT_ACTION_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=BOT_PLAYER_ACTION_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=BotPlayerActionDecision,
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id=_ACTION_END_USER_ID),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Bot action reason narration timed out; using template",
-                timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
-            )
-            return template
-        except Exception:
-            logfire.warn("Bot action reason narration failed; using template", _exc_info=True)
-            return template
-        if responses.output_parsed is None:
-            return template
-        return responses.output_parsed.reason
+        decision = await parse_responses_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=BOT_PLAYER_ACTION_PROMPT,
+            user_text=user_text,
+            end_user_id=_ACTION_END_USER_ID,
+            text_format=BotPlayerActionDecision,
+            timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
+        )
+        return decision.reason if decision is not None else template
 
     async def narrate_bot_insurance_reason(self, *, request: BotInsuranceReasonRequest) -> str:
         """Returns a Traditional Chinese reason for the already-made insurance choice.
@@ -948,28 +931,13 @@ class BotPlayerAI(BaseModel):
             f"{_format_other_players_block(other_players=request.other_players)}\n\n"
             f"{format_insurance_context(context=request.insurance_context)}"
         )
-        try:
-            async with asyncio.timeout(delay=BOT_INSURANCE_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=BOT_PLAYER_INSURANCE_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=BotPlayerInsuranceDecision,
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id=_INSURANCE_END_USER_ID),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Bot insurance reason narration timed out; using template",
-                timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
-            )
-            return template
-        except Exception:
-            logfire.warn("Bot insurance reason narration failed; using template", _exc_info=True)
-            return template
-        if responses.output_parsed is None:
-            return template
-        return responses.output_parsed.reason
+        decision = await parse_responses_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=BOT_PLAYER_INSURANCE_PROMPT,
+            user_text=user_text,
+            end_user_id=_INSURANCE_END_USER_ID,
+            text_format=BotPlayerInsuranceDecision,
+            timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
+        )
+        return decision.reason if decision is not None else template
