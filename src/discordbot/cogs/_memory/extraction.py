@@ -19,7 +19,6 @@ from discordbot.cogs._memory.prompts import (
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
-    MEMORY_MAX_OUTPUT_TOKENS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
     MEMORY_EXTRACT_TIMEOUT_SECONDS,
     MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
@@ -265,7 +264,6 @@ class MemoryExtractorAI(BaseModel):
                     ),
                     text_format=text_format,
                     reasoning=model.reasoning,
-                    max_output_tokens=MEMORY_MAX_OUTPUT_TOKENS,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": end_user_label},
                     extra_body={"mock_testing_fallbacks": False},
@@ -290,7 +288,8 @@ class MemoryExtractorAI(BaseModel):
             )
             return None
         if responses.status == "incomplete":
-            # The response hit the output-token budget. A truncated JSON body
+            # The response hit the answer model's own output-token ceiling (the
+            # memory calls set no explicit lower cap). A truncated JSON body
             # already fails parsing above, but a model that closed the JSON
             # early can still pass the `v1` header check downstream with a
             # silently amputated memory file; refuse it so raw entries are

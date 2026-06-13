@@ -13,36 +13,38 @@ RAW_CONSOLIDATION_MAX_BYTES = 16_384
 # unbounded; the oldest entries are evicted into the detail file first.
 RAW_FILE_MAX_BYTES = 65_536
 
-# Minimum gap between entry-count-triggered consolidations per user. Recorded
-# at attempt time so repeated LLM failures are rate-limited too; the raw byte
-# trigger above ignores the cooldown so a burst still consolidates.
-MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 600.0
+# Minimum gap between entry-count-triggered consolidations per user. Not a cost
+# guard: it batches the lossy whole-file rewrite so main.md (the only tier
+# injected into replies) does not drift from rewriting on every other message,
+# and, recorded at attempt time, it also rate-limits a failing consolidation's
+# retries. No data is lost while it waits (raw keeps accumulating, detail.md
+# keeps verbatim evidence, and the raw byte trigger above bypasses it for a
+# burst), so it stays short enough that new facts reach replies promptly.
+MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 300.0
 
 # Minimum gap between user-requested main-file regenerations. Recorded at
 # attempt time like the consolidation cooldown, and tracked separately so a
 # manual regeneration never delays the automatic consolidation or vice versa.
 MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 
-# Process-wide cap on concurrent background memory updates so a busy server
-# cannot fan out unbounded whole-file rewrites against the shared LiteLLM
-# proxy and starve the reply path (mirrors codex's stage-1 concurrency limit).
-MEMORY_GLOBAL_CONCURRENCY = 8
+# Process-wide cap on concurrent background memory updates. The constraint is
+# not cost but proxy contention: unbounded fan-out of whole-file rewrites
+# against the shared LiteLLM proxy would compete with the latency-critical
+# reply path for throughput and rate limits. Kept generous because the proxy
+# can absorb it; lower it only if background memory work starts adding reply
+# latency.
+MEMORY_GLOBAL_CONCURRENCY = 24
 
 # The main file has no hard size clamp. Past the trigger, consolidation runs a
 # deep-summarization (compaction) pass aiming at roughly the target size. The
-# bound exists because consolidation rewrites the whole file in one response,
-# so the ceiling is the model's output-token limit (~65k tokens on Gemini
-# Flash), not the 1M-token input window. Compaction summarizes low-signal and
-# stale content; it never drops durable memory outright, and fine-grained
-# evidence survives in the detail file regardless.
+# bound exists because consolidation rewrites the whole file in one response, so
+# the ceiling is the answer model's own output-token limit (~64k tokens on
+# Gemini Pro), not the 1M-token input window. The memory calls no longer set a
+# lower explicit cap, so the trigger sits well inside that ceiling. Compaction
+# summarizes low-signal and stale content; it never drops durable memory
+# outright, and fine-grained evidence survives in the detail file regardless.
 MAIN_COMPACTION_TRIGGER_CHARS = 30_000
 MAIN_COMPACTION_TARGET_CHARS = 15_000
-
-# Explicit output budget for both memory LLM calls. Far above any legitimate
-# memory rewrite (~15k zh-TW chars, roughly 10k tokens) plus reasoning room, but
-# below the provider ceiling so a runaway response fails as a detectable
-# `incomplete` status instead of silently exhausting the provider limit.
-MEMORY_MAX_OUTPUT_TOKENS = 32_768
 
 # Tail window of the detail file fed to consolidation as low-trust provenance.
 # Effectively the whole evidence log for any realistic user: this bot injects
@@ -74,9 +76,12 @@ MEMORY_TRANSCRIPT_MAX_CHARS = 100_000
 # user message right before it.
 MEMORY_REPLY_MAX_CHARS = 8_000
 
-# Background LLM call timeouts. The memory models run with high reasoning
-# effort (possibly on a Pro tier) and consolidation rewrites the whole main
-# file, so these are looser than interactive paths but still bounded so a
-# stuck call cannot pin the in-flight de-dupe slot forever.
-MEMORY_EXTRACT_TIMEOUT_SECONDS = 180.0
-MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 180.0
+# Background LLM call timeouts, kept purely as a liveness backstop rather than
+# a latency or cost guard (a slow background update is harmless). A genuinely
+# stuck call would otherwise hold the scope's lock and a global-concurrency
+# permit forever, so that user/server would never get another memory update.
+# The memory models run at high reasoning effort on a Pro tier and
+# consolidation rewrites the whole main file, so the bound stays well above a
+# legitimately slow rewrite (minutes) and only fires on a truly hung call.
+MEMORY_EXTRACT_TIMEOUT_SECONDS = 600.0
+MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 600.0
