@@ -54,6 +54,7 @@ make gen-docs
 ## Workflow
 
 - Create a focused branch such as `feature/your-change`, `fix/your-bug`, `docs/your-doc-change`, or `chore/your-maintenance-task`.
+- For parallel work across branches, `git worktree add ../discordbot-<branch> -b <branch>` checks out a branch in a separate directory that shares the same `.git`, so the main checkout stays untouched.
 - Keep PRs scoped. Avoid unrelated refactors.
 - Use Conventional Commits for commit messages and PR titles:
 
