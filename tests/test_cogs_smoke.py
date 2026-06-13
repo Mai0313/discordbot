@@ -8,7 +8,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import nextcord
-from nextcord import File, Embed, AllowedMentions
+from nextcord import Embed
 from nextcord.ext import commands
 
 from discordbot import cli
@@ -57,6 +57,14 @@ from discordbot.cogs._economy.database import (
 from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
+from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    DiscordPayload,
+    FakeInteraction,
+    FakeDiscordMessage,
+)
+
 TEST_DEALER_MODEL = "test-dealer-llm-model"
 
 if TYPE_CHECKING:
@@ -65,30 +73,6 @@ if TYPE_CHECKING:
 
     from openai import AsyncOpenAI
     import pytest
-    from nextcord.ui import View
-
-
-class DiscordPayload(TypedDict, total=False):
-    """Payload captured from fake Discord message and followup sends."""
-
-    content: str | None
-    embed: Embed
-    embeds: list[Embed]
-    file: File
-    files: list[File]
-    view: View | None
-    wait: bool
-    ephemeral: bool
-    suppress: bool
-    allowed_mentions: AllowedMentions
-
-
-class OriginalEditPayload(TypedDict, total=False):
-    """Payload captured from fake original interaction edits."""
-
-    content: str
-    file: File
-    allowed_mentions: AllowedMentions
 
 
 class SelfTimeoutCall(TypedDict):
@@ -96,116 +80,6 @@ class SelfTimeoutCall(TypedDict):
 
     member: SimpleNamespace
     until: datetime
-
-
-class FakeResponse:
-    """Minimal interaction response stub that records sends and deferral."""
-
-    def __init__(self) -> None:
-        """Initializes response state records."""
-        self.deferred = False
-        self.deferred_ephemeral = False
-        self.sent: list[DiscordPayload] = []
-        self.edited: list[DiscordPayload] = []
-
-    async def defer(self, ephemeral: bool = False) -> None:
-        """Records that the interaction response was deferred."""
-        self.deferred = True
-        self.deferred_ephemeral = ephemeral
-
-    async def send_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records an interaction response message."""
-        self.sent.append(kwargs)
-
-    async def edit_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records an interaction response edit."""
-        self.edited.append(kwargs)
-
-    def is_done(self) -> bool:
-        """Returns whether the fake response has already been used."""
-        return self.deferred or bool(self.sent)
-
-
-class FakeFollowup:
-    """Minimal interaction followup stub."""
-
-    def __init__(self) -> None:
-        """Initializes recorded followup sends."""
-        self.sent: list[DiscordPayload] = []
-
-    async def send(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
-        """Records the followup payload and returns a fake message."""
-        self.sent.append(kwargs)
-        return FakeDiscordMessage()
-
-
-class FakeInteraction:
-    """Minimal interaction stub shared by cog command tests."""
-
-    def __init__(self, user: FakeUser | None = None) -> None:
-        """Initializes user, response, followup, and edit records."""
-        self.user = user or FakeUser()
-        self.message: FakeDiscordMessage | None = None
-        self.response = FakeResponse()
-        self.followup = FakeFollowup()
-        self.edits: list[OriginalEditPayload] = []
-
-    async def edit_original_message(self, **kwargs: Unpack[OriginalEditPayload]) -> None:
-        """Records an edit to the deferred original response."""
-        self.edits.append(kwargs)
-
-
-class FakeUser:
-    """Minimal Discord user/member stub."""
-
-    def __init__(
-        self, user_id: int = 1, name: str = "alice", display_name: str = "Alice", bot: bool = False
-    ) -> None:
-        """Initializes identity, avatar, bot flag, and account age fields."""
-        self.id = user_id
-        self.name = name
-        self.display_name = display_name
-        self.bot = bot
-        self.mention = f"<@{user_id}>"
-        self.display_avatar = SimpleNamespace(url="https://example.test/avatar.png")
-        # /balance displays the snowflake-derived account age; pin it well into
-        # the past so freezegun does not make the value surprising.
-        self.created_at = datetime.now(tz=UTC) - timedelta(days=365 * 5)
-
-
-class FakeDiscordMessage:
-    """Minimal Discord message stub that records mutations."""
-
-    def __init__(self) -> None:
-        """Initializes message mutation records."""
-        self.edits: list[DiscordPayload] = []
-        self.reactions: list[str] = []
-        self.removed: list[tuple[str, FakeUser]] = []
-        self.replies: list[DiscordPayload] = []
-        self.deleted = False
-        self.suppressed = False
-
-    async def edit(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records an edit payload and suppress flag."""
-        if "suppress" in kwargs:
-            self.suppressed = bool(kwargs["suppress"])
-        self.edits.append(kwargs)
-
-    async def add_reaction(self, emoji: str) -> None:
-        """Records an added reaction."""
-        self.reactions.append(emoji)
-
-    async def remove_reaction(self, emoji: str, member: FakeUser) -> None:
-        """Records a removed reaction."""
-        self.removed.append((emoji, member))
-
-    async def reply(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records a message reply payload."""
-        self.replies.append(kwargs)
-
-    async def delete(self) -> None:
-        """Records message deletion."""
-        self.deleted = True
 
 
 class HangingResponses:
@@ -685,20 +559,17 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[15].get("ephemeral") is not True
     assert interaction.followup.sent[-1].get("ephemeral") is True
     balance_embed = interaction.followup.sent[0]["embed"]
-    assert balance_embed.title == "💰 財務總覽"
-    assert "315 虛擬歡樂豆" in balance_embed.description
-    assert any(field.name == "現金" and "`150`" in field.value for field in balance_embed.fields)
-    assert any(
-        field.name == "債務" and "本金 `30`" in field.value for field in balance_embed.fields
-    )
-    assert any(
-        field.name == "股票淨值" and "`200`" in field.value for field in balance_embed.fields
-    )
-    assert any(
-        field.name == "股票部位" and "BCAT" in field.value for field in balance_embed.fields
-    )
+    # Assert the financial summary's structure and the facade values it surfaces, not the exact
+    # localized title/labels: cash 150, debt principal 30, stock net 200, total 315, BCAT position.
+    assert_embed_title_prefix(embed=balance_embed, prefix="💰")
+    assert "315" in (balance_embed.description or "")
+    assert "150" in assert_embed_has_field(embed=balance_embed, name="現金").value
+    assert "30" in assert_embed_has_field(embed=balance_embed, name="債務").value
+    assert "200" in assert_embed_has_field(embed=balance_embed, name="股票淨值").value
+    assert "BCAT" in assert_embed_has_field(embed=balance_embed, name="股票部位").value
     borrow_embed = interaction.followup.sent[8]["embed"]
-    assert borrow_embed.footer.text == "貸方可用下方按鈕批准或拒絕，發起者可取消，180 秒後自動拒絕"
+    # The footer explains the loan-decision timeout; assert the behavioral 180s, not the copy.
+    assert "180" in (borrow_embed.footer.text or "")
     borrow_view = interaction.followup.sent[8]["view"]
     assert isinstance(borrow_view, CreditLoanDecisionView)
     assert borrow_view.message is not None

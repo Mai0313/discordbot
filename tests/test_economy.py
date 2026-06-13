@@ -18,6 +18,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
+from discordbot.typings.economy import TRANSFER_TAX_BPS
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
@@ -28,7 +29,6 @@ from discordbot.cogs._economy.database import (
     UserAccount,
     AdminAccount,
     CasinoAccount,
-    TransferResult,
     AccountSnapshot,
     JackpotSnapshot,
     LeaderboardEntry,
@@ -68,6 +68,12 @@ from discordbot.cogs._economy.database import (
 )
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embeds
+
+from tests.helpers.economy_invariants import (
+    assert_wallet_consistent,
+    assert_daily_casino_stats,
+    assert_casino_ledger_consistent,
+)
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
@@ -580,67 +586,48 @@ async def test_get_balance_unknown_user_returns_zero() -> None:
     assert await get_balance(user_id=999) == 0
 
 
-async def test_transfer_moves_currency_between_users() -> None:
-    """Successful transfer debits sender the full amount and credits the taxed net."""
-    await _add_balance(user_id=1, name="alice", amount=200)
+@pytest.mark.parametrize(
+    argnames=("sender_start", "amount"), argvalues=[(200, 80), (1_000, 1_000), (10_000, 2_500)]
+)
+async def test_transfer_taxes_and_preserves_invariant(sender_start: int, amount: int) -> None:
+    """A transfer debits the sender in full, burns the tax, and credits the taxed net.
+
+    The burned tax is derived from TRANSFER_TAX_BPS rather than hardcoded, and both wallets keep
+    the balance == total_earned - total_spent identity, so the burn truly leaves circulation.
+    """
+    await _add_balance(user_id=1, name="alice", amount=sender_start)
     result = await transfer(
-        sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=80
+        sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=amount
     )
-    # 80 transferred, 5% (4) burned, receiver nets 76.
-    assert result == TransferResult(
-        sender_balance=120, receiver_balance=76, received_amount=76, tax_amount=4
-    )
-    assert await get_balance(user_id=1) == 120
-    assert await get_balance(user_id=2) == 76
-
-
-async def test_transfer_burns_tax_and_preserves_invariant() -> None:
-    """The transfer tax removes points from circulation and keeps each side's invariant."""
-    await _add_balance(user_id=1, name="alice", amount=1_000)
-    await _add_balance(user_id=2, name="bob", amount=0)
-
-    result = await transfer(
-        sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=1_000
-    )
-
     assert result is not None
-    # 5% of 1000 is burned; receiver nets 950.
-    assert result.tax_amount == 50
-    assert result.received_amount == 950
+    expected_tax = amount * TRANSFER_TAX_BPS // 10_000
+    assert result.tax_amount == expected_tax
+    assert result.received_amount == amount - expected_tax
 
-    sender = await get_account(user_id=1)
-    receiver = await get_account(user_id=2)
-    assert sender is not None
-    assert receiver is not None
-    # Sender spent the full amount; receiver only earned the net. The 50 burned
-    # is gone from total circulation (1000 in, 950 + 0 left).
-    assert sender == AccountSnapshot(
-        name="alice", balance=0, total_earned=1_000, total_spent=1_000
-    )
-    assert receiver == AccountSnapshot(name="bob", balance=950, total_earned=950, total_spent=0)
-    assert sender.balance == sender.total_earned - sender.total_spent
-    assert receiver.balance == receiver.total_earned - receiver.total_spent
+    sender = await assert_wallet_consistent(user_id=1, expected_balance=sender_start - amount)
+    receiver = await assert_wallet_consistent(user_id=2, expected_balance=amount - expected_tax)
+    # Sender spent the full amount; receiver earned only the net, so the tax is out of circulation.
+    assert sender.total_spent == amount
+    assert receiver.total_earned == amount - expected_tax
 
 
-async def test_transfer_rejects_self() -> None:
-    """Transfers to oneself must be rejected."""
-    await _add_balance(user_id=1, name="alice", amount=100)
+@pytest.mark.parametrize(
+    argnames=("sender_start", "receiver_id", "amount"),
+    argvalues=[(100, 1, 10), (10, 2, 100)],
+    ids=["self-transfer", "insufficient-balance"],
+)
+async def test_transfer_rejects_invalid(sender_start: int, receiver_id: int, amount: int) -> None:
+    """A self-transfer or an over-balance transfer is rejected and leaves the sender untouched."""
+    await _add_balance(user_id=1, name="alice", amount=sender_start)
     result = await transfer(
-        sender_id=1, sender_name="alice", receiver_id=1, receiver_name="alice", amount=10
+        sender_id=1,
+        sender_name="alice",
+        receiver_id=receiver_id,
+        receiver_name="bob",
+        amount=amount,
     )
     assert result is None
-    assert await get_balance(user_id=1) == 100
-
-
-async def test_transfer_rejects_insufficient_balance() -> None:
-    """Transfers exceeding the sender's balance must be rejected."""
-    await _add_balance(user_id=1, name="alice", amount=10)
-    result = await transfer(
-        sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=100
-    )
-    assert result is None
-    assert await get_balance(user_id=1) == 10
-    assert await get_balance(user_id=2) == 0
+    assert await get_balance(user_id=1) == sender_start
 
 
 async def test_transfer_prevents_concurrent_double_spend() -> None:
@@ -2008,93 +1995,46 @@ async def test_settle_blackjack_player_split_offset_skips_vip_bonus() -> None:
     assert settlement.vip_bonus == 0
 
 
-async def test_settle_blackjack_player_five_card_non_21_wins_without_system_bonus() -> None:
-    """Five-card non-bust hands win normally without the five-card 21 bonus."""
-    await _add_balance(user_id=1, name="alice", amount=100_000)
+@pytest.mark.parametrize(
+    argnames=("last_card", "dealer", "dealer_21", "is_vip", "expect_outcome"),
+    argvalues=[
+        ("6", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, False, "five_card_win"),
+        ("7", [("10", "♣"), ("9", "♦")], False, False, "five_card_twenty_one"),
+        ("7", [("10", "♣"), ("9", "♦")], False, True, "five_card_twenty_one"),
+        ("7", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, False, "five_card_twenty_one"),
+        ("7", [("7", "♣"), ("7", "♦"), ("7", "♥")], True, True, "five_card_twenty_one"),
+    ],
+    ids=[
+        "non-21-wins-regardless-of-dealer-21",
+        "21-wins-vs-dealer-19",
+        "vip-21-wins-vs-dealer-19",
+        "21-push-vs-dealer-21",
+        "vip-21-push-vs-dealer-21",
+    ],
+)
+async def test_settle_blackjack_player_five_card(
+    last_card: str,
+    dealer: list[tuple[str, str]],
+    dealer_21: bool,
+    is_vip: bool,
+    expect_outcome: str,
+) -> None:
+    """Five-card settlement: a non-21 hand wins regardless of dealer, a 21 follows the comparison.
+
+    Every expected delta is derived from the rules -- the bet, the five-card bonus, and the VIP
+    perk -- rather than hardcoded. The house ledger and daily counters are checked through the
+    invariant helpers, proving the system-funded five-card and VIP-from-bonus payouts never move
+    /casino while the dealer-funded portion does.
+    """
+    bet = 10_000
+    starting = 100_000
+    seed = (VIP_PURCHASE_COST + starting) if is_vip else starting
+    await _add_balance(user_id=1, name="alice", amount=seed)
+    if is_vip:
+        assert await buy_vip(user_id=1, name="alice") is not None
+
     round_state = BlackjackRound.from_participants(
-        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
-    )
-    player = round_state.players[0]
-    hand = player.hands[0]
-    hand.cards = [
-        Card(rank="2", suit="♠"),
-        Card(rank="3", suit="♥"),
-        Card(rank="4", suit="♣"),
-        Card(rank="5", suit="♦"),
-        Card(rank="6", suit="♠"),
-    ]
-    hand.finished = True
-    round_state.dealer = [
-        Card(rank="7", suit="♣"),
-        Card(rank="7", suit="♦"),
-        Card(rank="7", suit="♥"),
-    ]
-    round_state.finished = True
-    round_state.phase = "settled"
-
-    settlement = await _settle_player(round_state=round_state)
-
-    assert settlement.outcome == "five_card_win"
-    assert settlement.hands[0].five_card_twenty_one is False
-    assert settlement.hands[0].five_card_bonus == 0
-    assert settlement.base_delta == 10_000
-    assert settlement.five_card_bonus == 0
-    assert settlement.delta == 10_000
-    assert settlement.new_balance == 110_000
-    assert settlement.casino_balance == -10_000
-    _ledger = await get_casino_ledger()
-    assert _ledger.balance == -10_000
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 10_000, 10_000)
-
-
-async def test_settle_blackjack_player_five_card_bonus_excludes_house_ledger() -> None:
-    """Five-card 21 pays the system bonus without moving the house ledger for it."""
-    await _add_balance(user_id=1, name="alice", amount=100_000)
-    round_state = BlackjackRound.from_participants(
-        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
-    )
-    player = round_state.players[0]
-    hand = player.hands[0]
-    hand.cards = [
-        Card(rank="2", suit="♠"),
-        Card(rank="3", suit="♥"),
-        Card(rank="4", suit="♣"),
-        Card(rank="5", suit="♦"),
-        Card(rank="7", suit="♠"),
-    ]
-    hand.finished = True
-    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="9", suit="♦")]
-    round_state.finished = True
-    round_state.phase = "settled"
-
-    settlement = await _settle_player(round_state=round_state)
-
-    assert settlement.outcome == "five_card_twenty_one"
-    assert settlement.hands[0].five_card_twenty_one is True
-    assert settlement.hands[0].five_card_bonus == 10_000
-    assert settlement.base_delta == 10_000
-    assert settlement.five_card_bonus == 10_000
-    assert settlement.delta == 20_000
-    assert settlement.new_balance == 120_000
-    assert settlement.casino_balance == -10_000
-    _ledger = await get_casino_ledger()
-    assert _ledger.balance == -10_000
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 20_000, 20_000)
-    account = await get_account(user_id=1)
-    assert account == AccountSnapshot(
-        name="alice", balance=120_000, total_earned=120_000, total_spent=0
-    )
-
-
-async def test_settle_blackjack_player_five_card_vip_keeps_system_bonus_out_of_house() -> None:
-    """VIP still boosts the regular win, while five-card bonus stays system-funded."""
-    await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 100_000)
-    purchase = await buy_vip(user_id=1, name="alice")
-    assert purchase is not None
-    round_state = BlackjackRound.from_participants(
-        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
+        rng=SystemRandom(), participants=[_participant(bet=bet, balance_at_start=starting)]
     )
     hand = round_state.players[0].hands[0]
     hand.cards = [
@@ -2102,100 +2042,38 @@ async def test_settle_blackjack_player_five_card_vip_keeps_system_bonus_out_of_h
         Card(rank="3", suit="♥"),
         Card(rank="4", suit="♣"),
         Card(rank="5", suit="♦"),
-        Card(rank="7", suit="♠"),
+        Card(rank=last_card, suit="♠"),
     ]
     hand.finished = True
-    round_state.dealer = [Card(rank="10", suit="♣"), Card(rank="9", suit="♦")]
+    round_state.dealer = [Card(rank=rank, suit=suit) for rank, suit in dealer]
     round_state.finished = True
     round_state.phase = "settled"
 
     settlement = await _settle_player(round_state=round_state)
 
-    assert settlement.base_delta == 10_000
-    assert settlement.vip_bonus == 2_000
-    assert settlement.five_card_bonus == 10_000
-    assert settlement.delta == 22_000
-    assert settlement.new_balance == 122_000
-    assert settlement.casino_balance == -12_000
-    _ledger = await get_casino_ledger()
-    assert _ledger.balance == -12_000
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 22_000, 22_000)
+    is_21 = last_card == "7"
+    five_card_bonus = bet if is_21 else 0
+    # A five-card non-21 hand always wins; a five-card 21 pushes only against a dealer 21.
+    base_delta = 0 if (is_21 and dealer_21) else bet
+    # VIP perk is max(0.2x dealer-paid win, 0.2x five-card bonus); only the dealer-win share is
+    # charged to the house, the rest is system funded along with the five-card bonus itself.
+    house_vip = (base_delta * 20 // 100) if is_vip else 0
+    vip_bonus = max(base_delta * 20 // 100, five_card_bonus * 20 // 100) if is_vip else 0
+    delta = base_delta + vip_bonus + five_card_bonus
+    casino_balance = -(base_delta + house_vip)
 
-
-async def test_settle_blackjack_player_five_card_push_still_pays_bonus() -> None:
-    """Dealer 21 pushes the main hand, but the five-card bonus still pays."""
-    await _add_balance(user_id=1, name="alice", amount=100_000)
-    round_state = BlackjackRound.from_participants(
-        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
-    )
-    hand = round_state.players[0].hands[0]
-    hand.cards = [
-        Card(rank="2", suit="♠"),
-        Card(rank="3", suit="♥"),
-        Card(rank="4", suit="♣"),
-        Card(rank="5", suit="♦"),
-        Card(rank="7", suit="♠"),
-    ]
-    hand.finished = True
-    round_state.dealer = [
-        Card(rank="7", suit="♣"),
-        Card(rank="7", suit="♦"),
-        Card(rank="7", suit="♥"),
-    ]
-    round_state.finished = True
-    round_state.phase = "settled"
-
-    settlement = await _settle_player(round_state=round_state)
-
-    assert settlement.base_delta == 0
-    assert settlement.five_card_bonus == 10_000
-    assert settlement.delta == 10_000
-    assert settlement.new_balance == 110_000
-    assert settlement.casino_balance == 0
-    _ledger = await get_casino_ledger()
-    assert _ledger.balance == 0
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 10_000, 10_000)
-
-
-async def test_settle_blackjack_player_five_card_push_pays_vip_bonus_without_house() -> None:
-    """VIP gets its five-card bonus even when the dealer also has 21."""
-    await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST + 100_000)
-    purchase = await buy_vip(user_id=1, name="alice")
-    assert purchase is not None
-    round_state = BlackjackRound.from_participants(
-        rng=SystemRandom(), participants=[_participant(bet=10_000, balance_at_start=100_000)]
-    )
-    hand = round_state.players[0].hands[0]
-    hand.cards = [
-        Card(rank="2", suit="♠"),
-        Card(rank="3", suit="♥"),
-        Card(rank="4", suit="♣"),
-        Card(rank="5", suit="♦"),
-        Card(rank="7", suit="♠"),
-    ]
-    hand.finished = True
-    round_state.dealer = [
-        Card(rank="7", suit="♣"),
-        Card(rank="7", suit="♦"),
-        Card(rank="7", suit="♥"),
-    ]
-    round_state.finished = True
-    round_state.phase = "settled"
-
-    settlement = await _settle_player(round_state=round_state)
-
-    assert settlement.base_delta == 0
-    assert settlement.vip_bonus == 2_000
-    assert settlement.five_card_bonus == 10_000
-    assert settlement.delta == 12_000
-    assert settlement.new_balance == 112_000
-    assert settlement.casino_balance == 0
-    _ledger = await get_casino_ledger()
-    assert _ledger.balance == 0
-    loss, win, net, _day_started_at = await _daily_casino_stats(user_id=1)
-    assert (loss, win, net) == (0, 12_000, 12_000)
+    assert settlement.outcome == expect_outcome
+    assert settlement.hands[0].five_card_twenty_one is is_21
+    assert settlement.hands[0].five_card_bonus == five_card_bonus
+    assert settlement.base_delta == base_delta
+    assert settlement.five_card_bonus == five_card_bonus
+    assert settlement.vip_bonus == vip_bonus
+    assert settlement.delta == delta
+    assert settlement.new_balance == starting + delta
+    assert settlement.casino_balance == casino_balance
+    await assert_casino_ledger_consistent(expected_balance=casino_balance)
+    await assert_daily_casino_stats(user_id=1, loss=0, win=delta, net=delta)
+    await assert_wallet_consistent(user_id=1, expected_balance=starting + delta)
 
 
 async def test_blackjack_final_embed_shows_five_card_bonus_metadata() -> None:

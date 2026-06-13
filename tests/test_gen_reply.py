@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Literal
@@ -29,6 +30,7 @@ from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.memory_tool import (
+    NO_STORED_MEMORY,
     parse_user_id_list,
     resolve_user_memories,
     build_memory_allowlist,
@@ -36,6 +38,16 @@ from discordbot.cogs._gen_reply.memory_tool import (
     allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
+
+from tests.helpers.llm_input import (
+    request_index,
+    request_input,
+    tool_names_for_call,
+    has_memory_context_block,
+    extract_callable_user_ids,
+    extract_user_memory_blocks,
+    extract_server_memory_block,
+)
 
 TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
@@ -1522,21 +1534,28 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
         cog.runtime_models.slow_model.name,
     ]
 
-    # Selection request offers only get_user_memory + a callable-users block.
-    select_tools = [tool.get("name") for tool in cog.client.responses.create_tools[0]]
-    assert select_tools == ["get_user_memory"]
-    select_block = str(cog.client.responses.create_inputs[0][-1])
-    assert "[id: 1]" in select_block
-    assert "Tester (tester)" in select_block
-    assert cog.client.responses.create_instructions[0] == MEMORY_SELECT_PROMPT
+    # Selection request offers only get_user_memory and lists the author as callable.
+    selection_idx = request_index(responses=cog.client.responses, phase="selection")
+    assert tool_names_for_call(responses=cog.client.responses, n=selection_idx) == [
+        "get_user_memory"
+    ]
+    assert extract_callable_user_ids(
+        request=request_input(responses=cog.client.responses, phase="selection")
+    ) == {1}
+    assert cog.client.responses.create_instructions[selection_idx] == MEMORY_SELECT_PROMPT
 
-    # Answer request keeps the built-in tools (no get_user_memory) and the clean persona.
-    answer_tools = [tool.get("name") for tool in cog.client.responses.create_tools[1]]
-    assert "get_user_memory" not in answer_tools
-    _assert_runtime_time_context(
-        instructions=cog.client.responses.create_instructions[1], system_prompt="SYS"
+    # Answer request keeps the built-in tools (no get_user_memory) and the clean persona: the
+    # author declined selection, so their stored memory is not injected.
+    answer_idx = request_index(responses=cog.client.responses, phase="answer")
+    assert "get_user_memory" not in tool_names_for_call(
+        responses=cog.client.responses, n=answer_idx
     )
-    assert "喜歡簡短回覆" not in str(cog.client.responses.create_inputs[1])
+    _assert_runtime_time_context(
+        instructions=cog.client.responses.create_instructions[answer_idx], system_prompt="SYS"
+    )
+    assert not has_memory_context_block(
+        request=request_input(responses=cog.client.responses, phase="answer")
+    )
 
     # Extraction still scheduled for the author with a memory-free, tool-free list.
     scheduled_list = scheduled[0]["message_list"]
@@ -1594,13 +1613,17 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 
     # The selection phase still offers the tool even when nobody has stored memory; the
     # answer phase keeps the clean persona and the built-in tools.
-    assert "get_user_memory" in [tool.get("name") for tool in cog.client.responses.create_tools[0]]
-    _assert_runtime_time_context(
-        instructions=cog.client.responses.create_instructions[-1], system_prompt="SYS"
+    selection_idx = request_index(responses=cog.client.responses, phase="selection")
+    answer_idx = request_index(responses=cog.client.responses, phase="answer")
+    assert "get_user_memory" in tool_names_for_call(
+        responses=cog.client.responses, n=selection_idx
     )
-    assert "get_user_memory" not in [
-        tool.get("name") for tool in cog.client.responses.create_tools[-1]
-    ]
+    _assert_runtime_time_context(
+        instructions=cog.client.responses.create_instructions[answer_idx], system_prompt="SYS"
+    )
+    assert "get_user_memory" not in tool_names_for_call(
+        responses=cog.client.responses, n=answer_idx
+    )
     assert scheduled == [user_scope(user_id=1), server_scope(bot_id=999, server_id=1)]
 
 
@@ -1649,9 +1672,9 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
 
     # memory_enabled=False runs no selection phase: a single answer request, no tool, no memory.
     assert cog.client.responses.create_streams == [True]
-    assert "不該被注入" not in str(cog.client.responses.create_inputs[-1])
-    assert "get_user_memory" not in str(cog.client.responses.create_tools[-1])
-    assert "get_user_memory" not in str(cog.client.responses.create_inputs[-1])
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert not has_memory_context_block(request=answer)
+    assert "get_user_memory" not in tool_names_for_call(responses=cog.client.responses, n=0)
     # The per-user update is skipped, but the server-scope update still runs in a public guild.
     assert scheduled == [server_scope(bot_id=999, server_id=1)]
 
@@ -1742,305 +1765,107 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-async def test_handle_message_reply_injects_selected_memory_into_answer(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    (
+        "seeded",
+        "server_nick",
+        "mention_ids",
+        "reference_author_id",
+        "channel_public",
+        "select_id_lists",
+        "expected_injected",
+        "callable_includes",
+        "callable_excludes",
+    ),
+    [
+        ({1: "喜歡被叫阿狗"}, None, [], None, True, [["1"]], {1}, {1}, set()),
+        ({}, None, [], None, True, [["1"]], set(), {1}, set()),
+        ({1: "機密"}, None, [], None, True, [], set(), {1}, set()),
+        ({42: "機密外人記憶"}, None, [], None, True, [["42"]], set(), {1}, {42}),
+        ({1: "甲記憶", 2: "乙記憶"}, None, [2], None, True, [["1"], ["2"]], {1, 2}, {1, 2}, set()),
+        (
+            {uid: f"記憶{uid}" for uid in range(1, 11)},
+            None,
+            list(range(2, 11)),
+            None,
+            True,
+            [[str(uid) for uid in range(1, 11)]],
+            set(range(1, 9)),
+            {1},
+            set(),
+        ),
+        ({}, None, [], 7, True, [], set(), {1, 7}, set()),
+        ({42: "李董的祕密"}, (42, "Boss", "李董"), [], None, True, [["42"]], {42}, {42}, set()),
+        ({42: "李董的祕密"}, (42, "Boss", "李董"), [], None, False, [["42"]], set(), {1}, {42}),
+    ],
+    ids=[
+        "inject-selected-memory",
+        "no-stored-memory",
+        "selection-declines",
+        "non-allowlisted-id-dropped",
+        "multiple-selection-calls",
+        "caps-injected-memories",
+        "reference-author-callable",
+        "nickname-table-widens-public",
+        "nickname-table-no-widen-private",
+    ],
+)
+async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- parametrized columns
+    economy_isolated_db: None,
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    seeded: dict[int, str],
+    server_nick: tuple[int, str, str] | None,
+    mention_ids: list[int],
+    reference_author_id: int | None,
+    channel_public: bool,
+    select_id_lists: list[list[str]],
+    expected_injected: set[int],
+    callable_includes: set[int],
+    callable_excludes: set[int],
 ) -> None:
-    """Selection picks a user; the answer request gets that memory as context plus a 🧠 footer."""
+    """The answer gets exactly the allowlisted, selected memories; everything else is dropped.
+
+    One matrix over the user-memory boundary: a plain selection, an empty/declined selection, an
+    id outside the conversation, multiple calls, the per-reply cap, a reference author joining the
+    allowlist, and the public-only nickname-table widening. Injection is asserted by id
+    (extract_user_memory_blocks) and the allowlist by the ids offered to the selection model
+    (extract_callable_user_ids), never by a sentinel substring over a serialized blob.
+    """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n喜歡被叫阿狗",
-        identity="Tester (tester) [id: 1]",
-    )
-
-    captured: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Captures the finalized reply handed to extraction."""
-        captured.append(kwargs["full_reply"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="嗨 阿狗"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(content="<@999> 我是誰", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # Selection (non-streaming) then the answer (streaming).
-    assert cog.client.responses.create_streams == [False, True]
-
-    # The selected memory rides as a low-authority assistant note placed BEFORE the current
-    # user message, which stays last so the model answers it rather than the note.
-    answer_input = cog.client.responses.create_inputs[1]
-    assert answer_input[-1].get("role") == "user"
-    assert any(
-        isinstance(m, dict) and m.get("role") == "assistant" and "喜歡被叫阿狗" in str(m)
-        for m in answer_input[:-1]
-    )
-    assert "function_call_output" not in str(answer_input)
-    assert "get_user_memory" not in [
-        tool.get("name") for tool in cog.client.responses.create_tools[1]
-    ]
-
-    # The visible reply is the answer text, the answer-turn usage footer, and a 🧠 line.
-    content = message.replies[0].content or ""
-    assert content.startswith("嗨 阿狗")
-    assert "⬆ 5 ⬇ 6" in content
-    assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in content
-    assert captured[0].startswith("嗨 阿狗")
-
-
-async def test_handle_message_reply_footer_includes_selection_usage(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The footer token counts include the selection request, not just the answer stream."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲",
-        identity="Tester (tester) [id: 1]",
-    )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
-    ]
-    cog.client.responses.select_usage = SimpleNamespace(input_tokens=100, output_tokens=20)
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="好"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # 100+5 input, 20+6 output summed across the selection and answer requests.
-    assert "⬆ 105 ⬇ 26" in (message.replies[0].content or "")
-
-
-async def test_handle_message_reply_footer_omits_users_without_memory(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A selection that finds no stored memory injects nothing and leaves the 🧠 line off."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()  # No memory written for the author.
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="你好"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # Selection ran but the user has no memory, so nothing is injected and no 🧠 line appears.
-    assert cog.client.responses.create_streams == [False, True]
-    assert "🧠" not in (message.replies[0].content or "")
-
-
-async def test_handle_message_reply_skips_memory_when_model_declines(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When selection returns no call, no memory is injected and no 🧠 line is added."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n機密",
-        identity="Tester (tester) [id: 1]",
-    )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    # select_queue left empty: the selection model declines to call the tool.
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="直接回答"), _completed_event(input_tokens=3, output_tokens=4)]
-    ]
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    assert cog.client.responses.create_streams == [False, True]
-    assert "機密" not in str(cog.client.responses.create_inputs)
-    assert "🧠" not in (message.replies[0].content or "")
-    assert (message.replies[0].content or "").startswith("直接回答")
-
-
-async def test_handle_message_reply_drops_memory_for_non_allowlisted_id(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The model asking for an id absent from the conversation gets no memory injected."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    # Memory exists for user 42, who never appears in the conversation.
-    write_main_memory(
-        scope=user_scope(user_id=42),
-        content="v1\n\n## 使用者輪廓\n機密外人記憶",
-        identity="Outsider (out) [id: 42]",
-    )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(content="<@999> 查 42 的記憶", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # The allowlist (author 1 only) drops id 42: nothing injected, no leak, no 🧠 line.
-    assert "機密外人記憶" not in str(cog.client.responses.create_inputs)
-    assert "🧠" not in (message.replies[0].content or "")
-
-
-async def test_handle_message_reply_footer_lists_memory_owners_in_order(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Selected owners render in lookup order and collapse to 等 N 人 past two."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    for uid, ident in (
-        (1, "Tester (tester) [id: 1]"),
-        (2, "Alice (alice) [id: 2]"),
-        (3, "Bob (bob) [id: 3]"),
-    ):
-        write_main_memory(
-            scope=user_scope(user_id=uid), content=f"v1\n\n## 使用者輪廓\n{uid}", identity=ident
-        )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    alice = FakeAuthor(user_id=2)
-    alice.name, alice.display_name = "alice", "Alice"
-    bob = FakeAuthor(user_id=3)
-    bob.name, bob.display_name = "bob", "Bob"
-    message = FakeMessage(content="<@999> 大家的記憶", author=FakeAuthor(user_id=1))
-    message.mentions = [alice, bob]
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="c", arguments='{"user_id_list": ["1", "2", "3"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
-    ]
-
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    content = message.replies[0].content or ""
-    assert "\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶" in content
-
-
-async def test_handle_message_reply_footer_dedupes_repeat_lookups(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Selecting the same user across multiple calls credits them once in the footer."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲",
-        identity="Tester (tester) [id: 1]",
-    )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [
-            _function_call_item(call_id="c1", arguments='{"user_id_list": ["1"]}'),
-            _function_call_item(call_id="c2", arguments='{"user_id_list": ["1"]}'),
-        ]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
-    ]
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    content = message.replies[0].content or ""
-    assert "\n-# 🧠 已讀取 Tester (tester) 的記憶" in content
-    assert content.count("Tester (tester)") == 1
-
-
-async def test_handle_message_reply_resolves_multiple_selection_calls(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two get_user_memory calls in the selection phase each inject their resolved memory."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲記憶",
-        identity="Tester (tester) [id: 1]",
-    )
-    write_main_memory(
-        scope=user_scope(user_id=2),
-        content="v1\n\n## 使用者輪廓\n乙記憶",
-        identity="Alice (alice) [id: 2]",
-    )
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    alice = FakeAuthor(user_id=2)
-    alice.name, alice.display_name = "alice", "Alice"
-    message = FakeMessage(content="<@999> 兩個人", author=FakeAuthor(user_id=1))
-    message.mentions = [alice]
-
-    cog.client.responses.select_queue = [
-        [
-            _function_call_item(call_id="cid-1", arguments='{"user_id_list": ["1"]}'),
-            _function_call_item(call_id="cid-2", arguments='{"user_id_list": ["2"]}'),
-        ]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
-    ]
-
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    answer_input = str(cog.client.responses.create_inputs[1])
-    assert "甲記憶" in answer_input
-    assert "乙記憶" in answer_input
-
-
-async def test_handle_message_reply_caps_injected_memories(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """More selected users than the per-reply cap inject only the first few, in order."""
-    del economy_isolated_db, memory_isolated_dir
-    cog = _cog()
-    for uid in range(1, 11):
+    for uid, body in seeded.items():
         write_main_memory(
             scope=user_scope(user_id=uid),
-            content=f"v1\n\n## 使用者輪廓\n記憶內容{uid}",
+            content=f"v1\n\n## 使用者輪廓\n{body}",
             identity=f"U{uid} (u{uid}) [id: {uid}]",
         )
-
+    if server_nick is not None:
+        nick_id, nick_name, nick_alias = server_nick
+        write_main_memory(
+            scope=server_scope(bot_id=999, server_id=1),
+            content=f"v1\n\n## 成員稱呼\n* {nick_name}(社群暱稱:{nick_alias})[id: {nick_id}]",
+            identity="Test Guild [id: 1]",
+        )
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    if reference_author_id is not None:
+        monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
 
-    message = FakeMessage(content="<@999> 大家", author=FakeAuthor(user_id=1))
-    message.mentions = [FakeAuthor(user_id=uid) for uid in range(2, 11)]
+    message = FakeMessage(
+        content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
+    )
+    message.mentions = [FakeAuthor(user_id=uid) for uid in mention_ids]
+    if reference_author_id is not None:
+        parent_author = FakeAuthor(user_id=reference_author_id)
+        parent_author.name, parent_author.display_name = "parent", "Parent"
+        parent = FakeMessage(content="原訊息", author=parent_author)
+        parent.id = 988
+        message.reference = FakeReference(resolved=parent)
 
     cog.client.responses.select_queue = [
         [
-            _function_call_item(
-                call_id="c",
-                arguments='{"user_id_list": ["1","2","3","4","5","6","7","8","9","10"]}',
-            )
+            _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
+            for index, ids in enumerate(select_id_lists)
         ]
     ]
     cog.client.responses.stream_queue = [
@@ -2049,37 +1874,147 @@ async def test_handle_message_reply_caps_injected_memories(
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer_input = str(cog.client.responses.create_inputs[1])
-    # First 8 (in selection order) are injected; the 9th and 10th are dropped.
-    assert "記憶內容8" in answer_input
-    assert "記憶內容9" not in answer_input
-    assert "記憶內容10" not in answer_input
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    # An allowlisted-but-memoryless user gets a placeholder block, not a leak; the boundary is
+    # which ids' real memory reaches the model, so placeholder sections are filtered out.
+    injected = {
+        uid
+        for uid, body in extract_user_memory_blocks(request=answer).items()
+        if body != NO_STORED_MEMORY
+    }
+    assert injected == expected_injected
+    # The current user message stays last so the model answers it, and no internal selection
+    # artifact (a function_call_output) ever leaks into the answer request.
+    assert isinstance(answer, list)
+    assert answer[-1].get("role") == "user"
+    assert not any(
+        isinstance(item, dict) and item.get("type") == "function_call_output" for item in answer
+    )
+
+    callable_ids = extract_callable_user_ids(
+        request=request_input(responses=cog.client.responses, phase="selection")
+    )
+    assert callable_includes <= callable_ids
+    assert callable_excludes.isdisjoint(callable_ids)
 
 
-async def test_handle_message_reply_allowlist_includes_reference_author(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    (
+        "seeded_ids",
+        "mentions",
+        "select_id_lists",
+        "select_usage",
+        "stream_usage",
+        "present",
+        "absent",
+        "credited_once",
+    ),
+    [
+        (
+            [1],
+            [],
+            [["1"]],
+            None,
+            (5, 6),
+            ["⬆ 5 ⬇ 6", "\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            [],
+            None,
+        ),
+        ([1], [], [["1"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], [], None),
+        (
+            [1, 2, 3],
+            [(2, "alice", "Alice"), (3, "bob", "Bob")],
+            [["1", "2", "3"]],
+            None,
+            (1, 1),
+            ["\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶"],
+            [],
+            None,
+        ),
+        (
+            [1],
+            [],
+            [["1"], ["1"]],
+            None,
+            (1, 1),
+            ["\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            [],
+            "Tester (tester)",
+        ),
+        ([], [], [["1"]], None, (5, 6), [], ["🧠"], None),
+    ],
+    ids=[
+        "single-owner-credit",
+        "selection-usage-folded-in",
+        "owners-collapse-past-two",
+        "repeat-lookups-credited-once",
+        "no-memory-no-credit",
+    ],
+)
+async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
+    economy_isolated_db: None,
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    seeded_ids: list[int],
+    mentions: list[tuple[int, str, str]],
+    select_id_lists: list[list[str]],
+    select_usage: tuple[int, int] | None,
+    stream_usage: tuple[int, int],
+    present: list[str],
+    absent: list[str],
+    credited_once: str | None,
 ) -> None:
-    """A referenced message's author becomes callable in the selection request."""
+    """The footer credits the memory owners actually read and folds selection tokens into usage.
+
+    Reads the user-visible reply text (the feature's small, real output surface): the single-owner
+    credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
+    repeat-lookup de-duplication, and the no-credit case.
+    """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-
+    labels = {1: "Tester (tester)", 2: "Alice (alice)", 3: "Bob (bob)"}
+    for uid in seeded_ids:
+        write_main_memory(
+            scope=user_scope(user_id=uid),
+            content=f"v1\n\n## 使用者輪廓\n記憶{uid}",
+            identity=f"{labels[uid]} [id: {uid}]",
+        )
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
 
-    parent_author = FakeAuthor(user_id=7)
-    parent_author.name, parent_author.display_name = "parent", "Parent"
-    parent = FakeMessage(content="原訊息", author=parent_author)
-    parent.id = 988
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    mention_authors: list[FakeAuthor] = []
+    for uid, name, display in mentions:
+        author = FakeAuthor(user_id=uid)
+        author.name, author.display_name = name, display
+        mention_authors.append(author)
+    message.mentions = mention_authors
 
-    message = FakeMessage(content="<@999> 回覆他", author=FakeAuthor(user_id=1))
-    message.reference = FakeReference(resolved=parent)
+    if select_usage is not None:
+        cog.client.responses.select_usage = SimpleNamespace(
+            input_tokens=select_usage[0], output_tokens=select_usage[1]
+        )
+    cog.client.responses.select_queue = [
+        [
+            _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
+            for index, ids in enumerate(select_id_lists)
+        ]
+    ]
+    cog.client.responses.stream_queue = [
+        [
+            _text_event(delta="好"),
+            _completed_event(input_tokens=stream_usage[0], output_tokens=stream_usage[1]),
+        ]
+    ]
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    # The selection request (first create) lists the reference author (7) as callable.
-    select_input = str(cog.client.responses.create_inputs[0])
-    assert "[id: 7] Parent (parent)" in select_input
-    assert "[id: 1] Tester (tester)" in select_input
+    content = message.replies[0].content or ""
+    for fragment in present:
+        assert fragment in content
+    for fragment in absent:
+        assert fragment not in content
+    if credited_once is not None:
+        assert content.count(credited_once) == 1
 
 
 async def test_handle_message_reply_continues_when_selection_fails(
@@ -2127,35 +2062,47 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     assert USAGE_FOOTER_RE.sub("", f"{body}{single}") == body
 
 
-class _ServerMemoryResponder:
-    """Answer-phase streamer stub that returns a fixed reply."""
-
-    def __init__(
-        self,
-        message: FakeMessage,
-        memory_lookups: list[str] | None = None,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        model_effort: str = "",
-    ) -> None:
-        """Stores the streaming target message and ignores usage seeds."""
-        del memory_lookups, input_tokens, output_tokens, model_effort
-        self.message = message
-
-    async def stream(self, *, responses: object) -> str:
-        """Returns placeholder reply content."""
-        del responses
-        return "回覆"
-
-
-async def test_handle_message_reply_injects_and_schedules_server_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("memory_enabled", "has_guild", "channel_public", "expect_server_read", "expect_scopes"),
+    [
+        (True, True, True, True, ["user", "server"]),
+        (True, True, False, True, ["user"]),
+        (True, False, True, False, ["user"]),
+        (False, True, True, False, ["server"]),
+        (False, False, True, False, []),
+        (False, True, False, False, []),
+    ],
+    ids=[
+        "qa-guild-public",
+        "qa-guild-private",
+        "qa-dm",
+        "summary-guild-public",
+        "summary-dm",
+        "summary-guild-private",
+    ],
+)
+async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- parametrized columns
+    economy_isolated_db: None,
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    memory_enabled: bool,
+    has_guild: bool,
+    channel_public: bool,
+    expect_server_read: bool,
+    expect_scopes: list[str],
 ) -> None:
-    """In a guild the bot injects the server's memory and schedules a server-scope update."""
+    """Server memory is read on a guild QA turn and written only from a public guild channel.
+
+    One matrix over (route, guild/DM, public/private): the read block rides the answer (and the
+    selection request) only on a memory-enabled guild turn; the per-user write follows
+    memory_enabled; the per-server write needs a public guild channel. Read is asserted
+    structurally via extract_server_memory_block, writes via the scheduled scopes.
+    """
+    del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
         scope=server_scope(bot_id=999, server_id=1),
-        content="v1\n\n## 伺服器輪廓\n這個社群很愛嘴",
+        content="v1\n\n## 伺服器輪廓\n社群風格",
         identity="Test Guild [id: 1]",
     )
     scheduled: list[dict[str, object]] = []
@@ -2164,139 +2111,40 @@ async def test_handle_message_reply_injects_and_schedules_server_memory(
         """Records each scheduled memory update."""
         scheduled.append(kwargs)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # The server memory rides into the answer request as background context.
-    assert "這個社群很愛嘴" in str(cog.client.responses.create_inputs[-1])
-    # The user update is scheduled first, the server update second.
-    assert len(scheduled) == 2
-    user_update, server_update = scheduled
-    assert user_update["scope"] == user_scope(user_id=1)
-    assert server_update["scope"] == server_scope(bot_id=999, server_id=1)
-    assert server_update["subject"] == "target_server_id: 1"
-    assert server_update["extractor"] is cog.server_memory_extractor
-    assert server_update["identity"] == "Test Guild [id: 1]"
-    # The server extractor drives the server-flavor prompts.
-    assert cog.server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
-    assert cog.server_memory_extractor.consolidate_prompt is SERVER_PHASE2_PROMPT
-
-
-async def test_handle_message_reply_skips_server_memory_in_dm(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A DM has no guild, so server memory is neither injected nor scheduled."""
-    cog = _cog()
-    write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
-        content="v1\n\n## 伺服器輪廓\n不該出現",
-        identity="Test Guild [id: 1]",
-    )
-    scheduled: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records each scheduled scope."""
-        scheduled.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    message.guild = None
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    assert "不該出現" not in str(cog.client.responses.create_inputs[-1])
-    assert scheduled == [user_scope(user_id=1)]
-
-
-async def test_handle_message_reply_skips_server_write_in_private_channel(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A channel @everyone cannot see never feeds the server-wide memory."""
-    cog = _cog()
-    scheduled: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records each scheduled scope."""
-        scheduled.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=False)
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # Private channel: the per-user update still runs, but no server-scope update.
-    assert scheduled == [user_scope(user_id=1)]
-
-
-async def test_handle_message_reply_records_server_memory_on_summary_route(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The SUMMARY route (memory_enabled=False) records server memory but not user memory."""
-    cog = _cog()
-    scheduled: list[dict[str, object]] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records each scheduled memory update."""
-        scheduled.append(kwargs)
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> 總結", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
-
-    # Only the server-scope update is scheduled; the per-user one is skipped.
-    assert [update["scope"] for update in scheduled] == [server_scope(bot_id=999, server_id=1)]
-    assert scheduled[0]["subject"] == "target_server_id: 1"
-    assert scheduled[0]["extractor"] is cog.server_memory_extractor
-
-
-async def test_handle_message_reply_summary_in_dm_records_nothing(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A SUMMARY in a DM has no guild, so neither user nor server memory is recorded."""
-    cog = _cog()
-    scheduled: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records each scheduled scope."""
-        scheduled.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> 總結", author=FakeAuthor(user_id=1))
-    message.guild = None
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
-
-    assert scheduled == []
-
-
-async def test_handle_message_reply_summary_in_private_channel_records_nothing(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A SUMMARY in a non-public channel never feeds the server-wide memory."""
-    cog = _cog()
-    scheduled: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records each scheduled scope."""
-        scheduled.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(
-        content="<@999> 總結", author=FakeAuthor(user_id=1), channel_public=False
+        content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
     )
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+    if not has_guild:
+        message.guild = None
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
 
-    assert scheduled == []
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=memory_enabled)
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
+
+    server_scope_value = server_scope(bot_id=999, server_id=1)
+    name_to_scope = {"user": user_scope(user_id=1), "server": server_scope_value}
+    assert [update["scope"] for update in scheduled] == [
+        name_to_scope[name] for name in expect_scopes
+    ]
+    for update in scheduled:
+        if update["scope"] == server_scope_value:
+            assert update["subject"] == "target_server_id: 1"
+            assert update["extractor"] is cog.server_memory_extractor
+            assert update["identity"] == "Test Guild [id: 1]"
+            assert cog.server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
+            assert cog.server_memory_extractor.consolidate_prompt is SERVER_PHASE2_PROMPT
+
+    # On a memory-enabled guild turn the selection request also sees the server memory so it can
+    # resolve nicknames; non-guild or SUMMARY turns run no selection phase.
+    if memory_enabled and has_guild:
+        selection = request_input(responses=cog.client.responses, phase="selection")
+        assert extract_server_memory_block(request=selection) is not None
 
 
 def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
@@ -2352,100 +2200,6 @@ def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
     assert "李董" in allowed[123]
     # The absent member is not added, so their personal memory stays unreachable here.
     assert 456 not in allowed
-
-
-async def test_handle_message_reply_injects_server_memory_into_selection(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The selection phase sees the server memory so it can resolve nicknames to ids."""
-    cog = _cog()
-    write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
-        content="v1\n\n## 伺服器輪廓\n選擇階段也要看到",
-        identity="Test Guild [id: 1]",
-    )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ServerMemoryResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # Selection input carries the server memory, with the callable-users block kept last.
-    selection_input = cog.client.responses.create_inputs[0]
-    assert "選擇階段也要看到" in str(selection_input)
-    assert "[id: 1]" in str(selection_input[-1])
-    assert "Tester (tester)" in str(selection_input[-1])
-
-
-async def test_handle_message_reply_widens_allowlist_with_nickname_table(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A member named only in the nickname table is askable by alias."""
-    del economy_isolated_db
-    cog = _cog()
-    # User 42 never speaks in the conversation, but the server nickname table names them.
-    write_main_memory(
-        scope=user_scope(user_id=42),
-        content="v1\n\n## 使用者輪廓\n李董的祕密",
-        identity="Boss (boss) [id: 42]",
-    )
-    write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
-        content="v1\n\n## 成員稱呼\n* Boss(社群暱稱:李董)[id: 42]",
-        identity="Test Guild [id: 1]",
-    )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    # The nickname-table id widened the allowlist, so the outsider's memory is injected.
-    assert "李董的祕密" in str(cog.client.responses.create_inputs[-1])
-
-
-async def test_handle_message_reply_does_not_widen_absent_member_in_private_channel(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A private channel must not read an absent member's personal memory via the nickname table.
-
-    The nickname table is public content, but the personal memory it would unlock is not, so
-    the allowlist stays conversation-only here: even when the selection model requests the
-    absent id, `resolve_user_memories` drops it and the secret never reaches the answer.
-    """
-    del economy_isolated_db
-    cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=42),
-        content="v1\n\n## 使用者輪廓\n李董的祕密",
-        identity="Boss (boss) [id: 42]",
-    )
-    write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
-        content="v1\n\n## 成員稱呼\n* Boss(社群暱稱:李董)[id: 42]",
-        identity="Test Guild [id: 1]",
-    )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-
-    cog.client.responses.select_queue = [
-        [_function_call_item(call_id="cid-1", arguments='{"user_id_list": ["42"]}')]
-    ]
-    cog.client.responses.stream_queue = [
-        [_text_event(delta="回覆"), _completed_event(input_tokens=5, output_tokens=6)]
-    ]
-
-    message = FakeMessage(
-        content="<@999> 李董最近怎樣", author=FakeAuthor(user_id=1), channel_public=False
-    )
-    await _reply_via_pipeline(cog=cog, message=message)
-
-    assert "李董的祕密" not in str(cog.client.responses.create_inputs[-1])
 
 
 async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
