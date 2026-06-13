@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 import logfire
-from pydantic import BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict
 from sqlalchemy import Index, String, Integer, DateTime, or_, func, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -258,15 +258,19 @@ class _StockExecutionSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    action: StockAction
-    price_cents: int
-    liquidity_shares: int
-    max_order_impact_bps: int
-    wallet_balance: int
-    position: StockPositionView
-    available_long_shares: int
-    available_short_shares: int
-    available_individual_long_shares: int
+    action: StockAction = Field(description="Requested buy/cover or short/sell action.")
+    price_cents: int = Field(description="Submit-time reference quote price in cents.")
+    liquidity_shares: int = Field(description="Per-stock liquidity used for execution slippage.")
+    max_order_impact_bps: int = Field(description="Maximum per-leg price impact in basis points.")
+    wallet_balance: int = Field(description="User's wallet cash available at submit time.")
+    position: StockPositionView = Field(description="User's current long/short position snapshot.")
+    available_long_shares: int = Field(
+        description="Float shares still openable as long market-wide."
+    )
+    available_short_shares: int = Field(description="Float shares still borrowable for shorting.")
+    available_individual_long_shares: int = Field(
+        description="New long shares the user can open before the 49% ownership cap."
+    )
 
 
 class _StockMarketExposure(BaseModel):
@@ -274,11 +278,11 @@ class _StockMarketExposure(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str
-    long_shares: int
-    short_shares: int
-    available_long_shares: int
-    available_short_shares: int
+    symbol: str = Field(description="Stock symbol the exposure totals apply to.")
+    long_shares: int = Field(description="Aggregate long shares held plus pending opens.")
+    short_shares: int = Field(description="Aggregate short shares borrowed plus pending opens.")
+    available_long_shares: int = Field(description="Float shares still openable as long.")
+    available_short_shares: int = Field(description="Float shares still borrowable for shorting.")
 
 
 class _StockOrderFlowSummary(BaseModel):
@@ -286,9 +290,15 @@ class _StockOrderFlowSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    buy_side_shares: int = 0
-    sell_side_shares: int = 0
-    pressure_bps: int = 0
+    buy_side_shares: int = Field(
+        default=0, description="Recent buy-side share volume in the window."
+    )
+    sell_side_shares: int = Field(
+        default=0, description="Recent sell-side share volume in the window."
+    )
+    pressure_bps: int = Field(
+        default=0, description="Decayed net order-flow pressure in basis points."
+    )
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver

@@ -175,14 +175,30 @@ class MemoryExtractorAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI]
-    extract_model: ModelSettings
-    consolidate_model: ModelSettings
-    evaluate_model: ModelSettings | None = None
-    phase1_prompt: str = PHASE1_PROMPT
-    evaluator_prompt: str = PHASE1_EVALUATOR_PROMPT
-    consolidate_prompt: str = PHASE2_PROMPT
-    compaction_block: str = PHASE2_COMPACTION_BLOCK
+    client: SkipValidation[AsyncOpenAI] = Field(
+        description="Async OpenAI client for the Responses API memory calls."
+    )
+    extract_model: ModelSettings = Field(description="Model running the phase-1 extraction call.")
+    consolidate_model: ModelSettings = Field(
+        description="Model running the phase-2 consolidation call."
+    )
+    evaluate_model: ModelSettings | None = Field(
+        default=None, description="Optional model for the phase-1.5 evaluator review."
+    )
+    phase1_prompt: str = Field(
+        default=PHASE1_PROMPT, description="Instructions for the phase-1 extraction call."
+    )
+    evaluator_prompt: str = Field(
+        default=PHASE1_EVALUATOR_PROMPT,
+        description="Instructions for the phase-1.5 evaluator call.",
+    )
+    consolidate_prompt: str = Field(
+        default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
+    )
+    compaction_block: str = Field(
+        default=PHASE2_COMPACTION_BLOCK,
+        description="Extra block appended to the consolidation prompt when compacting.",
+    )
 
     async def extract(self, subject: str, transcript: str) -> RawMemoryDraft | None:
         """Returns the phase-1 raw memory draft, or None when the LLM path fails.

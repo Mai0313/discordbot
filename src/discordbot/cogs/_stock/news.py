@@ -29,8 +29,8 @@ class StockNewsAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: AsyncOpenAI
-    model: ModelSettings
+    client: AsyncOpenAI = Field(description="Async OpenAI client for the news generation call.")
+    model: ModelSettings = Field(description="Model settings for the news generation call.")
 
     async def generate(self, context: StockNewsGenerationContext) -> StockGeneratedNews | None:
         """Returns one generated news item, or `None` when the LLM path fails."""

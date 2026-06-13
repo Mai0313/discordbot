@@ -41,7 +41,7 @@ class ThreadsURL(BaseModel):
         raw_url: Original Threads URL provided by the caller.
     """
 
-    raw_url: str
+    raw_url: str = Field(description="Original Threads URL provided by the caller")
 
     @computed_field
     @cached_property
@@ -410,7 +410,7 @@ class ThreadItem(_ThreadsModel):
         post: Parsed post for this thread item.
     """
 
-    post: Post | None = Field(default=None)
+    post: Post | None = Field(default=None, description="Parsed post for this thread item")
 
 
 class ThreadData(_ThreadsModel):
@@ -420,7 +420,9 @@ class ThreadData(_ThreadsModel):
         thread_items: Ordered thread items from the embedded JSON.
     """
 
-    thread_items: list[ThreadItem] = Field(default_factory=list)
+    thread_items: list[ThreadItem] = Field(
+        default_factory=list, description="Ordered thread items from the embedded JSON"
+    )
 
     def find_post_with_parents(self, post_code: str) -> tuple[Post | None, list[Post]]:
         """Returns the matching post and the chronologically-ordered ancestors before it.
@@ -463,18 +465,24 @@ class ThreadsOutput(BaseModel):
         taken_at: Post creation time.
     """
 
-    text: str = Field(default="")
-    url: str = Field(default="")
-    image_urls: list[str] = Field(default_factory=list)
-    video_urls: list[str] = Field(default_factory=list)
-    video_paths: list[Path] = Field(default_factory=list)
-    author_name: str = Field(default="")
-    author_icon_url: str = Field(default="")
-    like_count: int = Field(default=0)
-    reply_count: int = Field(default=0)
-    repost_count: int = Field(default=0)
-    quote_count: int = Field(default=0)
-    reshare_count: int = Field(default=0)
+    text: str = Field(default="", description="Extracted post text")
+    url: str = Field(default="", description="Source Threads URL")
+    image_urls: list[str] = Field(
+        default_factory=list, description="Image URLs extracted from the post"
+    )
+    video_urls: list[str] = Field(
+        default_factory=list, description="Video URLs extracted from the post"
+    )
+    video_paths: list[Path] = Field(
+        default_factory=list, description="Local paths of downloaded videos"
+    )
+    author_name: str = Field(default="", description="Post author username")
+    author_icon_url: str = Field(default="", description="Post author profile picture URL")
+    like_count: int = Field(default=0, description="Number of likes")
+    reply_count: int = Field(default=0, description="Number of direct replies")
+    repost_count: int = Field(default=0, description="Number of reposts")
+    quote_count: int = Field(default=0, description="Number of quote posts")
+    reshare_count: int = Field(default=0, description="Total reshare count")
     taken_at: datetime | None = Field(default=None, description="Post creation time")
 
     def unlink(self) -> None:
@@ -495,7 +503,9 @@ class ThreadsDownloader(BaseModel):
         output_folder: Directory where downloaded media files are written.
     """
 
-    output_folder: str = Field(default="./tmp")
+    output_folder: str = Field(
+        default="./tmp", description="Directory where downloaded media files are written"
+    )
 
     def _fetch_html(self, url: str) -> str:
         """Fetches the HTML content of the given URL."""

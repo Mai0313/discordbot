@@ -36,7 +36,10 @@ class BlackjackShoeStore(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    shoes: dict[int, list[Card]] = Field(default_factory=dict)
+    shoes: dict[int, list[Card]] = Field(
+        default_factory=dict,
+        description="Persistent remaining shoe cards keyed by Discord channel id.",
+    )
     # Per-channel monotonic generation counters. `take_shoe` stamps each round it hands
     # out with an increasing generation; `save_shoe` drops a write whose generation is
     # older than the last persisted one, so when two tables in the same channel settle out

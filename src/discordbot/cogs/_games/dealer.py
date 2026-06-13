@@ -3,7 +3,7 @@
 from typing import Final
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.games import GameKind, SettleOutcome
@@ -36,8 +36,8 @@ class SystemNarrator(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI]
-    model: ModelSettings
+    client: SkipValidation[AsyncOpenAI] = Field(description="The shared AsyncOpenAI client.")
+    model: ModelSettings = Field(description="Fast-model settings used for every narrator line.")
 
     async def _ask(
         self, instructions: str, user_text: str, fallback: str, end_user_id: str

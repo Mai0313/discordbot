@@ -12,7 +12,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import logfire
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs._memory.store import (
@@ -68,12 +68,26 @@ class _PendingMemoryUpdate(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    subject: str
-    message_list: SkipValidation[list[EasyInputMessageParam]]
-    full_reply: str
-    extractor: SkipValidation[MemoryExtractorAI]
-    identity: str
-    captured_at: float
+    subject: str = Field(description="The phase-1 extraction directive naming the memory target.")
+    message_list: SkipValidation[list[EasyInputMessageParam]] = Field(
+        description="Reply-pipeline input messages captured for the skipped turn."
+    )
+    full_reply: str = Field(description="The streamed reply text for the skipped turn.")
+    extractor: SkipValidation[MemoryExtractorAI] = Field(
+        description="The extraction service to run the replayed update with."
+    )
+    identity: str = Field(
+        description=(
+            "Single-line target identity stamped into the main memory file as "
+            "human-inspection metadata."
+        )
+    )
+    captured_at: float = Field(
+        description=(
+            "`time.monotonic()` when the turn was captured, so a clear that lands "
+            "before the replay can abort it via `cleared_since`."
+        )
+    )
 
 
 # Process-level per-scope in-flight de-dupe; while one extraction runs, only the

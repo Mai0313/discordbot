@@ -150,9 +150,18 @@ class MessageInputBuilder(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    bot: SkipValidation[commands.Bot]
-    runtime_models: RuntimeModelCatalog
-    gemini_client: SkipValidation[genai.Client] | None
+    bot: SkipValidation[commands.Bot] = Field(
+        description="The Discord bot instance, used to detect the bot's own messages."
+    )
+    runtime_models: RuntimeModelCatalog = Field(
+        description="Catalog whose slow model gates attachment modalities."
+    )
+    gemini_client: SkipValidation[genai.Client] | None = Field(
+        description=(
+            "Gemini client used to upload attachments to the Files API directly so each "
+            "upload can be polled to ACTIVE before use; None when GEMINI_API_KEY is unset."
+        )
+    )
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact
     # sources rendered (attachment + sticker ids, embed image/thumbnail URLs) plus edit

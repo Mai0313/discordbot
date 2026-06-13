@@ -7,7 +7,7 @@ import threading
 
 import logfire
 from nextcord import Message, DMChannel
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import Field, BaseModel, ConfigDict, computed_field
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
 
@@ -143,7 +143,7 @@ class MessageLogger(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    message: Message
+    message: Message = Field(description="The Discord message being logged.")
 
     @staticmethod
     def sanitize_text(s: str | None) -> str:
