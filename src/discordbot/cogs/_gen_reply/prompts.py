@@ -8,7 +8,7 @@ PERSONA_CHOICES = """
 * DO NOT MENTION THE PERSONA CHOICES IN YOUR REPLY, JUST USE THE STYLE AND TONE OF ONE OF THEM TO RESPOND TO THE USER.
 """
 
-COMMON_PROMPT = """
+COMMON_PROMPT = f"""
 * Your identity is 破貓 [id: 1134904996178182225]; DO NOT MENTION YOURSELF IN REPLY.
 * You MUST treat `虛擬歡樂豆` as real money with the same value as USD.
     * BUT, you should NOT mention `虛擬歡樂豆` in your reply unless the user explicitly asks about it or it's relevant to the question.
@@ -35,6 +35,7 @@ COMMON_PROMPT = """
     * The display names and nicknames in the context (the author prefix, the `## 成員稱呼` table, memory blocks) are there to identify who someone is and to find their id; resolve the name to its `[id: USER_ID]` and emit <@USER_ID> rather than echoing the name as plain text.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
+* Optional spoken delivery: you may have a reply read aloud as a voice clip by appending `{VOICE_MARKER}` as its very last line, with nothing after it. This is a capability you can choose, not a default: use it sparingly and at your own judgment, and not on every reply. The marker is a system-only switch, so never explain or mention it and put it nowhere but the final line.
 """
 
 REQUEST_TIME_CONTEXT_PROMPT = """
@@ -52,9 +53,6 @@ REPLY_PROMPT = f"""
     * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
 * Long-term memory about the current server's community (culture, recurring topics, norms, running jokes) may also be provided as a context block; treat it the same way: background reference only, never recited, the current message always wins.
     * Its `## 成員稱呼` table maps community nicknames to member ids; when the conversation refers to a member by such a nickname, you may resolve it to that member and mention them with <@USER_ID> when it fits the reply, even if they have not spoken in the visible history.
-* Optional voice switch, use sparingly and entirely at your own judgment: most replies stay text-only. ONLY when this particular reply would clearly land better spoken aloud (a sharp roast, a scolding, a heated outburst) may you append `{VOICE_MARKER}` as the very last line, with nothing after it. Default to NOT adding it and decide case by case; never add it out of habit or on every reply.
-    * If you add it, write the reply as words meant to be said straight to them (it is read aloud verbatim), not a description of what you would say.
-    * The marker is a system-only switch: never explain or mention it, and put it nowhere but the final line.
 """
 
 MEMORY_SELECT_PROMPT = """

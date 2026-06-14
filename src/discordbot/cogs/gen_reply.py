@@ -1060,6 +1060,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         context=context,
                         memory_enabled=False,
                         effort=route.effort,
+                        allow_voice=True,
                     )
                 else:
                     reactions.advance(emoji="💭")

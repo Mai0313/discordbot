@@ -1587,7 +1587,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
     argvalues=[
         ("IMAGE", "_handle_image_reply", [(30, True)], [], []),
         ("VIDEO", "_handle_video_reply", [(30, True)], [], []),
-        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False], [False]),
+        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False], [True]),
         ("QA", "_handle_message_reply", [(30, True)], [True], [True]),
     ],
 )
@@ -1678,7 +1678,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     # history depth without memory, and QA consumes the speculative context as-is.
     assert prep_requests == expected_prep
     assert memory_flags == expected_flags
-    # Voice is enabled only on the QA route; SUMMARY stays text, IMAGE/VIDEO never reach here.
+    # Voice is enabled on QA and SUMMARY (both stream a reply); IMAGE/VIDEO never reach here.
     assert voice_flags == expected_voice
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
