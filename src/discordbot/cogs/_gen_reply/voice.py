@@ -9,8 +9,8 @@ the written reply and the spoken clip stay coherent (the model knows it is speak
 separate post-hoc classifier would not. Synthesis is best-effort: any failure leaves a
 normal text reply.
 
-The tone ("兇/激動") rides in `TTS_STYLE_DIRECTIVE`, prepended to the input text, because
-the proxy's `instructions` parameter is silently ignored for this TTS model. `response_format`
+The fierce tone rides in `TTS_STYLE_DIRECTIVE`, prepended to the input text, because the
+proxy's `instructions` parameter is silently ignored for this TTS model. `response_format`
 is intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
 """
 
@@ -34,11 +34,14 @@ _TRAILING_VOICE_MARKER_RE = re.compile(rf"[\s`]*{_MARKER_BODY}[\s`]*\Z", re.IGNO
 # remove a stray mid-reply marker WITHOUT eating the surrounding text (so words never join).
 _ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 
-# Tunable voice config (edit here). The voice is a fixed male timbre; the style directive
-# is the persona's aggressive delivery, prepended to every spoken reply.
+# Tunable voice config (edit here). The voice is a single fixed timbre; the style directive
+# is the persona's aggressive delivery, prepended to every spoken reply (English on purpose:
+# Gemini TTS style prompting is documented in English and is read as style, not spoken).
 TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
-TTS_VOICE = "Charon"
-TTS_STYLE_DIRECTIVE = "用非常兇狠, 激動, 不耐煩又嗆辣的語氣, 大聲又快速地說出以下這段話:"
+TTS_VOICE = "Zephyr"
+TTS_STYLE_DIRECTIVE = (
+    "Say the following in a very fierce, aggressive, impatient and sarcastic tone, loud and fast:"
+)
 TTS_SPEED = 1.3
 
 # Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload
@@ -96,7 +99,9 @@ class VoiceSynthesizer(BaseModel):
     model_name: str = Field(
         default=TTS_MODEL_NAME, description="TTS model string dispatched on the proxy."
     )
-    voice: str = Field(default=TTS_VOICE, description="Fixed male voice timbre name.")
+    voice: str = Field(
+        default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
+    )
     style_directive: str = Field(
         default=TTS_STYLE_DIRECTIVE,
         description="Aggressive-delivery directive prepended to the spoken text.",

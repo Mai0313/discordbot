@@ -52,10 +52,10 @@ REPLY_PROMPT = f"""
     * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
 * Long-term memory about the current server's community (culture, recurring topics, norms, running jokes) may also be provided as a context block; treat it the same way: background reference only, never recited, the current message always wins.
     * Its `## 成員稱呼` table maps community nicknames to member ids; when the conversation refers to a member by such a nickname, you may resolve it to that member and mention them with <@USER_ID> when it fits the reply, even if they have not spoken in the visible history.
-* 語音輸出開關: 如果這則回覆「用兇狠, 激動, 嗆辣的口氣大聲念出來」會更有殺傷力 (例如開嗆, 罵人, 情緒激動的吐槽), 就在整段回覆的最後一行單獨輸出標記 `{VOICE_MARKER}`, 標記後面不要再接任何文字。
-    * 只有當你真的想用講的來表達時才加; 大多數一般回覆都不需要, 不加才是常態。
-    * 加標記時, 把回覆寫成「適合被直接念出來的口語」, 因為它會被原封不動地用語音念出來; 不要寫成像在描述「我想罵你」, 而是直接把要嗆的內容講出來。
-    * 這個標記純粹是給系統的開關, 絕對不要在回覆裡解釋它, 提到它, 或把它放在其他位置。
+* Voice output switch: if this reply would hit harder said out loud in a fierce, agitated, sarcastic tone (e.g. roasting, scolding, an emotionally charged outburst), emit the marker `{VOICE_MARKER}` alone on the very last line, with nothing after it.
+    * Add it ONLY when you genuinely want to express this out loud; most ordinary replies do not need it, and omitting it is the norm.
+    * When you add it, write the reply as natural spoken lines, because it will be read aloud verbatim: do not describe what you would say (e.g. "I want to scold you"), say the actual words straight to them.
+    * The marker is a system-only switch: never explain it, mention it, or place it anywhere other than the final line.
 """
 
 MEMORY_SELECT_PROMPT = """
