@@ -34,6 +34,7 @@ from discordbot.cogs._gen_reply.input import (
     render_author_identity,
     render_server_identity,
 )
+from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import (
@@ -238,6 +239,16 @@ class ReplyGeneratorCogs(commands.Cog):
         except Exception:
             logfire.warn("Gemini Files API disabled: GEMINI_API_KEY not configured")
             return None
+
+    @cached_property
+    def voice_synthesizer(self) -> VoiceSynthesizer:
+        """The cached text-to-speech engine for spoken QA replies.
+
+        Returns:
+            A synthesizer bound to this cog's client and the catalog's TTS model; the
+            caller still gates it on `allow_voice` and `config.voice_reply_enabled`.
+        """
+        return VoiceSynthesizer(client=self.client, model_name=self.runtime_models.tts_model.name)
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -828,20 +839,25 @@ class ReplyGeneratorCogs(commands.Cog):
             selection_output_tokens=selection_output_tokens,
         )
 
-    async def _handle_message_reply(
+    async def _handle_message_reply(  # noqa: PLR0913 -- per-call reply inputs plus the route's memory/effort/voice gates
         self,
         message: Message,
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
         effort: Literal["low", "medium", "high"] = "high",
+        allow_voice: bool = False,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
         The per-user update is gated by `memory_enabled`; the per-server update always runs
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
-        community memory even though it carries `memory_enabled=False`.
+        community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
+        spoken clip when the answer model marks the reply for it (QA only; SUMMARY stays text).
         """
+        voice_synthesizer = (
+            self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
+        )
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it rather than continuing
         # the assistant memory note: the memory rides as earlier context, after history and
@@ -862,6 +878,7 @@ class ReplyGeneratorCogs(commands.Cog):
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
             model_effort=effort,
+            voice_synthesizer=voice_synthesizer,
         )
         with logfire.span("gen_reply answer", model=slow_model.name):
             responses = await self.client.responses.create(
@@ -1043,6 +1060,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         context=context,
                         memory_enabled=False,
                         effort=route.effort,
+                        allow_voice=True,
                     )
                 else:
                     reactions.advance(emoji="💭")
@@ -1058,6 +1076,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         system_prompt=REPLY_PROMPT,
                         context=context,
                         effort=route.effort,
+                        allow_voice=True,
                     )
                 reactions.advance(emoji="🆗")
         finally:

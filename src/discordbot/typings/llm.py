@@ -13,6 +13,8 @@ class LLMConfig(BaseSettings):
         api_key: The API key for authentication.
         gemini_api_key: The Google AI Studio key used to upload attachments to
             the Gemini Files API directly, so uploads can be polled to ACTIVE.
+        voice_reply_enabled: Kill-switch for spoken QA replies; when false the answer
+            model's voice marker is still stripped but no audio clip is synthesized.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -35,6 +37,11 @@ class LLMConfig(BaseSettings):
         description="The Google AI Studio key for direct Gemini Files API uploads.",
         examples=["AIza..."],
         validation_alias=AliasChoices("GEMINI_API_KEY"),
+    )
+    voice_reply_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may synthesize a spoken clip for fierce QA replies.",
+        validation_alias=AliasChoices("VOICE_REPLY_ENABLED"),
     )
 
 

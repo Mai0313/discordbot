@@ -24,6 +24,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.images import get_image_data, shrink_image_bytes
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
+from discordbot.cogs._gen_reply.voice import VOICE_REPLY_FILENAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence, Awaitable, Coroutine
@@ -255,8 +256,13 @@ class MessageInputBuilder(BaseModel):
         `proxy_url` (media.discordapp.net) over the origin URL, since sources like the
         Threads CDN expire and reject requests without specific headers.
         """
+        is_own_message = bool(self.bot.user and message.author.id == self.bot.user.id)
         sources: list[AttachmentSource] = []
         for attachment in message.attachments:
+            # Skip the bot's own generated voice clip: its text is already in the transcript,
+            # so re-uploading the WAV only adds latency and feeds the model duplicate self-output.
+            if is_own_message and attachment.filename == VOICE_REPLY_FILENAME:
+                continue
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             sources.append(
                 AttachmentSource(
