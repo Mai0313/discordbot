@@ -304,7 +304,14 @@ class ReplyGeneratorCogs(commands.Cog):
         if hist_messages:
             full_tasks: list[Awaitable[EasyInputMessageParam]] = []
             for hist_msg in hist_messages:
-                full_tasks.append(self.input_builder.process_single_message(message=hist_msg))
+                # History is the only render that opts into the dead-source skip: an expired
+                # CDN attachment here re-fails every turn. Current/reference do not (see
+                # MessageInputBuilder._resolve_file_upload).
+                full_tasks.append(
+                    self.input_builder.process_single_message(
+                        message=hist_msg, allow_dead_cache=True
+                    )
+                )
             text_tasks: list[Awaitable[EasyInputMessageParam]] = []
             if with_text_only:
                 for hist_msg in hist_messages:
