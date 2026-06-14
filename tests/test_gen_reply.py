@@ -8,10 +8,11 @@ from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Literal
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from PIL import Image
 import pytest
+import nextcord
 from nextcord import File, Embed
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -24,7 +25,12 @@ from discordbot.cogs.gen_reply import (
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, PendingUpload, MessageInputBuilder
+from discordbot.cogs._gen_reply.input import (
+    DEAD_SOURCE_TTL,
+    USAGE_FOOTER_RE,
+    PendingUpload,
+    MessageInputBuilder,
+)
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -76,11 +82,28 @@ class FakeChannel:
         self.history = history
         self.parent = None
         self._view_channel = view_channel
+        self.sent: list[FakeReply] = []
 
     def permissions_for(self, role: object) -> SimpleNamespace:
         """Returns the @everyone permissions for this channel."""
         del role
         return SimpleNamespace(view_channel=self._view_channel)
+
+    async def send(
+        self,
+        content: str | None = None,
+        embed: Embed | None = None,
+        file: File | None = None,
+        files: list[File] | None = None,
+    ) -> FakeReply:
+        """Records an unparented channel send (the deleted-source fallback target)."""
+        sent = FakeReply()
+        sent.content = content
+        sent.embed = embed
+        sent.file = file
+        sent.files = files
+        self.sent.append(sent)
+        return sent
 
 
 class FakeReference:
@@ -152,6 +175,8 @@ class FakeMessage:
         self.system_content = ""
         self.added_reactions: list[str] = []
         self.removed_reactions: list[tuple[str, FakeAuthor]] = []
+        # When set, reply() raises this instead of recording (simulates a deleted source).
+        self.reply_error: Exception | None = None
 
     async def _history(
         self, limit: int, before: FakeMessage, oldest_first: bool
@@ -168,6 +193,8 @@ class FakeMessage:
         files: list[File] | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content."""
+        if self.reply_error is not None:
+            raise self.reply_error
         reply = FakeReply()
         reply.content = content
         reply.file = file
@@ -627,6 +654,138 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
     chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
     assert all(len(chunk) <= DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
     assert cog.client.responses.create_models == []
+
+
+def _deleted_source_error() -> nextcord.HTTPException:
+    """Builds the Discord 400 50035 raised when replying to a since-deleted source."""
+    return nextcord.HTTPException(
+        SimpleNamespace(status=400, reason="Bad Request"),
+        {"code": 50035, "message": "Invalid Form Body"},
+    )
+
+
+def _unknown_message_notfound() -> nextcord.NotFound:
+    """Builds the 404 10008 a deleted source can raise on some Discord paths."""
+    return nextcord.NotFound(
+        SimpleNamespace(status=404, reason="Not Found"),
+        {"code": 10008, "message": "Unknown Message"},
+    )
+
+
+@pytest.mark.parametrize("error", [_deleted_source_error(), _unknown_message_notfound()])
+async def test_streaming_falls_back_to_channel_send_when_source_deleted(
+    economy_isolated_db: None, error: nextcord.HTTPException
+) -> None:
+    """A deleted source makes the final reply land unparented via channel.send, not crash."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.reply_error = error
+
+    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
+
+    assert message.replies == []  # reply() raised, so nothing was recorded there
+    assert message.channel.sent[0].content == result
+
+
+async def test_streaming_followup_chain_intact_after_channel_send_fallback(
+    economy_isolated_db: None,
+) -> None:
+    """Overflow follow-ups still chain off the unparented parent when the source is gone."""
+    del economy_isolated_db
+    message = FakeMessage(content="<@999> explain")
+    message.reply_error = _deleted_source_error()
+    body = "x" * 4500
+
+    await ResponseStreamer(message=message).stream(
+        responses=_stream_events_from(
+            events=[_text_event(delta=body), _completed_event(input_tokens=1, output_tokens=2)]
+        )
+    )
+
+    assert message.replies == []
+    parent = message.channel.sent[0]
+    assert parent.content == body[:DISCORD_MESSAGE_LIMIT]
+    # The chain continues off the channel-sent parent, not the deleted source.
+    assert parent.replies[0].content == body[DISCORD_MESSAGE_LIMIT : DISCORD_MESSAGE_LIMIT * 2]
+
+
+async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: None) -> None:
+    """A non-deletion HTTP error (e.g. Forbidden) propagates instead of silently channel.send."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.reply_error = nextcord.HTTPException(
+        SimpleNamespace(status=403, reason="Forbidden"),
+        {"code": 50013, "message": "Missing Permissions"},
+    )
+
+    with pytest.raises(nextcord.HTTPException):
+        await ResponseStreamer(message=message).stream(responses=_stream_events())
+    assert message.channel.sent == []
+
+
+def _media_builder() -> MessageInputBuilder:
+    """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
+    return MessageInputBuilder(
+        bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
+        runtime_models=RuntimeModelCatalog(),
+        gemini_client=FakeGeminiClient(),
+    )
+
+
+async def test_dead_source_skipped_within_ttl_then_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing source is skipped (no re-fetch) for the TTL, then retried once after it."""
+    calls = {"n": 0}
+
+    def _raise_get_image_data(image_file: str) -> bytes:
+        del image_file
+        calls["n"] += 1
+        raise RuntimeError("CDN url expired")
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_image_data", _raise_get_image_data)
+    builder = _media_builder()
+    url = "https://example.test/dead.png"
+
+    assert await builder.image_to_part(source=url, cache_key=url) is None
+    assert calls["n"] == 1
+    # Within the TTL the source is skipped without another fetch.
+    assert await builder.image_to_part(source=url, cache_key=url) is None
+    assert calls["n"] == 1
+    # Backdating the marker past the TTL retries the fetch exactly once (self-heal).
+    builder._dead_sources[url] = datetime.now(tz=UTC) - DEAD_SOURCE_TTL - timedelta(seconds=1)
+    assert await builder.image_to_part(source=url, cache_key=url) is None
+    assert calls["n"] == 2
+
+
+async def test_media_semaphore_bounds_upload_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrent Files-API uploads are capped by the shared media semaphore."""
+    builder = _media_builder()
+    builder._media_semaphore = asyncio.Semaphore(2)
+    state = {"active": 0, "peak": 0}
+
+    async def _slow_upload(file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
+        del file
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return SimpleNamespace(
+            name=config["display_name"],
+            uri=f"https://files.test/{config['display_name']}",
+            state=FileState.ACTIVE,
+            error=None,
+            expiration_time=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(builder.gemini_client.aio.files, "upload", _slow_upload)
+    results = await asyncio.gather(*[
+        builder._upload_file(filename=f"f{index}.txt", data=b"x", content_type="text/plain")
+        for index in range(6)
+    ])
+
+    assert all(result is not None for result in results)
+    assert state["peak"] == 2
 
 
 def test_extract_friendly_error_prefers_nested_provider_message() -> None:
@@ -1345,6 +1504,13 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
     await cog.on_message(message=failed)
     assert failed.replies[0].content is None
+
+    # Source deleted before the error embed lands: it falls back to an unparented send.
+    deleted = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
+    deleted.reply_error = _deleted_source_error()
+    await cog.on_message(message=deleted)
+    assert deleted.replies == []
+    assert deleted.channel.sent[0].embed is not None
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
