@@ -92,9 +92,9 @@ class DragonGateTurn(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    turn_number: int = Field(description="Sequence number of this turn within the table.")
-    participant: GameParticipant = Field(description="Player taking this turn.")
-    pillars: list[Card] = Field(description="The two gate pillar cards.")
+    turn_number: int = Field(..., description="Sequence number of this turn within the table.")
+    participant: GameParticipant = Field(..., description="Player taking this turn.")
+    pillars: list[Card] = Field(..., description="The two gate pillar cards.")
     direction: DragonGateDirection | None = Field(
         default=None, description="High/low choice for a same-point gate, None until chosen."
     )
@@ -120,13 +120,13 @@ class DragonGateTurnResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    turn_number: int = Field(description="Sequence number of the resolved turn.")
-    participant: GameParticipant = Field(description="Player whose attempt was resolved.")
-    pillars: list[Card] = Field(description="The two gate pillar cards.")
-    third_card: Card = Field(description="The third card drawn to resolve the bet.")
-    bet: int = Field(description="Bet amount placed on this turn.")
-    outcome: DragonGateOutcome = Field(description="Resolved outcome label for the turn.")
-    delta: int = Field(description="Signed point change applied to the player's balance.")
+    turn_number: int = Field(..., description="Sequence number of the resolved turn.")
+    participant: GameParticipant = Field(..., description="Player whose attempt was resolved.")
+    pillars: list[Card] = Field(..., description="The two gate pillar cards.")
+    third_card: Card = Field(..., description="The third card drawn to resolve the bet.")
+    bet: int = Field(..., description="Bet amount placed on this turn.")
+    outcome: DragonGateOutcome = Field(..., description="Resolved outcome label for the turn.")
+    delta: int = Field(..., description="Signed point change applied to the player's balance.")
     direction: DragonGateDirection | None = Field(
         default=None, description="High/low choice used for a same-point gate, if any."
     )
@@ -145,8 +145,10 @@ class DragonGateRound(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    rng: Random = Field(description="Random source used for card draws.")
-    participants: list[GameParticipant] = Field(description="Seated players in rotation order.")
+    rng: Random = Field(..., description="Random source used for card draws.")
+    participants: list[GameParticipant] = Field(
+        ..., description="Seated players in rotation order."
+    )
     current_player_index: int = Field(
         default=0, description="Index of the participant whose turn is active."
     )

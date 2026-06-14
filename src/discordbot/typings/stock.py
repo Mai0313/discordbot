@@ -44,32 +44,36 @@ class StockProfileView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    name: str = Field(description="Display name of the virtual company.")
-    category: str = Field(description="Market category the company belongs to.")
-    price_cents: int = Field(description="Latest quote price in cents.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    name: str = Field(..., description="Display name of the virtual company.")
+    category: str = Field(..., description="Market category the company belongs to.")
+    price_cents: int = Field(..., description="Latest quote price in cents.")
     previous_close_price_cents: int = Field(
-        description="Previous trading-day close price in cents."
+        ..., description="Previous trading-day close price in cents."
     )
-    day_open_price_cents: int = Field(description="Current trading-day open price in cents.")
-    total_shares: int = Field(description="Total issued share count.")
-    float_shares: int = Field(description="Tradable float share count.")
-    base_volatility_bps: int = Field(description="Baseline per-tick volatility in basis points.")
+    day_open_price_cents: int = Field(..., description="Current trading-day open price in cents.")
+    total_shares: int = Field(..., description="Total issued share count.")
+    float_shares: int = Field(..., description="Tradable float share count.")
+    base_volatility_bps: int = Field(
+        ..., description="Baseline per-tick volatility in basis points."
+    )
     volatility_amplifier_bps: int = Field(
-        description="Additional volatility amplifier in basis points."
+        ..., description="Additional volatility amplifier in basis points."
     )
     liquidity_shares: int = Field(
-        description="Liquidity depth in shares used for order-size slippage."
+        ..., description="Liquidity depth in shares used for order-size slippage."
     )
-    fair_value_cents: int = Field(description="Mean-reversion fair value anchor in cents.")
+    fair_value_cents: int = Field(..., description="Mean-reversion fair value anchor in cents.")
     mean_reversion_bps: int = Field(
-        description="Per-tick mean-reversion pull toward fair value in basis points."
+        ..., description="Per-tick mean-reversion pull toward fair value in basis points."
     )
-    max_tick_change_bps: int = Field(description="Cap on price change per tick in basis points.")
+    max_tick_change_bps: int = Field(
+        ..., description="Cap on price change per tick in basis points."
+    )
     news_cadence_hours: int = Field(
-        description="Minimum hours between news refreshes for this symbol."
+        ..., description="Minimum hours between news refreshes for this symbol."
     )
-    updated_at: datetime = Field(description="Timestamp of the latest profile update.")
+    updated_at: datetime = Field(..., description="Timestamp of the latest profile update.")
 
 
 class StockProfileUpsert(BaseModel):
@@ -138,8 +142,8 @@ class StockPositionView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    user_id: int = Field(description="Discord user ID owning the position.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    user_id: int = Field(..., description="Discord user ID owning the position.")
     user_name: str = Field(default="", description="Stored display name of the position owner.")
     long_shares: int = Field(default=0, description="Number of shares held long.")
     long_cost_basis: int = Field(
@@ -162,11 +166,13 @@ class StockParticipantPositionView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the participant.")
-    user_name: str = Field(description="Stored display name of the participant.")
-    long_shares: int = Field(description="Number of shares the participant holds long.")
-    short_shares: int = Field(description="Number of shares the participant holds short.")
-    realized_pnl: int = Field(description="Realized profit and loss for the participant in cents.")
+    user_id: int = Field(..., description="Discord user ID of the participant.")
+    user_name: str = Field(..., description="Stored display name of the participant.")
+    long_shares: int = Field(..., description="Number of shares the participant holds long.")
+    short_shares: int = Field(..., description="Number of shares the participant holds short.")
+    realized_pnl: int = Field(
+        ..., description="Realized profit and loss for the participant in cents."
+    )
 
 
 class StockTradeLegView(BaseModel):
@@ -174,23 +180,23 @@ class StockTradeLegView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    operation_id: str = Field(description="Parent stock operation identifier.")
-    leg_order: int = Field(description="Ordering index of this leg within the operation.")
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    user_id: int = Field(description="Discord user ID the leg belongs to.")
+    operation_id: str = Field(..., description="Parent stock operation identifier.")
+    leg_order: int = Field(..., description="Ordering index of this leg within the operation.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    user_id: int = Field(..., description="Discord user ID the leg belongs to.")
     user_name: str = Field(default="", description="Stored display name of the leg owner.")
-    leg_type: StockTradeLegType = Field(description="Type of atomic trade leg.")
-    shares: int = Field(description="Share quantity executed in this leg.")
-    price_cents: int = Field(description="Per-leg execution price in cents.")
-    wallet_delta: int = Field(description="Wallet balance change applied by this leg.")
-    basis_delta: int = Field(description="Cost-basis change applied by this leg in cents.")
+    leg_type: StockTradeLegType = Field(..., description="Type of atomic trade leg.")
+    shares: int = Field(..., description="Share quantity executed in this leg.")
+    price_cents: int = Field(..., description="Per-leg execution price in cents.")
+    wallet_delta: int = Field(..., description="Wallet balance change applied by this leg.")
+    basis_delta: int = Field(..., description="Cost-basis change applied by this leg in cents.")
     collateral_delta: int = Field(
-        description="Short collateral change applied by this leg in cents."
+        ..., description="Short collateral change applied by this leg in cents."
     )
     realized_pnl_delta: int = Field(
-        description="Realized profit and loss change applied by this leg in cents."
+        ..., description="Realized profit and loss change applied by this leg in cents."
     )
-    created_at: datetime = Field(description="Timestamp the leg was created.")
+    created_at: datetime = Field(..., description="Timestamp the leg was created.")
 
 
 class StockNewsView(BaseModel):
@@ -198,9 +204,9 @@ class StockNewsView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    headline: str = Field(description="News headline text.")
-    sentiment_bps: int = Field(description="News sentiment impulse in basis points.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    headline: str = Field(..., description="News headline text.")
+    sentiment_bps: int = Field(..., description="News sentiment impulse in basis points.")
     source: str = Field(
         default="template", description="Origin of the news item, such as template or model."
     )
@@ -208,7 +214,7 @@ class StockNewsView(BaseModel):
     expires_at: datetime | None = Field(
         default=None, description="Timestamp after which the news is stale, if set."
     )
-    created_at: datetime = Field(description="Timestamp the news item was created.")
+    created_at: datetime = Field(..., description="Timestamp the news item was created.")
 
 
 class StockGeneratedNews(BaseModel):
@@ -216,9 +222,13 @@ class StockGeneratedNews(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    headline: str = Field(description="Generated news headline text.")
-    sentiment_bps: int = Field(description="Generated news sentiment impulse in basis points.")
-    source: str = Field(description="Origin of the generated news, such as template or model.")
+    headline: str = Field(..., description="Generated news headline text.")
+    sentiment_bps: int = Field(
+        ..., description="Generated news sentiment impulse in basis points."
+    )
+    source: str = Field(
+        ..., description="Origin of the generated news, such as template or model."
+    )
     model: str = Field(default="", description="Model identifier that generated the news, if any.")
 
 
@@ -227,22 +237,26 @@ class StockNewsGenerationContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    profile: StockProfileView = Field(description="Stock profile and latest quote for context.")
-    change_cents: int = Field(description="Daily price change in cents.")
-    change_bps: int = Field(description="Daily price change in basis points.")
-    pressure_bps: int = Field(description="Recent decayed order-flow pressure in basis points.")
-    buy_side_shares: int = Field(description="Recent buy-side order flow in shares.")
-    sell_side_shares: int = Field(description="Recent sell-side order flow in shares.")
-    net_order_shares: int = Field(description="Net order flow in shares.")
+    profile: StockProfileView = Field(
+        ..., description="Stock profile and latest quote for context."
+    )
+    change_cents: int = Field(..., description="Daily price change in cents.")
+    change_bps: int = Field(..., description="Daily price change in basis points.")
+    pressure_bps: int = Field(
+        ..., description="Recent decayed order-flow pressure in basis points."
+    )
+    buy_side_shares: int = Field(..., description="Recent buy-side order flow in shares.")
+    sell_side_shares: int = Field(..., description="Recent sell-side order flow in shares.")
+    net_order_shares: int = Field(..., description="Net order flow in shares.")
     recent_news_sentiment_bps: int = Field(
-        description="Existing decayed news sentiment in basis points."
+        ..., description="Existing decayed news sentiment in basis points."
     )
     latest_news_headline: str = Field(default="", description="Most recent news headline, if any.")
     latest_news_sentiment_bps: int = Field(
         default=0, description="Sentiment of the most recent news in basis points."
     )
     lookback_hours: int = Field(
-        description="Lookback window in hours used to compute the context."
+        ..., description="Lookback window in hours used to compute the context."
     )
 
 
@@ -251,9 +265,9 @@ class StockPriceTickView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    price_cents: int = Field(description="Quote price at this tick in cents.")
-    created_at: datetime = Field(description="Timestamp of the price tick.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    price_cents: int = Field(..., description="Quote price at this tick in cents.")
+    created_at: datetime = Field(..., description="Timestamp of the price tick.")
 
 
 class StockMarketQuote(BaseModel):
@@ -261,10 +275,10 @@ class StockMarketQuote(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    profile: StockProfileView = Field(description="Stock profile and latest quote.")
-    change_cents: int = Field(description="Daily price change in cents.")
-    change_bps: int = Field(description="Daily price change in basis points.")
-    pressure_bps: int = Field(description="Recent order-flow pressure in basis points.")
+    profile: StockProfileView = Field(..., description="Stock profile and latest quote.")
+    change_cents: int = Field(..., description="Daily price change in cents.")
+    change_bps: int = Field(..., description="Daily price change in basis points.")
+    pressure_bps: int = Field(..., description="Recent order-flow pressure in basis points.")
 
 
 class StockDetailViewData(BaseModel):
@@ -272,20 +286,20 @@ class StockDetailViewData(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    quote: StockMarketQuote = Field(description="Market quote for the selected stock.")
-    balance: int = Field(description="Viewing user's wallet cash balance.")
+    quote: StockMarketQuote = Field(..., description="Market quote for the selected stock.")
+    balance: int = Field(..., description="Viewing user's wallet cash balance.")
     position: StockPositionView = Field(
-        description="Viewing user's current position in the stock."
+        ..., description="Viewing user's current position in the stock."
     )
     recent_trades: tuple[StockTradeLegView, ...] = Field(
-        description="Recent trade legs for the viewing user."
+        ..., description="Recent trade legs for the viewing user."
     )
     public_positions: tuple[StockParticipantPositionView, ...] = Field(
         default=(), description="Public position summaries for all participants."
     )
-    news: tuple[StockNewsView, ...] = Field(description="Recent news items for the stock.")
+    news: tuple[StockNewsView, ...] = Field(..., description="Recent news items for the stock.")
     ticks: tuple[StockPriceTickView, ...] = Field(
-        description="Recent price ticks for the 7D chart."
+        ..., description="Recent price ticks for the 7D chart."
     )
 
 
@@ -294,27 +308,33 @@ class StockPortfolioHolding(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    name: str = Field(description="Display name of the virtual company.")
-    price_cents: int = Field(description="Latest quote price in cents.")
-    long_shares: int = Field(description="Number of shares held long.")
-    long_cost_basis: int = Field(description="Aggregate cost basis of the long position in cents.")
-    long_market_value: int = Field(
-        description="Current market value of the long position in cents."
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    name: str = Field(..., description="Display name of the virtual company.")
+    price_cents: int = Field(..., description="Latest quote price in cents.")
+    long_shares: int = Field(..., description="Number of shares held long.")
+    long_cost_basis: int = Field(
+        ..., description="Aggregate cost basis of the long position in cents."
     )
-    short_shares: int = Field(description="Number of shares held short.")
+    long_market_value: int = Field(
+        ..., description="Current market value of the long position in cents."
+    )
+    short_shares: int = Field(..., description="Number of shares held short.")
     short_entry_value: int = Field(
-        description="Aggregate entry value of the short position in cents."
+        ..., description="Aggregate entry value of the short position in cents."
     )
     short_collateral: int = Field(
-        description="Collateral reserved against the short position in cents."
+        ..., description="Collateral reserved against the short position in cents."
     )
-    short_cover_cost: int = Field(description="Current cost to cover the short position in cents.")
-    equity_value: int = Field(description="Net equity value of this holding in cents.")
+    short_cover_cost: int = Field(
+        ..., description="Current cost to cover the short position in cents."
+    )
+    equity_value: int = Field(..., description="Net equity value of this holding in cents.")
     unrealized_pnl: int = Field(
-        description="Unrealized profit and loss for this holding in cents."
+        ..., description="Unrealized profit and loss for this holding in cents."
     )
-    realized_pnl: int = Field(description="Realized profit and loss for this holding in cents.")
+    realized_pnl: int = Field(
+        ..., description="Realized profit and loss for this holding in cents."
+    )
 
 
 class StockPortfolioView(BaseModel):
@@ -322,16 +342,18 @@ class StockPortfolioView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID owning the portfolio.")
+    user_id: int = Field(..., description="Discord user ID owning the portfolio.")
     holdings: tuple[StockPortfolioHolding, ...] = Field(
-        description="Current stock holdings for the user."
+        ..., description="Current stock holdings for the user."
     )
-    equity_value: int = Field(description="Total net equity value across all holdings in cents.")
+    equity_value: int = Field(
+        ..., description="Total net equity value across all holdings in cents."
+    )
     unrealized_pnl: int = Field(
-        description="Total unrealized profit and loss across holdings in cents."
+        ..., description="Total unrealized profit and loss across holdings in cents."
     )
     realized_pnl: int = Field(
-        description="Total realized profit and loss across holdings in cents."
+        ..., description="Total realized profit and loss across holdings in cents."
     )
 
 
@@ -340,21 +362,21 @@ class StockSettlementResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    success: bool = Field(description="Whether the settlement completed successfully.")
+    success: bool = Field(..., description="Whether the settlement completed successfully.")
     operation_id: str | None = Field(
-        description="Identifier of the settled operation, if created."
+        ..., description="Identifier of the settled operation, if created."
     )
-    symbol: str = Field(description="Virtual company ticker symbol.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
     requested_action: StockAction = Field(
-        description="Stock operation family requested by the user."
+        ..., description="Stock operation family requested by the user."
     )
-    shares: int = Field(description="Share quantity settled.")
-    price_cents: int = Field(description="Execution price in cents.")
-    wallet_delta: int = Field(description="Net wallet balance change from the settlement.")
-    balance_after: int = Field(description="Wallet cash balance after settlement.")
-    position: StockPositionView = Field(description="Resulting position after settlement.")
+    shares: int = Field(..., description="Share quantity settled.")
+    price_cents: int = Field(..., description="Execution price in cents.")
+    wallet_delta: int = Field(..., description="Net wallet balance change from the settlement.")
+    balance_after: int = Field(..., description="Wallet cash balance after settlement.")
+    position: StockPositionView = Field(..., description="Resulting position after settlement.")
     legs: tuple[StockTradeLegView, ...] = Field(
-        description="Trade legs produced by the settlement."
+        ..., description="Trade legs produced by the settlement."
     )
     status: StockOperationStatus | None = Field(
         default=None, description="Final operation lifecycle status, if known."
@@ -367,19 +389,19 @@ class StockReconciliationOperation(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    operation_id: str = Field(description="Stock operation identifier.")
-    status: StockOperationStatus = Field(description="Current operation lifecycle status.")
-    user_id: int = Field(description="Discord user ID that initiated the operation.")
-    user_name: str = Field(description="Stored display name of the operation owner.")
-    symbol: str = Field(description="Virtual company ticker symbol.")
+    operation_id: str = Field(..., description="Stock operation identifier.")
+    status: StockOperationStatus = Field(..., description="Current operation lifecycle status.")
+    user_id: int = Field(..., description="Discord user ID that initiated the operation.")
+    user_name: str = Field(..., description="Stored display name of the operation owner.")
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
     requested_action: StockAction = Field(
-        description="Stock operation family requested by the user."
+        ..., description="Stock operation family requested by the user."
     )
-    failure_reason: str = Field(description="Recorded reason the operation did not finalize.")
-    created_at: datetime = Field(description="Timestamp the operation was created.")
-    updated_at: datetime = Field(description="Timestamp of the latest operation update.")
+    failure_reason: str = Field(..., description="Recorded reason the operation did not finalize.")
+    created_at: datetime = Field(..., description="Timestamp the operation was created.")
+    updated_at: datetime = Field(..., description="Timestamp of the latest operation update.")
     legs: tuple[StockTradeLegView, ...] = Field(
-        description="Trade legs associated with the operation."
+        ..., description="Trade legs associated with the operation."
     )
 
 
@@ -388,19 +410,23 @@ class StockSupplyAuditView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Virtual company ticker symbol.")
-    name: str = Field(description="Display name of the virtual company.")
-    price_cents: int = Field(description="Latest quote price in cents.")
-    total_shares: int = Field(description="Total issued share count.")
-    float_shares: int = Field(description="Tradable float share count.")
-    long_shares: int = Field(description="Aggregate long exposure in shares.")
-    short_shares: int = Field(description="Aggregate short borrow in shares.")
-    available_long_shares: int = Field(description="Remaining long capacity in shares.")
-    available_short_shares: int = Field(description="Remaining short borrow capacity in shares.")
-    liquidity_shares: int = Field(
-        description="Liquidity depth in shares used for order-size slippage."
+    symbol: str = Field(..., description="Virtual company ticker symbol.")
+    name: str = Field(..., description="Display name of the virtual company.")
+    price_cents: int = Field(..., description="Latest quote price in cents.")
+    total_shares: int = Field(..., description="Total issued share count.")
+    float_shares: int = Field(..., description="Tradable float share count.")
+    long_shares: int = Field(..., description="Aggregate long exposure in shares.")
+    short_shares: int = Field(..., description="Aggregate short borrow in shares.")
+    available_long_shares: int = Field(..., description="Remaining long capacity in shares.")
+    available_short_shares: int = Field(
+        ..., description="Remaining short borrow capacity in shares."
     )
-    non_final_operations: int = Field(description="Count of operations not yet in a final state.")
+    liquidity_shares: int = Field(
+        ..., description="Liquidity depth in shares used for order-size slippage."
+    )
+    non_final_operations: int = Field(
+        ..., description="Count of operations not yet in a final state."
+    )
 
 
 __all__ = [

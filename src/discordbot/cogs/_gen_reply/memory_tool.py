@@ -60,9 +60,11 @@ class UserMemory(BaseModel):
         memory: Consolidated long-term memory markdown, identity-stripped.
     """
 
-    username: str = Field(description="Display label of the user whose memory this is.")
-    user_id: str = Field(description="String form of the Discord user id.")
-    memory: str = Field(description="Consolidated long-term memory markdown, identity-stripped.")
+    username: str = Field(..., description="Display label of the user whose memory this is.")
+    user_id: str = Field(..., description="String form of the Discord user id.")
+    memory: str = Field(
+        ..., description="Consolidated long-term memory markdown, identity-stripped."
+    )
 
 
 class MemorySelection(BaseModel):
@@ -74,9 +76,11 @@ class MemorySelection(BaseModel):
         output_tokens: Output tokens the selection request consumed, for reply accounting.
     """
 
-    memories: list[UserMemory] = Field(description="Allowlist-enforced memories the model chose.")
-    input_tokens: int = Field(description="Input tokens the selection request consumed.")
-    output_tokens: int = Field(description="Output tokens the selection request consumed.")
+    memories: list[UserMemory] = Field(
+        ..., description="Allowlist-enforced memories the model chose."
+    )
+    input_tokens: int = Field(..., description="Input tokens the selection request consumed.")
+    output_tokens: int = Field(..., description="Output tokens the selection request consumed.")
 
 
 def _user_label(user: Member | User) -> str:

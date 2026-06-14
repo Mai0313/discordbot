@@ -42,11 +42,11 @@ class _BoardFonts(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    title: Font = Field(description="Board title font.")
-    header: Font = Field(description="Table header font.")
-    rank: Font = Field(description="Ranking number font.")
-    body: Font = Field(description="Row text font.")
-    small: Font = Field(description="Subtitle and badge font.")
+    title: Font = Field(..., description="Board title font.")
+    header: Font = Field(..., description="Table header font.")
+    rank: Font = Field(..., description="Ranking number font.")
+    body: Font = Field(..., description="Row text font.")
+    small: Font = Field(..., description="Subtitle and badge font.")
 
 
 class _RankingBoardSpec(BaseModel):
@@ -54,12 +54,18 @@ class _RankingBoardSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    title: str = Field(description="Board title text.")
-    subtitle: str = Field(description="Subtitle line under the title.")
-    amount_header: str = Field(description="Amount column header text.")
-    amount_label: str = Field(description="Label prefixed to each amount cell, empty for none.")
-    accent: tuple[int, int, int] = Field(description="Accent RGB color for headers and medals.")
-    rows: tuple[tuple[str, int], ...] = Field(description="Ranked (name, amount) rows to render.")
+    title: str = Field(..., description="Board title text.")
+    subtitle: str = Field(..., description="Subtitle line under the title.")
+    amount_header: str = Field(..., description="Amount column header text.")
+    amount_label: str = Field(
+        ..., description="Label prefixed to each amount cell, empty for none."
+    )
+    accent: tuple[int, int, int] = Field(
+        ..., description="Accent RGB color for headers and medals."
+    )
+    rows: tuple[tuple[str, int], ...] = Field(
+        ..., description="Ranked (name, amount) rows to render."
+    )
 
 
 class _RankingRow(BaseModel):
@@ -67,9 +73,9 @@ class _RankingRow(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    position: int = Field(description="One-based ranking position.")
-    name: str = Field(description="Player display name.")
-    amount: int = Field(description="Amount shown in the row.")
+    position: int = Field(..., description="One-based ranking position.")
+    name: str = Field(..., description="Player display name.")
+    amount: int = Field(..., description="Amount shown in the row.")
 
 
 _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}

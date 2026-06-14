@@ -44,7 +44,7 @@ class ResponseStreamer(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     message: SkipValidation[Message] = Field(
-        description="The Discord message being answered and replied to."
+        ..., description="The Discord message being answered and replied to."
     )
     stored_content: str = Field(default="", description="The accumulated reply text.")
     reasoning_content: str = Field(

@@ -59,8 +59,10 @@ class TransferParticipant(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mention: str = Field(description="Discord mention string (<@user_id>) shown in the embed.")
-    display_name: str = Field(description="Display name shown next to the mention.")
+    mention: str = Field(
+        ..., description="Discord mention string (<@user_id>) shown in the embed."
+    )
+    display_name: str = Field(..., description="Display name shown next to the mention.")
 
 
 class LoanParty(BaseModel):
@@ -68,7 +70,9 @@ class LoanParty(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mention: str = Field(description="Discord mention string (<@user_id>) shown in the embed.")
+    mention: str = Field(
+        ..., description="Discord mention string (<@user_id>) shown in the embed."
+    )
     display_name: str = Field(default="", description="Display name shown next to the mention.")
     avatar_url: str = Field(default="", description="Avatar URL for the embed thumbnail.")
 

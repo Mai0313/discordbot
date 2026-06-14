@@ -45,7 +45,8 @@ class LoopLocalSemaphore(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     capacity_provider: SkipValidation[Callable[[], int]] = Field(
-        description="Returns the concurrency cap, read fresh each time the semaphore is rebuilt."
+        ...,
+        description="Returns the concurrency cap, read fresh each time the semaphore is rebuilt.",
     )
     _semaphore: asyncio.Semaphore | None = PrivateAttr(default=None)
     _loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)

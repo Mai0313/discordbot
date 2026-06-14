@@ -76,10 +76,10 @@ class AccountSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    name: str = Field(description="Last-seen Discord account name.")
-    balance: int = Field(description="Current point balance.")
-    total_earned: int = Field(description="Lifetime gross earned amount.")
-    total_spent: int = Field(description="Lifetime gross spent amount.")
+    name: str = Field(..., description="Last-seen Discord account name.")
+    balance: int = Field(..., description="Current point balance.")
+    total_earned: int = Field(..., description="Lifetime gross earned amount.")
+    total_spent: int = Field(..., description="Lifetime gross spent amount.")
 
 
 class AdminAccount(BaseModel):
@@ -87,8 +87,8 @@ class AdminAccount(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the economy admin account.")
-    name: str = Field(description="Last-seen Discord account name.")
+    user_id: int = Field(..., description="Discord user ID of the economy admin account.")
+    name: str = Field(..., description="Last-seen Discord account name.")
 
 
 class LeaderboardEntry(BaseModel):
@@ -96,9 +96,9 @@ class LeaderboardEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the leaderboard account.")
-    name: str = Field(description="Last-seen Discord account name.")
-    balance: int = Field(description="Current point balance used for ranking.")
+    user_id: int = Field(..., description="Discord user ID of the leaderboard account.")
+    name: str = Field(..., description="Last-seen Discord account name.")
+    balance: int = Field(..., description="Current point balance used for ranking.")
     avatar_url: str = Field(
         default="", description="Last-seen Discord avatar URL for the account."
     )
@@ -109,9 +109,9 @@ class LossLeaderboardEntry(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the leaderboard account.")
-    name: str = Field(description="Last-seen Discord account name.")
-    loss_amount: int = Field(description="Gross current-day casino loss used for ranking.")
+    user_id: int = Field(..., description="Discord user ID of the leaderboard account.")
+    name: str = Field(..., description="Last-seen Discord account name.")
+    loss_amount: int = Field(..., description="Gross current-day casino loss used for ranking.")
     avatar_url: str = Field(
         default="", description="Last-seen Discord avatar URL for the account."
     )
@@ -129,13 +129,13 @@ class CreditResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(description="User balance after the credit.")
-    credited_amount: int = Field(description="Amount that landed in balance.")
+    new_balance: int = Field(..., description="User balance after the credit.")
+    credited_amount: int = Field(..., description="Amount that landed in balance.")
     principal_repaid: int = Field(
-        description="Always zero; long-term loans are repaid explicitly."
+        ..., description="Always zero; long-term loans are repaid explicitly."
     )
     remaining_debt: int = Field(
-        description="Always zero; use portfolio / loan views for active debt."
+        ..., description="Always zero; use portfolio / loan views for active debt."
     )
 
 
@@ -149,8 +149,8 @@ class BalanceAdjustmentResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(description="User balance after the adjustment.")
-    applied_delta: int = Field(description="Signed balance delta that was actually applied.")
+    new_balance: int = Field(..., description="User balance after the adjustment.")
+    applied_delta: int = Field(..., description="Signed balance delta that was actually applied.")
 
 
 class WalletDeltaLeg(BaseModel):
@@ -158,7 +158,7 @@ class WalletDeltaLeg(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    delta: int = Field(description="Signed wallet delta to apply for this leg.")
+    delta: int = Field(..., description="Signed wallet delta to apply for this leg.")
     reason: str = Field(default="", description="Optional reason describing this wallet delta.")
 
 
@@ -167,9 +167,9 @@ class OrderedWalletDeltaResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(description="User balance after all ordered deltas are applied.")
+    new_balance: int = Field(..., description="User balance after all ordered deltas are applied.")
     applied_deltas: tuple[int, ...] = Field(
-        description="Signed deltas that were actually applied, in order."
+        ..., description="Signed deltas that were actually applied, in order."
     )
 
 
@@ -191,12 +191,12 @@ class JackpotSettlementRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    player_id: int = Field(description="Discord user ID for the player account.")
+    player_id: int = Field(..., description="Discord user ID for the player account.")
     player_account_name: str = Field(
-        description="Last-seen account name stored on the player row."
+        ..., description="Last-seen account name stored on the player row."
     )
     player_delta: int = Field(
-        description="Signed change for the player; the pool receives the inverse."
+        ..., description="Signed change for the player; the pool receives the inverse."
     )
     player_avatar_url: str = Field(
         default="", description="Last-seen Discord avatar URL for the player."
@@ -230,13 +230,14 @@ class JackpotSettlementBatchResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     player_balances: dict[int, int] = Field(
-        description="Latest post-settlement balance for each touched player."
+        ..., description="Latest post-settlement balance for each touched player."
     )
     applied_player_deltas: dict[int, int] = Field(
-        description="Signed player deltas that were actually applied; losses may be smaller than requested when the balance clamps at zero."
+        ...,
+        description="Signed player deltas that were actually applied; losses may be smaller than requested when the balance clamps at zero.",
     )
     jackpot_balance: int = Field(
-        description="Pool balance after the final settlement and any reseed."
+        ..., description="Pool balance after the final settlement and any reseed."
     )
     jackpot_generation: int = Field(
         default=0, description="Pool generation after the final settlement and any reseed."
@@ -256,7 +257,7 @@ class JackpotSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    balance: int = Field(description="Current jackpot pool balance.")
+    balance: int = Field(..., description="Current jackpot pool balance.")
     generation: int = Field(default=0, description="Current jackpot pool generation counter.")
 
 
@@ -265,12 +266,16 @@ class JackpotSettlementResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    player_balance: int = Field(description="Player balance after this settlement.")
-    jackpot_balance: int = Field(description="Pool balance after this settlement and any reseed.")
+    player_balance: int = Field(..., description="Player balance after this settlement.")
+    jackpot_balance: int = Field(
+        ..., description="Pool balance after this settlement and any reseed."
+    )
     jackpot_generation: int = Field(
         default=0, description="Pool generation after this settlement and any reseed."
     )
-    applied_player_delta: int = Field(description="Signed player delta that was actually applied.")
+    applied_player_delta: int = Field(
+        ..., description="Signed player delta that was actually applied."
+    )
     jackpot_depleted: bool = Field(
         default=False,
         description="True when a seeded pool was drained and replenished during this settlement.",
@@ -286,10 +291,14 @@ class CasinoLedgerSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    balance: int = Field(description="Current casino system ledger balance.")
-    total_earned: int = Field(description="Lifetime gross amount earned by the casino ledger.")
-    total_spent: int = Field(description="Lifetime gross amount paid out by the casino ledger.")
-    updated_at: datetime = Field(description="Timestamp of the last casino ledger update.")
+    balance: int = Field(..., description="Current casino system ledger balance.")
+    total_earned: int = Field(
+        ..., description="Lifetime gross amount earned by the casino ledger."
+    )
+    total_spent: int = Field(
+        ..., description="Lifetime gross amount paid out by the casino ledger."
+    )
+    updated_at: datetime = Field(..., description="Timestamp of the last casino ledger update.")
 
 
 class CasinoDailyStats(BaseModel):
@@ -301,9 +310,9 @@ class CasinoDailyStats(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    daily_loss: int = Field(description="Gross current-day casino loss total.")
-    daily_win: int = Field(description="Gross current-day casino win total.")
-    daily_net: int = Field(description="Net current-day casino result (win minus loss).")
+    daily_loss: int = Field(..., description="Gross current-day casino loss total.")
+    daily_win: int = Field(..., description="Gross current-day casino win total.")
+    daily_net: int = Field(..., description="Net current-day casino result (win minus loss).")
 
 
 class RoundSettlementResult(BaseModel):
@@ -311,9 +320,9 @@ class RoundSettlementResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    player_balance: int = Field(description="Player balance after the round settlement.")
+    player_balance: int = Field(..., description="Player balance after the round settlement.")
     casino_balance: int = Field(
-        description="Casino system ledger balance after the round settlement."
+        ..., description="Casino system ledger balance after the round settlement."
     )
 
 
@@ -329,13 +338,13 @@ class TransferResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    sender_balance: int = Field(description="Sender balance after the debit.")
-    receiver_balance: int = Field(description="Receiver balance after the credit.")
+    sender_balance: int = Field(..., description="Sender balance after the debit.")
+    receiver_balance: int = Field(..., description="Receiver balance after the credit.")
     received_amount: int = Field(
-        description="Net amount credited to the receiver after the tax burn."
+        ..., description="Net amount credited to the receiver after the tax burn."
     )
     tax_amount: int = Field(
-        description="Amount burned by the transfer tax (removed from circulation)."
+        ..., description="Amount burned by the transfer tax (removed from circulation)."
     )
 
 
@@ -353,15 +362,18 @@ class CheckinResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(description="User balance after the payout.")
+    new_balance: int = Field(..., description="User balance after the payout.")
     amount: int = Field(
-        description="Total amount credited for this check-in (base * streak bonus * VIP multiplier)."
+        ...,
+        description="Total amount credited for this check-in (base * streak bonus * VIP multiplier).",
     )
     streak: int = Field(
-        description="Streak counter persisted on the account after this check-in (1..CHECKIN_STREAK_CYCLE)."
+        ...,
+        description="Streak counter persisted on the account after this check-in (1..CHECKIN_STREAK_CYCLE).",
     )
     is_vip: bool = Field(
-        description="VIP status of the account at check-in time, surfaced so the embed can label the bonus correctly."
+        ...,
+        description="VIP status of the account at check-in time, surfaced so the embed can label the bonus correctly.",
     )
 
 
@@ -375,8 +387,8 @@ class VipPurchaseResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(description="User balance after the 10M debit.")
-    cost: int = Field(description="Points deducted for the purchase.")
+    new_balance: int = Field(..., description="User balance after the 10M debit.")
+    cost: int = Field(..., description="Points deducted for the purchase.")
 
 
 class LoanProposalView(BaseModel):
@@ -384,20 +396,24 @@ class LoanProposalView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    proposal_id: int = Field(description="Row ID of the loan proposal.")
-    kind: LoanProposalKind = Field(description="Pending loan proposal flow type.")
-    status: LoanProposalStatus = Field(description="Current lifecycle state of the proposal.")
-    lender_type: LoanLenderType = Field(description="Kind of lender backing the proposed loan.")
-    borrower_id: int = Field(description="Discord user ID of the borrower.")
-    borrower_name: str = Field(description="Last-seen account name of the borrower.")
-    lender_id: int | None = Field(
-        description="Discord user ID of the lender, or None for central-bank loans."
+    proposal_id: int = Field(..., description="Row ID of the loan proposal.")
+    kind: LoanProposalKind = Field(..., description="Pending loan proposal flow type.")
+    status: LoanProposalStatus = Field(..., description="Current lifecycle state of the proposal.")
+    lender_type: LoanLenderType = Field(
+        ..., description="Kind of lender backing the proposed loan."
     )
-    lender_name: str = Field(description="Display name of the lender.")
-    amount: int = Field(description="Proposed loan principal amount.")
-    monthly_rate_bps: int = Field(description="Monthly simple-interest rate in basis points.")
-    escrow_amount: int = Field(description="Amount held in escrow while the proposal is pending.")
-    created_at: datetime = Field(description="Timestamp the proposal was created.")
+    borrower_id: int = Field(..., description="Discord user ID of the borrower.")
+    borrower_name: str = Field(..., description="Last-seen account name of the borrower.")
+    lender_id: int | None = Field(
+        ..., description="Discord user ID of the lender, or None for central-bank loans."
+    )
+    lender_name: str = Field(..., description="Display name of the lender.")
+    amount: int = Field(..., description="Proposed loan principal amount.")
+    monthly_rate_bps: int = Field(..., description="Monthly simple-interest rate in basis points.")
+    escrow_amount: int = Field(
+        ..., description="Amount held in escrow while the proposal is pending."
+    )
+    created_at: datetime = Field(..., description="Timestamp the proposal was created.")
 
 
 class LoanContractView(BaseModel):
@@ -405,22 +421,22 @@ class LoanContractView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    contract_id: int = Field(description="Row ID of the loan contract.")
-    lender_type: LoanLenderType = Field(description="Kind of lender backing the contract.")
+    contract_id: int = Field(..., description="Row ID of the loan contract.")
+    lender_type: LoanLenderType = Field(..., description="Kind of lender backing the contract.")
     lender_id: int | None = Field(
-        description="Discord user ID of the lender, or None for central-bank loans."
+        ..., description="Discord user ID of the lender, or None for central-bank loans."
     )
-    lender_name: str = Field(description="Display name of the lender.")
-    borrower_id: int = Field(description="Discord user ID of the borrower.")
-    borrower_name: str = Field(description="Last-seen account name of the borrower.")
-    principal_remaining: int = Field(description="Outstanding loan principal still owed.")
-    interest_due: int = Field(description="Accrued interest currently due on the contract.")
-    monthly_rate_bps: int = Field(description="Monthly simple-interest rate in basis points.")
-    opened_at: datetime = Field(description="Timestamp the contract was opened.")
+    lender_name: str = Field(..., description="Display name of the lender.")
+    borrower_id: int = Field(..., description="Discord user ID of the borrower.")
+    borrower_name: str = Field(..., description="Last-seen account name of the borrower.")
+    principal_remaining: int = Field(..., description="Outstanding loan principal still owed.")
+    interest_due: int = Field(..., description="Accrued interest currently due on the contract.")
+    monthly_rate_bps: int = Field(..., description="Monthly simple-interest rate in basis points.")
+    opened_at: datetime = Field(..., description="Timestamp the contract was opened.")
     last_interest_accrued_at: datetime = Field(
-        description="Timestamp through which interest has been accrued."
+        ..., description="Timestamp through which interest has been accrued."
     )
-    status: LoanContractStatus = Field(description="Current lifecycle state of the contract.")
+    status: LoanContractStatus = Field(..., description="Current lifecycle state of the contract.")
 
 
 class LoanProposalAcceptResult(BaseModel):
@@ -429,9 +445,9 @@ class LoanProposalAcceptResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     contract: LoanContractView = Field(
-        description="The loan contract created from the accepted proposal."
+        ..., description="The loan contract created from the accepted proposal."
     )
-    borrower_balance: int = Field(description="Borrower balance after acceptance.")
+    borrower_balance: int = Field(..., description="Borrower balance after acceptance.")
     lender_balance: int | None = Field(
         default=None,
         description="Lender balance after acceptance, or None for central-bank loans.",
@@ -447,18 +463,20 @@ class LoanPaymentResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    paid_amount: int = Field(description="Total amount paid in this repayment or collection.")
-    interest_paid: int = Field(description="Portion of the payment applied to interest.")
-    principal_paid: int = Field(description="Portion of the payment applied to principal.")
-    borrower_balance: int = Field(description="Borrower balance after the payment.")
+    paid_amount: int = Field(..., description="Total amount paid in this repayment or collection.")
+    interest_paid: int = Field(..., description="Portion of the payment applied to interest.")
+    principal_paid: int = Field(..., description="Portion of the payment applied to principal.")
+    borrower_balance: int = Field(..., description="Borrower balance after the payment.")
     lender_balance: int | None = Field(
         default=None,
         description="Lender balance after the payment, or None for central-bank loans.",
     )
     remaining_principal: int = Field(
-        description="Outstanding principal still owed after the payment."
+        ..., description="Outstanding principal still owed after the payment."
     )
-    remaining_interest: int = Field(description="Accrued interest still due after the payment.")
+    remaining_interest: int = Field(
+        ..., description="Accrued interest still due after the payment."
+    )
     closed_contract_ids: tuple[int, ...] = Field(
         default=(), description="Contract IDs closed as a result of this payment."
     )
@@ -470,12 +488,12 @@ class CentralBankStatus(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     total_positive_user_balance: int = Field(
-        description="Sum of all positive user balances backing central bank credit."
+        ..., description="Sum of all positive user balances backing central bank credit."
     )
     outstanding_principal: int = Field(
-        description="Total central bank loan principal currently outstanding."
+        ..., description="Total central bank loan principal currently outstanding."
     )
-    available_credit: int = Field(description="Remaining central bank lending capacity.")
+    available_credit: int = Field(..., description="Remaining central bank lending capacity.")
 
 
 class PortfolioView(BaseModel):
@@ -483,12 +501,12 @@ class PortfolioView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the account.")
-    name: str = Field(description="Last-seen Discord account name.")
-    balance: int = Field(description="Current spendable wallet balance.")
-    debt_principal: int = Field(description="Total outstanding loan principal.")
-    debt_interest: int = Field(description="Total accrued loan interest due.")
-    net_worth: int = Field(description="Balance minus total debt principal and interest.")
+    user_id: int = Field(..., description="Discord user ID of the account.")
+    name: str = Field(..., description="Last-seen Discord account name.")
+    balance: int = Field(..., description="Current spendable wallet balance.")
+    debt_principal: int = Field(..., description="Total outstanding loan principal.")
+    debt_interest: int = Field(..., description="Total accrued loan interest due.")
+    net_worth: int = Field(..., description="Balance minus total debt principal and interest.")
 
 
 __all__ = [

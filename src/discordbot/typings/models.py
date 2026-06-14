@@ -16,6 +16,7 @@ class ModelSettings(BaseModel):
     """
 
     name: str = Field(
+        ...,
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-flash-latest", "gemini-3-pro-image-preview"],
     )
@@ -224,7 +225,7 @@ class RouteDecision(BaseModel):
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
-        description="Reply mode selected for the incoming Discord message."
+        ..., description="Reply mode selected for the incoming Discord message."
     )
     effort: Literal["low", "medium", "high"] = Field(
         default="high",

@@ -96,22 +96,22 @@ class ShoeSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    total_cards: int = Field(description="Total cards left in the true remaining shoe.")
+    total_cards: int = Field(..., description="Total cards left in the true remaining shoe.")
     rank_counts: dict[str, int] = Field(
-        description="Remaining count per card rank in stable Blackjack rank order."
+        ..., description="Remaining count per card rank in stable Blackjack rank order."
     )
-    ace_count: int = Field(description="Number of aces left in the remaining shoe.")
+    ace_count: int = Field(..., description="Number of aces left in the remaining shoe.")
     ten_value_count: int = Field(
-        description="Number of ten-value cards (10/J/Q/K) left in the remaining shoe."
+        ..., description="Number of ten-value cards (10/J/Q/K) left in the remaining shoe."
     )
     low_card_count: int = Field(
-        description="Number of low cards (2-6) left in the remaining shoe."
+        ..., description="Number of low cards (2-6) left in the remaining shoe."
     )
     neutral_card_count: int = Field(
-        description="Number of neutral cards (7-9) left in the remaining shoe."
+        ..., description="Number of neutral cards (7-9) left in the remaining shoe."
     )
     high_card_count: int = Field(
-        description="Number of high cards (aces plus ten-value) left in the remaining shoe."
+        ..., description="Number of high cards (aces plus ten-value) left in the remaining shoe."
     )
 
 
@@ -126,9 +126,11 @@ class DealerKnowledge(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     up_card: str = Field(
-        description="The dealer's face-up card, exactly what a seated player sees."
+        ..., description="The dealer's face-up card, exactly what a seated player sees."
     )
-    up_value: int = Field(description="Blackjack value of the dealer up-card (ace counts as 11).")
+    up_value: int = Field(
+        ..., description="Blackjack value of the dealer up-card (ace counts as 11)."
+    )
 
 
 class DrawOdds(BaseModel):
@@ -137,20 +139,22 @@ class DrawOdds(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     total_draws: int = Field(
-        description="Number of possible next cards (size of the remaining shoe)."
+        ..., description="Number of possible next cards (size of the remaining shoe)."
     )
-    bust_probability: float = Field(description="Probability the next single card busts the hand.")
+    bust_probability: float = Field(
+        ..., description="Probability the next single card busts the hand."
+    )
     twenty_one_probability: float = Field(
-        description="Probability the next single card makes the hand total 21."
+        ..., description="Probability the next single card makes the hand total 21."
     )
     seventeen_to_twenty_one_probability: float = Field(
-        description="Probability the next single card leaves a total between 17 and 21."
+        ..., description="Probability the next single card leaves a total between 17 and 21."
     )
     five_card_non_bust_probability: float = Field(
-        description="Probability the next card reaches a five-plus-card hand without busting."
+        ..., description="Probability the next card reaches a five-plus-card hand without busting."
     )
     five_card_twenty_one_probability: float = Field(
-        description="Probability the next card reaches a five-plus-card hand totaling 21."
+        ..., description="Probability the next card reaches a five-plus-card hand totaling 21."
     )
 
 
@@ -160,13 +164,13 @@ class ActionAnalysis(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     allowed_actions: tuple[BotAction, ...] = Field(
-        description="Actions the bot is legally allowed to take this turn."
+        ..., description="Actions the bot is legally allowed to take this turn."
     )
     basic_strategy_action: BotAction = Field(
-        description="The deterministic hint action the bot would play this turn."
+        ..., description="The deterministic hint action the bot would play this turn."
     )
     basic_strategy_reason: str = Field(
-        description="Short English explanation of the basic-strategy hint action."
+        ..., description="Short English explanation of the basic-strategy hint action."
     )
     ev_analysis: ActionEvAnalysis | None = Field(
         default=None,
@@ -199,12 +203,17 @@ class BotPlayerActionContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     information_boundary: str = Field(
-        description="Text describing exactly which table information the bot is allowed to see."
+        ...,
+        description="Text describing exactly which table information the bot is allowed to see.",
     )
-    shoe_summary: ShoeSummary = Field(description="Rank-level summary of the true remaining shoe.")
-    dealer: DealerKnowledge = Field(description="Up-card-only dealer state visible to the bot.")
+    shoe_summary: ShoeSummary = Field(
+        ..., description="Rank-level summary of the true remaining shoe."
+    )
+    dealer: DealerKnowledge = Field(
+        ..., description="Up-card-only dealer state visible to the bot."
+    )
     action_analysis: ActionAnalysis = Field(
-        description="Computed reference data for the bot's action decision."
+        ..., description="Computed reference data for the bot's action decision."
     )
 
 
@@ -219,22 +228,33 @@ class BotPlayerInsuranceContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     information_boundary: str = Field(
-        description="Text describing exactly which table information the bot is allowed to see."
+        ...,
+        description="Text describing exactly which table information the bot is allowed to see.",
     )
-    shoe_summary: ShoeSummary = Field(description="Rank-level summary of the true remaining shoe.")
-    dealer: DealerKnowledge = Field(description="Up-card-only dealer state visible to the bot.")
-    insurance_cost: int = Field(description="Cost in currency to take the insurance side bet.")
-    insurance_payout: int = Field(description="Payout in currency if the insurance bet wins.")
+    shoe_summary: ShoeSummary = Field(
+        ..., description="Rank-level summary of the true remaining shoe."
+    )
+    dealer: DealerKnowledge = Field(
+        ..., description="Up-card-only dealer state visible to the bot."
+    )
+    insurance_cost: int = Field(
+        ..., description="Cost in currency to take the insurance side bet."
+    )
+    insurance_payout: int = Field(..., description="Payout in currency if the insurance bet wins.")
     ten_value_probability: float = Field(
-        description="Ten-value card fraction of the remaining shoe used to price insurance."
+        ..., description="Ten-value card fraction of the remaining shoe used to price insurance."
     )
     insurance_expected_value: float = Field(
-        description="Expected value in currency of taking insurance at the current shoe density."
+        ...,
+        description="Expected value in currency of taking insurance at the current shoe density.",
     )
     insurance_recommendation: str = Field(
-        description="Deterministic recommendation, 'take' or 'decline', from the shoe density."
+        ...,
+        description="Deterministic recommendation, 'take' or 'decline', from the shoe density.",
     )
-    summary: str = Field(description="Human-readable summary of the insurance pricing analysis.")
+    summary: str = Field(
+        ..., description="Human-readable summary of the insurance pricing analysis."
+    )
 
 
 _HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
@@ -887,30 +907,32 @@ class BotActionReasonRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    action: BotAction = Field(description="The action already chosen by the EV engine to narrate.")
-    hand_repr: str = Field(description="Text representation of the bot's active hand.")
-    hand_total: int = Field(description="Best total of the bot's active hand.")
+    action: BotAction = Field(
+        ..., description="The action already chosen by the EV engine to narrate."
+    )
+    hand_repr: str = Field(..., description="Text representation of the bot's active hand.")
+    hand_total: int = Field(..., description="Best total of the bot's active hand.")
     dealer_up: Card | None = Field(
-        description="The dealer's face-up card, or None when not yet dealt."
+        ..., description="The dealer's face-up card, or None when not yet dealt."
     )
     allowed_actions: tuple[BotAction, ...] = Field(
-        description="Actions the bot was legally allowed to take this turn."
+        ..., description="Actions the bot was legally allowed to take this turn."
     )
-    bet: int = Field(description="Current wager on the bot's active hand.")
+    bet: int = Field(..., description="Current wager on the bot's active hand.")
     balance_remaining: int = Field(
-        description="Bot balance still uncommitted after current wagers."
+        ..., description="Bot balance still uncommitted after current wagers."
     )
     finance: BotFinancialContext = Field(
-        description="The bot's lifetime and daily financial state."
+        ..., description="The bot's lifetime and daily financial state."
     )
     other_players: list[OtherPlayerView] = Field(
-        description="Visible table state of the other seated players."
+        ..., description="Visible table state of the other seated players."
     )
     own_other_hands: list[str] = Field(
-        description="Text representations of the bot's other split hands, if any."
+        ..., description="Text representations of the bot's other split hands, if any."
     )
     action_context: BotPlayerActionContext | None = Field(
-        description="Full computed action context, or None when unavailable."
+        ..., description="Full computed action context, or None when unavailable."
     )
 
 
@@ -920,21 +942,21 @@ class BotInsuranceReasonRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     take_insurance: bool = Field(
-        description="The insurance decision already made, True to take it, to narrate."
+        ..., description="The insurance decision already made, True to take it, to narrate."
     )
     dealer_up: Card | None = Field(
-        description="The dealer's face-up card, or None when not yet dealt."
+        ..., description="The dealer's face-up card, or None when not yet dealt."
     )
-    hand_repr: str = Field(description="Text representation of the bot's opening hand.")
-    bet: int = Field(description="The bot's main wager this round.")
+    hand_repr: str = Field(..., description="Text representation of the bot's opening hand.")
+    bet: int = Field(..., description="The bot's main wager this round.")
     finance: BotFinancialContext = Field(
-        description="The bot's lifetime and daily financial state."
+        ..., description="The bot's lifetime and daily financial state."
     )
     other_players: list[OtherPlayerView] = Field(
-        description="Visible table state of the other seated players."
+        ..., description="Visible table state of the other seated players."
     )
     insurance_context: BotPlayerInsuranceContext | None = Field(
-        description="Full computed insurance context, or None when unavailable."
+        ..., description="Full computed insurance context, or None when unavailable."
     )
 
 
@@ -948,9 +970,9 @@ class BotPlayerAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: AsyncOpenAI = Field(description="The shared AsyncOpenAI client.")
+    client: AsyncOpenAI = Field(..., description="The shared AsyncOpenAI client.")
     model: ModelSettings = Field(
-        description="Slow-model settings for strategic Blackjack reasoning."
+        ..., description="Slow-model settings for strategic Blackjack reasoning."
     )
 
     async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:

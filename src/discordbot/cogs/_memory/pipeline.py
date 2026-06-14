@@ -68,25 +68,29 @@ class _PendingMemoryUpdate(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    subject: str = Field(description="The phase-1 extraction directive naming the memory target.")
-    message_list: SkipValidation[list[EasyInputMessageParam]] = Field(
-        description="Reply-pipeline input messages captured for the skipped turn."
+    subject: str = Field(
+        ..., description="The phase-1 extraction directive naming the memory target."
     )
-    full_reply: str = Field(description="The streamed reply text for the skipped turn.")
+    message_list: SkipValidation[list[EasyInputMessageParam]] = Field(
+        ..., description="Reply-pipeline input messages captured for the skipped turn."
+    )
+    full_reply: str = Field(..., description="The streamed reply text for the skipped turn.")
     extractor: SkipValidation[MemoryExtractorAI] = Field(
-        description="The extraction service to run the replayed update with."
+        ..., description="The extraction service to run the replayed update with."
     )
     identity: str = Field(
+        ...,
         description=(
             "Single-line target identity stamped into the main memory file as "
             "human-inspection metadata."
-        )
+        ),
     )
     captured_at: float = Field(
+        ...,
         description=(
             "`time.monotonic()` when the turn was captured, so a clear that lands "
             "before the replay can abort it via `cleared_since`."
-        )
+        ),
     )
 
 

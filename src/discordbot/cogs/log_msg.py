@@ -143,7 +143,7 @@ class MessageLogger(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    message: Message = Field(description="The Discord message being logged.")
+    message: Message = Field(..., description="The Discord message being logged.")
 
     @staticmethod
     def sanitize_text(s: str | None) -> str:

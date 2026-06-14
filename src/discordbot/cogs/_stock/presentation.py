@@ -66,11 +66,11 @@ class _MarketFonts(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    title: Font = Field(description="Board title font.")
-    header: Font = Field(description="Table header font.")
-    symbol: Font = Field(description="Stock symbol font.")
-    body: Font = Field(description="Row text font.")
-    small: Font = Field(description="Footer and badge font.")
+    title: Font = Field(..., description="Board title font.")
+    header: Font = Field(..., description="Table header font.")
+    symbol: Font = Field(..., description="Stock symbol font.")
+    body: Font = Field(..., description="Row text font.")
+    small: Font = Field(..., description="Footer and badge font.")
 
 
 class _MarketBoardQuote(BaseModel):
@@ -78,13 +78,13 @@ class _MarketBoardQuote(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Stock ticker symbol.")
-    name: str = Field(description="Company display name.")
-    category: str = Field(description="Company category label.")
-    price_cents: int = Field(description="Quoted price in cents.")
-    total_shares: int = Field(description="Total issued shares for market cap.")
-    change_bps: int = Field(description="Price change in basis points.")
-    pressure_bps: int = Field(description="Order-flow pressure in basis points.")
+    symbol: str = Field(..., description="Stock ticker symbol.")
+    name: str = Field(..., description="Company display name.")
+    category: str = Field(..., description="Company category label.")
+    price_cents: int = Field(..., description="Quoted price in cents.")
+    total_shares: int = Field(..., description="Total issued shares for market cap.")
+    change_bps: int = Field(..., description="Price change in basis points.")
+    pressure_bps: int = Field(..., description="Order-flow pressure in basis points.")
 
 
 class _MarketBoardSpec(BaseModel):
@@ -92,9 +92,9 @@ class _MarketBoardSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    quotes: tuple[_MarketBoardQuote, ...] = Field(description="Quotes for the rendered page.")
-    page_index: int = Field(description="Zero-based page index.")
-    page_size: int = Field(description="Rows per page.")
+    quotes: tuple[_MarketBoardQuote, ...] = Field(..., description="Quotes for the rendered page.")
+    page_index: int = Field(..., description="Zero-based page index.")
+    page_size: int = Field(..., description="Rows per page.")
 
 
 def market_board_filename(page_index: int) -> str:

@@ -26,7 +26,7 @@ class RegionMaps(_Base):
         maps: Map names in the region.
     """
 
-    region: str = Field(description="Region name.")
+    region: str = Field(..., description="Region name.")
     maps: list[str] = Field(default_factory=list, description="Map names in the region.")
 
 
@@ -38,7 +38,7 @@ class AcquisitionMonster(_Base):
         level: Monster level.
     """
 
-    name: str = Field(description="Monster name.")
+    name: str = Field(..., description="Monster name.")
     level: int = Field(default=0, description="Monster level.")
 
 
@@ -50,7 +50,7 @@ class AcquisitionNPC(_Base):
         price: Item price from the NPC.
     """
 
-    name: str = Field(description="NPC name.")
+    name: str = Field(..., description="NPC name.")
     price: int = Field(default=0, description="Item price from the NPC.")
 
 
@@ -62,7 +62,7 @@ class AcquisitionQuest(_Base):
         level: Quest level.
     """
 
-    name: str = Field(description="Quest name.")
+    name: str = Field(..., description="Quest name.")
     level: int = Field(default=0, description="Quest level.")
 
 
@@ -157,7 +157,7 @@ class DropItem(_Base):
         jobs: Jobs associated with the dropped item.
     """
 
-    name: str = Field(description="Dropped item name.")
+    name: str = Field(..., description="Dropped item name.")
     level: int = Field(default=0, description="Dropped item level.")
     type: str = Field(default="", description="Dropped item type.")
     jobs: list[str] = Field(
@@ -216,7 +216,7 @@ class MonsterQuest(_Base):
         level: Quest level.
     """
 
-    name: str = Field(description="Quest name.")
+    name: str = Field(..., description="Quest name.")
     level: int = Field(default=0, description="Quest level.")
 
 
@@ -238,7 +238,7 @@ class Monster(_Base):
         quests: Quests associated with the monster.
     """
 
-    name: str = Field(description="Monster name.")
+    name: str = Field(..., description="Monster name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese monster name.")
     level: int = Field(default=0, description="Monster level.")
     hp: int = Field(default=0, description="Monster HP.")
@@ -411,7 +411,7 @@ class Equipment(_Base):
     """
 
     type: str = Field(default="", description="Equipment type.")
-    name: str = Field(description="Equipment name.")
+    name: str = Field(..., description="Equipment name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese equipment name.")
     level: int = Field(default=0, description="Equipment level.")
     equipment_restriction: EquipmentRestriction = Field(
@@ -466,7 +466,7 @@ class Scroll(_Base):
         acquisition: Acquisition data for the scroll.
     """
 
-    name: str = Field(description="Scroll name.")
+    name: str = Field(..., description="Scroll name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese scroll name.")
     stats: dict[str, int] = Field(
         default_factory=dict, description="Stat bonuses keyed by stat name."
@@ -520,7 +520,7 @@ class Useable(_Base):
         jump: Jump stat data.
     """
 
-    name: str = Field(description="Useable item name.")
+    name: str = Field(..., description="Useable item name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese useable item name.")
     type: str = Field(default="", description="Useable item type.")
     description: str | dict[str, str] = Field(
@@ -563,7 +563,7 @@ class NPCItem(_Base):
         price: Sold item price.
     """
 
-    name: str = Field(description="Sold item name.")
+    name: str = Field(..., description="Sold item name.")
     price: int = Field(default=0, description="Sold item price.")
 
 
@@ -583,7 +583,7 @@ class NPC(_Base):
         recipes: Crafting recipes associated with the NPC.
     """
 
-    name: str = Field(description="NPC name.")
+    name: str = Field(..., description="NPC name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese NPC name.")
     type: str = Field(default="", description="NPC type.")
     region_to_maps_list: list[RegionMaps] = Field(
@@ -642,7 +642,7 @@ class HuntTarget(_Base):
         quantity: Required hunt quantity.
     """
 
-    name: str = Field(description="Hunt target name.")
+    name: str = Field(..., description="Hunt target name.")
     quantity: int = Field(default=0, description="Required hunt quantity.")
 
 
@@ -718,7 +718,7 @@ class Quest(_Base):
         prerequisites: Prerequisite quest names.
     """
 
-    name: str = Field(description="Quest name.")
+    name: str = Field(..., description="Quest name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese quest name.")
     frequency: str = Field(default="", description="Quest frequency label.")
     lv_lower: int = Field(default=0, alias="lvLower", description="Lower level bound.")
@@ -749,7 +749,7 @@ class MapNPC(_Base):
         sub_map: Sub-map name.
     """
 
-    name: str = Field(description="NPC name.")
+    name: str = Field(..., description="NPC name.")
     type: str = Field(default="", description="NPC type.")
     sub_map: str = Field(default="", alias="subMap", description="Sub-map name.")
 
@@ -762,7 +762,7 @@ class MapMonster(_Base):
         level: Monster level.
     """
 
-    name: str = Field(description="Monster name.")
+    name: str = Field(..., description="Monster name.")
     level: int = Field(default=0, description="Monster level.")
 
 
@@ -784,7 +784,7 @@ class MapEntry(_Base):
     """
 
     region: str = Field(default="", description="Map region name.")
-    name: str = Field(description="Map name.")
+    name: str = Field(..., description="Map name.")
     name_zh: str = Field(default="", alias="nameZh", description="Chinese map name.")
     x: int = Field(default=0, description="Map x-coordinate.")
     y: int = Field(default=0, description="Map y-coordinate.")
@@ -818,7 +818,7 @@ class MiscItem(_Base):
         acquisition: Acquisition data for the miscellaneous item.
     """
 
-    name: str = Field(description="Miscellaneous item name.")
+    name: str = Field(..., description="Miscellaneous item name.")
     name_zh: str = Field(
         default="", alias="nameZh", description="Chinese miscellaneous item name."
     )
@@ -856,13 +856,15 @@ class MapleStats(_Base):
         popular_items: Popular item names.
     """
 
-    total_monsters: int = Field(description="Total monster count.")
-    total_equipment: int = Field(description="Total equipment count.")
-    total_scrolls: int = Field(description="Total scroll count.")
-    total_useable: int = Field(description="Total useable item count.")
-    total_npcs: int = Field(description="Total NPC count.")
-    total_quests: int = Field(description="Total quest count.")
-    total_maps: int = Field(description="Total map count.")
-    total_misc: int = Field(description="Total miscellaneous item count.")
-    level_distribution: dict[str, int] = Field(description="Monster counts keyed by level range.")
-    popular_items: list[str] = Field(description="Popular item names.")
+    total_monsters: int = Field(..., description="Total monster count.")
+    total_equipment: int = Field(..., description="Total equipment count.")
+    total_scrolls: int = Field(..., description="Total scroll count.")
+    total_useable: int = Field(..., description="Total useable item count.")
+    total_npcs: int = Field(..., description="Total NPC count.")
+    total_quests: int = Field(..., description="Total quest count.")
+    total_maps: int = Field(..., description="Total map count.")
+    total_misc: int = Field(..., description="Total miscellaneous item count.")
+    level_distribution: dict[str, int] = Field(
+        ..., description="Monster counts keyed by level range."
+    )
+    popular_items: list[str] = Field(..., description="Popular item names.")

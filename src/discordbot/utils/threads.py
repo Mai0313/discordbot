@@ -41,7 +41,7 @@ class ThreadsURL(BaseModel):
         raw_url: Original Threads URL provided by the caller.
     """
 
-    raw_url: str = Field(description="Original Threads URL provided by the caller")
+    raw_url: str = Field(..., description="Original Threads URL provided by the caller")
 
     @computed_field
     @cached_property
@@ -504,7 +504,7 @@ class ThreadsDownloader(BaseModel):
     """
 
     output_folder: str = Field(
-        default="./tmp", description="Directory where downloaded media files are written"
+        ..., description="Directory where downloaded media files are written"
     )
 
     def _fetch_html(self, url: str) -> str:

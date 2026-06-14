@@ -237,8 +237,8 @@ class BlackjackHandState(BaseModel):
     cards: list[Card] = Field(
         default_factory=list, description="Cards currently held in this hand."
     )
-    bet: int = Field(description="Active wager for this hand (doubled after Double Down).")
-    base_bet: int = Field(description="Original wager kept for Surrender refund math.")
+    bet: int = Field(..., description="Active wager for this hand (doubled after Double Down).")
+    base_bet: int = Field(..., description="Original wager kept for Surrender refund math.")
     finished: bool = Field(
         default=False, description="True once this hand no longer needs Hit / Stand actions."
     )
@@ -283,7 +283,7 @@ class BlackjackPlayerHand(BaseModel):
             insurance.
     """
 
-    participant: GameParticipant = Field(description="Discord player and wager metadata.")
+    participant: GameParticipant = Field(..., description="Discord player and wager metadata.")
     hands: list[BlackjackHandState] = Field(
         default_factory=list, description="All active sub-hands in display order."
     )
@@ -509,9 +509,9 @@ class BlackjackRound(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    rng: Random = Field(description="Random source used for card draws.")
+    rng: Random = Field(..., description="Random source used for card draws.")
     players: list[BlackjackPlayerHand] = Field(
-        description="Per-player containers, each holding one or more sub-hands."
+        ..., description="Per-player containers, each holding one or more sub-hands."
     )
     dealer: list[Card] = Field(
         default_factory=list, description="Dealer cards shared by the table."

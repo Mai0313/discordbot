@@ -19,8 +19,8 @@ class DownloadResult(BaseModel):
         filename: Local path of the downloaded file.
     """
 
-    title: str = Field(description="Video title reported by yt-dlp.")
-    filename: Path = Field(description="Local path of the downloaded file.")
+    title: str = Field(..., description="Video title reported by yt-dlp.")
+    filename: Path = Field(..., description="Local path of the downloaded file.")
 
     def unlink(self) -> None:
         """Deletes the downloaded file."""
@@ -59,7 +59,7 @@ class VideoDownloader(BaseModel):
         share_resolve_timeout: Timeout in seconds for resolving Facebook share URLs.
     """
 
-    output_folder: str = Field(default="./tmp", description="Download folder")
+    output_folder: str = Field(..., description="Download folder")
     max_retries: int = Field(
         default=5, description="Configured maximum retry count.", examples=[5, 3]
     )

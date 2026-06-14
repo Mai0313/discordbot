@@ -42,11 +42,11 @@ class _HistorySummary(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    rounds: int = Field(description="Number of rounds included in the summary.")
-    wins: int = Field(description="Rounds with a positive net delta.")
-    losses: int = Field(description="Rounds with a negative net delta.")
-    pushes: int = Field(description="Rounds with a zero net delta.")
-    net_delta: int = Field(description="Sum of every round's net delta.")
+    rounds: int = Field(..., description="Number of rounds included in the summary.")
+    wins: int = Field(..., description="Rounds with a positive net delta.")
+    losses: int = Field(..., description="Rounds with a negative net delta.")
+    pushes: int = Field(..., description="Rounds with a zero net delta.")
+    net_delta: int = Field(..., description="Sum of every round's net delta.")
 
 
 class _Row(BaseModel):
@@ -54,12 +54,12 @@ class _Row(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    when: str = Field(description="Round timestamp as MM/DD HH:MM.")
-    player: str = Field(description="Player hand cell, possibly truncated.")
-    dealer: str = Field(description="Dealer hand cell, possibly truncated.")
-    bet: str = Field(description="Comma-formatted bet amount.")
-    pnl: str = Field(description="Signed comma-formatted net delta.")
-    tag: str = Field(description="Short ASCII outcome tag.")
+    when: str = Field(..., description="Round timestamp as MM/DD HH:MM.")
+    player: str = Field(..., description="Player hand cell, possibly truncated.")
+    dealer: str = Field(..., description="Dealer hand cell, possibly truncated.")
+    bet: str = Field(..., description="Comma-formatted bet amount.")
+    pnl: str = Field(..., description="Signed comma-formatted net delta.")
+    tag: str = Field(..., description="Short ASCII outcome tag.")
 
 
 def _summarize(records: Sequence[BlackjackHistoryRecord]) -> _HistorySummary:

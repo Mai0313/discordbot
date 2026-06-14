@@ -65,22 +65,22 @@ class _EvContext(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     marginalize: bool = Field(
-        description="Selects the marginal (hole integrated out) vs exact dealer model."
+        ..., description="Selects the marginal (hole integrated out) vs exact dealer model."
     )
-    dealer_total: int = Field(description="Exact-pass dealer two-card total.")
+    dealer_total: int = Field(..., description="Exact-pass dealer two-card total.")
     dealer_soft: bool = Field(
-        description="Whether the exact-pass dealer total counts an ace as 11."
+        ..., description="Whether the exact-pass dealer total counts an ace as 11."
     )
-    up_total: int = Field(description="Dealer up-card total.")
-    up_soft: bool = Field(description="Whether the up-card total counts an ace as 11.")
-    up_bucket: int = Field(description="Value bucket index of the dealer up-card.")
+    up_total: int = Field(..., description="Dealer up-card total.")
+    up_soft: bool = Field(..., description="Whether the up-card total counts an ace as 11.")
+    up_bucket: int = Field(..., description="Value bucket index of the dealer up-card.")
     peek_no_blackjack: bool = Field(
-        description="Whether to condition on no dealer Blackjack after an Ace/ten peek."
+        ..., description="Whether to condition on no dealer Blackjack after an Ace/ten peek."
     )
-    dealer_memo: _DealerMemo = Field(description="Memo cache for exact dealer distributions.")
-    player_memo: _PlayerMemo = Field(description="Memo cache for optimal player-hand EVs.")
+    dealer_memo: _DealerMemo = Field(..., description="Memo cache for exact dealer distributions.")
+    player_memo: _PlayerMemo = Field(..., description="Memo cache for optimal player-hand EVs.")
     marginal_memo: _MarginalMemo = Field(
-        description="Memo cache for marginal dealer distributions by deck."
+        ..., description="Memo cache for marginal dealer distributions by deck."
     )
 
 

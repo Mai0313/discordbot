@@ -96,32 +96,36 @@ class MemoryObservation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     category: MemoryCategory = Field(
+        ...,
         description="The memory section this observation belongs to.",
         examples=["stable_preference", "recent_context"],
     )
     subject_is_target_user: bool = Field(
-        description="Whether the evidence is about the target user, not another participant."
+        ..., description="Whether the evidence is about the target user, not another participant."
     )
     evidence_kind: MemoryEvidenceKind = Field(
+        ...,
         description="The evidence shape supporting or rejecting this observation.",
         examples=["explicit_preference", "casual_mention"],
     )
     confidence: MemoryConfidence = Field(
-        description="Confidence after attribution and durability checks.", examples=["high"]
+        ..., description="Confidence after attribution and durability checks.", examples=["high"]
     )
     durability: MemoryDurability = Field(
+        ...,
         description="How long the observation should influence memory.",
         examples=["stable", "recent"],
     )
     promotion_eligible: bool = Field(
-        description="Whether this may be promoted into stable memory during consolidation."
+        ..., description="Whether this may be promoted into stable memory during consolidation."
     )
     normalized_key: str = Field(
+        ...,
         description="Stable dedupe key for the same underlying observation.",
         examples=["preference.reply_language.zh_tw"],
     )
-    summary_zh: str = Field(description="Traditional Chinese memory delta.")
-    evidence_quote: str = Field(description="Short evidence quote from the target user.")
+    summary_zh: str = Field(..., description="Traditional Chinese memory delta.")
+    evidence_quote: str = Field(..., description="Short evidence quote from the target user.")
     ttl_days: int | None = Field(
         default=None,
         description="Positive TTL for recent context; null for stable observations.",
@@ -135,7 +139,8 @@ class RawMemoryDraft(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     has_signal: bool = Field(
-        description="Whether the conversation contained durable memory-worthy signal about the target user"
+        ...,
+        description="Whether the conversation contained durable memory-worthy signal about the target user",
     )
     observations: tuple[MemoryObservation, ...] = Field(
         default=(),
@@ -157,10 +162,12 @@ class ConsolidatedMemory(BaseModel):
     # memory_markdown for a no-op); the runtime consolidation path intentionally ignores
     # this bool and decides off memory_markdown's well-formedness, so do not branch on it.
     changed: bool = Field(
-        description="Whether the consolidated memory file materially changed from the existing one"
+        ...,
+        description="Whether the consolidated memory file materially changed from the existing one",
     )
     memory_markdown: str = Field(
-        description="Full rewritten memory file starting with `v1`; empty when changed is false"
+        ...,
+        description="Full rewritten memory file starting with `v1`; empty when changed is false",
     )
 
 
@@ -176,11 +183,13 @@ class MemoryExtractorAI(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     client: SkipValidation[AsyncOpenAI] = Field(
-        description="Async OpenAI client for the Responses API memory calls."
+        ..., description="Async OpenAI client for the Responses API memory calls."
     )
-    extract_model: ModelSettings = Field(description="Model running the phase-1 extraction call.")
+    extract_model: ModelSettings = Field(
+        ..., description="Model running the phase-1 extraction call."
+    )
     consolidate_model: ModelSettings = Field(
-        description="Model running the phase-2 consolidation call."
+        ..., description="Model running the phase-2 consolidation call."
     )
     evaluate_model: ModelSettings | None = Field(
         default=None, description="Optional model for the phase-1.5 evaluator review."

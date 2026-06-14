@@ -50,8 +50,8 @@ ORDER BY created_at ASC, message_id ASC
 class PendingPublicMessage(BaseModel):
     """A public response that still needs Discord-side cleanup."""
 
-    channel_id: int = Field(description="Channel holding the tracked public message.")
-    message_id: int = Field(description="Discord id of the tracked public message.")
+    channel_id: int = Field(..., description="Channel holding the tracked public message.")
+    message_id: int = Field(..., description="Discord id of the tracked public message.")
     guild_name: str | None = Field(default=None, description="Guild name for cleanup logs.")
     channel_name: str | None = Field(default=None, description="Channel name for cleanup logs.")
     user_name: str | None = Field(default=None, description="Triggering user, for cleanup logs.")

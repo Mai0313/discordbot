@@ -19,14 +19,16 @@ class HelpSection(BaseModel):
         detail: Full command list rendered in the category's detail embed.
     """
 
-    emoji: str = Field(description="Leading emoji for the select option and detail title.")
+    emoji: str = Field(..., description="Leading emoji for the select option and detail title.")
     label: str = Field(
-        description="Category name used as the select option label and embed title."
+        ..., description="Category name used as the select option label and embed title."
     )
     summary: str = Field(
-        description="One-line index/select-option description (kept under 100 chars)."
+        ..., description="One-line index/select-option description (kept under 100 chars)."
     )
-    detail: str = Field(description="Full command list rendered in the category's detail embed.")
+    detail: str = Field(
+        ..., description="Full command list rendered in the category's detail embed."
+    )
 
 
 class HelpGuide(BaseModel):
@@ -40,12 +42,16 @@ class HelpGuide(BaseModel):
         sections: Category key to its content, keyed by `CATEGORY_ORDER`.
     """
 
-    title: str = Field(description="Overview embed title.")
-    intro: str = Field(description="Leading line on the overview embed.")
-    select_placeholder: str = Field(description="Placeholder shown on the category select menu.")
-    overview_label: str = Field(description="Select option label that returns to the overview.")
+    title: str = Field(..., description="Overview embed title.")
+    intro: str = Field(..., description="Leading line on the overview embed.")
+    select_placeholder: str = Field(
+        ..., description="Placeholder shown on the category select menu."
+    )
+    overview_label: str = Field(
+        ..., description="Select option label that returns to the overview."
+    )
     sections: dict[str, HelpSection] = Field(
-        description="Category key to its content, keyed by `CATEGORY_ORDER`."
+        ..., description="Category key to its content, keyed by `CATEGORY_ORDER`."
     )
 
     @field_validator("sections")

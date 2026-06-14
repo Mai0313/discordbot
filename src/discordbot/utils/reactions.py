@@ -43,10 +43,10 @@ class ReactionStatusChain(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     message: SkipValidation[Message] = Field(
-        description="The user message receiving status reactions."
+        ..., description="The user message receiving status reactions."
     )
     bot_user: SkipValidation[ClientUser | None] = Field(
-        description="The bot user that scopes removal of the previous reaction."
+        ..., description="The bot user that scopes removal of the previous reaction."
     )
     current_emoji: str | None = Field(
         default=None, description="The most recently scheduled status emoji."

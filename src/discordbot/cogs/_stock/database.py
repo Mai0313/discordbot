@@ -258,18 +258,26 @@ class _StockExecutionSnapshot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    action: StockAction = Field(description="Requested buy/cover or short/sell action.")
-    price_cents: int = Field(description="Submit-time reference quote price in cents.")
-    liquidity_shares: int = Field(description="Per-stock liquidity used for execution slippage.")
-    max_order_impact_bps: int = Field(description="Maximum per-leg price impact in basis points.")
-    wallet_balance: int = Field(description="User's wallet cash available at submit time.")
-    position: StockPositionView = Field(description="User's current long/short position snapshot.")
-    available_long_shares: int = Field(
-        description="Float shares still openable as long market-wide."
+    action: StockAction = Field(..., description="Requested buy/cover or short/sell action.")
+    price_cents: int = Field(..., description="Submit-time reference quote price in cents.")
+    liquidity_shares: int = Field(
+        ..., description="Per-stock liquidity used for execution slippage."
     )
-    available_short_shares: int = Field(description="Float shares still borrowable for shorting.")
+    max_order_impact_bps: int = Field(
+        ..., description="Maximum per-leg price impact in basis points."
+    )
+    wallet_balance: int = Field(..., description="User's wallet cash available at submit time.")
+    position: StockPositionView = Field(
+        ..., description="User's current long/short position snapshot."
+    )
+    available_long_shares: int = Field(
+        ..., description="Float shares still openable as long market-wide."
+    )
+    available_short_shares: int = Field(
+        ..., description="Float shares still borrowable for shorting."
+    )
     available_individual_long_shares: int = Field(
-        description="New long shares the user can open before the 49% ownership cap."
+        ..., description="New long shares the user can open before the 49% ownership cap."
     )
 
 
@@ -278,11 +286,15 @@ class _StockMarketExposure(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    symbol: str = Field(description="Stock symbol the exposure totals apply to.")
-    long_shares: int = Field(description="Aggregate long shares held plus pending opens.")
-    short_shares: int = Field(description="Aggregate short shares borrowed plus pending opens.")
-    available_long_shares: int = Field(description="Float shares still openable as long.")
-    available_short_shares: int = Field(description="Float shares still borrowable for shorting.")
+    symbol: str = Field(..., description="Stock symbol the exposure totals apply to.")
+    long_shares: int = Field(..., description="Aggregate long shares held plus pending opens.")
+    short_shares: int = Field(
+        ..., description="Aggregate short shares borrowed plus pending opens."
+    )
+    available_long_shares: int = Field(..., description="Float shares still openable as long.")
+    available_short_shares: int = Field(
+        ..., description="Float shares still borrowable for shorting."
+    )
 
 
 class _StockOrderFlowSummary(BaseModel):

@@ -101,16 +101,17 @@ class AttachmentSource(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     handle: SkipValidation[Attachment | StickerItem | str] = Field(
-        description="The attachment, sticker, or image URL the loaders consume."
+        ..., description="The attachment, sticker, or image URL the loaders consume."
     )
     kind: Literal["image", "file"] = Field(
-        description="Whether the source renders as an image or a generic file."
+        ..., description="Whether the source renders as an image or a generic file."
     )
     content_type: str = Field(
-        description="Resolved MIME type, empty only for unguessable sources."
+        ..., description="Resolved MIME type, empty only for unguessable sources."
     )
     cache_key: int | str = Field(
-        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache."
+        ...,
+        description="Stable identity (attachment/sticker id or chosen embed URL) for the cache.",
     )
 
 
@@ -128,12 +129,12 @@ class PendingUpload(BaseModel):
         expires_at: Provider-reported expiry; a pending entry past it is discarded.
     """
 
-    name: str = Field(description="The Gemini file resource name used to re-poll its state.")
+    name: str = Field(..., description="The Gemini file resource name used to re-poll its state.")
     uri: str = Field(
-        description="The full file uri the answer references once the file is ACTIVE."
+        ..., description="The full file uri the answer references once the file is ACTIVE."
     )
     expires_at: datetime = Field(
-        description="Provider-reported expiry; a pending entry past it is discarded."
+        ..., description="Provider-reported expiry; a pending entry past it is discarded."
     )
 
 
@@ -151,16 +152,17 @@ class MessageInputBuilder(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     bot: SkipValidation[commands.Bot] = Field(
-        description="The Discord bot instance, used to detect the bot's own messages."
+        ..., description="The Discord bot instance, used to detect the bot's own messages."
     )
     runtime_models: RuntimeModelCatalog = Field(
-        description="Catalog whose slow model gates attachment modalities."
+        ..., description="Catalog whose slow model gates attachment modalities."
     )
     gemini_client: SkipValidation[genai.Client] | None = Field(
+        ...,
         description=(
             "Gemini client used to upload attachments to the Files API directly so each "
             "upload can be polled to ACTIVE before use; None when GEMINI_API_KEY is unset."
-        )
+        ),
     )
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact

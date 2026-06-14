@@ -59,13 +59,14 @@ class FishGradeConfigView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    grade: FishGrade = Field(description="Rarity grade this config applies to.")
-    weight: int = Field(description="Base roll weight relative to other grades.")
-    color: int = Field(description="Embed color for this grade as an 0xRRGGBB integer.")
-    emoji: str = Field(description="Leading emoji shown for this grade.")
-    label: str = Field(description="Localized display label for this grade.")
+    grade: FishGrade = Field(..., description="Rarity grade this config applies to.")
+    weight: int = Field(..., description="Base roll weight relative to other grades.")
+    color: int = Field(..., description="Embed color for this grade as an 0xRRGGBB integer.")
+    emoji: str = Field(..., description="Leading emoji shown for this grade.")
+    label: str = Field(..., description="Localized display label for this grade.")
     order_index: int = Field(
-        description="Rarity rank; higher means rarer and drives luck weighting and display order."
+        ...,
+        description="Rarity rank; higher means rarer and drives luck weighting and display order.",
     )
 
 
@@ -74,19 +75,19 @@ class FishSpeciesView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    species_id: str = Field(description="Stable identifier for the fish species.")
-    name: str = Field(description="Display name of the fish species.")
-    grade: FishGrade = Field(description="Rarity grade of the species.")
-    emoji: str = Field(description="Emoji shown for the species.")
+    species_id: str = Field(..., description="Stable identifier for the fish species.")
+    name: str = Field(..., description="Display name of the fish species.")
+    grade: FishGrade = Field(..., description="Rarity grade of the species.")
+    emoji: str = Field(..., description="Emoji shown for the species.")
     intra_grade_weight: int = Field(
-        description="Roll weight of this species relative to others in the same grade."
+        ..., description="Roll weight of this species relative to others in the same grade."
     )
-    base_value: int = Field(description="Base sell value before the size multiplier.")
+    base_value: int = Field(..., description="Base sell value before the size multiplier.")
     size_min_bps: int = Field(
-        description="Minimum size multiplier in basis points, e.g. 5000 for 0.5x."
+        ..., description="Minimum size multiplier in basis points, e.g. 5000 for 0.5x."
     )
     size_max_bps: int = Field(
-        description="Maximum size multiplier in basis points, e.g. 20000 for 2.0x."
+        ..., description="Maximum size multiplier in basis points, e.g. 20000 for 2.0x."
     )
     image_key: str = Field(
         default="",
@@ -99,14 +100,15 @@ class GearView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    gear_id: str = Field(description="Stable identifier for the gear item.")
-    gear_type: GearType = Field(description="Whether this gear is a rod or a bait.")
-    name: str = Field(description="Display name of the gear item.")
-    emoji: str = Field(description="Emoji shown for the gear item.")
-    tier: int = Field(description="Relative power tier of the gear item.")
-    price: int = Field(description="Purchase price in currency, burned on purchase.")
+    gear_id: str = Field(..., description="Stable identifier for the gear item.")
+    gear_type: GearType = Field(..., description="Whether this gear is a rod or a bait.")
+    name: str = Field(..., description="Display name of the gear item.")
+    emoji: str = Field(..., description="Emoji shown for the gear item.")
+    tier: int = Field(..., description="Relative power tier of the gear item.")
+    price: int = Field(..., description="Purchase price in currency, burned on purchase.")
     rarity_shift_bps: int = Field(
-        description="Luck shift in basis points applied to rarer grades when this gear is used."
+        ...,
+        description="Luck shift in basis points applied to rarer grades when this gear is used.",
     )
     durability: int = Field(
         default=0, description="Number of casts a rod lasts; always zero for bait."
@@ -121,10 +123,10 @@ class BaitStackView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    bait_id: str = Field(description="Identifier of the owned bait.")
-    name: str = Field(description="Display name of the bait.")
-    emoji: str = Field(description="Emoji shown for the bait.")
-    quantity: int = Field(description="Number of this bait the user currently owns.")
+    bait_id: str = Field(..., description="Identifier of the owned bait.")
+    name: str = Field(..., description="Display name of the bait.")
+    emoji: str = Field(..., description="Emoji shown for the bait.")
+    quantity: int = Field(..., description="Number of this bait the user currently owns.")
 
 
 class AnglerStateView(BaseModel):
@@ -132,7 +134,7 @@ class AnglerStateView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the angler.")
+    user_id: int = Field(..., description="Discord user ID of the angler.")
     user_name: str = Field(default="", description="Last-seen display name of the angler.")
     rod: GearView | None = Field(
         default=None, description="Currently equipped rod, or None when the angler has no rod."
@@ -153,17 +155,17 @@ class CatchRoll(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    species_id: str = Field(description="Identifier of the rolled species.")
-    species_name: str = Field(description="Display name of the rolled species.")
-    grade: FishGrade = Field(description="Rarity grade of the rolled species.")
-    emoji: str = Field(description="Emoji of the rolled species.")
-    size_bps: int = Field(description="Rolled size multiplier in basis points.")
-    base_value: int = Field(description="Species base value before the size multiplier.")
+    species_id: str = Field(..., description="Identifier of the rolled species.")
+    species_name: str = Field(..., description="Display name of the rolled species.")
+    grade: FishGrade = Field(..., description="Rarity grade of the rolled species.")
+    emoji: str = Field(..., description="Emoji of the rolled species.")
+    size_bps: int = Field(..., description="Rolled size multiplier in basis points.")
+    base_value: int = Field(..., description="Species base value before the size multiplier.")
     value: int = Field(
-        description="Final payout after size, bait bonus, and the single-catch cap."
+        ..., description="Final payout after size, bait bonus, and the single-catch cap."
     )
     capped: bool = Field(
-        description="Whether the single-catch cap reduced the otherwise-higher value."
+        ..., description="Whether the single-catch cap reduced the otherwise-higher value."
     )
 
 
@@ -172,15 +174,15 @@ class CatchLogView(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    user_id: int = Field(description="Discord user ID of the angler who made the catch.")
-    user_name: str = Field(description="Stored display name of the angler.")
-    species_id: str = Field(description="Identifier of the caught species.")
-    species_name: str = Field(description="Stored display name of the caught species.")
-    grade: FishGrade = Field(description="Rarity grade of the catch.")
-    emoji: str = Field(description="Stored emoji of the catch.")
-    size_bps: int = Field(description="Size multiplier of the catch in basis points.")
-    value: int = Field(description="Final catch value paid to the angler.")
-    created_at: datetime = Field(description="Timestamp the catch was recorded.")
+    user_id: int = Field(..., description="Discord user ID of the angler who made the catch.")
+    user_name: str = Field(..., description="Stored display name of the angler.")
+    species_id: str = Field(..., description="Identifier of the caught species.")
+    species_name: str = Field(..., description="Stored display name of the caught species.")
+    grade: FishGrade = Field(..., description="Rarity grade of the catch.")
+    emoji: str = Field(..., description="Stored emoji of the catch.")
+    size_bps: int = Field(..., description="Size multiplier of the catch in basis points.")
+    value: int = Field(..., description="Final catch value paid to the angler.")
+    created_at: datetime = Field(..., description="Timestamp the catch was recorded.")
 
 
 class PurchaseResult(BaseModel):
@@ -188,8 +190,8 @@ class PurchaseResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    success: bool = Field(description="Whether the purchase completed and gear was granted.")
-    gear_id: str = Field(description="Identifier of the gear that was bought.")
+    success: bool = Field(..., description="Whether the purchase completed and gear was granted.")
+    gear_id: str = Field(..., description="Identifier of the gear that was bought.")
     gear_type: GearType | None = Field(
         default=None, description="Type of gear bought, or None when the purchase failed early."
     )
@@ -206,7 +208,7 @@ class CastResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    status: CastStatus = Field(description="Status of the cast attempt.")
+    status: CastStatus = Field(..., description="Status of the cast attempt.")
     roll: CatchRoll | None = Field(
         default=None, description="The rolled catch when the cast succeeded, else None."
     )
@@ -227,10 +229,10 @@ class FishingPanelData(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    balance: int = Field(description="Angler's current wallet balance.")
-    angler: AnglerStateView = Field(description="Angler's rod and lifetime fishing state.")
+    balance: int = Field(..., description="Angler's current wallet balance.")
+    angler: AnglerStateView = Field(..., description="Angler's rod and lifetime fishing state.")
     baits: tuple[BaitStackView, ...] = Field(
-        description="Owned bait stacks with positive quantity."
+        ..., description="Owned bait stacks with positive quantity."
     )
     last_catch: CatchLogView | None = Field(
         default=None, description="Most recent catch for the angler, if any."
@@ -242,7 +244,9 @@ class FishGradeConfigUpsert(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    grade: FishGrade = Field(description="Rarity grade this config applies to.", examples=["SR"])
+    grade: FishGrade = Field(
+        ..., description="Rarity grade this config applies to.", examples=["SR"]
+    )
     weight: int = Field(
         ge=0, description="Base roll weight relative to other grades.", examples=[800]
     )
@@ -267,7 +271,7 @@ class FishSpeciesUpsert(BaseModel):
         min_length=1, max_length=32, description="Stable species identifier.", examples=["carp"]
     )
     name: str = Field(min_length=1, max_length=64, description="Display name.", examples=["鯉魚"])
-    grade: FishGrade = Field(description="Rarity grade of the species.", examples=["R"])
+    grade: FishGrade = Field(..., description="Rarity grade of the species.", examples=["R"])
     emoji: str = Field(min_length=1, max_length=32, description="Species emoji.", examples=["🐠"])
     intra_grade_weight: int = Field(
         ge=1, description="Roll weight within the grade.", examples=[70]
@@ -299,7 +303,7 @@ class GearUpsert(BaseModel):
         min_length=1, max_length=32, description="Stable gear identifier.", examples=["rod_bamboo"]
     )
     gear_type: GearType = Field(
-        description="Whether the gear is a rod or a bait.", examples=["rod"]
+        ..., description="Whether the gear is a rod or a bait.", examples=["rod"]
     )
     name: str = Field(min_length=1, max_length=64, description="Display name.", examples=["竹竿"])
     emoji: str = Field(min_length=1, max_length=32, description="Gear emoji.", examples=["🎋"])
@@ -328,9 +332,9 @@ class FishingCatalog(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    grades: tuple[FishGradeConfigView, ...] = Field(description="Default grade configs.")
-    species: tuple[FishSpeciesView, ...] = Field(description="Default fish species rows.")
-    gear: tuple[GearView, ...] = Field(description="Default rod and bait rows.")
+    grades: tuple[FishGradeConfigView, ...] = Field(..., description="Default grade configs.")
+    species: tuple[FishSpeciesView, ...] = Field(..., description="Default fish species rows.")
+    gear: tuple[GearView, ...] = Field(..., description="Default rod and bait rows.")
 
 
 __all__ = [

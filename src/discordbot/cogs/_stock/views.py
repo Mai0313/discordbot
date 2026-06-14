@@ -86,12 +86,12 @@ class _StockQuantitySubmission(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     interaction: SkipValidation[Interaction] = Field(
-        description="Discord interaction that submitted the quantity."
+        ..., description="Discord interaction that submitted the quantity."
     )
-    symbol: str = Field(description="Stock symbol being operated on.")
-    action: StockAction = Field(description="Requested buy/cover or short/sell action.")
-    owner_id: int = Field(description="Discord user id allowed to operate this panel.")
-    raw_quantity: str = Field(description="Raw quantity text from the modal or preset.")
+    symbol: str = Field(..., description="Stock symbol being operated on.")
+    action: StockAction = Field(..., description="Requested buy/cover or short/sell action.")
+    owner_id: int = Field(..., description="Discord user id allowed to operate this panel.")
+    raw_quantity: str = Field(..., description="Raw quantity text from the modal or preset.")
     message: SkipValidation[Message | None] = Field(
         default=None, description="Public stock message to edit in place, if any."
     )

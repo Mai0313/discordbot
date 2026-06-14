@@ -16,8 +16,9 @@ class StockNewsDraft(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    headline: str = Field(description="One short fictional Traditional Chinese headline")
+    headline: str = Field(..., description="One short fictional Traditional Chinese headline")
     sentiment_bps: int = Field(
+        ...,
         description="Simulated market sentiment impact in basis points, from -180 to 180",
         ge=-180,
         le=180,
@@ -29,8 +30,10 @@ class StockNewsAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: AsyncOpenAI = Field(description="Async OpenAI client for the news generation call.")
-    model: ModelSettings = Field(description="Model settings for the news generation call.")
+    client: AsyncOpenAI = Field(
+        ..., description="Async OpenAI client for the news generation call."
+    )
+    model: ModelSettings = Field(..., description="Model settings for the news generation call.")
 
     async def generate(self, context: StockNewsGenerationContext) -> StockGeneratedNews | None:
         """Returns one generated news item, or `None` when the LLM path fails."""
