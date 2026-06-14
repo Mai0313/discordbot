@@ -178,10 +178,10 @@ def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessa
     """Renders selected user memories as a low-authority assistant context note.
 
     The model picks these via get_user_memory in the selection phase; they are injected here
-    as background context because Gemini cannot use the function tool and its built-in
-    search/url tools in the same request. Rendered as `role=assistant` (the bot's own note,
-    the lowest authority tier) so a stored operating preference cannot outrank the developer
-    prompt or the user's current message.
+    as background context because the user-memory read path is split into a selection phase
+    and an answer phase on purpose (latency / cost / provider-neutral). Rendered as
+    `role=assistant` (the bot's own note, the lowest authority tier) so a stored operating
+    preference cannot outrank the developer prompt or the user's current message.
     """
     sections = "\n\n".join(
         f"[id: {memory.user_id}] {memory.username}:\n{memory.memory}" for memory in memories

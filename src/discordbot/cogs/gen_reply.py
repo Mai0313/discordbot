@@ -567,9 +567,9 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> MemorySelection:
         """Phase 1 of a reply: lets the model choose whose long-term memory to read.
 
-        Runs an isolated request offering only the get_user_memory tool (Gemini cannot mix a
-        custom function tool with its built-in search/url tools), then resolves the chosen ids
-        server-side against the allowlist. The current guild's server memory rides in front as
+        Runs an isolated request offering only the get_user_memory tool (the read path is split
+        into a selection phase and an answer phase on purpose, not a hard limit), then resolves
+        the chosen ids server-side against the allowlist. The current guild's server memory rides in front as
         background context so a spoken nickname can be mapped to its user id. Returns the
         memories plus this request's token usage so the reply footer and chat reward account
         for the selection call too.
@@ -731,15 +731,17 @@ class ReplyGeneratorCogs(commands.Cog):
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
 
-        # Gemini cannot use a custom function tool together with its built-in search/url
-        # tools, so memory retrieval is two-phase: phase 1 lets the model pick whose
-        # long-term memory to read via get_user_memory (no built-in tools), and phase 2
-        # streams the answer with the built-in tools always available and any selected
-        # memory injected as context. The allowlist (conversation authors + mentioned
-        # users, minus the bot) is the permission boundary.
-        # The split is a Gemini constraint, not a hard requirement: OpenAI / Claude answer
-        # models allow mixing function and built-in tools in one request, so this stays
-        # correct (just one extra request) if the answer model is switched off Gemini.
+        # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term
+        # memory to read via get_user_memory (no built-in tools), and phase 2 streams the
+        # answer with the built-in tools always available and any selected memory injected
+        # as context. The allowlist (conversation authors + mentioned users, minus the bot)
+        # is the permission boundary.
+        # The split is deliberate, not a hard limit: by default LiteLLM silently drops
+        # grounding when a function tool and built-in search/url tools mix, and the Gemini 3
+        # include_server_side_tool_invocations opt-out that lifts it is Preview-only.
+        # Splitting also keeps selection on a cheaper/faster model off the answer's critical
+        # path and stays provider-neutral (OpenAI / Claude mix tools fine), so it stays
+        # correct if the answer model changes.
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
