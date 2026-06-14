@@ -12,6 +12,7 @@ import contextlib
 from google import genai
 from openai import AsyncOpenAI
 import logfire
+import nextcord
 from nextcord import File, Embed, Message
 from pydantic import ValidationError
 from nextcord.ext import commands
@@ -936,11 +937,18 @@ class ReplyGeneratorCogs(commands.Cog):
                     color=0xED4245,
                 )
                 error_embed.set_footer(text=type(e).__name__)
-                await message.reply(
-                    content=None,
-                    embed=error_embed,
-                    **embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message),
-                )
+                spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
+                try:
+                    await message.reply(content=None, embed=error_embed, **spacer)
+                except nextcord.HTTPException as send_error:
+                    # Source deleted before the error landed (50035): send it unparented. Rebuild
+                    # the spacer; the failed reply already consumed the single-use spacer file.
+                    if send_error.code != 50035 and not isinstance(send_error, nextcord.NotFound):
+                        raise
+                    fresh_spacer = embed_spacer_payload(
+                        embeds=[error_embed], is_edit=False, target=message
+                    )
+                    await message.channel.send(content=None, embed=error_embed, **fresh_spacer)
         finally:
             await reactions.flush()
 

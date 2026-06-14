@@ -38,6 +38,16 @@ type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseI
 # needed, so adopting an already-uploaded pending file never re-downloads the source.
 type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 
+# A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
+# history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
+# reply; after the window it is retried once so a transient blip self-heals.
+DEAD_SOURCE_TTL = timedelta(minutes=30)
+# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines (the
+# input builder is a shared singleton). Above the typical per-message attachment count so a
+# single request stays fully parallel, while two concurrent pipelines cannot launch dozens of
+# simultaneous uploads and starve each other (the source of the worst observed render tail).
+MEDIA_CONCURRENCY = 8
+
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
 # Without this, the model performs in-context learning on its own past footers
@@ -181,6 +191,15 @@ class MessageInputBuilder(BaseModel):
     _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
         default_factory=OrderedDict
     )
+    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. A hit within
+    # DEAD_SOURCE_TTL skips the fetch fast (no network, no per-turn re-warn); past the TTL the
+    # entry is dropped and the source retried once. Bounded like the caches above.
+    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
+    # Caps concurrent media fetch/upload work; see MEDIA_CONCURRENCY. Created in-loop on first
+    # builder access (during message handling), so it binds to the running event loop.
+    _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
+        default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
+    )
 
     async def get_user_prompt(self, content: str) -> str:
         """Removes bot mention syntax from image/video generation prompts."""
@@ -299,6 +318,59 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
+    def _is_known_dead(self, cache_key: int | str) -> bool:
+        """Whether a source's fetch failed recently enough to skip re-fetching it.
+
+        Past DEAD_SOURCE_TTL the marker is dropped so the source is retried once, letting a
+        transient blip self-heal while an expired CDN url stays cheap.
+        """
+        dead_at = self._dead_sources.get(cache_key)
+        if dead_at is None:
+            return False
+        if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
+            self._dead_sources.move_to_end(cache_key)
+            return True
+        self._dead_sources.pop(cache_key, None)
+        return False
+
+    def _mark_dead(self, cache_key: int | str) -> None:
+        """Records a source's fetch failure so it is skipped for DEAD_SOURCE_TTL."""
+        self._dead_sources[cache_key] = datetime.now(tz=UTC)
+        self._dead_sources.move_to_end(cache_key)
+        if len(self._dead_sources) > 128:
+            self._dead_sources.popitem(last=False)
+
+    async def _repoll_pending_upload(
+        self, cache_key: int | str
+    ) -> tuple[bool, tuple[str, datetime] | None]:
+        """Re-polls a prior pending upload once, without re-downloading the source.
+
+        Returns `(handled, result)`: `handled=True` means stop and use `result` (an ACTIVE
+        `(uri, expiry)`, or `None` if it is still PROCESSING); `handled=False` means there is
+        no usable pending entry, so the caller should fall through to a fresh upload.
+        """
+        pending = self._pending_uploads.get(cache_key)
+        if pending is None or self.gemini_client is None:
+            return False, None
+        if datetime.now(tz=UTC) >= pending.expires_at:
+            self._pending_uploads.pop(cache_key, None)
+            return False, None
+        try:
+            uploaded = await self.gemini_client.aio.files.get(name=pending.name)
+        except Exception:
+            self._pending_uploads.pop(cache_key, None)
+            return False, None
+        if uploaded.state == FileState.ACTIVE:
+            self._pending_uploads.pop(cache_key, None)
+            return True, (pending.uri, pending.expires_at)
+        if uploaded.state == FileState.PROCESSING:
+            # Still cooking; keep it and retry on the next reference.
+            self._pending_uploads.move_to_end(cache_key)
+            return True, None
+        # Terminal non-active state: drop it and let the caller re-upload.
+        self._pending_uploads.pop(cache_key, None)
+        return False, None
+
     async def _resolve_file_upload(
         self, cache_key: int | str, filename: str, load_data: "FileBytesLoader"
     ) -> tuple[str, datetime] | None:
@@ -317,31 +389,24 @@ class MessageInputBuilder(BaseModel):
         keeps being adopted even after its Discord CDN url has expired and a re-download
         would fail.
         """
-        pending = self._pending_uploads.get(cache_key)
-        if pending is not None and self.gemini_client is not None:
-            if datetime.now(tz=UTC) >= pending.expires_at:
-                self._pending_uploads.pop(cache_key, None)
-            else:
-                try:
-                    uploaded = await self.gemini_client.aio.files.get(name=pending.name)
-                except Exception:
-                    self._pending_uploads.pop(cache_key, None)
-                else:
-                    if uploaded.state == FileState.ACTIVE:
-                        self._pending_uploads.pop(cache_key, None)
-                        return pending.uri, pending.expires_at
-                    if uploaded.state == FileState.PROCESSING:
-                        # Still cooking; keep it and retry on the next reference.
-                        self._pending_uploads.move_to_end(cache_key)
-                        return None
-                    # Terminal non-active state: drop it and re-upload below.
-                    self._pending_uploads.pop(cache_key, None)
-        try:
-            data, content_type = await load_data()
-        except Exception:
-            logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+        handled, adopted = await self._repoll_pending_upload(cache_key=cache_key)
+        if handled:
+            return adopted
+        if self._is_known_dead(cache_key=cache_key):
             return None
-        result = await self._upload_file(filename=filename, data=data, content_type=content_type)
+        # One media slot spans the whole download + upload (+ activation poll) for every
+        # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
+        # uploads at once and buffer all their bytes while waiting for an upload slot.
+        async with self._media_semaphore:
+            try:
+                data, content_type = await load_data()
+            except Exception:
+                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+                self._mark_dead(cache_key=cache_key)
+                return None
+            result = await self._upload_file(
+                filename=filename, data=data, content_type=content_type
+            )
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result
             self._pending_uploads.move_to_end(cache_key)
@@ -380,6 +445,8 @@ class MessageInputBuilder(BaseModel):
             return None
         activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5
+        # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
+        # call, so the activation poll counts against the concurrency cap on purpose.
         try:
             uploaded = await self.gemini_client.aio.files.upload(
                 file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
@@ -427,7 +494,9 @@ class MessageInputBuilder(BaseModel):
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
 
         URL sources fetch over the network and attachments decode/re-encode, so the
-        blocking work runs off the event loop. Raises on any fetch/decode failure.
+        blocking work runs off the event loop. Raises on any fetch/decode failure. The
+        Files-API path bounds concurrency in `_resolve_file_upload`; direct callers (the
+        IMAGE route, non-Gemini inline render) fetch a single current-turn image.
         """
         if isinstance(source, str):
             file_bytes = await asyncio.to_thread(get_image_data, image_file=source)

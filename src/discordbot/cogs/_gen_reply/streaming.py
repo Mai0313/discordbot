@@ -8,6 +8,7 @@ import contextlib
 
 from openai import AsyncStream
 import logfire
+import nextcord
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
@@ -137,13 +138,31 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *kept])
 
+    async def _reply_or_send(self, content: str) -> Message:
+        """Replies to the source message, sending unparented if it was deleted.
+
+        Deleting the source before the reply lands makes Discord 400 with code 50035
+        (unknown message_reference); we log it and send into the same channel instead of
+        wasting the whole pipeline. Other HTTP errors still propagate to the caller.
+        """
+        try:
+            return await self.message.reply(content=content)
+        except nextcord.HTTPException as exc:
+            if exc.code != 50035 and not isinstance(exc, nextcord.NotFound):
+                raise
+            logfire.info(
+                "Source message deleted before reply; sending unparented",
+                message_id=self.message.id,
+            )
+            return await self.message.channel.send(content=content)
+
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
         preview = self._render_preview()
         if not preview or preview == self.displayed_content:
             return
         if self.reply is None:
-            self.reply = await self.message.reply(content=preview)
+            self.reply = await self._reply_or_send(content=preview)
         else:
             await self.reply.edit(content=preview)
         self.displayed_content = preview
@@ -187,7 +206,7 @@ class ResponseStreamer(BaseModel):
             content=content, footer=footer
         )
         if reply is None:
-            reply = await self.message.reply(content=parent_content)
+            reply = await self._reply_or_send(content=parent_content)
         else:
             await reply.edit(content=parent_content)
         previous = reply

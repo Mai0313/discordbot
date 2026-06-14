@@ -28,7 +28,10 @@ def get_pil_image(image_file: str) -> Image.Image:
             recognised image data URI.
     """
     if image_file.startswith(("http://", "https://")):
-        response = requests.get(url=image_file, timeout=30)
+        # 10s caps the history-render I/O tail: a URL taking longer is almost always a
+        # dead/slow CDN that would fail anyway, and a 30s wait let one such source dominate
+        # the whole render. Healthy media.discordapp.net images return well under 1s.
+        response = requests.get(url=image_file, timeout=10)
         image = Image.open(fp=BytesIO(initial_bytes=response.content))
     elif match := _DATA_URI_RE.match(string=image_file):
         payload = base64.b64decode(s=image_file[match.end() :])
