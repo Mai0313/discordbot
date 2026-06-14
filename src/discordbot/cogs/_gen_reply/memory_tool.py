@@ -26,7 +26,7 @@ from discordbot.cogs._gen_reply.input import sanitize_identity
 NO_STORED_MEMORY = "(no stored memory for this user)"
 
 # Mechanism-only description: the "when to call it" behavior rule lives in
-# REPLY_PROMPT (developer authority), not in the tool definition.
+# MEMORY_SELECT_PROMPT (developer authority), not in the tool definition.
 GET_USER_MEMORY_TOOL: FunctionToolParam = {
     "type": "function",
     "name": "get_user_memory",
