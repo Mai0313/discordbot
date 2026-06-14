@@ -23,6 +23,7 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._gen_reply.voice import (
+    VOICE_REPLY_FILENAME,
     VoiceSynthesizer,
     strip_voice_marker,
     strip_partial_voice_marker,
@@ -358,7 +359,7 @@ class ResponseStreamer(BaseModel):
         if audio is None:
             return
         with contextlib.suppress(Exception):
-            await self.reply.edit(file=File(fp=BytesIO(audio), filename="reply.wav"))
+            await self.reply.edit(file=File(fp=BytesIO(audio), filename=VOICE_REPLY_FILENAME))
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""

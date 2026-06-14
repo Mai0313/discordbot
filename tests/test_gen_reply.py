@@ -980,6 +980,26 @@ def _media_builder() -> MessageInputBuilder:
     )
 
 
+def test_collect_sources_skips_bot_own_voice_clip() -> None:
+    """The bot's own generated voice clip is dropped from history input; others survive."""
+    builder = _media_builder()  # bot user id 999
+
+    bot_msg = FakeMessage(author=FakeAuthor(user_id=999))
+    bot_msg.attachments = [
+        FakeAttachment(filename="reply.wav", content_type="audio/wav", attachment_id=1),
+        FakeAttachment(filename="note.txt", content_type="text/plain", attachment_id=2),
+    ]
+    # The bot's voice clip is skipped; a normal attachment on its message is kept.
+    assert [s.cache_key for s in builder.collect_attachment_sources(message=bot_msg)] == [2]
+
+    # The same filename on a human's message is NOT skipped (only the bot's own clip is).
+    user_msg = FakeMessage(author=FakeAuthor(user_id=1))
+    user_msg.attachments = [
+        FakeAttachment(filename="reply.wav", content_type="audio/wav", attachment_id=3)
+    ]
+    assert [s.cache_key for s in builder.collect_attachment_sources(message=user_msg)] == [3]
+
+
 async def test_dead_source_skipped_within_ttl_then_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

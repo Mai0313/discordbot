@@ -43,6 +43,10 @@ TTS_VOICE = "Zephyr"
 TTS_STYLE_DIRECTIVE = "Say the following in a male voice:"
 TTS_SPEED = 1.3
 
+# Filename of the attached voice clip. Shared so input rendering can recognise and skip the
+# bot's own clip when it later appears in history, instead of re-uploading it as self-input.
+VOICE_REPLY_FILENAME = "reply.wav"
+
 # Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload limit,
 # and a request timeout so a slow/hung clip cannot keep this message's own pipeline (its 🆗
 # reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text
