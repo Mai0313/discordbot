@@ -60,7 +60,9 @@ class ModelSettings(BaseModel):
                     {"type": "web_fetch_20260209", "name": "web_fetch"},
                 ],
             )
-        return [{"type": "web_search"}]
+        if "grok" in self.name:
+            return cast("list[ToolParam]", [{"type": "web_search"}, {"type": "x_search"}])
+        return cast("list[ToolParam]", [{"type": "web_search"}])
 
 
 class RuntimeModelCatalog(BaseModel):
