@@ -394,13 +394,19 @@ class MessageInputBuilder(BaseModel):
             return adopted
         if self._is_known_dead(cache_key=cache_key):
             return None
-        try:
-            data, content_type = await load_data()
-        except Exception:
-            logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
-            self._mark_dead(cache_key=cache_key)
-            return None
-        result = await self._upload_file(filename=filename, data=data, content_type=content_type)
+        # One media slot spans the whole download + upload (+ activation poll) for every
+        # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
+        # uploads at once and buffer all their bytes while waiting for an upload slot.
+        async with self._media_semaphore:
+            try:
+                data, content_type = await load_data()
+            except Exception:
+                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+                self._mark_dead(cache_key=cache_key)
+                return None
+            result = await self._upload_file(
+                filename=filename, data=data, content_type=content_type
+            )
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result
             self._pending_uploads.move_to_end(cache_key)
@@ -439,46 +445,42 @@ class MessageInputBuilder(BaseModel):
             return None
         activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5
-        # Bounded so concurrent pipelines cannot launch dozens of simultaneous uploads (and
-        # hold their poll waits) at once; the slot is held through the activation poll on purpose.
-        async with self._media_semaphore:
-            try:
-                uploaded = await self.gemini_client.aio.files.upload(
-                    file=io.BytesIO(data),
-                    config={"mime_type": content_type, "display_name": filename},
-                )
-                # The SDK types name/uri as Optional; in practice both are assigned at upload
-                # time. Capture the stable resource name once (guarded) so the poll loop and
-                # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
-                file_name = uploaded.name
-                if file_name is None:
-                    logfire.warn(f"Gemini upload returned no resource name; dropping: {filename}")
-                    return None
-                deadline = time.monotonic() + activation_timeout_seconds
-                while uploaded.state == FileState.PROCESSING:
-                    if time.monotonic() >= deadline:
-                        logfire.warn(
-                            f"Attachment still processing; will retry on next reference: {filename}"
-                        )
-                        if uploaded.uri is None:
-                            logfire.warn(f"Pending upload has no uri; dropping: {filename}")
-                            return None
-                        # Hand back the in-flight upload so the caller can re-poll it later
-                        # instead of re-uploading the same bytes from scratch.
-                        expires_at = uploaded.expiration_time or (
-                            datetime.now(tz=UTC) + timedelta(hours=47)
-                        )
-                        return PendingUpload(
-                            name=file_name, uri=uploaded.uri, expires_at=expires_at
-                        )
-                    await asyncio.sleep(poll_interval_seconds)
-                    uploaded = await self.gemini_client.aio.files.get(name=file_name)
-                if uploaded.state != FileState.ACTIVE:
-                    logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
-                    return None
-            except Exception:
-                logfire.warn(f"Failed to upload attachment to Files API: {filename}")
+        # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
+        # call, so the activation poll counts against the concurrency cap on purpose.
+        try:
+            uploaded = await self.gemini_client.aio.files.upload(
+                file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
+            )
+            # The SDK types name/uri as Optional; in practice both are assigned at upload
+            # time. Capture the stable resource name once (guarded) so the poll loop and
+            # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
+            file_name = uploaded.name
+            if file_name is None:
+                logfire.warn(f"Gemini upload returned no resource name; dropping: {filename}")
                 return None
+            deadline = time.monotonic() + activation_timeout_seconds
+            while uploaded.state == FileState.PROCESSING:
+                if time.monotonic() >= deadline:
+                    logfire.warn(
+                        f"Attachment still processing; will retry on next reference: {filename}"
+                    )
+                    if uploaded.uri is None:
+                        logfire.warn(f"Pending upload has no uri; dropping: {filename}")
+                        return None
+                    # Hand back the in-flight upload so the caller can re-poll it later
+                    # instead of re-uploading the same bytes from scratch.
+                    expires_at = uploaded.expiration_time or (
+                        datetime.now(tz=UTC) + timedelta(hours=47)
+                    )
+                    return PendingUpload(name=file_name, uri=uploaded.uri, expires_at=expires_at)
+                await asyncio.sleep(poll_interval_seconds)
+                uploaded = await self.gemini_client.aio.files.get(name=file_name)
+            if uploaded.state != FileState.ACTIVE:
+                logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
+                return None
+        except Exception:
+            logfire.warn(f"Failed to upload attachment to Files API: {filename}")
+            return None
         file_uri = uploaded.uri
         if file_uri is None:
             logfire.warn(f"Active upload has no uri; dropping: {filename}")
@@ -492,20 +494,21 @@ class MessageInputBuilder(BaseModel):
         """Fetches and downscales an image source to upload-ready bytes and MIME type.
 
         URL sources fetch over the network and attachments decode/re-encode, so the
-        blocking work runs off the event loop. Raises on any fetch/decode failure.
+        blocking work runs off the event loop. Raises on any fetch/decode failure. The
+        Files-API path bounds concurrency in `_resolve_file_upload`; direct callers (the
+        IMAGE route, non-Gemini inline render) fetch a single current-turn image.
         """
-        async with self._media_semaphore:
-            if isinstance(source, str):
-                file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
-                return file_bytes, "image/jpeg"
-            if isinstance(source, Attachment):
-                content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
-            else:
-                content_type = guess_type(source.url)[0] or "image/png"
-            file_bytes = await source.read()
-            return await asyncio.to_thread(
-                shrink_image_bytes, payload=file_bytes, content_type=content_type
-            )
+        if isinstance(source, str):
+            file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
+            return file_bytes, "image/jpeg"
+        if isinstance(source, Attachment):
+            content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
+        else:
+            content_type = guess_type(source.url)[0] or "image/png"
+        file_bytes = await source.read()
+        return await asyncio.to_thread(
+            shrink_image_bytes, payload=file_bytes, content_type=content_type
+        )
 
     def _answer_model_is_gemini(self) -> bool:
         """Whether the answer model reads Gemini Files-API URIs.

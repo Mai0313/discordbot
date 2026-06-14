@@ -758,29 +758,27 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     assert calls["n"] == 2
 
 
-async def test_media_semaphore_bounds_upload_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Concurrent Files-API uploads are capped by the shared media semaphore."""
+async def test_media_semaphore_bounds_media_io_concurrency() -> None:
+    """The shared semaphore caps the whole download+upload sequence, not just the upload.
+
+    Counting concurrency in the byte loader proves non-image downloads (which run before the
+    Gemini upload) are bounded too, so concurrent pipelines cannot buffer every file at once.
+    """
     builder = _media_builder()
     builder._media_semaphore = asyncio.Semaphore(2)
     state = {"active": 0, "peak": 0}
 
-    async def _slow_upload(file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
-        del file
+    async def _slow_load() -> tuple[bytes, str]:
         state["active"] += 1
         state["peak"] = max(state["peak"], state["active"])
         await asyncio.sleep(0.01)
         state["active"] -= 1
-        return SimpleNamespace(
-            name=config["display_name"],
-            uri=f"https://files.test/{config['display_name']}",
-            state=FileState.ACTIVE,
-            error=None,
-            expiration_time=datetime(2099, 1, 1, tzinfo=UTC),
-        )
+        return b"x", "image/png"
 
-    monkeypatch.setattr(builder.gemini_client.aio.files, "upload", _slow_upload)
     results = await asyncio.gather(*[
-        builder._upload_file(filename=f"f{index}.txt", data=b"x", content_type="text/plain")
+        builder._resolve_file_upload(
+            cache_key=f"k{index}", filename=f"f{index}", load_data=_slow_load
+        )
         for index in range(6)
     ])
 
