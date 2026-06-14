@@ -33,6 +33,7 @@ from discordbot.cogs._gen_reply.input import (
 )
 from discordbot.cogs._gen_reply.voice import (
     VOICE_MARKER,
+    VOICE_TIMEOUT_SECONDS,
     VoiceSynthesizer,
     strip_voice_marker,
     strip_partial_voice_marker,
@@ -876,8 +877,10 @@ class _FakeSpeech:
 
 
 def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
-    """A minimal AsyncOpenAI stand-in exposing client.audio.speech.create."""
-    return SimpleNamespace(audio=SimpleNamespace(speech=speech))
+    """A minimal AsyncOpenAI stand-in exposing client.audio.speech.create and with_options."""
+    client = SimpleNamespace(audio=SimpleNamespace(speech=speech))
+    client.with_options = lambda **_: client
+    return client
 
 
 async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
@@ -892,6 +895,8 @@ async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
     assert speech.calls[0]["input"] != "閉嘴"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
+    # The per-request timeout is applied so a slow clip cannot stall the message pipeline.
+    assert speech.calls[0]["timeout"] == VOICE_TIMEOUT_SECONDS
 
 
 async def test_voice_synthesizer_skips_overlong_text() -> None:

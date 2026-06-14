@@ -43,12 +43,13 @@ TTS_VOICE = "Zephyr"
 TTS_STYLE_DIRECTIVE = "Say the following in a male voice:"
 TTS_SPEED = 1.3
 
-# Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload limit.
-# No explicit request timeout on purpose: synthesis runs after the text reply is already on
-# screen and is per-message, so a slow clip only delays its own message, never others; the
-# SDK's own timeout backstops a genuine hang.
+# Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload limit,
+# and a single-shot request timeout so a slow/hung clip cannot keep this message's own pipeline
+# (its 🆗 reaction + memory scheduling) waiting. The synthesis is per-message and runs after the
+# text is already on screen, so the wait only delays its own message, never others.
 VOICE_MAX_INPUT_CHARS = 400
 VOICE_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+VOICE_TIMEOUT_SECONDS = 30.0
 
 
 def strip_voice_marker(*, text: str) -> tuple[str, bool]:
@@ -88,7 +89,7 @@ class VoiceSynthesizer(BaseModel):
 
     Holds the shared async client plus the fixed voice / style / speed config; `synthesize`
     renders one reply to WAV bytes or returns None on over-length input, an oversized clip,
-    or any provider error, so the caller always degrades to a plain text reply.
+    a timeout, or any provider error, so the caller always degrades to a plain text reply.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -114,16 +115,19 @@ class VoiceSynthesizer(BaseModel):
         if not spoken or len(spoken) > VOICE_MAX_INPUT_CHARS:
             return None
         try:
-            responses = await self.client.audio.speech.create(
+            # max_retries=0 so VOICE_TIMEOUT_SECONDS is a true ceiling: create's timeout is
+            # per-attempt, and the SDK would otherwise retry and multiply the wait.
+            responses = await self.client.with_options(max_retries=0).audio.speech.create(
                 input=f"{self.style_directive}\n\n{spoken}",
                 model=self.model_name,
                 voice=self.voice,
                 speed=self.speed,
                 extra_headers={"x-litellm-end-user-id": end_user_id},
+                timeout=VOICE_TIMEOUT_SECONDS,
             )
             audio = await responses.aread()
         except Exception:
-            # Best-effort: any provider error degrades to a plain text reply.
+            # Best-effort: a timeout or any provider error degrades to a plain text reply.
             logfire.warn("Voice synthesis failed; replying without audio")
             return None
         if len(audio) > VOICE_MAX_AUDIO_BYTES:
