@@ -44,9 +44,9 @@ TTS_STYLE_DIRECTIVE = "Say the following in a male voice:"
 TTS_SPEED = 1.3
 
 # Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload limit,
-# and a single-shot request timeout so a slow/hung clip cannot keep this message's own pipeline
-# (its 🆗 reaction + memory scheduling) waiting. The synthesis is per-message and runs after the
-# text is already on screen, so the wait only delays its own message, never others.
+# and a request timeout so a slow/hung clip cannot keep this message's own pipeline (its 🆗
+# reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text
+# is already on screen, so the wait only delays its own message, never others.
 VOICE_MAX_INPUT_CHARS = 400
 VOICE_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 VOICE_TIMEOUT_SECONDS = 30.0
@@ -115,9 +115,7 @@ class VoiceSynthesizer(BaseModel):
         if not spoken or len(spoken) > VOICE_MAX_INPUT_CHARS:
             return None
         try:
-            # max_retries=0 so VOICE_TIMEOUT_SECONDS is a true ceiling: create's timeout is
-            # per-attempt, and the SDK would otherwise retry and multiply the wait.
-            responses = await self.client.with_options(max_retries=0).audio.speech.create(
+            responses = await self.client.audio.speech.create(
                 input=f"{self.style_directive}\n\n{spoken}",
                 model=self.model_name,
                 voice=self.voice,

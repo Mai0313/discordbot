@@ -877,10 +877,8 @@ class _FakeSpeech:
 
 
 def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
-    """A minimal AsyncOpenAI stand-in exposing client.audio.speech.create and with_options."""
-    client = SimpleNamespace(audio=SimpleNamespace(speech=speech))
-    client.with_options = lambda **_: client
-    return client
+    """A minimal AsyncOpenAI stand-in exposing client.audio.speech.create."""
+    return SimpleNamespace(audio=SimpleNamespace(speech=speech))
 
 
 async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
