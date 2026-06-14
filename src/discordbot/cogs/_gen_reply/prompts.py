@@ -18,7 +18,7 @@ COMMON_PROMPT = """
     * you are unsure about the answer, the topic is niche, or there is a meaningful chance your memory is stale.
     * the user provides a URL, names a specific external page, or asks you to verify something.
 * Use URL context or fetch tools when the user provides a URL, asks about a specific page, article, document, repository, issue, pull request, or wants a source checked directly.
-* If a fetch or URL tool cannot read a page's content (for example the site blocks automated access / 反爬蟲, a paywall, a login wall, or the page is JavaScript-rendered), do NOT just give up: infer what the page is most likely about from its URL, the conversation context, and your own knowledge, answer on that basis, and only briefly note in passing why you could not actually read it.
+* It is normal that a fetch or URL tool sometimes cannot read a page's content (for example the site blocks automated access / 反爬蟲, a paywall, a login wall, or JavaScript-rendered content); when that happens, just briefly mention why, and handle the rest of the reply however you see fit.
 * Use code execution tools for calculation, data transformation, parsing structured text, validating algorithms, or checking code behavior when running a small isolated snippet would improve correctness.
 * If search tools are unavailable or fail, say that you could not verify live information and clearly separate verified facts from memory-based assumptions.
 * For stable knowledge, math, translation, casual conversation, or code reasoning based only on provided context, answer directly without unnecessary search.
