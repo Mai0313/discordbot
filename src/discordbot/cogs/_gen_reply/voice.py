@@ -9,9 +9,10 @@ the written reply and the spoken clip stay coherent (the model knows it is speak
 separate post-hoc classifier would not. Synthesis is best-effort: any failure leaves a
 normal text reply.
 
-The fierce tone rides in `TTS_STYLE_DIRECTIVE`, prepended to the input text, because the
-proxy's `instructions` parameter is silently ignored for this TTS model. `response_format`
-is intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
+The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it only fixes the voice gender and lets
+the tone follow the reply's own wording), prepended to the input text because the proxy's
+`instructions` parameter is silently ignored for this TTS model. `response_format` is
+intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
 """
 
 import re
@@ -34,14 +35,13 @@ _TRAILING_VOICE_MARKER_RE = re.compile(rf"[\s`]*{_MARKER_BODY}[\s`]*\Z", re.IGNO
 # remove a stray mid-reply marker WITHOUT eating the surrounding text (so words never join).
 _ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 
-# Tunable voice config (edit here). The voice is a single fixed timbre; the style directive
-# is the persona's aggressive delivery, prepended to every spoken reply (English on purpose:
-# Gemini TTS style prompting is documented in English and is read as style, not spoken).
+# Tunable voice config (edit here). The style directive only fixes the voice gender and lets
+# the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
+# distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
+# documented in English and is read as style, not spoken aloud).
 TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
 TTS_VOICE = "Zephyr"
-TTS_STYLE_DIRECTIVE = (
-    "Say the following in a very fierce, aggressive, impatient and sarcastic tone, loud and fast:"
-)
+TTS_STYLE_DIRECTIVE = "Say the following in a male voice:"
 TTS_SPEED = 1.3
 
 # Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload
@@ -104,7 +104,7 @@ class VoiceSynthesizer(BaseModel):
     )
     style_directive: str = Field(
         default=TTS_STYLE_DIRECTIVE,
-        description="Aggressive-delivery directive prepended to the spoken text.",
+        description="Style directive prepended to the spoken text (fixes voice gender).",
     )
     speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
 

@@ -52,10 +52,9 @@ REPLY_PROMPT = f"""
     * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
 * Long-term memory about the current server's community (culture, recurring topics, norms, running jokes) may also be provided as a context block; treat it the same way: background reference only, never recited, the current message always wins.
     * Its `## 成員稱呼` table maps community nicknames to member ids; when the conversation refers to a member by such a nickname, you may resolve it to that member and mention them with <@USER_ID> when it fits the reply, even if they have not spoken in the visible history.
-* Voice output switch: if this reply would hit harder said out loud in a fierce, agitated, sarcastic tone (e.g. roasting, scolding, an emotionally charged outburst), emit the marker `{VOICE_MARKER}` alone on the very last line, with nothing after it.
-    * Add it ONLY when you genuinely want to express this out loud; most ordinary replies do not need it, and omitting it is the norm.
-    * When you add it, write the reply as natural spoken lines, because it will be read aloud verbatim: do not describe what you would say (e.g. "I want to scold you"), say the actual words straight to them.
-    * The marker is a system-only switch: never explain it, mention it, or place it anywhere other than the final line.
+* Optional voice switch, use sparingly and entirely at your own judgment: most replies stay text-only. ONLY when this particular reply would clearly land better spoken aloud (a sharp roast, a scolding, a heated outburst) may you append `{VOICE_MARKER}` as the very last line, with nothing after it. Default to NOT adding it and decide case by case; never add it out of habit or on every reply.
+    * If you add it, write the reply as words meant to be said straight to them (it is read aloud verbatim), not a description of what you would say.
+    * The marker is a system-only switch: never explain or mention it, and put it nowhere but the final line.
 """
 
 MEMORY_SELECT_PROMPT = """
