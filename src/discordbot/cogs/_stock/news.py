@@ -1,14 +1,9 @@
 """AI-backed news generation for the simulated stock market."""
 
-from typing import cast
-import asyncio
-
 from openai import AsyncOpenAI
-import logfire
-from pydantic import Field, BaseModel, ConfigDict, ValidationError
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.utils.llm import litellm_call_kwargs
+from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT
@@ -34,8 +29,8 @@ class StockNewsAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: AsyncOpenAI
-    model: ModelSettings
+    client: AsyncOpenAI = Field(description="Async OpenAI client for the news generation call.")
+    model: ModelSettings = Field(description="Model settings for the news generation call.")
 
     async def generate(self, context: StockNewsGenerationContext) -> StockGeneratedNews | None:
         """Returns one generated news item, or `None` when the LLM path fails."""
@@ -57,42 +52,20 @@ class StockNewsAI(BaseModel):
             f"Latest previous headline: {context.latest_news_headline or 'None'}\n"
             "Write a plausible fictional event that fits this context."
         )
-        try:
-            async with asyncio.timeout(delay=STOCK_NEWS_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=STOCK_NEWS_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=StockNewsDraft,
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id="stock_news"),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Stock news AI request timed out; using deterministic fallback",
-                timeout_seconds=STOCK_NEWS_AI_TIMEOUT_SECONDS,
-                symbol=profile.symbol,
-            )
-            return None
-        except ValidationError:
-            logfire.warn("Stock news AI parse failed; using fallback", symbol=profile.symbol)
-            return None
-        except Exception:
-            logfire.warn(
-                "Stock news AI request failed; using deterministic fallback",
-                symbol=profile.symbol,
-                _exc_info=True,
-            )
-            return None
-        if responses.output_parsed is None:
-            logfire.warn("Stock news AI returned no parsed output", symbol=profile.symbol)
+        draft = await parse_responses_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=STOCK_NEWS_PROMPT,
+            user_text=user_text,
+            end_user_id="stock_news",
+            text_format=StockNewsDraft,
+            timeout_seconds=STOCK_NEWS_AI_TIMEOUT_SECONDS,
+        )
+        if draft is None:
             return None
         return StockGeneratedNews(
-            headline=responses.output_parsed.headline.strip(),
-            sentiment_bps=responses.output_parsed.sentiment_bps,
+            headline=draft.headline.strip(),
+            sentiment_bps=draft.sentiment_bps,
             source="ai",
             model=self.model.name,
         )

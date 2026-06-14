@@ -2,6 +2,7 @@
 
 import re
 import time
+from typing import cast
 import asyncio
 import contextlib
 
@@ -10,7 +11,11 @@ import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import (
+    ResponseStreamEvent,
+    ResponseCreatedEvent,
+    ResponseCompletedEvent,
+)
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
@@ -229,11 +234,14 @@ class ResponseStreamer(BaseModel):
             if response.type in {"response.created", "response.completed"}:
                 # Capture the model on `created` too so the usage footer never falls back
                 # to an empty model name (and $0.00000000) when a stream ends without a
-                # clean `completed` event. Usage only arrives on `completed`.
-                self.model_name = response.response.model
-                if response.response.usage:
-                    self.input_tokens += response.response.usage.input_tokens
-                    self.output_tokens += response.response.usage.output_tokens
+                # clean `completed` event. Usage only arrives on `completed`. Both events
+                # carry `.response`, but mypy cannot narrow the ~50-member event union on a
+                # set-membership test, so cast to the two that do before reading it.
+                event = cast("ResponseCreatedEvent | ResponseCompletedEvent", response)
+                self.model_name = event.response.model
+                if event.response.usage:
+                    self.input_tokens += event.response.usage.input_tokens
+                    self.output_tokens += event.response.usage.output_tokens
             elif response.type == "response.reasoning_summary_text.delta":
                 self._on_reasoning_delta(delta=response.delta)
             elif response.type == "response.output_text.delta":

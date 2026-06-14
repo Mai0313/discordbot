@@ -5,7 +5,7 @@ from typing import cast
 
 import nextcord
 from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
-from pydantic import BaseModel, ConfigDict, SkipValidation
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ui import Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
@@ -85,13 +85,19 @@ class _StockQuantitySubmission(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
-    interaction: SkipValidation[Interaction]
-    symbol: str
-    action: StockAction
-    owner_id: int
-    raw_quantity: str
-    message: SkipValidation[Message | None] = None
-    parent: SkipValidation[StockPublicView | None] = None
+    interaction: SkipValidation[Interaction] = Field(
+        description="Discord interaction that submitted the quantity."
+    )
+    symbol: str = Field(description="Stock symbol being operated on.")
+    action: StockAction = Field(description="Requested buy/cover or short/sell action.")
+    owner_id: int = Field(description="Discord user id allowed to operate this panel.")
+    raw_quantity: str = Field(description="Raw quantity text from the modal or preset.")
+    message: SkipValidation[Message | None] = Field(
+        default=None, description="Public stock message to edit in place, if any."
+    )
+    parent: SkipValidation[StockPublicView | None] = Field(
+        default=None, description="Originating view to stop after submission, if any."
+    )
 
 
 class StockMarketView(StockPublicView):

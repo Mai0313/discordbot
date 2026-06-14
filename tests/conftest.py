@@ -33,18 +33,14 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     """Per-test memory directory with reset process-local memory state."""
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
-    monkeypatch.setattr("discordbot.cogs._memory.store._scope_locks", {})
-    monkeypatch.setattr("discordbot.cogs._memory.store._scope_locks_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._regeneration_tasks", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._regeneration_loop", None)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._memory_semaphore_obj", None)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._memory_semaphore_loop", None)
+    # _scope_locks, _regeneration_tasks, and the memory semaphore are loop-local
+    # helpers that rebuild on the per-test event loop, so they need no manual reset.
     return memories_dir
 
 

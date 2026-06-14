@@ -12,15 +12,13 @@ let the model reason from the actual table state rather than fall back on a
 prescriptive script.
 """
 
-from typing import Final, cast
-import asyncio
+from typing import Final
 
 from openai import AsyncOpenAI
 import logfire
-from pydantic import BaseModel, ConfigDict
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.utils.llm import litellm_call_kwargs
+from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.games import (
     Card,
     BotAction,
@@ -98,13 +96,23 @@ class ShoeSummary(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    total_cards: int
-    rank_counts: dict[str, int]
-    ace_count: int
-    ten_value_count: int
-    low_card_count: int
-    neutral_card_count: int
-    high_card_count: int
+    total_cards: int = Field(description="Total cards left in the true remaining shoe.")
+    rank_counts: dict[str, int] = Field(
+        description="Remaining count per card rank in stable Blackjack rank order."
+    )
+    ace_count: int = Field(description="Number of aces left in the remaining shoe.")
+    ten_value_count: int = Field(
+        description="Number of ten-value cards (10/J/Q/K) left in the remaining shoe."
+    )
+    low_card_count: int = Field(
+        description="Number of low cards (2-6) left in the remaining shoe."
+    )
+    neutral_card_count: int = Field(
+        description="Number of neutral cards (7-9) left in the remaining shoe."
+    )
+    high_card_count: int = Field(
+        description="Number of high cards (aces plus ten-value) left in the remaining shoe."
+    )
 
 
 class DealerKnowledge(BaseModel):
@@ -117,8 +125,10 @@ class DealerKnowledge(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    up_card: str
-    up_value: int
+    up_card: str = Field(
+        description="The dealer's face-up card, exactly what a seated player sees."
+    )
+    up_value: int = Field(description="Blackjack value of the dealer up-card (ace counts as 11).")
 
 
 class DrawOdds(BaseModel):
@@ -126,12 +136,22 @@ class DrawOdds(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    total_draws: int
-    bust_probability: float
-    twenty_one_probability: float
-    seventeen_to_twenty_one_probability: float
-    five_card_non_bust_probability: float
-    five_card_twenty_one_probability: float
+    total_draws: int = Field(
+        description="Number of possible next cards (size of the remaining shoe)."
+    )
+    bust_probability: float = Field(description="Probability the next single card busts the hand.")
+    twenty_one_probability: float = Field(
+        description="Probability the next single card makes the hand total 21."
+    )
+    seventeen_to_twenty_one_probability: float = Field(
+        description="Probability the next single card leaves a total between 17 and 21."
+    )
+    five_card_non_bust_probability: float = Field(
+        description="Probability the next card reaches a five-plus-card hand without busting."
+    )
+    five_card_twenty_one_probability: float = Field(
+        description="Probability the next card reaches a five-plus-card hand totaling 21."
+    )
 
 
 class ActionAnalysis(BaseModel):
@@ -139,15 +159,38 @@ class ActionAnalysis(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    allowed_actions: tuple[BotAction, ...]
-    basic_strategy_action: BotAction
-    basic_strategy_reason: str
-    ev_analysis: ActionEvAnalysis | None = None
-    hit_odds: DrawOdds | None = None
-    double_odds: DrawOdds | None = None
-    stand_summary: str | None = None
-    split_summary: str | None = None
-    surrender_summary: str | None = None
+    allowed_actions: tuple[BotAction, ...] = Field(
+        description="Actions the bot is legally allowed to take this turn."
+    )
+    basic_strategy_action: BotAction = Field(
+        description="The deterministic hint action the bot would play this turn."
+    )
+    basic_strategy_reason: str = Field(
+        description="Short English explanation of the basic-strategy hint action."
+    )
+    ev_analysis: ActionEvAnalysis | None = Field(
+        default=None,
+        description="Per-action EV analysis from the EV engine, or None when unavailable.",
+    )
+    hit_odds: DrawOdds | None = Field(
+        default=None,
+        description="One-card draw odds for hitting, or None when hit is not allowed.",
+    )
+    double_odds: DrawOdds | None = Field(
+        default=None,
+        description="One-card draw odds for doubling, or None when double is not allowed.",
+    )
+    stand_summary: str | None = Field(
+        default=None,
+        description="Human-readable summary of standing, or None when not applicable.",
+    )
+    split_summary: str | None = Field(
+        default=None, description="Human-readable summary of splitting, or None when not allowed."
+    )
+    surrender_summary: str | None = Field(
+        default=None,
+        description="Human-readable summary of surrendering, or None when not allowed.",
+    )
 
 
 class BotPlayerActionContext(BaseModel):
@@ -155,10 +198,14 @@ class BotPlayerActionContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    information_boundary: str
-    shoe_summary: ShoeSummary
-    dealer: DealerKnowledge
-    action_analysis: ActionAnalysis
+    information_boundary: str = Field(
+        description="Text describing exactly which table information the bot is allowed to see."
+    )
+    shoe_summary: ShoeSummary = Field(description="Rank-level summary of the true remaining shoe.")
+    dealer: DealerKnowledge = Field(description="Up-card-only dealer state visible to the bot.")
+    action_analysis: ActionAnalysis = Field(
+        description="Computed reference data for the bot's action decision."
+    )
 
 
 class BotPlayerInsuranceContext(BaseModel):
@@ -171,15 +218,23 @@ class BotPlayerInsuranceContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    information_boundary: str
-    shoe_summary: ShoeSummary
-    dealer: DealerKnowledge
-    insurance_cost: int
-    insurance_payout: int
-    ten_value_probability: float
-    insurance_expected_value: float
-    insurance_recommendation: str
-    summary: str
+    information_boundary: str = Field(
+        description="Text describing exactly which table information the bot is allowed to see."
+    )
+    shoe_summary: ShoeSummary = Field(description="Rank-level summary of the true remaining shoe.")
+    dealer: DealerKnowledge = Field(description="Up-card-only dealer state visible to the bot.")
+    insurance_cost: int = Field(description="Cost in currency to take the insurance side bet.")
+    insurance_payout: int = Field(description="Payout in currency if the insurance bet wins.")
+    ten_value_probability: float = Field(
+        description="Ten-value card fraction of the remaining shoe used to price insurance."
+    )
+    insurance_expected_value: float = Field(
+        description="Expected value in currency of taking insurance at the current shoe density."
+    )
+    insurance_recommendation: str = Field(
+        description="Deterministic recommendation, 'take' or 'decline', from the shoe density."
+    )
+    summary: str = Field(description="Human-readable summary of the insurance pricing analysis.")
 
 
 _HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
@@ -832,17 +887,31 @@ class BotActionReasonRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    action: BotAction
-    hand_repr: str
-    hand_total: int
-    dealer_up: Card | None
-    allowed_actions: tuple[BotAction, ...]
-    bet: int
-    balance_remaining: int
-    finance: BotFinancialContext
-    other_players: list[OtherPlayerView]
-    own_other_hands: list[str]
-    action_context: BotPlayerActionContext | None
+    action: BotAction = Field(description="The action already chosen by the EV engine to narrate.")
+    hand_repr: str = Field(description="Text representation of the bot's active hand.")
+    hand_total: int = Field(description="Best total of the bot's active hand.")
+    dealer_up: Card | None = Field(
+        description="The dealer's face-up card, or None when not yet dealt."
+    )
+    allowed_actions: tuple[BotAction, ...] = Field(
+        description="Actions the bot was legally allowed to take this turn."
+    )
+    bet: int = Field(description="Current wager on the bot's active hand.")
+    balance_remaining: int = Field(
+        description="Bot balance still uncommitted after current wagers."
+    )
+    finance: BotFinancialContext = Field(
+        description="The bot's lifetime and daily financial state."
+    )
+    other_players: list[OtherPlayerView] = Field(
+        description="Visible table state of the other seated players."
+    )
+    own_other_hands: list[str] = Field(
+        description="Text representations of the bot's other split hands, if any."
+    )
+    action_context: BotPlayerActionContext | None = Field(
+        description="Full computed action context, or None when unavailable."
+    )
 
 
 class BotInsuranceReasonRequest(BaseModel):
@@ -850,13 +919,23 @@ class BotInsuranceReasonRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    take_insurance: bool
-    dealer_up: Card | None
-    hand_repr: str
-    bet: int
-    finance: BotFinancialContext
-    other_players: list[OtherPlayerView]
-    insurance_context: BotPlayerInsuranceContext | None
+    take_insurance: bool = Field(
+        description="The insurance decision already made, True to take it, to narrate."
+    )
+    dealer_up: Card | None = Field(
+        description="The dealer's face-up card, or None when not yet dealt."
+    )
+    hand_repr: str = Field(description="Text representation of the bot's opening hand.")
+    bet: int = Field(description="The bot's main wager this round.")
+    finance: BotFinancialContext = Field(
+        description="The bot's lifetime and daily financial state."
+    )
+    other_players: list[OtherPlayerView] = Field(
+        description="Visible table state of the other seated players."
+    )
+    insurance_context: BotPlayerInsuranceContext | None = Field(
+        description="Full computed insurance context, or None when unavailable."
+    )
 
 
 class BotPlayerAI(BaseModel):
@@ -869,8 +948,10 @@ class BotPlayerAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: AsyncOpenAI
-    model: ModelSettings
+    client: AsyncOpenAI = Field(description="The shared AsyncOpenAI client.")
+    model: ModelSettings = Field(
+        description="Slow-model settings for strategic Blackjack reasoning."
+    )
 
     async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:
         """Returns a Traditional Chinese reason for the already-chosen action.
@@ -899,31 +980,16 @@ class BotPlayerAI(BaseModel):
             f"allowed_actions: [{', '.join(request.allowed_actions)}]\n\n"
             f"{format_action_context(context=request.action_context)}"
         )
-        try:
-            async with asyncio.timeout(delay=BOT_ACTION_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=BOT_PLAYER_ACTION_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=BotPlayerActionDecision,
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id=_ACTION_END_USER_ID),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Bot action reason narration timed out; using template",
-                timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
-            )
-            return template
-        except Exception:
-            logfire.warn("Bot action reason narration failed; using template", _exc_info=True)
-            return template
-        if responses.output_parsed is None:
-            return template
-        return responses.output_parsed.reason
+        decision = await parse_responses_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=BOT_PLAYER_ACTION_PROMPT,
+            user_text=user_text,
+            end_user_id=_ACTION_END_USER_ID,
+            text_format=BotPlayerActionDecision,
+            timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
+        )
+        return decision.reason if decision is not None else template
 
     async def narrate_bot_insurance_reason(self, *, request: BotInsuranceReasonRequest) -> str:
         """Returns a Traditional Chinese reason for the already-made insurance choice.
@@ -948,28 +1014,13 @@ class BotPlayerAI(BaseModel):
             f"{_format_other_players_block(other_players=request.other_players)}\n\n"
             f"{format_insurance_context(context=request.insurance_context)}"
         )
-        try:
-            async with asyncio.timeout(delay=BOT_INSURANCE_AI_TIMEOUT_SECONDS):
-                responses = await self.client.responses.parse(
-                    model=self.model.name,
-                    instructions=BOT_PLAYER_INSURANCE_PROMPT,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=BotPlayerInsuranceDecision,
-                    reasoning=self.model.reasoning,
-                    **litellm_call_kwargs(end_user_id=_INSURANCE_END_USER_ID),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Bot insurance reason narration timed out; using template",
-                timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
-            )
-            return template
-        except Exception:
-            logfire.warn("Bot insurance reason narration failed; using template", _exc_info=True)
-            return template
-        if responses.output_parsed is None:
-            return template
-        return responses.output_parsed.reason
+        decision = await parse_responses_or_none(
+            client=self.client,
+            model=self.model,
+            instructions=BOT_PLAYER_INSURANCE_PROMPT,
+            user_text=user_text,
+            end_user_id=_INSURANCE_END_USER_ID,
+            text_format=BotPlayerInsuranceDecision,
+            timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
+        )
+        return decision.reason if decision is not None else template

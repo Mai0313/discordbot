@@ -23,9 +23,16 @@ class ModelPriceEntry(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    input_cost_per_token: float = Field(default=0.0)
-    output_cost_per_token: float = Field(default=0.0)
-    supported_modalities: list[str] = Field(default=["text", "image"])
+    input_cost_per_token: float = Field(
+        default=0.0, description="Per-token input price in USD; 0.0 when the model is unknown."
+    )
+    output_cost_per_token: float = Field(
+        default=0.0, description="Per-token output price in USD; 0.0 when the model is unknown."
+    )
+    supported_modalities: list[str] = Field(
+        default=["text", "image"],
+        description="Input modalities the model accepts; defaults to text and image.",
+    )
 
 
 @cache

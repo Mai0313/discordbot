@@ -2,14 +2,12 @@
 
 import re
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
-import asyncio
 
 from openai import AsyncOpenAI
-import logfire
-from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
+from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.utils.llm import litellm_call_kwargs
+from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
@@ -177,14 +175,30 @@ class MemoryExtractorAI(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI]
-    extract_model: ModelSettings
-    consolidate_model: ModelSettings
-    evaluate_model: ModelSettings | None = None
-    phase1_prompt: str = PHASE1_PROMPT
-    evaluator_prompt: str = PHASE1_EVALUATOR_PROMPT
-    consolidate_prompt: str = PHASE2_PROMPT
-    compaction_block: str = PHASE2_COMPACTION_BLOCK
+    client: SkipValidation[AsyncOpenAI] = Field(
+        description="Async OpenAI client for the Responses API memory calls."
+    )
+    extract_model: ModelSettings = Field(description="Model running the phase-1 extraction call.")
+    consolidate_model: ModelSettings = Field(
+        description="Model running the phase-2 consolidation call."
+    )
+    evaluate_model: ModelSettings | None = Field(
+        default=None, description="Optional model for the phase-1.5 evaluator review."
+    )
+    phase1_prompt: str = Field(
+        default=PHASE1_PROMPT, description="Instructions for the phase-1 extraction call."
+    )
+    evaluator_prompt: str = Field(
+        default=PHASE1_EVALUATOR_PROMPT,
+        description="Instructions for the phase-1.5 evaluator call.",
+    )
+    consolidate_prompt: str = Field(
+        default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
+    )
+    compaction_block: str = Field(
+        default=PHASE2_COMPACTION_BLOCK,
+        description="Extra block appended to the consolidation prompt when compacting.",
+    )
 
     async def extract(self, subject: str, transcript: str) -> RawMemoryDraft | None:
         """Returns the phase-1 raw memory draft, or None when the LLM path fails.
@@ -253,7 +267,7 @@ class MemoryExtractorAI(BaseModel):
             update={"memory_markdown": redact_secrets(text=result.memory_markdown).strip()}
         )
 
-    async def _parse(  # noqa: PLR0913 -- one shared Responses call surface for both phases
+    async def _parse(  # noqa: PLR0913 -- thin delegate mirroring the 3 phase call sites
         self,
         model: ModelSettings,
         instructions: str,
@@ -262,53 +276,22 @@ class MemoryExtractorAI(BaseModel):
         timeout_seconds: float,
         end_user_label: str,
     ) -> _OutputT | None:
-        """Runs one structured Responses API call, returning None on any failure."""
-        try:
-            async with asyncio.timeout(delay=timeout_seconds):
-                responses = await self.client.responses.parse(
-                    model=model.name,
-                    instructions=instructions,
-                    input=cast(
-                        "ResponseInputParam",
-                        [EasyInputMessageParam(role="user", content=user_text)],
-                    ),
-                    text_format=text_format,
-                    reasoning=model.reasoning,
-                    **litellm_call_kwargs(end_user_id=end_user_label),
-                )
-        except TimeoutError:
-            logfire.warn(
-                "Memory LLM request timed out; skipping update",
-                timeout_seconds=timeout_seconds,
-                end_user_label=end_user_label,
-            )
-            return None
-        except ValidationError:
-            # The model returned no text output (e.g. safety filter); parse raises
-            # before output_parsed can be inspected, same as RouteDecision handling.
-            logfire.warn("Memory LLM parse failed; skipping update", end_user_label=end_user_label)
-            return None
-        except Exception:
-            logfire.warn(
-                "Memory LLM request failed; skipping update",
-                end_user_label=end_user_label,
-                _exc_info=True,
-            )
-            return None
-        if responses.status == "incomplete":
-            # The response hit the answer model's own output-token ceiling (the
-            # memory calls set no explicit lower cap). A truncated JSON body
-            # already fails parsing above, but a model that closed the JSON
-            # early can still pass the `v1` header check downstream with a
-            # silently amputated memory file; refuse it so raw entries are
-            # kept for retry instead.
-            logfire.warn(
-                "Memory LLM response incomplete; skipping update",
-                end_user_label=end_user_label,
-                incomplete_details=str(responses.incomplete_details),
-            )
-            return None
-        return responses.output_parsed
+        """Runs one structured Responses API call, returning None on any failure.
+
+        Delegates to the shared `parse_responses_or_none`, which owns the call surface,
+        the timeout, and the degrade-to-None handling (timeout, refused output, an
+        incomplete/truncated response — the last matters here because a model that closed
+        the JSON early could otherwise pass the `v1` header check with an amputated file).
+        """
+        return await parse_responses_or_none(
+            client=self.client,
+            model=model,
+            instructions=instructions,
+            user_text=user_text,
+            end_user_id=end_user_label,
+            text_format=text_format,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def transcript_from_messages(message_list: list[EasyInputMessageParam], full_reply: str) -> str:

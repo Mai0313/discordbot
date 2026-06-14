@@ -17,8 +17,7 @@ from random import Random, SystemRandom
 from typing import Any, Final
 import asyncio
 from datetime import datetime
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager
 
 import logfire
 from sqlalchemy import (
@@ -60,7 +59,7 @@ from discordbot.typings.fishing import (
     FishGradeConfigUpsert,
 )
 from discordbot.cogs._fishing.catch import roll_catch
-from discordbot.utils.asyncio_locks import LoopLocalLock
+from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger, stored_int_to_text
 from discordbot.cogs._economy.database import (
@@ -72,9 +71,7 @@ from discordbot.cogs._economy.database import (
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
-_angler_locks: dict[int, asyncio.Lock] = {}
-_angler_lock_refcounts: dict[int, int] = {}
-_angler_locks_loop: asyncio.AbstractEventLoop | None = None
+_angler_locks = KeyedLockManager[int]()
 _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 
 
@@ -101,35 +98,9 @@ def _current_schema_lock() -> asyncio.Lock:
     return _schema_lock.get()
 
 
-@asynccontextmanager
-async def _angler_lock(user_id: int) -> AsyncIterator[None]:
+def _angler_lock(user_id: int) -> AbstractAsyncContextManager[None]:
     """Returns a per-user fishing mutation lock bound to the current event loop."""
-    global _angler_locks_loop  # noqa: PLW0603 -- loop-local lock map
-    loop = asyncio.get_running_loop()
-    if _angler_locks_loop is not loop:
-        _angler_locks.clear()
-        _angler_lock_refcounts.clear()
-        _angler_locks_loop = loop
-    lock = _angler_locks.get(user_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _angler_locks[user_id] = lock
-    _angler_lock_refcounts[user_id] = _angler_lock_refcounts.get(user_id, 0) + 1
-    acquired = False
-    try:
-        await lock.acquire()
-        acquired = True
-        yield
-    finally:
-        if acquired:
-            lock.release()
-        refcount = _angler_lock_refcounts.get(user_id, 1) - 1
-        if refcount <= 0:
-            _angler_lock_refcounts.pop(user_id, None)
-            if _angler_locks.get(user_id) is lock:
-                _angler_locks.pop(user_id, None)
-        else:
-            _angler_lock_refcounts[user_id] = refcount
+    return _angler_locks.hold(key=user_id)
 
 
 def open_fishing_session() -> AsyncSession:

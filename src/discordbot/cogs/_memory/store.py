@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
+from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.cogs._memory.constants import (
     RAW_FILE_MAX_BYTES,
     DETAIL_FILE_MAX_BYTES,
@@ -46,10 +47,9 @@ _IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
 # Capturing variant used by `read_main_identity` to recover the stored line.
 _IDENTITY_CAPTURE_RE = re.compile(r"^v1\n([^\n]*\[id: \d+\][^\n]*)\n")
 
-# Process-local registries keyed by scope; tests reset them through the
-# conftest fixture.
-_scope_locks: dict[str, asyncio.Lock] = {}
-_scope_locks_loop: asyncio.AbstractEventLoop | None = None
+# Per-scope file-write locks, rebuilt per event loop by the shared registry.
+_scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
+# Manual-clear timestamps; monotonic, so it is not loop-keyed and tests reset it.
 _cleared_at: dict[str, float] = {}
 
 
@@ -98,12 +98,7 @@ def _read_text(path: Path) -> str:
 
 def scope_lock(scope: str) -> asyncio.Lock:
     """Returns the per-scope lock that serializes memory file writes."""
-    global _scope_locks_loop  # noqa: PLW0603 -- process-local lock registry keyed by loop
-    loop = asyncio.get_running_loop()
-    if _scope_locks_loop is not loop:
-        _scope_locks.clear()
-        _scope_locks_loop = loop
-    return _scope_locks.setdefault(scope, asyncio.Lock())
+    return _scope_locks.setdefault(key=scope, default=asyncio.Lock())
 
 
 def mark_cleared(scope: str) -> None:

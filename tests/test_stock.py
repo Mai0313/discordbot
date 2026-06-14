@@ -144,16 +144,8 @@ async def stock_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{stock_db_path}")
     monkeypatch.setattr(stock_db, "_engine", engine)
     monkeypatch.setattr(stock_db, "_schema_ready_for", None)
-    stock_db._operation_locks.clear()
-    stock_db._operation_lock_refcounts.clear()
-    monkeypatch.setattr(stock_db, "_operation_locks_loop", None)
-    stock_db._market_locks.clear()
-    stock_db._market_lock_refcounts.clear()
-    monkeypatch.setattr(stock_db, "_market_locks_loop", None)
-    monkeypatch.setattr(stock_db, "_news_generation_lock", None)
-    monkeypatch.setattr(stock_db, "_news_generation_lock_loop", None)
-    monkeypatch.setattr(stock_db, "_news_provider_semaphore", None)
-    monkeypatch.setattr(stock_db, "_news_provider_semaphore_loop", None)
+    # The operation / market / news locks are loop-local helpers that rebuild on the
+    # per-test event loop, so they need no manual reset here.
     yield
     await engine.dispose()
 
@@ -1768,8 +1760,7 @@ async def test_stock_concurrent_trades_do_not_reuse_stale_position(
     assert sum(result.success for result in results) == 1
     detail = await stock_db.get_stock_detail(symbol=BCAT_SYMBOL, user_id=1)
     assert detail.position.long_shares == 1
-    assert stock_db._operation_locks == {}
-    assert stock_db._operation_lock_refcounts == {}
+    assert stock_db._operation_locks.is_empty
 
 
 async def asyncio_gather_stock_buys() -> tuple[StockSettlementResult, StockSettlementResult]:

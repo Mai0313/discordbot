@@ -120,13 +120,18 @@ repos:
     rev: v2.1.0
     hooks:
       - id: mypy
+        exclude: '^(tests|scripts)/'
         additional_dependencies:
           - "Pydantic"
-          - "Types-PyYAML"
           - "Types-requests"
           - "Types-urllib3"
-          - "Types-redis"
-          - "Types-attrs"
+          - "openai>=2.30.0"
+          - "google-genai>=2.7.0"
+          - "sqlalchemy[asyncio]>=2.0.48"
+          - "pydantic-settings>=2.13.1"
+          - "pillow>=12.2.0"
+          - "logfire>=4.33.0"
+          - "rich>=14.3.3"
 
   # - repo: local
   #   hooks:

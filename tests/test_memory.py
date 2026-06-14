@@ -1468,7 +1468,7 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
 
     assert scheduled is True
     # The actual rebuild runs as a background task; await it to observe the write.
-    await pipeline._regeneration_tasks[USER_SCOPE]
+    await pipeline._regeneration_tasks.get(key=USER_SCOPE)
     assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n背景重建後的記憶"
 
 
@@ -1495,7 +1495,7 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     # A rebuild already in flight must not double-schedule the whole-file rewrite.
     assert second is False
     release.set()
-    await pipeline._regeneration_tasks[USER_SCOPE]
+    await pipeline._regeneration_tasks.get(key=USER_SCOPE)
 
 
 def test_paginate_on_lines_single_page_passthrough() -> None:
