@@ -101,9 +101,8 @@ dev = [
     "google-antigravity",
     "ipykernel",
     "ipywidgets",
-    "litellm[proxy]",
     "notebook",
-    "openai-agents[litellm]",
+    "openai-agents[litellm]>=0.17.5",
     "poethepoet",
     "pre-commit",
 ]
