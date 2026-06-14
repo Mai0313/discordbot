@@ -108,6 +108,18 @@ class RuntimeModelCatalog(BaseModel):
         return video_model
 
     @property
+    def tts_model(self) -> ModelSettings:
+        """The model settings for spoken-reply text-to-speech.
+
+        Callers: `VoiceSynthesizer` (via `ReplyGeneratorCogs.voice_synthesizer`).
+
+        Returns:
+            Model settings whose name is dispatched on the `audio.speech` endpoint to
+            render a fierce QA reply to a voice clip. `effort` is unused for TTS.
+        """
+        return ModelSettings(name="gemini-3.1-flash-tts-preview")
+
+    @property
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 

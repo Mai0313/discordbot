@@ -56,6 +56,7 @@ nav:
                   - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
+                  - voice: Reference/discordbot/cogs/_gen_reply/voice.md
               - _help:
                   - content: Reference/discordbot/cogs/_help/content.md
                   - presentation: Reference/discordbot/cogs/_help/presentation.md
@@ -105,6 +106,7 @@ nav:
               - stock: Reference/discordbot/typings/stock.md
           - utils:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
+              - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
               - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
@@ -134,6 +136,7 @@ nav:
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md
       - video_dev: Scripts/video_dev.md
+      - voice_dev: Scripts/voice_dev.md
   # <<< auto-generated nav end
 
 theme:

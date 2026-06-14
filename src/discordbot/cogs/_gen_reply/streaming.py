@@ -1,5 +1,6 @@
 """Streams a Responses API reply onto a Discord message."""
 
+from io import BytesIO
 import re
 import time
 from typing import cast
@@ -9,7 +10,7 @@ import contextlib
 from openai import AsyncStream
 import logfire
 import nextcord
-from nextcord import Message
+from nextcord import File, Message
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 from openai.types.responses import (
@@ -21,6 +22,11 @@ from openai.types.responses import (
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.economy import CHAT_REWARD_MAX_PER_REPLY, CHAT_REWARD_TOKEN_DIVISOR
 from discordbot.utils.model_pricing import get_token_rates
+from discordbot.cogs._gen_reply.voice import (
+    VoiceSynthesizer,
+    strip_voice_marker,
+    strip_partial_voice_marker,
+)
 from discordbot.cogs._economy.database import credit_with_repayment
 from discordbot.cogs._economy.presentation import currency_text
 
@@ -76,6 +82,18 @@ class ResponseStreamer(BaseModel):
         default_factory=list,
         description="Labels of users whose stored memory was injected, for the footer.",
     )
+    voice_synthesizer: SkipValidation[VoiceSynthesizer | None] = Field(
+        default=None,
+        description="TTS engine for spoken replies; None disables voice for this reply.",
+    )
+    voice_requested: bool = Field(
+        default=False,
+        description="Whether the answer model appended the voice marker to this reply.",
+    )
+    voice_text: str = Field(
+        default="",
+        description="Marker-stripped, footer-less reply text used as the spoken-clip input.",
+    )
     created_at: float = Field(
         default_factory=time.monotonic,
         description=(
@@ -120,7 +138,7 @@ class ResponseStreamer(BaseModel):
         fit one Discord message, so a long think never hits the 2000-char limit.
         """
         if self.content_started:
-            return self.stored_content[:DISCORD_MESSAGE_LIMIT]
+            return strip_partial_voice_marker(text=self.stored_content)[:DISCORD_MESSAGE_LIMIT]
         if not self.reasoning_content:
             return ""
         # Mentions are escaped because this transient text is never meant to ping;
@@ -209,6 +227,9 @@ class ResponseStreamer(BaseModel):
             reply = await self._reply_or_send(content=parent_content)
         else:
             await reply.edit(content=parent_content)
+        # Track the parent reply so a later voice attach edits the right message even when
+        # the reply was created here (no preview snapshot ran before finalize).
+        self.reply = reply
         previous = reply
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
@@ -288,6 +309,11 @@ class ResponseStreamer(BaseModel):
         )
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
+        # The answer model may append the voice marker to ask for a spoken clip. Strip it
+        # before the footer is built or anything is written, and keep the cleaned text as the
+        # spoken-clip input so the audio matches the visible reply (without the usage footer).
+        self.stored_content, self.voice_requested = strip_voice_marker(text=self.stored_content)
+        self.voice_text = self.stored_content
         if result.new_balance is not None:
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
@@ -314,7 +340,25 @@ class ResponseStreamer(BaseModel):
         )
         self.stored_content += usage_footer
 
+        await self._maybe_attach_voice()
         return self.stored_content
+
+    async def _maybe_attach_voice(self) -> None:
+        """Renders the reply to audio and edits it onto the sent message when requested.
+
+        Runs only when the answer model asked for a spoken reply and voice is enabled for
+        this turn. The text reply is already on screen, so synthesis adds no latency to it;
+        the clip is best-effort and any failure (or a too-long reply) leaves a text reply.
+        """
+        if self.voice_synthesizer is None or not self.voice_requested or self.reply is None:
+            return
+        audio = await self.voice_synthesizer.synthesize(
+            text=self.voice_text, end_user_id=self.message.author.name
+        )
+        if audio is None:
+            return
+        with contextlib.suppress(Exception):
+            await self.reply.edit(file=File(fp=BytesIO(audio), filename="reply.wav"))
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
