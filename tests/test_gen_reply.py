@@ -747,15 +747,37 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     builder = _media_builder()
     url = "https://example.test/dead.png"
 
-    assert await builder.image_to_part(source=url, cache_key=url) is None
+    assert await builder.image_to_part(source=url, cache_key=url, allow_dead_cache=True) is None
     assert calls["n"] == 1
     # Within the TTL the source is skipped without another fetch.
-    assert await builder.image_to_part(source=url, cache_key=url) is None
+    assert await builder.image_to_part(source=url, cache_key=url, allow_dead_cache=True) is None
     assert calls["n"] == 1
     # Backdating the marker past the TTL retries the fetch exactly once (self-heal).
     builder._dead_sources[url] = datetime.now(tz=UTC) - DEAD_SOURCE_TTL - timedelta(seconds=1)
+    assert await builder.image_to_part(source=url, cache_key=url, allow_dead_cache=True) is None
+    assert calls["n"] == 2
+
+
+async def test_non_history_render_does_not_dead_cache_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Current/reference renders (allow_dead_cache off) retry a transient failure, not poison it."""
+    calls = {"n": 0}
+
+    def _raise_get_image_data(image_file: str) -> bytes:
+        del image_file
+        calls["n"] += 1
+        raise RuntimeError("transient blip")
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_image_data", _raise_get_image_data)
+    builder = _media_builder()
+    url = "https://example.test/fresh.png"
+
+    # Default path (current/reference): each call re-attempts the fetch and never marks dead.
+    assert await builder.image_to_part(source=url, cache_key=url) is None
     assert await builder.image_to_part(source=url, cache_key=url) is None
     assert calls["n"] == 2
+    assert url not in builder._dead_sources
 
 
 async def test_media_semaphore_bounds_media_io_concurrency() -> None:
@@ -2594,10 +2616,10 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     rendered_urls: list[str] = []
 
     async def fake_image_to_part(
-        self: object, source: object, cache_key: object
+        self: object, source: object, cache_key: object, allow_dead_cache: bool = False
     ) -> tuple[dict[str, str], datetime]:
         """Records each rendered source instead of hitting the network."""
-        del self, cache_key
+        del self, cache_key, allow_dead_cache
         rendered_urls.append(str(source))
         return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
 

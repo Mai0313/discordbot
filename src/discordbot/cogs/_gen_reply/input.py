@@ -372,7 +372,11 @@ class MessageInputBuilder(BaseModel):
         return False, None
 
     async def _resolve_file_upload(
-        self, cache_key: int | str, filename: str, load_data: "FileBytesLoader"
+        self,
+        cache_key: int | str,
+        filename: str,
+        load_data: "FileBytesLoader",
+        allow_dead_cache: bool = False,
     ) -> tuple[str, datetime] | None:
         """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
 
@@ -392,7 +396,10 @@ class MessageInputBuilder(BaseModel):
         handled, adopted = await self._repoll_pending_upload(cache_key=cache_key)
         if handled:
             return adopted
-        if self._is_known_dead(cache_key=cache_key):
+        # The dead-source skip is for history scrollback only (an expired CDN url that
+        # re-fails every turn); current/reference renders never opt in, so one transient
+        # failure on a just-posted attachment is not poisoned for the next reply.
+        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
         # One media slot spans the whole download + upload (+ activation poll) for every
         # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
@@ -402,7 +409,8 @@ class MessageInputBuilder(BaseModel):
                 data, content_type = await load_data()
             except Exception:
                 logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
-                self._mark_dead(cache_key=cache_key)
+                if allow_dead_cache:
+                    self._mark_dead(cache_key=cache_key)
                 return None
             result = await self._upload_file(
                 filename=filename, data=data, content_type=content_type
@@ -534,7 +542,10 @@ class MessageInputBuilder(BaseModel):
         return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
 
     async def image_to_part(
-        self, source: Attachment | StickerItem | str, cache_key: int | str
+        self,
+        source: Attachment | StickerItem | str,
+        cache_key: int | str,
+        allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
         """Converts an image source to a content part plus its cache expiry.
 
@@ -553,6 +564,7 @@ class MessageInputBuilder(BaseModel):
                 cache_key=cache_key,
                 filename=source_name,
                 load_data=lambda: self._load_image_bytes(source=source),
+                allow_dead_cache=allow_dead_cache,
             )
             if uploaded is None:
                 return None
@@ -574,7 +586,7 @@ class MessageInputBuilder(BaseModel):
         return image_part, self._inline_expiry()
 
     async def attachment_to_part(
-        self, attachment: Attachment, cache_key: int | str
+        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> tuple[RenderedPart, datetime] | None:
         """Converts a file attachment to a content part plus its cache expiry.
 
@@ -596,7 +608,10 @@ class MessageInputBuilder(BaseModel):
 
         if self._answer_model_is_gemini():
             uploaded = await self._resolve_file_upload(
-                cache_key=cache_key, filename=attachment.filename, load_data=_load
+                cache_key=cache_key,
+                filename=attachment.filename,
+                load_data=_load,
+                allow_dead_cache=allow_dead_cache,
             )
             if uploaded is None:
                 return None
@@ -700,7 +715,7 @@ class MessageInputBuilder(BaseModel):
         return "image"
 
     async def _render_attachment_parts(
-        self, sources: list[AttachmentSource]
+        self, sources: list[AttachmentSource], allow_dead_cache: bool = False
     ) -> list[tuple[RenderedPart, datetime] | None]:
         """Renders every supported source to a content part + expiry; failures stay None.
 
@@ -710,23 +725,35 @@ class MessageInputBuilder(BaseModel):
         tasks: list[Coroutine[object, object, tuple[RenderedPart, datetime] | None]] = []
         for source in sources:
             if source.kind == "image":
-                tasks.append(self.image_to_part(source=source.handle, cache_key=source.cache_key))
+                tasks.append(
+                    self.image_to_part(
+                        source=source.handle,
+                        cache_key=source.cache_key,
+                        allow_dead_cache=allow_dead_cache,
+                    )
+                )
             else:
                 # Only attachments are ever classified as files; stickers and embeds are images.
                 tasks.append(
                     self.attachment_to_part(
-                        attachment=cast("Attachment", source.handle), cache_key=source.cache_key
+                        attachment=cast("Attachment", source.handle),
+                        cache_key=source.cache_key,
+                        allow_dead_cache=allow_dead_cache,
                     )
                 )
         return list(await asyncio.gather(*tasks))
 
     async def get_attachment_parts(
-        self, message: Message, sources: list[AttachmentSource] | None = None
+        self,
+        message: Message,
+        sources: list[AttachmentSource] | None = None,
+        allow_dead_cache: bool = False,
     ) -> list[RenderedPart]:
         """Extracts attachment content parts from a message, with a per-message cache.
 
         Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
-        they are collected and gated here so direct callers keep working.
+        they are collected and gated here so direct callers keep working. `allow_dead_cache`
+        is opt-in for history scrollback only (see `_resolve_file_upload`).
         """
         if sources is None:
             sources = self._supported_sources(
@@ -749,7 +776,9 @@ class MessageInputBuilder(BaseModel):
             # values are immutable strings, so the copies stay cheap.
             return [part.copy() for part in cached[1]]
 
-        rendered = await self._render_attachment_parts(sources=sources)
+        rendered = await self._render_attachment_parts(
+            sources=sources, allow_dead_cache=allow_dead_cache
+        )
         resolved = [item[0] for item in rendered if item is not None]
         # A None entry means a download/convert or upload failed; skip caching so the
         # next reply retries instead of pinning a degraded render. The entry's expiry is
@@ -835,14 +864,23 @@ class MessageInputBuilder(BaseModel):
             logfire.warn(f"Failed to render message {message.id} for routing", _exc_info=True)
             return EasyInputMessageParam(role="user", content="")
 
-    async def process_single_message(self, message: Message) -> EasyInputMessageParam:
-        """Processes a single Discord message into a Responses API input message."""
+    async def process_single_message(
+        self, message: Message, allow_dead_cache: bool = False
+    ) -> EasyInputMessageParam:
+        """Processes a single Discord message into a Responses API input message.
+
+        `allow_dead_cache` is set only for history scrollback, where an expired CDN source
+        re-fails every turn; current/reference renders leave it off so a transient failure
+        on a just-posted attachment is retried on the next reply.
+        """
         try:
             content = await self.get_cleaned_content(message=message)
             sources = self._supported_sources(
                 sources=self.collect_attachment_sources(message=message)
             )
-            attachment_parts = await self.get_attachment_parts(message=message, sources=sources)
+            attachment_parts = await self.get_attachment_parts(
+                message=message, sources=sources, allow_dead_cache=allow_dead_cache
+            )
             return self._assemble_input_message(
                 message=message,
                 content=content,
