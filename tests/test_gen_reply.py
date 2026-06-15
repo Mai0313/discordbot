@@ -1315,14 +1315,6 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
 
-    # No Gemini client (GEMINI_API_KEY unconfigured): the file is dropped, not a crash.
-    no_client = GeminiFileUploader()
-    no_client.__dict__["gemini_client"] = None
-    assert (
-        await no_client._upload_file(filename="x.txt", data=b"x", content_type="text/plain")
-        is None
-    )
-
 
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
     monkeypatch: pytest.MonkeyPatch,
@@ -1381,21 +1373,6 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
-
-
-def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A deployment without GEMINI_API_KEY gets a None client, not a hard failure."""
-
-    def _raise(config: object) -> object:
-        """Mimics genai.Client refusing to build without a key."""
-        del config
-        raise ValueError("No API key was provided.")
-
-    monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.create_gemini_client", _raise
-    )
-    uploader = GeminiFileUploader()
-    assert uploader.gemini_client is None
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:

@@ -101,24 +101,20 @@ class GeminiFileUploader(AttachmentRenderer):
     )
 
     @cached_property
-    def gemini_client(self) -> genai.Client | None:
+    def gemini_client(self) -> genai.Client:
         """The Gemini client for direct Files API uploads, built lazily on first use.
 
         The client uploads attachments directly (not through the LiteLLM proxy) so each
-        upload can be polled to an ACTIVE `state` before it is referenced. Built defensively:
-        `genai.Client` raises when `GEMINI_API_KEY` is unset, so a missing key degrades to
-        dropping attachment uploads (handled in `_upload_file`), never a hard failure. Built
-        here, not at the cog: this uploader is only constructed on the Gemini answer-model
-        path, so a non-Gemini deployment never builds the client nor logs the disabled warning.
+        upload can be polled to an ACTIVE `state` before it is referenced. Built here, not
+        at the cog: this uploader is only constructed on the Gemini answer-model path, so a
+        non-Gemini deployment never builds it. A missing `GEMINI_API_KEY` does not fail
+        construction; the failure surfaces at the upload call, where `_upload_file` catches
+        it and drops the attachment while the text reply still goes out.
 
         Returns:
-            A Gemini client reused across uploads, or None when no key is configured.
+            A Gemini client reused across uploads.
         """
-        try:
-            return create_gemini_client(config=self.config)
-        except Exception:
-            logfire.warn("Gemini Files API disabled: GEMINI_API_KEY not configured")
-            return None
+        return create_gemini_client(config=self.config)
 
     async def render_image(
         self,
@@ -201,7 +197,7 @@ class GeminiFileUploader(AttachmentRenderer):
         no usable pending entry, so the caller should fall through to a fresh upload.
         """
         pending = self._pending_uploads.get(cache_key)
-        if pending is None or self.gemini_client is None:
+        if pending is None:
             return False, None
         if datetime.now(tz=UTC) >= pending.expires_at:
             self._pending_uploads.pop(cache_key, None)
@@ -299,9 +295,6 @@ class GeminiFileUploader(AttachmentRenderer):
         can reuse the handle until it actually expires (Gemini files live ~48h) instead
         of guessing a fixed TTL.
         """
-        if self.gemini_client is None:
-            logfire.warn(f"Gemini Files API unavailable; dropping attachment: {filename}")
-            return None
         activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5
         # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
