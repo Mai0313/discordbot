@@ -36,6 +36,7 @@ from discordbot.cogs._gen_reply.voice import (
     VOICE_TIMEOUT_SECONDS,
     VoiceSynthesizer,
     strip_voice_marker,
+    speechify_discord_markup,
     strip_partial_voice_marker,
 )
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
@@ -72,13 +73,31 @@ if TYPE_CHECKING:
 
 
 class FakeGuild:
-    """Minimal guild stub with a stable ID and name."""
+    """Minimal guild stub with a stable ID, name, and member lookup."""
 
-    def __init__(self, guild_id: int = 1, name: str = "Test Guild") -> None:
-        """Initializes the fake guild ID, name, and @everyone role sentinel."""
+    def __init__(
+        self,
+        guild_id: int = 1,
+        name: str = "Test Guild",
+        members: dict[int, SimpleNamespace] | None = None,
+    ) -> None:
+        """Initializes the fake guild ID, name, @everyone sentinel, and member map."""
         self.id = guild_id
         self.name = name
         self.default_role = SimpleNamespace()
+        self._members = members or {}
+
+    def get_member(self, user_id: int) -> SimpleNamespace | None:
+        """Returns a registered member stub for mention-name resolution, else None."""
+        return self._members.get(user_id)
+
+    def get_role(self, role_id: int) -> None:
+        """No roles are registered in the stub."""
+        del role_id
+
+    def get_channel(self, channel_id: int) -> None:
+        """No channels are registered in the stub."""
+        del channel_id
 
 
 class FakeChannel:
@@ -837,6 +856,58 @@ def test_strip_voice_marker_mid_content_does_not_join_words() -> None:
     assert cleaned == "開頭\n\n結尾"
     # No fusion: the words on either side stay separated.
     assert "開頭結尾" not in cleaned
+
+
+def test_speechify_discord_markup_rewrites_and_drops() -> None:
+    """Mentions resolve to names; emoji / timestamps drop; slash commands keep their words."""
+    names = {239270225441193986: "小明", 42: "管理員", 7: "general"}
+
+    def _resolve(*, target_id: int) -> str | None:
+        return names.get(target_id)
+
+    assert speechify_discord_markup(text="嗆爆 <@239270225441193986>", resolve_name=_resolve) == (
+        "嗆爆 小明"
+    )
+    # Role and channel mentions resolve through the same snowflake lookup.
+    assert speechify_discord_markup(text="<@&42> 去 <#7> 集合", resolve_name=_resolve) == (
+        "管理員 去 general 集合"
+    )
+    # An unresolved mention is dropped, leaving no doubled space behind.
+    assert speechify_discord_markup(text="哈囉 <@999> 你好", resolve_name=_resolve) == "哈囉 你好"
+    # Custom emoji and timestamp tags are dropped; a slash-command reference keeps its words.
+    assert speechify_discord_markup(text="讚啦 <:blobcheer:123>", resolve_name=_resolve) == "讚啦"
+    assert speechify_discord_markup(
+        text="活動在 <t:1700000000:F> 開始", resolve_name=_resolve
+    ) == ("活動在 開始")
+    assert (
+        speechify_discord_markup(text="用 </play:456> 點歌", resolve_name=_resolve)
+        == "用 play 點歌"
+    )
+
+
+def _voice_marker_mention_events() -> list[SimpleNamespace]:
+    """A marker-tagged stream whose reply text contains a raw user mention."""
+    return [
+        _text_event(delta="嗆爆 <@239270225441193986>"),
+        _text_event(delta=f"\n{VOICE_MARKER}"),
+        _completed_event(input_tokens=3, output_tokens=4),
+    ]
+
+
+async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> None:
+    """The spoken clip narrates the resolved name while the visible reply keeps the mention."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.guild = FakeGuild(members={239270225441193986: SimpleNamespace(display_name="小明")})
+    synthesizer = _FakeVoiceSynthesizer()
+
+    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_mention_events())
+    )
+
+    # The visible reply keeps the clickable mention; only the spoken text is normalised.
+    assert "<@239270225441193986>" in result
+    assert synthesizer.calls == [{"text": "嗆爆 小明", "end_user_id": message.author.name}]
 
 
 def test_strip_partial_voice_marker_hides_streaming_fragment() -> None:

@@ -16,6 +16,7 @@ intentionally not sent (the proxy 500s on it); the model returns WAV, hence `rep
 """
 
 import re
+from typing import Protocol
 
 from openai import AsyncOpenAI
 import logfire
@@ -86,6 +87,45 @@ def strip_partial_voice_marker(*, text: str) -> str:
         if lowered.endswith(fragment):
             return stripped[: -len(fragment)].rstrip()
     return stripped
+
+
+# Discord-specific markup the answer model may embed in a reply: user/role/channel mentions
+# (`<@id>` / `<@!id>` / `<@&id>` / `<#id>`), custom emoji (`<:name:id>` / `<a:name:id>`),
+# timestamps (`<t:unix:style>`), and slash-command references (`</cmd:id>`). Read aloud
+# verbatim these are a bare snowflake or a colon-wrapped name, so they are rewritten to a
+# spoken form before synthesis; the visible text reply keeps the real markup so Discord still
+# renders it.
+_MENTION_RE = re.compile(r"<(?:@[!&]?|#)(\d+)>")
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+_TIMESTAMP_RE = re.compile(r"<t:-?\d+(?::[tTdDfFR])?>")
+_SLASH_COMMAND_RE = re.compile(r"</([\w ]+):\d+>")
+_COLLAPSE_SPACES_RE = re.compile(r"[ \t]{2,}")
+
+
+class MentionNameResolver(Protocol):
+    """Resolves a Discord snowflake (member/role/channel) to a name for the spoken reply."""
+
+    def __call__(self, *, target_id: int) -> str | None: ...
+
+
+def speechify_discord_markup(*, text: str, resolve_name: MentionNameResolver) -> str:
+    """Rewrites Discord markup into plain spoken text before TTS synthesis.
+
+    A mention becomes the resolved member/role/channel name (or is dropped when it cannot be
+    resolved), custom emoji and timestamp tags are dropped, and a slash-command reference keeps
+    only its command words. Only the spoken-clip input is cleaned, so the model's `<@id>`-style
+    markup is never read aloud as a raw snowflake while the visible reply stays untouched.
+    """
+
+    def _named(match: re.Match[str]) -> str:
+        return resolve_name(target_id=int(match.group(1))) or ""
+
+    cleaned = _MENTION_RE.sub(_named, text)
+    cleaned = _CUSTOM_EMOJI_RE.sub("", cleaned)
+    cleaned = _TIMESTAMP_RE.sub("", cleaned)
+    cleaned = _SLASH_COMMAND_RE.sub(r"\1", cleaned)
+    cleaned = _COLLAPSE_SPACES_RE.sub(" ", cleaned)
+    return cleaned.strip()
 
 
 class VoiceSynthesizer(BaseModel):

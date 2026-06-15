@@ -26,6 +26,7 @@ from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
     VoiceSynthesizer,
     strip_voice_marker,
+    speechify_discord_markup,
     strip_partial_voice_marker,
 )
 from discordbot.cogs._economy.database import credit_with_repayment
@@ -314,7 +315,15 @@ class ResponseStreamer(BaseModel):
         # before the footer is built or anything is written, and keep the cleaned text as the
         # spoken-clip input so the audio matches the visible reply (without the usage footer).
         self.stored_content, self.voice_requested = strip_voice_marker(text=self.stored_content)
-        self.voice_text = self.stored_content
+        # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
+        # snowflake), so the voice input is normalised while the visible reply keeps its markup.
+        self.voice_text = (
+            speechify_discord_markup(
+                text=self.stored_content, resolve_name=self._resolve_mention_name
+            )
+            if self.voice_requested
+            else self.stored_content
+        )
         if result.new_balance is not None:
             balance_text = f"{currency_text(amount=result.new_balance, compact=True)} ({currency_text(amount=reward, signed=True, compact=True)})"
         else:
@@ -343,6 +352,20 @@ class ResponseStreamer(BaseModel):
 
         await self._maybe_attach_voice()
         return self.stored_content
+
+    def _resolve_mention_name(self, *, target_id: int) -> str | None:
+        """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""
+        guild = self.message.guild
+        if guild is None:
+            return None
+        member = guild.get_member(target_id)
+        if member is not None:
+            return member.display_name
+        role = guild.get_role(target_id)
+        if role is not None:
+            return role.name
+        channel = guild.get_channel(target_id)
+        return getattr(channel, "name", None) if channel is not None else None
 
     async def _maybe_attach_voice(self) -> None:
         """Renders the reply to audio and edits it onto the sent message when requested.
