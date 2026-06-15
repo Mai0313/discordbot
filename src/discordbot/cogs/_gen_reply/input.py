@@ -1,53 +1,27 @@
 """Builds Responses API input messages from Discord messages."""
 
-import io
 import re
-import time
-import base64
 from typing import TYPE_CHECKING, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
 from mimetypes import guess_type
 from collections import OrderedDict
 
-from google import genai
 import logfire
 from nextcord import Embed, Message, Attachment, StickerItem
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
-from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.images import get_image_data, shrink_image_bytes
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.cogs._gen_reply.voice import VOICE_REPLY_FILENAME
+from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
+from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence, Awaitable, Coroutine
-
-# A rendered attachment content part. The Gemini answer model reads a Files-API handle
-# (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
-# attachments are inlined per type instead: images as input_image base64, PDFs as input_file
-# base64 file_data, and text/code files as input_text.
-type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-
-# Lazily fetches a source's bytes and mime type. Awaited only when a fresh Gemini upload is
-# needed, so adopting an already-uploaded pending file never re-downloads the source.
-type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
-
-# A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
-# history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
-# reply; after the window it is retried once so a transient blip self-heals.
-DEAD_SOURCE_TTL = timedelta(minutes=30)
-# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines (the
-# input builder is a shared singleton). Above the typical per-message attachment count so a
-# single request stays fully parallel, while two concurrent pipelines cannot launch dozens of
-# simultaneous uploads and starve each other (the source of the worst observed render tail).
-MEDIA_CONCURRENCY = 8
+    from collections.abc import Sequence, Coroutine
 
 # Strips the usage_footer appended by `streaming.ResponseStreamer.stream` from
 # bot-authored messages before feeding them back as `role=assistant` history.
@@ -126,38 +100,13 @@ class AttachmentSource(BaseModel):
     )
 
 
-class PendingUpload(BaseModel):
-    """A Gemini Files upload still PROCESSING when the activation poll bound elapsed.
-
-    Cached per attachment source so a slow upload (typically large video/media that
-    keeps cooking server-side past the bound) is re-polled on the next reference to
-    that source instead of re-uploaded from scratch. The answer never references a
-    pending uri; it is adopted only once a later `files.get` reports ACTIVE.
-
-    Attributes:
-        name: The Gemini file resource name (`files/<id>`) used to re-poll its state.
-        uri: The full file uri the answer references once the file becomes ACTIVE.
-        expires_at: Provider-reported expiry; a pending entry past it is discarded.
-    """
-
-    name: str = Field(..., description="The Gemini file resource name used to re-poll its state.")
-    uri: str = Field(
-        ..., description="The full file uri the answer references once the file is ACTIVE."
-    )
-    expires_at: datetime = Field(
-        ..., description="Provider-reported expiry; a pending entry past it is discarded."
-    )
-
-
 class MessageInputBuilder(BaseModel):
     """Converts Discord messages into Responses API input parts.
 
     Attributes:
         bot: The Discord bot instance, used to detect the bot's own messages.
         runtime_models: Catalog whose slow model gates attachment modalities.
-        gemini_client: Gemini client used to upload attachments to the Files API
-            directly, so each upload can be polled to ACTIVE before it is used; None
-            when `GEMINI_API_KEY` is unconfigured, in which case uploads are dropped.
+        attachment_handler: Strategy that renders each attachment source to a content part.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -168,12 +117,8 @@ class MessageInputBuilder(BaseModel):
     runtime_models: RuntimeModelCatalog = Field(
         ..., description="Catalog whose slow model gates attachment modalities."
     )
-    gemini_client: SkipValidation[genai.Client] | None = Field(
-        ...,
-        description=(
-            "Gemini client used to upload attachments to the Files API directly so each "
-            "upload can be polled to ACTIVE before use; None when GEMINI_API_KEY is unset."
-        ),
+    attachment_handler: SkipValidation[AttachmentRenderer] = Field(
+        ..., description="Strategy that renders each attachment source to a content part."
     )
     # Rendered attachment parts per message, so replying repeatedly in the same channel
     # does not re-upload the same history attachments every time. Keyed on the exact
@@ -185,22 +130,6 @@ class MessageInputBuilder(BaseModel):
     _attachment_cache: OrderedDict[
         tuple[int, datetime | None, tuple[int | str, ...]], tuple[datetime, list[RenderedPart]]
     ] = PrivateAttr(default_factory=OrderedDict)
-    # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
-    # (attachment/sticker id or embed url). The next reference to that source re-polls the
-    # same file (usually ACTIVE by then) instead of re-uploading. Kept until the file's
-    # provider expiry; bounded like the render cache.
-    _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
-        default_factory=OrderedDict
-    )
-    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. A hit within
-    # DEAD_SOURCE_TTL skips the fetch fast (no network, no per-turn re-warn); past the TTL the
-    # entry is dropped and the source retried once. Bounded like the caches above.
-    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
-    # Caps concurrent media fetch/upload work; see MEDIA_CONCURRENCY. Created in-loop on first
-    # builder access (during message handling), so it binds to the running event loop.
-    _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
-        default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
-    )
 
     async def get_user_prompt(self, content: str) -> str:
         """Removes bot mention syntax from image/video generation prompts."""
@@ -324,345 +253,6 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
-    def _is_known_dead(self, cache_key: int | str) -> bool:
-        """Whether a source's fetch failed recently enough to skip re-fetching it.
-
-        Past DEAD_SOURCE_TTL the marker is dropped so the source is retried once, letting a
-        transient blip self-heal while an expired CDN url stays cheap.
-        """
-        dead_at = self._dead_sources.get(cache_key)
-        if dead_at is None:
-            return False
-        if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
-            self._dead_sources.move_to_end(cache_key)
-            return True
-        self._dead_sources.pop(cache_key, None)
-        return False
-
-    def _mark_dead(self, cache_key: int | str) -> None:
-        """Records a source's fetch failure so it is skipped for DEAD_SOURCE_TTL."""
-        self._dead_sources[cache_key] = datetime.now(tz=UTC)
-        self._dead_sources.move_to_end(cache_key)
-        if len(self._dead_sources) > 128:
-            self._dead_sources.popitem(last=False)
-
-    async def _repoll_pending_upload(
-        self, cache_key: int | str
-    ) -> tuple[bool, tuple[str, datetime] | None]:
-        """Re-polls a prior pending upload once, without re-downloading the source.
-
-        Returns `(handled, result)`: `handled=True` means stop and use `result` (an ACTIVE
-        `(uri, expiry)`, or `None` if it is still PROCESSING); `handled=False` means there is
-        no usable pending entry, so the caller should fall through to a fresh upload.
-        """
-        pending = self._pending_uploads.get(cache_key)
-        if pending is None or self.gemini_client is None:
-            return False, None
-        if datetime.now(tz=UTC) >= pending.expires_at:
-            self._pending_uploads.pop(cache_key, None)
-            return False, None
-        try:
-            uploaded = await self.gemini_client.aio.files.get(name=pending.name)
-        except Exception:
-            self._pending_uploads.pop(cache_key, None)
-            return False, None
-        if uploaded.state == FileState.ACTIVE:
-            self._pending_uploads.pop(cache_key, None)
-            return True, (pending.uri, pending.expires_at)
-        if uploaded.state == FileState.PROCESSING:
-            # Still cooking; keep it and retry on the next reference.
-            self._pending_uploads.move_to_end(cache_key)
-            return True, None
-        # Terminal non-active state: drop it and let the caller re-upload.
-        self._pending_uploads.pop(cache_key, None)
-        return False, None
-
-    async def _resolve_file_upload(
-        self,
-        cache_key: int | str,
-        filename: str,
-        load_data: "FileBytesLoader",
-        allow_dead_cache: bool = False,
-    ) -> tuple[str, datetime] | None:
-        """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
-
-        A source whose first upload timed out while still PROCESSING is cached as a
-        `PendingUpload` keyed on its `cache_key`. The next reference re-polls that same
-        file once (it has usually finished cooking in the background by then) instead of
-        re-uploading from scratch, so a large-but-processable attachment becomes usable on
-        a later reply rather than being re-uploaded and re-dropped every time. Only an
-        ACTIVE file is ever returned, so the answer never references a not-yet-ready uri.
-
-        `load_data` fetches the source bytes (and their mime type) and is awaited only
-        when a fresh upload is actually needed: adopting a now-ACTIVE pending upload, or
-        dropping one still PROCESSING, never re-downloads the source. So a borderline file
-        keeps being adopted even after its Discord CDN url has expired and a re-download
-        would fail.
-        """
-        handled, adopted = await self._repoll_pending_upload(cache_key=cache_key)
-        if handled:
-            return adopted
-        # The dead-source skip is for history scrollback only (an expired CDN url that
-        # re-fails every turn); current/reference renders never opt in, so one transient
-        # failure on a just-posted attachment is not poisoned for the next reply.
-        if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
-            return None
-        # One media slot spans the whole download + upload (+ activation poll) for every
-        # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
-        # uploads at once and buffer all their bytes while waiting for an upload slot.
-        async with self._media_semaphore:
-            try:
-                data, content_type = await load_data()
-            except Exception:
-                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
-                if allow_dead_cache:
-                    self._mark_dead(cache_key=cache_key)
-                return None
-            result = await self._upload_file(
-                filename=filename, data=data, content_type=content_type
-            )
-        if isinstance(result, PendingUpload):
-            self._pending_uploads[cache_key] = result
-            self._pending_uploads.move_to_end(cache_key)
-            if len(self._pending_uploads) > 128:
-                self._pending_uploads.popitem(last=False)
-            return None
-        return result
-
-    async def _upload_file(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
-        self, filename: str, data: bytes, content_type: str
-    ) -> tuple[str, datetime] | PendingUpload | None:
-        """Uploads bytes to the Gemini Files API, polling to ACTIVE within the bound.
-
-        Sending attachments by file URI instead of inlined base64 keeps oversized
-        payloads under Gemini's ~10MB per-part `inline_data` cap. The upload goes
-        through the Gemini SDK directly (not the LiteLLM proxy) so the file can be
-        polled to an ACTIVE `state` before it is referenced; the proxy's file resource
-        only ever reports a deprecated `uploaded` status, which is why a fresh upload
-        used immediately intermittently 400s with "not in an ACTIVE state".
-
-        The answer request still references the file through the proxy, by the full
-        `uri` (`https://.../files/<id>`): the proxy resolves that to a `fileData.fileUri`
-        part, while the bare `files/<id>` name fails its mime-type lookup. The upload +
-        activation poll runs in the background while the route and memory selection calls
-        resolve, so small files (instant ACTIVE) add no latency and only large / video
-        uploads spend any of that overlap window waiting. A file still PROCESSING at the
-        bound returns a `PendingUpload` (the caller caches it to re-poll on the next
-        reference); a terminal non-active state or any failure returns None.
-
-        Returns the provider-reported `expiration_time` alongside the URI so the cache
-        can reuse the handle until it actually expires (Gemini files live ~48h) instead
-        of guessing a fixed TTL.
-        """
-        if self.gemini_client is None:
-            logfire.warn(f"Gemini Files API unavailable; dropping attachment: {filename}")
-            return None
-        activation_timeout_seconds = 15.0
-        poll_interval_seconds = 0.5
-        # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
-        # call, so the activation poll counts against the concurrency cap on purpose.
-        try:
-            uploaded = await self.gemini_client.aio.files.upload(
-                file=io.BytesIO(data), config={"mime_type": content_type, "display_name": filename}
-            )
-            # The SDK types name/uri as Optional; in practice both are assigned at upload
-            # time. Capture the stable resource name once (guarded) so the poll loop and
-            # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
-            file_name = uploaded.name
-            if file_name is None:
-                logfire.warn(f"Gemini upload returned no resource name; dropping: {filename}")
-                return None
-            deadline = time.monotonic() + activation_timeout_seconds
-            while uploaded.state == FileState.PROCESSING:
-                if time.monotonic() >= deadline:
-                    logfire.warn(
-                        f"Attachment still processing; will retry on next reference: {filename}"
-                    )
-                    if uploaded.uri is None:
-                        logfire.warn(f"Pending upload has no uri; dropping: {filename}")
-                        return None
-                    # Hand back the in-flight upload so the caller can re-poll it later
-                    # instead of re-uploading the same bytes from scratch.
-                    expires_at = uploaded.expiration_time or (
-                        datetime.now(tz=UTC) + timedelta(hours=47)
-                    )
-                    return PendingUpload(name=file_name, uri=uploaded.uri, expires_at=expires_at)
-                await asyncio.sleep(poll_interval_seconds)
-                uploaded = await self.gemini_client.aio.files.get(name=file_name)
-            if uploaded.state != FileState.ACTIVE:
-                logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
-                return None
-        except Exception:
-            logfire.warn(f"Failed to upload attachment to Files API: {filename}")
-            return None
-        file_uri = uploaded.uri
-        if file_uri is None:
-            logfire.warn(f"Active upload has no uri; dropping: {filename}")
-            return None
-        # Fall back to a conservative 47h (under the ~48h lifetime) if the provider omits
-        # the expiry, so a missing field never pins an unbounded cache entry.
-        expires_at = uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
-        return file_uri, expires_at
-
-    async def _load_image_bytes(self, source: Attachment | StickerItem | str) -> tuple[bytes, str]:
-        """Fetches and downscales an image source to upload-ready bytes and MIME type.
-
-        URL sources fetch over the network and attachments decode/re-encode, so the
-        blocking work runs off the event loop. Raises on any fetch/decode failure. The
-        Files-API path bounds concurrency in `_resolve_file_upload`; direct callers (the
-        IMAGE route, non-Gemini inline render) fetch a single current-turn image.
-        """
-        if isinstance(source, str):
-            file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
-            return file_bytes, "image/jpeg"
-        if isinstance(source, Attachment):
-            content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
-        else:
-            content_type = guess_type(source.url)[0] or "image/png"
-        file_bytes = await source.read()
-        return await asyncio.to_thread(
-            shrink_image_bytes, payload=file_bytes, content_type=content_type
-        )
-
-    def _answer_model_is_gemini(self) -> bool:
-        """Whether the answer model reads Gemini Files-API URIs.
-
-        Only Gemini resolves the uploaded file URI; OpenAI / Anthropic answer models reject
-        it (the proxy mistranslates it), so their attachments are inlined instead. The Gemini
-        Files API is kept because Gemini also ingests video and hits inline limits more easily.
-        """
-        return "gemini" in self.runtime_models.slow_model.name
-
-    @staticmethod
-    def _inline_expiry() -> datetime:
-        """Cache validity for a self-contained inlined part.
-
-        Inlined bytes never expire, but the cache key cannot see a Discord CDN re-host of
-        the same source, so the render is refreshed periodically as a cheap safety net.
-        """
-        return datetime.now(tz=UTC) + timedelta(hours=12)
-
-    @staticmethod
-    def _data_uri(data: bytes, mime_type: str) -> str:
-        """Builds a base64 data URI for inlining bytes into a content part."""
-        return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
-
-    async def image_to_part(
-        self,
-        source: Attachment | StickerItem | str,
-        cache_key: int | str,
-        allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
-        """Converts an image source to a content part plus its cache expiry.
-
-        Gemini answer models reference an uploaded Files-API handle (re-polled via
-        `cache_key` if a prior upload is still pending, before any re-download); other
-        providers inline the already-downscaled image as a base64 `input_image` part.
-        """
-        if isinstance(source, str):
-            source_name = "image"
-        else:
-            source_name = (
-                getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
-            )
-        if self._answer_model_is_gemini():
-            uploaded = await self._resolve_file_upload(
-                cache_key=cache_key,
-                filename=source_name,
-                load_data=lambda: self._load_image_bytes(source=source),
-                allow_dead_cache=allow_dead_cache,
-            )
-            if uploaded is None:
-                return None
-            file_id, expires_at = uploaded
-            # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
-            # attachment marker is derived from message metadata, not from this part.
-            part = ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
-            return part, expires_at
-        try:
-            file_bytes, content_type = await self._load_image_bytes(source=source)
-        except Exception:
-            logfire.warn("Failed to convert this image")
-            return None
-        image_part = ResponseInputImageParam(
-            type="input_image",
-            image_url=self._data_uri(data=file_bytes, mime_type=content_type),
-            detail="auto",
-        )
-        return image_part, self._inline_expiry()
-
-    async def attachment_to_part(
-        self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
-        """Converts a file attachment to a content part plus its cache expiry.
-
-        Gemini answer models reference an uploaded Files-API handle (re-polled via
-        `cache_key` before any re-download if a prior upload is still pending); other
-        providers inline the file (text/code as `input_text`, PDF as base64 `input_file`,
-        else dropped).
-        """
-        content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
-        mime_type = content_type.split(";")[0].strip()
-        if not mime_type:
-            logfire.warn(
-                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
-            )
-            return None
-
-        async def _load() -> tuple[bytes, str]:
-            return await attachment.read(), mime_type
-
-        if self._answer_model_is_gemini():
-            uploaded = await self._resolve_file_upload(
-                cache_key=cache_key,
-                filename=attachment.filename,
-                load_data=_load,
-                allow_dead_cache=allow_dead_cache,
-            )
-            if uploaded is None:
-                return None
-            file_id, expires_at = uploaded
-            part = ResponseInputFileParam(
-                type="input_file", file_id=file_id, filename=attachment.filename
-            )
-            return part, expires_at
-        try:
-            file_bytes, _ = await _load()
-        except Exception:
-            logfire.warn(f"Failed to download this attachment: {attachment.url}")
-            return None
-        return self._inline_file_part(
-            filename=attachment.filename, data=file_bytes, mime_type=mime_type
-        )
-
-    def _inline_file_part(
-        self, filename: str, data: bytes, mime_type: str
-    ) -> tuple[RenderedPart, datetime] | None:
-        """Inlines a non-image file for a non-Gemini answer model, or drops it.
-
-        PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
-        inline); UTF-8-decodable files inline as `input_text` with a filename header; anything
-        else (non-text binaries the Gemini Files path would have uploaded) is dropped.
-        """
-        if mime_type == "application/pdf":
-            pdf_part = ResponseInputFileParam(
-                type="input_file",
-                filename=filename,
-                file_data=self._data_uri(data=data, mime_type=mime_type),
-            )
-            return pdf_part, self._inline_expiry()
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            logfire.warn(
-                f"Dropping non-text, non-PDF attachment for a non-Gemini model: {filename}"
-            )
-            return None
-        text_part = ResponseInputTextParam(
-            type="input_text", text=f"[attached file: {filename}]\n{text}"
-        )
-        return text_part, self._inline_expiry()
-
     async def get_image_source_bytes(self, message: Message) -> list[bytes]:
         """Returns downscaled bytes of a message's image sources for the IMAGE route.
 
@@ -675,7 +265,7 @@ class MessageInputBuilder(BaseModel):
         tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
         for source in self.collect_attachment_sources(message=message):
             if source.kind == "image":
-                tasks.append(self._load_image_bytes(source=source.handle))
+                tasks.append(load_image_bytes(source=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
         return [item[0] for item in loaded if isinstance(item, tuple)]
 
@@ -732,7 +322,7 @@ class MessageInputBuilder(BaseModel):
         for source in sources:
             if source.kind == "image":
                 tasks.append(
-                    self.image_to_part(
+                    self.attachment_handler.render_image(
                         source=source.handle,
                         cache_key=source.cache_key,
                         allow_dead_cache=allow_dead_cache,
@@ -741,7 +331,7 @@ class MessageInputBuilder(BaseModel):
             else:
                 # Only attachments are ever classified as files; stickers and embeds are images.
                 tasks.append(
-                    self.attachment_to_part(
+                    self.attachment_handler.render_file(
                         attachment=cast("Attachment", source.handle),
                         cache_key=source.cache_key,
                         allow_dead_cache=allow_dead_cache,
@@ -759,7 +349,7 @@ class MessageInputBuilder(BaseModel):
 
         Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
         they are collected and gated here so direct callers keep working. `allow_dead_cache`
-        is opt-in for history scrollback only (see `_resolve_file_upload`).
+        is opt-in for history scrollback only (see `GeminiFileUploader._resolve_file_upload`).
         """
         if sources is None:
             sources = self._supported_sources(
