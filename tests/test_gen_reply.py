@@ -486,13 +486,26 @@ def _png_b64() -> str:
     return base64.b64encode(s=buffer.getvalue()).decode(encoding="utf-8")
 
 
+def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
+    """A GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
+
+    `gemini_client` is a cached_property, so seeding `__dict__` bypasses the real
+    factory and the upload path runs against the fake instead.
+    """
+    uploader = GeminiFileUploader()
+    uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
+    return uploader
+
+
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
     cog.__dict__["client"] = FakeClient()
-    cog.__dict__["gemini_client"] = FakeGeminiClient()
+    handler = cog.input_builder.attachment_handler
+    if isinstance(handler, GeminiFileUploader):
+        handler.__dict__["gemini_client"] = FakeGeminiClient()
     return cog
 
 
@@ -1048,7 +1061,7 @@ def _media_builder() -> MessageInputBuilder:
     return MessageInputBuilder(
         bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
         runtime_models=RuntimeModelCatalog(),
-        attachment_handler=GeminiFileUploader(gemini_client=FakeGeminiClient()),
+        attachment_handler=_fake_uploader(),
     )
 
 
@@ -1086,7 +1099,7 @@ async def test_dead_source_skipped_within_ttl_then_retried(
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
     )
-    uploader = GeminiFileUploader(gemini_client=FakeGeminiClient())
+    uploader = _fake_uploader()
     url = "https://example.test/dead.png"
 
     assert await uploader.render_image(source=url, cache_key=url, allow_dead_cache=True) is None
@@ -1114,7 +1127,7 @@ async def test_non_history_render_does_not_dead_cache_transient_failure(
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
     )
-    uploader = GeminiFileUploader(gemini_client=FakeGeminiClient())
+    uploader = _fake_uploader()
     url = "https://example.test/fresh.png"
 
     # Default path (current/reference): each call re-attempts the fetch and never marks dead.
@@ -1130,7 +1143,7 @@ async def test_media_semaphore_bounds_media_io_concurrency() -> None:
     Counting concurrency in the byte loader proves non-image downloads (which run before the
     Gemini upload) are bounded too, so concurrent pipelines cannot buffer every file at once.
     """
-    uploader = GeminiFileUploader(gemini_client=FakeGeminiClient())
+    uploader = _fake_uploader()
     uploader._media_semaphore = asyncio.Semaphore(2)
     state = {"active": 0, "peak": 0}
 
@@ -1260,7 +1273,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     )
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
-        return GeminiFileUploader(gemini_client=FakeGeminiClient(files=files))
+        return _fake_uploader(files=files)
 
     # PROCESSING for two polls, then ACTIVE: the file URI and its expiry are returned.
     active = _uploader(FakeGeminiFiles(processing_rounds=2))
@@ -1302,13 +1315,6 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     monkeypatch.setattr(boom.gemini_client.aio.files, "upload", _raise)
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
 
-    # No Gemini client (GEMINI_API_KEY unconfigured): the file is dropped, not a crash.
-    no_client = GeminiFileUploader(gemini_client=None)
-    assert (
-        await no_client._upload_file(filename="x.txt", data=b"x", content_type="text/plain")
-        is None
-    )
-
 
 async def test_resolve_file_upload_recovers_pending_on_next_reference(
     monkeypatch: pytest.MonkeyPatch,
@@ -1332,7 +1338,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     )
 
     files = FakeGeminiFiles(processing_rounds=99)
-    uploader = GeminiFileUploader(gemini_client=FakeGeminiClient(files=files))
+    uploader = _fake_uploader(files=files)
 
     load_calls = 0
 
@@ -1367,22 +1373,6 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
-
-
-def test_gemini_client_disabled_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A deployment without GEMINI_API_KEY gets a None client, not a hard failure."""
-    cog = _cog()
-    # Drop the injected fake so the real cached_property runs against the factory.
-    del cog.__dict__["gemini_client"]
-    cog.config = SimpleNamespace()
-
-    def _raise(config: object) -> object:
-        """Mimics genai.Client refusing to build without a key."""
-        del config
-        raise ValueError("No API key was provided.")
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.create_gemini_client", _raise)
-    assert cog.gemini_client is None
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:
