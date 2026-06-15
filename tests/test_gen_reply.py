@@ -48,11 +48,13 @@ from discordbot.cogs._gen_reply.memory_tool import (
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
+from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import (
     DEAD_SOURCE_TTL,
     PendingUpload,
     GeminiFileUploader,
 )
+from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
 from tests.helpers.llm_input import (
     request_index,
@@ -468,6 +470,40 @@ class FakeGeminiClient:
         self.aio = SimpleNamespace(files=files or FakeGeminiFiles())
 
 
+class FakeOpenAIFiles:
+    """Fake OpenAI Files API resource that records uploads."""
+
+    def __init__(
+        self,
+        status: str = "uploaded",
+        file_id: str = "file-test",
+        expires_at: int | None = 4_070_908_800,
+    ) -> None:
+        """Initializes fake upload output fields."""
+        self.status = status
+        self.file_id = file_id
+        self.expires_at = expires_at
+        self.create_calls: list[tuple[str, bytes, str, dict[str, object]]] = []
+
+    async def create(
+        self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+    ) -> SimpleNamespace:
+        """Records an upload and returns a fake OpenAI file object."""
+        filename, data, content_type = file
+        self.create_calls.append((filename, data.read(), content_type, expires_after))
+        return SimpleNamespace(
+            id=self.file_id, status=self.status, expires_at=self.expires_at, purpose=purpose
+        )
+
+
+class FakeOpenAIClient:
+    """Fake OpenAI client exposing the async Files API used by OpenAIFileUploader."""
+
+    def __init__(self, files: FakeOpenAIFiles | None = None) -> None:
+        """Initializes the file resource."""
+        self.files = files or FakeOpenAIFiles()
+
+
 class FakeClient:
     """Fake OpenAI client with responses, images, and videos resources."""
 
@@ -494,6 +530,13 @@ def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
     """
     uploader = GeminiFileUploader()
     uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
+    return uploader
+
+
+def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUploader:
+    """An OpenAIFileUploader with its lazy client pre-seeded to a fake."""
+    uploader = OpenAIFileUploader()
+    uploader.__dict__["client"] = FakeOpenAIClient(files=files)
     return uploader
 
 
@@ -1373,6 +1416,73 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
+
+
+async def test_openai_file_uploader_renders_image_and_file_parts() -> None:
+    """OpenAI uploads return file-id content parts for images and files."""
+    files = FakeOpenAIFiles()
+    renderer = _fake_openai_uploader(files=files)
+
+    image_rendered = await renderer.render_image(
+        source=FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        ),
+        cache_key="pic.png",
+    )
+    assert image_rendered is not None
+    image_part, image_expiry = image_rendered
+    assert image_part["type"] == "input_image"
+    assert image_part["file_id"] == "file-test"
+    assert image_part["detail"] == "auto"
+    assert image_expiry == datetime(2099, 1, 1, tzinfo=UTC)
+
+    file_rendered = await renderer.render_file(
+        attachment=FakeAttachment(
+            filename="notes.txt", content_type="text/plain", payload=b"hello world"
+        ),
+        cache_key="notes.txt",
+    )
+    assert file_rendered is not None
+    file_part, file_expiry = file_rendered
+    assert file_part["type"] == "input_file"
+    assert file_part["file_id"] == "file-test"
+    assert file_part["filename"] == "notes.txt"
+    assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
+
+    assert files.create_calls[0][0] == "pic.png"
+    assert files.create_calls[0][2] == "image/jpeg"
+    assert files.create_calls[0][3] == {"anchor": "created_at", "seconds": 2_592_000}
+    assert files.create_calls[1] == (
+        "notes.txt",
+        b"hello world",
+        "text/plain",
+        {"anchor": "created_at", "seconds": 2_592_000},
+    )
+
+
+async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenAI upload errors degrade to a dropped attachment."""
+    errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
+    assert (
+        await errored._upload_file(filename="bad.txt", data=b"x", content_type="text/plain")
+        is None
+    )
+
+    boom = _fake_openai_uploader(files=FakeOpenAIFiles())
+
+    async def _raise(
+        file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+    ) -> SimpleNamespace:
+        del file, purpose, expires_after
+        raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(boom.client.files, "create", _raise)
+    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+
+
+def test_gpt_attachment_handler_path_stays_disabled() -> None:
+    """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
+    assert isinstance(build_attachment_handler(model_name="gpt-5.1"), InlineRenderer)
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:

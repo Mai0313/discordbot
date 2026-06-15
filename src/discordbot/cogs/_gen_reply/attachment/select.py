@@ -4,6 +4,8 @@ from discordbot.cogs._gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import GeminiFileUploader
 
+# from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
+
 
 def build_attachment_handler(model_name: str) -> AttachmentRenderer:
     """Returns the attachment renderer matching the answer (slow) model's provider.
@@ -15,4 +17,6 @@ def build_attachment_handler(model_name: str) -> AttachmentRenderer:
     """
     if "gemini" in model_name:
         return GeminiFileUploader()
+    # if "gpt" in model_name:
+    #     return OpenAIFileUploader()
     return InlineRenderer()
