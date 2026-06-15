@@ -66,6 +66,7 @@ from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
+from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -228,7 +229,7 @@ class ReplyGeneratorCogs(commands.Cog):
         Built defensively: `genai.Client` raises when `GEMINI_API_KEY` is unset, so a
         deployment that only configured the OpenAI/LiteLLM proxy still serves text and
         non-attachment replies. A missing client degrades to dropping attachment uploads
-        (handled in `MessageInputBuilder._upload_file`), never a hard failure on the
+        (handled in `GeminiFileUploader._upload_file`), never a hard failure on the
         `on_message` path that builds `input_builder` before it knows about attachments.
 
         Returns:
@@ -293,7 +294,11 @@ class ReplyGeneratorCogs(commands.Cog):
             client that uploads attachments to the Files API.
         """
         return MessageInputBuilder(
-            bot=self.bot, runtime_models=self.runtime_models, gemini_client=self.gemini_client
+            bot=self.bot,
+            runtime_models=self.runtime_models,
+            attachment_handler=build_attachment_handler(
+                runtime_models=self.runtime_models, gemini_client=self.gemini_client
+            ),
         )
 
     async def _get_history_message(
@@ -317,7 +322,7 @@ class ReplyGeneratorCogs(commands.Cog):
             for hist_msg in hist_messages:
                 # History is the only render that opts into the dead-source skip: an expired
                 # CDN attachment here re-fails every turn. Current/reference do not (see
-                # MessageInputBuilder._resolve_file_upload).
+                # GeminiFileUploader._resolve_file_upload).
                 full_tasks.append(
                     self.input_builder.process_single_message(
                         message=hist_msg, allow_dead_cache=True
