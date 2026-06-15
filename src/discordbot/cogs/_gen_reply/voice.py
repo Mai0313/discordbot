@@ -40,8 +40,8 @@ _ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 # distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
 # documented in English and is read as style, not spoken aloud).
 TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
-TTS_VOICE = "Zephyr"
-TTS_STYLE_DIRECTIVE = "Say the following in a male voice:"
+TTS_VOICE = "Aoede"
+TTS_STYLE_DIRECTIVE = "Using the voice you think best fits the following text:"
 TTS_SPEED = 1.3
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
