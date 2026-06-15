@@ -9,7 +9,6 @@ import asyncio
 from functools import cached_property
 import contextlib
 
-from google import genai
 from openai import AsyncOpenAI
 import logfire
 import nextcord
@@ -20,7 +19,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import litellm_call_kwargs, create_gemini_client, create_litellm_client
+from discordbot.utils.llm import litellm_call_kwargs, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
@@ -223,25 +222,6 @@ class ReplyGeneratorCogs(commands.Cog):
         return create_litellm_client(config=self.config)
 
     @cached_property
-    def gemini_client(self) -> genai.Client | None:
-        """The cached Gemini client for direct Files API attachment uploads.
-
-        Built defensively: `genai.Client` raises when `GEMINI_API_KEY` is unset, so a
-        deployment that only configured the OpenAI/LiteLLM proxy still serves text and
-        non-attachment replies. A missing client degrades to dropping attachment uploads
-        (handled in `GeminiFileUploader._upload_file`), never a hard failure on the
-        `on_message` path that builds `input_builder` before it knows about attachments.
-
-        Returns:
-            A Gemini client reused across uploads, or None when no key is configured.
-        """
-        try:
-            return create_gemini_client(config=self.config)
-        except Exception:
-            logfire.warn("Gemini Files API disabled: GEMINI_API_KEY not configured")
-            return None
-
-    @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
         """The cached text-to-speech engine for spoken QA replies.
 
@@ -290,14 +270,14 @@ class ReplyGeneratorCogs(commands.Cog):
         """The cached Discord-message-to-Responses-API input builder.
 
         Returns:
-            A builder bound to this bot, runtime model catalog, and the Gemini
-            client that uploads attachments to the Files API.
+            A builder bound to this bot, runtime model catalog, and the attachment
+            handler matching the answer model's provider.
         """
         return MessageInputBuilder(
             bot=self.bot,
             runtime_models=self.runtime_models,
             attachment_handler=build_attachment_handler(
-                runtime_models=self.runtime_models, gemini_client=self.gemini_client
+                model_name=self.runtime_models.slow_model.name
             ),
         )
 

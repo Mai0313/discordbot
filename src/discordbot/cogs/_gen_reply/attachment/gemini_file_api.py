@@ -11,6 +11,7 @@ import time
 from typing import TYPE_CHECKING
 import asyncio
 from datetime import UTC, datetime, timedelta
+from functools import cached_property
 from collections import OrderedDict
 
 from google import genai
@@ -20,6 +21,8 @@ from pydantic import Field, BaseModel, PrivateAttr, SkipValidation
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.utils.llm import create_gemini_client
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
 from discordbot.cogs._gen_reply.attachment.loaders import (
     attachment_mime,
@@ -72,17 +75,13 @@ class GeminiFileUploader(AttachmentRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
     Attributes:
-        gemini_client: Gemini client used to upload attachments to the Files API
-            directly, so each upload can be polled to ACTIVE before it is used; None
-            when `GEMINI_API_KEY` is unconfigured, in which case uploads are dropped.
+        config: Runtime LLM config supplying the Gemini Files API key for the lazily
+            built upload client.
     """
 
-    gemini_client: SkipValidation[genai.Client] | None = Field(
-        ...,
-        description=(
-            "Gemini client used to upload attachments to the Files API directly so each "
-            "upload can be polled to ACTIVE before use; None when GEMINI_API_KEY is unset."
-        ),
+    config: LLMConfig = Field(
+        default_factory=LLMConfig,
+        description="Runtime LLM config supplying the Gemini Files API key for the upload client.",
     )
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
     # (attachment/sticker id or embed url). The next reference to that source re-polls the
@@ -100,6 +99,26 @@ class GeminiFileUploader(AttachmentRenderer):
     _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
         default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
     )
+
+    @cached_property
+    def gemini_client(self) -> genai.Client | None:
+        """The Gemini client for direct Files API uploads, built lazily on first use.
+
+        The client uploads attachments directly (not through the LiteLLM proxy) so each
+        upload can be polled to an ACTIVE `state` before it is referenced. Built defensively:
+        `genai.Client` raises when `GEMINI_API_KEY` is unset, so a missing key degrades to
+        dropping attachment uploads (handled in `_upload_file`), never a hard failure. Built
+        here, not at the cog: this uploader is only constructed on the Gemini answer-model
+        path, so a non-Gemini deployment never builds the client nor logs the disabled warning.
+
+        Returns:
+            A Gemini client reused across uploads, or None when no key is configured.
+        """
+        try:
+            return create_gemini_client(config=self.config)
+        except Exception:
+            logfire.warn("Gemini Files API disabled: GEMINI_API_KEY not configured")
+            return None
 
     async def render_image(
         self,
