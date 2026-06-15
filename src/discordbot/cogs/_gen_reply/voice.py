@@ -42,7 +42,7 @@ _ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
 TTS_VOICE = "Aoede"
 TTS_STYLE_DIRECTIVE = "Using the voice you think best fits the following text:"
-TTS_SPEED = 1.3
+TTS_SPEED = 1.5
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
