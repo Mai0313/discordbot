@@ -212,6 +212,20 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
+    def tone_model(self) -> ModelSettings:
+        """The model settings for the per-user tone-note updater.
+
+        Callers: `MemoryExtractorAI.update_tone` (via `schedule_tone_update`).
+
+        Returns:
+            Fast no-reasoning settings for the single-call background tone refresh.
+            Distilling a short tone preference from one conversation is a simple
+            summarization, so flash-lite is enough and keeps this frequent
+            background call cheap, well below the Pro tier the memory pipeline uses.
+        """
+        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
+
+    @property
     def player_model(self) -> ModelSettings:
         """The model settings for the casino bot-player AI.
 

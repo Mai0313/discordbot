@@ -24,7 +24,7 @@ from discordbot.cogs.gen_reply import (
 )
 from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
 from discordbot.utils.reactions import ReactionStatusChain
-from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
+from discordbot.cogs._memory.store import user_scope, write_tone, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.voice import (
     VOICE_MARKER,
@@ -59,6 +59,7 @@ from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUplo
 from tests.helpers.llm_input import (
     request_index,
     request_input,
+    extract_tone_block,
     tool_names_for_call,
     has_memory_context_block,
     extract_callable_user_ids,
@@ -2314,6 +2315,88 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
     assert "get_user_memory" not in tool_names_for_call(responses=cog.client.responses, n=0)
     # The per-user update is skipped, but the server-scope update still runs in a public guild.
     assert scheduled == [server_scope(bot_id=999, server_id=1)]
+
+
+class _FakeStreamer:
+    """Stands in for the answer-phase streamer without real streaming."""
+
+    def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
+        self,
+        message: FakeMessage,
+        memory_lookups: list[str] | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model_effort: str = "",
+        voice_synthesizer: object | None = None,
+    ) -> None:
+        """Stores the streaming target message and ignores the accounting kwargs."""
+        del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+        self.message = message
+
+    async def stream(self, *, responses: object) -> str:
+        """Returns placeholder reply content."""
+        del responses
+        return "回覆"
+
+
+async def test_handle_message_reply_injects_author_tone_block(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The author's tone note is read directly, injected into the answer only, and a refresh runs."""
+    del memory_isolated_dir
+    cog = _cog()
+    write_tone(scope=user_scope(user_id=1), content="## 語氣偏好\n* 偏好禮貌、就事論事")
+
+    tone_scheduled: list[dict[str, object]] = []
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _FakeStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_tone_update",
+        lambda **kwargs: tone_scheduled.append(kwargs),
+    )
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    # The tone note rides the answer request as a low-authority assistant block.
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    tone_block = extract_tone_block(request=answer)
+    assert tone_block is not None
+    assert "偏好禮貌、就事論事" in tone_block
+    # It is answer-only context; the selection phase never sees it.
+    selection = request_input(responses=cog.client.responses, phase="selection")
+    assert extract_tone_block(request=selection) is None
+    # A QA reply schedules a tone refresh for the author.
+    assert tone_scheduled
+    assert tone_scheduled[0]["scope"] == user_scope(user_id=1)
+    assert tone_scheduled[0]["extractor"] is cog.memory_extractor
+
+
+async def test_handle_message_reply_summary_reads_tone_but_skips_write(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SUMMARY route still reads the author tone (every reply honors it) but writes none."""
+    del memory_isolated_dir
+    cog = _cog()
+    write_tone(scope=user_scope(user_id=1), content="## 語氣偏好\n* 偏好簡短")
+
+    tone_scheduled: list[dict[str, object]] = []
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _FakeStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.schedule_tone_update",
+        lambda **kwargs: tone_scheduled.append(kwargs),
+    )
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    tone_block = extract_tone_block(request=answer)
+    assert tone_block is not None
+    assert "偏好簡短" in tone_block
+    # No tone write on the summary route (it carries no per-user memory write).
+    assert tone_scheduled == []
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(

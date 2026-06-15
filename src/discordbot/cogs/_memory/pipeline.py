@@ -17,7 +17,9 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs._memory.store import (
     clear_raw,
+    read_tone,
     scope_lock,
+    write_tone,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -35,6 +37,7 @@ from discordbot.cogs._memory.constants import (
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
     MAIN_COMPACTION_TARGET_CHARS,
+    TONE_UPDATE_COOLDOWN_SECONDS,
     MAIN_COMPACTION_TRIGGER_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
@@ -102,9 +105,21 @@ _inflight_tasks: dict[str, asyncio.Task[None]] = {}
 _pending_updates: dict[str, _PendingMemoryUpdate] = {}
 _inflight_loop: asyncio.AbstractEventLoop | None = None
 
+# Per-scope in-flight tone-update tasks. Unlike the memory updater there is no
+# pending-replay slot: tone is stable and the target-centered history retains a
+# preference stated during an in-flight run, so a concurrent turn is simply
+# dropped and the next post-cooldown turn refreshes the note.
+_tone_inflight_tasks: dict[str, asyncio.Task[None]] = {}
+_tone_inflight_loop: asyncio.AbstractEventLoop | None = None
+
 # Per-scope consolidation attempt times for the cooldown; monotonic, so it does
 # not need a loop-change reset. Tests clear it through the conftest fixture.
 _last_consolidation: dict[str, float] = {}
+
+# Per-scope tone-update attempt times for the cooldown; monotonic like the
+# consolidation cooldown, recorded at attempt time so a failing call also cools
+# down instead of retrying every turn.
+_last_tone_update: dict[str, float] = {}
 
 # Per-scope regeneration attempt times, separate from the consolidation cooldown
 # so a manual `/memory regenerate` never starves the automatic background
@@ -257,6 +272,93 @@ def _should_consolidate(scope: str) -> bool:
         # waiting out a cooldown that belonged to the wiped memory.
         return True
     return time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
+
+
+def schedule_tone_update(
+    scope: str,
+    subject: str,
+    message_list: list[EasyInputMessageParam],
+    full_reply: str,
+    extractor: MemoryExtractorAI,
+) -> None:
+    """Starts a background per-user tone-note refresh without delaying the reply path.
+
+    Decoupled from `schedule_memory_update` on purpose: tone lives in its own file,
+    is refreshed by a single cheap call (not the two-phase pipeline), and carries no
+    pending-replay slot. A turn is dropped when one is already in flight or the
+    per-scope cooldown has not elapsed; the next post-cooldown turn refreshes from
+    the retained history, so the throttle delays a refresh, it never loses the signal.
+    """
+    global _tone_inflight_loop  # noqa: PLW0603 -- process task de-dupe
+    loop = asyncio.get_running_loop()
+    if _tone_inflight_loop is not loop:
+        _tone_inflight_tasks.clear()
+        _tone_inflight_loop = loop
+    running = _tone_inflight_tasks.get(scope)
+    if running is not None and not running.done():
+        return
+    if not _should_update_tone(scope=scope):
+        return
+    # Recorded at attempt time so a failing call cools down like consolidation.
+    _last_tone_update[scope] = time.monotonic()
+    task = asyncio.create_task(
+        _run_tone_update(
+            scope=scope,
+            subject=subject,
+            message_list=message_list,
+            full_reply=full_reply,
+            extractor=extractor,
+        )
+    )
+    _tone_inflight_tasks[scope] = task
+    task.add_done_callback(lambda finished: _finish_tone_update(scope=scope, task=finished))
+
+
+def _finish_tone_update(scope: str, task: asyncio.Task[None]) -> None:
+    """Clears the in-flight tone slot and logs failures (no replay)."""
+    if _tone_inflight_tasks.get(scope) is task:
+        _tone_inflight_tasks.pop(scope, None)
+    if task.cancelled():
+        # Cancelled (e.g. bot shutdown): reading result() would raise out of this
+        # callback, and a pre-shutdown tone refresh is not worth recovering.
+        return
+    try:
+        task.result()
+    except Exception:
+        logfire.warn("Background tone update failed", scope=scope, _exc_info=True)
+
+
+def _should_update_tone(scope: str) -> bool:
+    """Whether the per-scope tone cooldown allows a refresh right now."""
+    last_attempt = _last_tone_update.get(scope)
+    if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
+        # No prior attempt, or the memory was cleared since it: capture the fresh
+        # tone signal promptly instead of waiting out a stale cooldown.
+        return True
+    return time.monotonic() - last_attempt >= TONE_UPDATE_COOLDOWN_SECONDS
+
+
+async def _run_tone_update(
+    scope: str,
+    subject: str,
+    message_list: list[EasyInputMessageParam],
+    full_reply: str,
+    extractor: MemoryExtractorAI,
+) -> None:
+    """Reads the current tone note and rewrites it from the conversation, best effort."""
+    started_at = time.monotonic()
+    transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
+    async with scope_lock(scope=scope), _memory_semaphore():
+        result = await extractor.update_tone(
+            subject=subject, transcript=transcript, existing_tone=read_tone(scope=scope)
+        )
+        if result is None or not result.changed or not result.tone_markdown:
+            return
+        if cleared_since(scope=scope, started_at=started_at):
+            # The memory was cleared while this update was in flight; dropping the
+            # write beats resurrecting deleted tone state.
+            return
+        write_tone(scope=scope, content=result.tone_markdown)
 
 
 async def _consolidate_locked(

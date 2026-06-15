@@ -85,3 +85,22 @@ MEMORY_REPLY_MAX_CHARS = 8_000
 # legitimately slow rewrite (minutes) and only fires on a truly hung call.
 MEMORY_EXTRACT_TIMEOUT_SECONDS = 600.0
 MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 600.0
+
+# Hard byte cap for the per-user tone note (`tone.md`). The note is kept short by
+# its prompt (a heading plus a few bullets), not by an LLM compaction pass like
+# main.md, so this is only a store-level backstop: a misbehaving rewrite cannot
+# grow the always-injected note unbounded. Small on purpose since it only ever
+# describes how one user wants the bot to sound.
+TONE_FILE_MAX_BYTES = 4_096
+
+# Minimum gap between per-user tone-note updates. Tone preference is stable, so
+# the single-call updater is throttled to bound background cost. The first signal
+# for a user is captured immediately (no prior attempt), and the target-centered
+# history window retains a preference stated during a cooldown, so the next update
+# still picks it up — the throttle delays a refresh, it never drops the signal.
+TONE_UPDATE_COOLDOWN_SECONDS = 300.0
+
+# Liveness backstop for the single-call tone updater so a hung call cannot hold
+# the scope lock and a concurrency permit forever. Generous relative to the cheap
+# flash-lite call it guards, since a slow background tone refresh is harmless.
+TONE_UPDATE_TIMEOUT_SECONDS = 120.0

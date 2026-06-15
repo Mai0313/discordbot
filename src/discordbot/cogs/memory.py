@@ -17,6 +17,7 @@ from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._memory.store import (
+    read_tone,
     user_scope,
     server_scope,
     read_main_memory,
@@ -125,6 +126,7 @@ class MemoryCogs(commands.Cog):
                 "我已經記下 {count} 筆對你的觀察，正在整理成長期記憶，"
                 "再多聊幾次就會在這裡看到完整內容。"
             ),
+            tone_text=read_tone(scope=scope),
         )
 
     @memory.subcommand(
@@ -171,24 +173,34 @@ class MemoryCogs(commands.Cog):
             ),
         )
 
-    async def _show_memory(
+    async def _show_memory(  # noqa: PLR0913 -- display strings plus the optional tone section
         self,
         interaction: Interaction,
         scope: str,
         title: str,
         empty_description: str,
         pending_template: str,
+        tone_text: str = "",
     ) -> None:
-        """Shows a scope's consolidated memory, or a friendly placeholder when empty."""
+        """Shows a scope's consolidated memory, or a friendly placeholder when empty.
+
+        `tone_text` is the per-user tone note (empty for the per-server view); when
+        present it leads the display as its own section, and it counts as content so
+        a user with only a tone note still sees it instead of the empty placeholder.
+        """
         memory_text = read_main_memory(scope=scope)
         pending_count = count_raw_entries(scope=scope)
+        sections: list[str] = []
+        if tone_text:
+            sections.append(tone_text)
         if memory_text:
             # Strip only the exact `v1` header line, never a `v1`-prefixed first
             # token of a malformed/hand-edited file (e.g. `v10...`, `v1: ...`).
-            display_text = memory_text.removeprefix("v1\n").strip()
+            sections.append(memory_text.removeprefix("v1\n").strip())
+        if sections:
             await self._send_memory_pages(
                 interaction=interaction,
-                text=display_text,
+                text="\n\n".join(sections),
                 footer_text=memory_footer_text(pending_count=pending_count),
                 title=title,
             )

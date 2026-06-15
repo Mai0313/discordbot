@@ -37,7 +37,10 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._tone_inflight_tasks", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._tone_inflight_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_tone_update", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
     # _scope_locks, _regeneration_tasks, and the memory semaphore are loop-local
     # helpers that rebuild on the per-test event loop, so they need no manual reset.

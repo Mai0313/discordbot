@@ -19,8 +19,10 @@ from discordbot.cogs._memory import pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
     clear_raw,
+    read_tone,
     scope_lock,
     user_scope,
+    write_tone,
     clear_memory,
     mark_cleared,
     append_detail,
@@ -43,6 +45,7 @@ from discordbot.cogs._memory.views import (
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
+    TONE_UPDATE_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
@@ -52,6 +55,7 @@ from discordbot.cogs._memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
+    ToneUpdate,
     MemoryCategory,
     RawMemoryDraft,
     MemoryConfidence,
@@ -79,6 +83,8 @@ USER_SCOPE = user_scope(user_id=USER_ID)
 IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
 TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="none")
+
+TEST_TONE_MODEL = ModelSettings(name="test-tone-model", effort="none")
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -180,6 +186,18 @@ def _extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
         client=cast("AsyncOpenAI", fake_client),
         extract_model=TEST_MEMORY_MODEL,
         consolidate_model=TEST_MEMORY_MODEL,
+    )
+    return extractor, fake_client
+
+
+def _tone_extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
+    """Builds a MemoryExtractorAI whose tone updater is wired to a fake client."""
+    fake_client = FakeMemoryClient()
+    extractor = MemoryExtractorAI(
+        client=cast("AsyncOpenAI", fake_client),
+        extract_model=TEST_MEMORY_MODEL,
+        consolidate_model=TEST_MEMORY_MODEL,
+        tone_model=TEST_TONE_MODEL,
     )
     return extractor, fake_client
 
@@ -329,6 +347,36 @@ def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> 
     (user_dir / "main.md.tmp").write_text(data="partial", encoding="utf-8")
     assert clear_memory(scope=USER_SCOPE) is True
     assert not user_dir.exists()
+
+
+def test_read_tone_missing_file_returns_empty(memory_isolated_dir: Path) -> None:
+    assert read_tone(scope=USER_SCOPE) == ""
+
+
+def test_write_tone_roundtrip_and_atomic(memory_isolated_dir: Path) -> None:
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌、就事論事\n")
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌、就事論事"
+    # The tone note carries no identity/v1 header, so what is read is what was written.
+    leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_write_tone_clamps_oversized_note(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The note is kept short by its prompt; the byte cap is only a store backstop.
+    monkeypatch.setattr("discordbot.cogs._memory.store.TONE_FILE_MAX_BYTES", 64)
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n" + "長" * 1_000)
+    on_disk = (memory_isolated_dir / str(USER_ID) / "tone.md").read_text(encoding="utf-8")
+    assert len(on_disk.encode("utf-8")) <= 64 + 1
+
+
+def test_clear_user_memory_removes_tone_file(memory_isolated_dir: Path) -> None:
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好簡短")
+    assert read_tone(scope=USER_SCOPE) != ""
+    assert clear_memory(scope=USER_SCOPE) is True
+    assert read_tone(scope=USER_SCOPE) == ""
+    assert not (memory_isolated_dir / str(USER_ID)).exists()
 
 
 def test_clear_user_memory_flags_in_flight_updates(memory_isolated_dir: Path) -> None:
@@ -577,6 +625,47 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
     ]
 
 
+async def test_update_tone_returns_redacted_note() -> None:
+    extractor, fake_client = _tone_extractor()
+    fake_client.responses.output_parsed = ToneUpdate(
+        changed=True, tone_markdown="## 語氣偏好\n* 不要在回覆裡貼 sk-aaaabbbbccccddddeeee"
+    )
+    result = await extractor.update_tone(
+        subject=f"target_user_id: {USER_ID}", transcript="t", existing_tone=""
+    )
+    assert result is not None
+    assert result.changed is True
+    assert "sk-aaaabbbbccccddddeeee" not in result.tone_markdown
+    assert "[REDACTED_SECRET]" in result.tone_markdown
+    assert fake_client.responses.parse_models == [TEST_TONE_MODEL.name]
+    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    assert f"target_user_id: {USER_ID}" in user_text
+    assert "<existing_tone>" in user_text
+
+
+async def test_update_tone_no_op_passthrough() -> None:
+    extractor, fake_client = _tone_extractor()
+    fake_client.responses.output_parsed = ToneUpdate(changed=False, tone_markdown="")
+    result = await extractor.update_tone(
+        subject=f"target_user_id: {USER_ID}",
+        transcript="t",
+        existing_tone="## 語氣偏好\n* 偏好簡短",
+    )
+    assert result is not None
+    assert result.changed is False
+    assert result.tone_markdown == ""
+
+
+async def test_update_tone_without_tone_model_is_noop() -> None:
+    # The per-server / regeneration extractors set no tone model, so update_tone is a no-op.
+    extractor, fake_client = _extractor()
+    result = await extractor.update_tone(
+        subject=f"target_user_id: {USER_ID}", transcript="t", existing_tone=""
+    )
+    assert result is None
+    assert fake_client.responses.parse_models == []
+
+
 def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "recent_context" in PHASE1_PROMPT
     assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
@@ -584,6 +673,15 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "today" in PHASE2_PROMPT
     assert "ttl_days" in PHASE2_PROMPT
     assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
+
+
+def test_tone_prompt_is_persona_independent_and_phases_exclude_tone() -> None:
+    # The tone note is the always-injected tier, so it must be persona-independent.
+    assert "## 語氣偏好" in TONE_UPDATE_PROMPT
+    assert "Persona-independent" in TONE_UPDATE_PROMPT
+    # The main-memory phases push tone out to the separate note and drop stale tone bullets.
+    assert "TONE IS OUT OF SCOPE" in PHASE1_PROMPT
+    assert "separate tone note" in PHASE2_PROMPT
 
 
 def test_redact_secrets_masks_token_shapes() -> None:
@@ -769,6 +867,24 @@ async def _wait_for_inflight() -> None:
         await task
 
 
+async def _wait_for_tone_inflight() -> None:
+    """Awaits the scheduled background tone task for the test user."""
+    task = pipeline._tone_inflight_tasks.get(USER_SCOPE)
+    if task is not None:
+        await task
+
+
+def _schedule_tone(extractor: MemoryExtractorAI, full_reply: str = "回覆") -> None:
+    """Schedules a per-user tone update with the shared test inputs."""
+    pipeline.schedule_tone_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply=full_reply,
+        extractor=extractor,
+    )
+
+
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
@@ -799,6 +915,100 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert raw_file_bytes(scope=USER_SCOPE) == 0
+
+
+async def test_tone_pipeline_writes_note_on_change(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _tone_extractor()
+    fake_client.responses.output_parsed = ToneUpdate(
+        changed=True, tone_markdown="## 語氣偏好\n* 偏好禮貌、就事論事"
+    )
+    _schedule_tone(extractor=extractor)
+    await _wait_for_tone_inflight()
+    assert "偏好禮貌、就事論事" in read_tone(scope=USER_SCOPE)
+
+
+async def test_tone_pipeline_skips_no_op(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _tone_extractor()
+    fake_client.responses.output_parsed = ToneUpdate(changed=False, tone_markdown="")
+    _schedule_tone(extractor=extractor)
+    await _wait_for_tone_inflight()
+    assert read_tone(scope=USER_SCOPE) == ""
+
+
+def test_should_update_tone_respects_cooldown_and_clear(memory_isolated_dir: Path) -> None:
+    # No prior attempt: the first tone signal is captured immediately.
+    assert pipeline._should_update_tone(scope=USER_SCOPE) is True
+    pipeline._last_tone_update[USER_SCOPE] = time.monotonic()
+    assert pipeline._should_update_tone(scope=USER_SCOPE) is False
+    # A clear since the last attempt reopens it (the cooldown belonged to wiped state).
+    mark_cleared(scope=USER_SCOPE)
+    assert pipeline._should_update_tone(scope=USER_SCOPE) is True
+
+
+async def test_tone_pipeline_cooldown_blocks_second_update(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _tone_extractor()
+    fake_client.responses.output_parsed = ToneUpdate(
+        changed=True, tone_markdown="## 語氣偏好\n* 第一版"
+    )
+    _schedule_tone(extractor=extractor)
+    await _wait_for_tone_inflight()
+    assert "第一版" in read_tone(scope=USER_SCOPE)
+    # A second turn inside the cooldown is dropped without starting a task.
+    fake_client.responses.output_parsed = ToneUpdate(
+        changed=True, tone_markdown="## 語氣偏好\n* 第二版"
+    )
+    _schedule_tone(extractor=extractor)
+    assert pipeline._tone_inflight_tasks.get(USER_SCOPE) is None
+    assert "第二版" not in read_tone(scope=USER_SCOPE)
+    assert "第一版" in read_tone(scope=USER_SCOPE)
+
+
+async def test_tone_pipeline_dedupes_in_flight(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extractor, fake_client = _tone_extractor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[int] = []
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        calls.append(1)
+        started.set()
+        await release.wait()
+        return _parsed(output=ToneUpdate(changed=True, tone_markdown="## 語氣偏好\n* x"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    _schedule_tone(extractor=extractor)
+    await started.wait()
+    first_task = pipeline._tone_inflight_tasks[USER_SCOPE]
+    # A concurrent turn is dropped (no pending replay slot for tone).
+    _schedule_tone(extractor=extractor)
+    assert pipeline._tone_inflight_tasks[USER_SCOPE] is first_task
+    release.set()
+    await first_task
+    assert calls == [1]
+
+
+async def test_tone_pipeline_skips_write_after_clear(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extractor, fake_client = _tone_extractor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        started.set()
+        await release.wait()
+        return _parsed(output=ToneUpdate(changed=True, tone_markdown="## 語氣偏好\n* x"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    _schedule_tone(extractor=extractor)
+    await started.wait()
+    # A clear that lands mid-flight must abort the write, not resurrect tone state.
+    mark_cleared(scope=USER_SCOPE)
+    release.set()
+    await pipeline._tone_inflight_tasks[USER_SCOPE]
+    assert read_tone(scope=USER_SCOPE) == ""
 
 
 async def test_pipeline_defers_and_replays_newest_update_in_flight(

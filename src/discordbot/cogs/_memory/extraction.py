@@ -12,6 +12,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
+    TONE_UPDATE_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
@@ -19,6 +20,7 @@ from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
 from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
+    TONE_UPDATE_TIMEOUT_SECONDS,
     MEMORY_EXTRACT_TIMEOUT_SECONDS,
     MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
 )
@@ -171,6 +173,21 @@ class ConsolidatedMemory(BaseModel):
     )
 
 
+class ToneUpdate(BaseModel):
+    """Structured output of the single-call per-user tone-note updater."""
+
+    model_config = ConfigDict(frozen=True)
+
+    changed: bool = Field(
+        ...,
+        description="Whether the tone note materially changed; false on the common no-signal turn.",
+    )
+    tone_markdown: str = Field(
+        ...,
+        description="Full rewritten tone note starting with `## 語氣偏好`; empty when changed is false.",
+    )
+
+
 class MemoryExtractorAI(BaseModel):
     """Runs the two-phase memory LLM calls with best-effort fallbacks.
 
@@ -194,6 +211,10 @@ class MemoryExtractorAI(BaseModel):
     evaluate_model: ModelSettings | None = Field(
         default=None, description="Optional model for the phase-1.5 evaluator review."
     )
+    tone_model: ModelSettings | None = Field(
+        default=None,
+        description="Optional cheap model for the single-call per-user tone-note updater.",
+    )
     phase1_prompt: str = Field(
         default=PHASE1_PROMPT, description="Instructions for the phase-1 extraction call."
     )
@@ -203,6 +224,9 @@ class MemoryExtractorAI(BaseModel):
     )
     consolidate_prompt: str = Field(
         default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
+    )
+    tone_prompt: str = Field(
+        default=TONE_UPDATE_PROMPT, description="Instructions for the per-user tone-note updater."
     )
     compaction_block: str = Field(
         default=PHASE2_COMPACTION_BLOCK,
@@ -274,6 +298,37 @@ class MemoryExtractorAI(BaseModel):
             return None
         return result.model_copy(
             update={"memory_markdown": redact_secrets(text=result.memory_markdown).strip()}
+        )
+
+    async def update_tone(
+        self, subject: str, transcript: str, existing_tone: str
+    ) -> ToneUpdate | None:
+        """Returns the rewritten per-user tone note, or None when the LLM path fails or is off.
+
+        `subject` is the same leading directive the extraction call uses
+        (`target_user_id: <id>`). Returns None when no tone model is configured,
+        so the per-server and regeneration extractors (which never set one) are
+        no-ops here.
+        """
+        if self.tone_model is None:
+            return None
+        user_text = (
+            f"{subject}\n\n"
+            f"<existing_tone>\n{existing_tone.strip() or '(empty)'}\n</existing_tone>\n\n"
+            f"Conversation transcript:\n{transcript}"
+        )
+        result = await self._parse(
+            model=self.tone_model,
+            instructions=self.tone_prompt,
+            user_text=user_text,
+            text_format=ToneUpdate,
+            timeout_seconds=TONE_UPDATE_TIMEOUT_SECONDS,
+            end_user_label="memory_tone",
+        )
+        if result is None:
+            return None
+        return result.model_copy(
+            update={"tone_markdown": redact_secrets(text=result.tone_markdown).strip()}
         )
 
     async def _parse(  # noqa: PLR0913 -- thin delegate mirroring the 3 phase call sites

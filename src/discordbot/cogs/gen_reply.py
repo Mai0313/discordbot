@@ -25,7 +25,7 @@ from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
-from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
+from discordbot.cogs._memory.store import read_tone, user_scope, server_scope, read_main_memory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -34,7 +34,7 @@ from discordbot.cogs._gen_reply.input import (
     render_server_identity,
 )
 from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
-from discordbot.cogs._memory.pipeline import schedule_memory_update
+from discordbot.cogs._memory.pipeline import schedule_tone_update, schedule_memory_update
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
@@ -51,6 +51,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
     MemorySelection,
+    render_tone_block,
     parse_user_id_list,
     memory_lookup_labels,
     resolve_user_memories,
@@ -237,13 +238,15 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Returns:
             An extractor bound to this cog's client and the phase-1/phase-2
-            memory models.
+            memory models, plus the cheap tone model that drives the per-user
+            tone-note updater.
         """
         return MemoryExtractorAI(
             client=self.client,
             extract_model=self.runtime_models.extract_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
+            tone_model=self.runtime_models.tone_model,
         )
 
     @cached_property
@@ -735,6 +738,13 @@ class ReplyGeneratorCogs(commands.Cog):
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
 
+        # The message author's tone-preference note is read directly for that one author
+        # (their own preference for how the bot should sound) and injected on every reply
+        # with no selection phase, so it is always read — even on the SUMMARY route — and a
+        # persona change never invalidates it. One file read, no extra LLM call.
+        author_tone = read_tone(scope=user_scope(user_id=message.author.id))
+        tone_block = render_tone_block(tone=author_tone) if author_tone else None
+
         # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term
         # memory to read via get_user_memory (no built-in tools), and phase 2 streams the
         # answer with the built-in tools always available and any selected memory injected
@@ -819,6 +829,7 @@ class ReplyGeneratorCogs(commands.Cog):
             current_message=current_message,
             server_memory_block=server_memory_block,
             memory_block=memory_block,
+            tone_block=tone_block,
             memory_labels=memory_labels,
             selection_input_tokens=selection_input_tokens,
             selection_output_tokens=selection_output_tokens,
@@ -850,7 +861,7 @@ class ReplyGeneratorCogs(commands.Cog):
         answer_input: ResponseInputParam = [*context.hist_messages, *context.reference_messages]
         answer_input.extend(
             block
-            for block in (context.server_memory_block, context.memory_block)
+            for block in (context.server_memory_block, context.memory_block, context.tone_block)
             if block is not None
         )
         answer_input.extend(context.current_message)
@@ -896,6 +907,16 @@ class ReplyGeneratorCogs(commands.Cog):
                     username=message.author.name,
                     user_id=message.author.id,
                 ),
+            )
+            # The author's tone note rides the same target-centered transcript but a
+            # separate, cheaper single-call updater (its own cooldown / de-dupe), so a
+            # tone change is picked up without waiting on the main-memory consolidation.
+            schedule_tone_update(
+                scope=user_scope(user_id=message.author.id),
+                subject=f"target_user_id: {message.author.id}",
+                message_list=memory_message_list,
+                full_reply=full_reply,
+                extractor=self.memory_extractor,
             )
         # Server memory is not gated by `memory_enabled`: the SUMMARY route runs with it
         # off (no per-user memory) yet its ~100-message digest is high-quality community
