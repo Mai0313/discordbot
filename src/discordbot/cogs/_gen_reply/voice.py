@@ -9,7 +9,7 @@ the written reply and the spoken clip stay coherent (the model knows it is speak
 separate post-hoc classifier would not. Synthesis is best-effort: any failure leaves a
 normal text reply.
 
-The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it only fixes the voice gender and lets
+The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
 the tone follow the reply's own wording), prepended to the input text because the proxy's
 `instructions` parameter is silently ignored for this TTS model. `response_format` is
 intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
@@ -35,13 +35,13 @@ _TRAILING_VOICE_MARKER_RE = re.compile(rf"[\s`]*{_MARKER_BODY}[\s`]*\Z", re.IGNO
 # remove a stray mid-reply marker WITHOUT eating the surrounding text (so words never join).
 _ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 
-# Tunable voice config (edit here). The style directive only fixes the voice gender and lets
+# Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
 # distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
 # documented in English and is read as style, not spoken aloud).
 TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
 TTS_VOICE = "Despina"
-TTS_STYLE_DIRECTIVE = "Using the voice you think best fits the following text:"
+TTS_STYLE_DIRECTIVE = "Using a natural 18-year-old woman's voice that fits the following text:"
 TTS_SPEED = 1.5
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
@@ -149,7 +149,7 @@ class VoiceSynthesizer(BaseModel):
     )
     style_directive: str = Field(
         default=TTS_STYLE_DIRECTIVE,
-        description="Style directive prepended to the spoken text (fixes voice gender).",
+        description="Style directive prepended to the spoken text (fixes voice age/gender).",
     )
     speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
 
