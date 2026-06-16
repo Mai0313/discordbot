@@ -22,7 +22,12 @@ from discordbot.cogs.gen_reply import (
     _discard_task,
     _build_runtime_instructions,
 )
-from discordbot.typings.models import ModelSettings, RouteDecision, RuntimeModelCatalog
+from discordbot.typings.models import (
+    EffortGrade,
+    ModelSettings,
+    RouteClassification,
+    RuntimeModelCatalog,
+)
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
@@ -290,7 +295,10 @@ class FakeResponses:
         # When set, create() raises this on tool-bearing calls only (the prompt director),
         # leaving the tool-free caption call working, to exercise best-effort fallback.
         self.create_error: Exception | None = None
-        self.output_parsed = RouteDecision(decision="SUMMARY")
+        # parse() serves both the route classifier and the effort grader; each picks its
+        # own parsed output by the requested text_format.
+        self.output_parsed: RouteClassification | None = RouteClassification(decision="SUMMARY")
+        self.effort_parsed: EffortGrade | None = EffortGrade(effort="high")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
         # Each entry is the `.output` item list for one non-streaming (memory selection)
@@ -336,15 +344,17 @@ class FakeResponses:
         model: str,
         instructions: str,
         input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
-        text_format: type[RouteDecision],
+        text_format: type[RouteClassification | EffortGrade],
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
     ) -> SimpleNamespace:
-        """Records the route model and returns configured parsed output."""
+        """Records the model and returns the parsed output for the requested schema."""
         self.parse_models.append(model)
         self.parse_inputs.append(input)
+        if text_format is EffortGrade:
+            return SimpleNamespace(output_parsed=self.effort_parsed)
         return SimpleNamespace(output_parsed=self.output_parsed)
 
 
@@ -570,12 +580,22 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     return cog
 
 
-async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteDecision:
-    """Routes a message after building the shared text-only reference/current parts."""
+async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassification:
+    """Classifies a message after building the shared text-only reference/current parts."""
     reference_messages, current_message = await cog._get_reference_and_current_text_only(
         message=message
     )
-    return await cog._route_message(
+    return await cog._route_classify(
+        message=message, reference_messages=reference_messages, current_message=current_message
+    )
+
+
+async def _grade(cog: ReplyGeneratorCogs, message: FakeMessage) -> EffortGrade:
+    """Grades a message's answer effort after building the shared text-only parts."""
+    reference_messages, current_message = await cog._get_reference_and_current_text_only(
+        message=message
+    )
+    return await cog._grade_effort(
         message=message, reference_messages=reference_messages, current_message=current_message
     )
 
@@ -1918,6 +1938,9 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
+    # Distinctive non-fallback grade so the effort reaching the answer model is checked to
+    # be the graded value, not the "high" default that timeout/error would also produce.
+    cog.client.responses.effort_parsed = EffortGrade(effort="low")
     calls: list[str] = []
     prompts: list[str] = []
     prep_requests: list[tuple[int, bool]] = []
@@ -1925,12 +1948,12 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
-    ) -> RouteDecision:
+    ) -> RouteClassification:
         """Returns the parametrized route."""
         del reference_messages, current_message
         # Yield like a real route I/O call so the speculative prep task gets scheduled.
         await asyncio.sleep(0)
-        return RouteDecision(decision=route)
+        return RouteClassification(decision=route)
 
     async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
@@ -1964,6 +1987,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
 
     memory_flags: list[bool] = []
     voice_flags: list[bool] = []
+    effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
     async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors _handle_message_reply's signature
@@ -1978,9 +2002,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
+        effort_flags.append(effort)
         contexts.append(context)
 
-    monkeypatch.setattr(cog, "_route_message", fake_route)
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -1999,8 +2024,11 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert voice_flags == expected_voice
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
+        assert effort_flags == []
     else:
         assert contexts == [prepared_context]
+        # The parallel grade flows end-to-end into the answer model on QA and SUMMARY.
+        assert effort_flags == ["low"]
 
 
 async def test_prepare_reply_context_shields_shared_parts_task(
@@ -2088,7 +2116,7 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
-    monkeypatch.setattr(cog, "_route_message", boom)
+    monkeypatch.setattr(cog, "_route_classify", boom)
     monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
     failed = FakeMessage(content="<@999> fail", author=FakeAuthor(user_id=1))
     await cog.on_message(message=failed)
@@ -2135,13 +2163,13 @@ async def test_on_message_discards_speculative_context_on_image_route(
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
-    ) -> str:
+    ) -> RouteClassification:
         """Routes every message to IMAGE."""
         del reference_messages, current_message
         # Yield like a real route I/O call so the speculative prep task starts and can
         # then be cancelled by the IMAGE dispatch.
         await asyncio.sleep(0)
-        return "IMAGE"
+        return RouteClassification(decision="IMAGE")
 
     async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
@@ -2171,7 +2199,7 @@ async def test_on_message_discards_speculative_context_on_image_route(
         del message, bot_user, previous
         return emoji
 
-    monkeypatch.setattr(cog, "_route_message", fake_route)
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
@@ -3068,26 +3096,142 @@ async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> 
     assert USAGE_FOOTER_RE.sub("", result) == "hello from stream"
 
 
-async def test_route_message_carries_effort_and_defaults_high() -> None:
-    """The route result carries the model's effort; unparsed output falls back to high."""
+async def test_route_classify_carries_decision_and_defaults_qa() -> None:
+    """The route classifies the reply mode; unparsed output falls back to QA."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteDecision(decision="QA", effort="low")
-    message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
-    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="low")
+    cog.client.responses.output_parsed = RouteClassification(decision="IMAGE")
+    message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
+    assert (await _route(cog=cog, message=message)).decision == "IMAGE"
 
     cog.client.responses.output_parsed = None
-    assert await _route(cog=cog, message=message) == RouteDecision(decision="QA", effort="high")
+    assert (await _route(cog=cog, message=message)).decision == "QA"
 
 
-async def test_route_url_summary_downgrade_keeps_effort() -> None:
-    """The URL-summary-to-QA downgrade preserves the graded effort."""
+async def test_route_url_summary_downgrades_to_qa() -> None:
+    """A SUMMARY classification on a message carrying a URL is steered back to QA."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteDecision(decision="SUMMARY", effort="medium")
+    cog.client.responses.output_parsed = RouteClassification(decision="SUMMARY")
     message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
 
-    routed = await _route(cog=cog, message=message)
+    assert (await _route(cog=cog, message=message)).decision == "QA"
 
-    assert routed == RouteDecision(decision="QA", effort="medium")
+
+async def test_grade_effort_carries_grade_and_defaults_high() -> None:
+    """The effort grader returns the model's grade; unparsed output falls back to high."""
+    cog = _cog()
+    cog.client.responses.effort_parsed = EffortGrade(effort="low")
+    message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
+    assert (await _grade(cog=cog, message=message)).effort == "low"
+
+    cog.client.responses.effort_parsed = None
+    assert (await _grade(cog=cog, message=message)).effort == "high"
+
+
+async def test_resolve_effort_returns_graded_effort_on_success() -> None:
+    """A completed grade flows through _resolve_effort as the answer model's effort."""
+    cog = _cog()
+    route_done = asyncio.Event()
+    route_done.set()
+
+    async def graded() -> EffortGrade:
+        """Returns a non-default grade so the success path is pinned."""
+        return EffortGrade(effort="low")
+
+    effort_task = asyncio.create_task(coro=graded())
+    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "low"
+
+
+async def test_resolve_effort_defaults_high_on_error() -> None:
+    """A failed effort grade resolves to high effort rather than stalling the reply."""
+    cog = _cog()
+    route_done = asyncio.Event()
+    route_done.set()
+
+    async def boom() -> EffortGrade:
+        """Fails the grade to exercise the fallback."""
+        raise RuntimeError("boom")
+
+    effort_task = asyncio.create_task(coro=boom())
+    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "high"
+
+
+async def test_resolve_effort_defaults_high_on_grace_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A grade still running past the post-route grace resolves to high effort."""
+    cog = _cog()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.EFFORT_GRACE_SECONDS", 0.01)
+    route_done = asyncio.Event()
+    route_done.set()
+
+    async def slow() -> EffortGrade:
+        """Outlives the grace window."""
+        await asyncio.sleep(30)
+        return EffortGrade(effort="low")
+
+    effort_task = asyncio.create_task(coro=slow())
+    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "high"
+
+
+async def test_on_message_cancels_effort_task_on_image_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The IMAGE route cancels the parallel effort grade it will never consume."""
+    cog = _cog()
+    cancelled: list[bool] = []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes every message to IMAGE after yielding so the effort task starts."""
+        del reference_messages, current_message
+        await asyncio.sleep(0)
+        return RouteClassification(decision="IMAGE")
+
+    async def fake_grade(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> EffortGrade:
+        """Blocks until cancelled, recording the cancellation."""
+        del message, reference_messages, current_message
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return EffortGrade(effort="low")
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        return ReplyContext()
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    async def fake_reaction(
+        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+    ) -> str:
+        """Skips real reaction calls."""
+        del message, bot_user, previous
+        return emoji
+
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_grade_effort", fake_grade)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
+
+    message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+    assert cancelled == [True]
 
 
 async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None) -> None:

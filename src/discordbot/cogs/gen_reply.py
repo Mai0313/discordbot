@@ -22,7 +22,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import litellm_call_kwargs, create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
-from discordbot.typings.models import RouteDecision, RuntimeModelCatalog
+from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
@@ -41,6 +41,7 @@ from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
     VIDEO_PROMPT,
+    EFFORT_PROMPT,
     SUMMARY_PROMPT,
     DESCRIPTION_PROMPT,
     MEMORY_SELECT_PROMPT,
@@ -85,6 +86,13 @@ _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 # yet a selection that finishes within the (route-dominant) window is never thrown away.
 # Tune against the `gen_reply memory selection done` latency log.
 MEMORY_SELECT_GRACE_SECONDS = 5.0
+
+# Effort grading runs in parallel with the route under the same `route_done` gate as
+# memory selection: it runs unbounded while the route is in flight and gets only this
+# grace once the route returns before the reply falls back to "high" effort. The grade
+# is consumed only just before the answer model starts, so this latency hides behind the
+# route. Tune against the `gen_reply effort done` latency log.
+EFFORT_GRACE_SECONDS = 5.0
 
 # Hard ceiling on the video-generation polling loop so a hung provider job cannot
 # leave the message handler waiting forever.
@@ -186,6 +194,33 @@ async def _discard_task[TaskResultT](task: asyncio.Task[TaskResultT]) -> None:
         pass
     except Exception:
         logfire.warn("Speculative reply context build failed off-route", _exc_info=True)
+
+
+async def _await_gated[GatedT](
+    *, task: asyncio.Task[GatedT], route_done: asyncio.Event, grace_seconds: float
+) -> GatedT:
+    """Awaits a speculative side task, bounded by the route call instead of a fixed timeout.
+
+    The task overlaps the route for free: while the route is still in flight it may run
+    unbounded; once the route completes (`route_done` set) a still-running task gets only
+    `grace_seconds` more before this raises TimeoutError. The task is always cancelled on
+    exit so it never orphans (e.g. when the speculative prep task is discarded on a non-QA
+    route). Shared by memory selection and effort grading, which both ride this gate.
+    """
+    route_wait = asyncio.create_task(coro=route_done.wait())
+    try:
+        await asyncio.wait({task, route_wait}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        return await asyncio.wait_for(fut=task, timeout=grace_seconds)
+    finally:
+        route_wait.cancel()
+        with contextlib.suppress(BaseException):
+            await route_wait
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
 
 
 def _log_pre_answer_latency(started: float, decision: str) -> None:
@@ -585,18 +620,19 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         return reference_messages, current_message
 
-    async def _route_message(
+    async def _route_classify(
         self,
         message: Message,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
-    ) -> RouteDecision:
-        """Routes the message to the appropriate handler using pre-built context parts.
+    ) -> RouteClassification:
+        """Classifies the message into a reply mode using pre-built context parts.
 
-        Besides the handler choice, the route also grades how much reasoning effort the
-        answer deserves; QA and SUMMARY override the slow model's effort with it. The
-        reference + current parts arrive already text-only (attachment markers, no file
-        ids), so the route classifies on the text without reading or waiting on uploads.
+        Only the handler choice is decided here; the answer effort is graded by
+        `_grade_effort` in a parallel call, so this stays a short single-purpose
+        classification on the critical path. The reference + current parts arrive already
+        text-only (attachment markers, no file ids), so the route classifies on the text
+        without reading or waiting on uploads.
         """
         message_list = [*reference_messages, *current_message]
 
@@ -608,31 +644,92 @@ class ReplyGeneratorCogs(commands.Cog):
                     model=route_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
-                    text_format=RouteDecision,
+                    text_format=RouteClassification,
                     reasoning=route_model.reasoning,
                     **litellm_call_kwargs(end_user_id=message.author.name),
                 )
             parsed = responses.output_parsed
             if parsed is None:
-                route = RouteDecision(decision="QA")
+                route = RouteClassification(decision="QA")
             elif parsed.decision == "SUMMARY" and _message_has_url(content=message.content):
-                route = RouteDecision(decision="QA", effort=parsed.effort)
+                # A summary request carrying a URL is really a QA recap of that link, not a
+                # recap of channel history, so steer it back to QA.
+                route = RouteClassification(decision="QA")
             else:
                 route = parsed
         except ValidationError:
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
-            logfire.warn("RouteDecision parse failed, model returned no text; defaulting to QA")
-            route = RouteDecision(decision="QA")
+            logfire.warn(
+                "RouteClassification parse failed, model returned no text; defaulting to QA"
+            )
+            route = RouteClassification(decision="QA")
         # Route-call latency is logged on every path: this is the prime suspect for slow
         # replies, so the log file must show its duration directly, not just a span start.
         logfire.info(
             "gen_reply route done",
             elapsed_seconds=time.monotonic() - started,
             decision=route.decision,
-            effort=route.effort,
         )
         return route
+
+    async def _grade_effort(
+        self,
+        message: Message,
+        reference_messages: list[EasyInputMessageParam],
+        current_message: list[EasyInputMessageParam],
+    ) -> EffortGrade:
+        """Grades how much reasoning effort the answer model should spend on this message.
+
+        Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
+        the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
+        this task. The parts arrive already text-only, so grading never waits on uploads.
+        Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
+        """
+        message_list = [*reference_messages, *current_message]
+
+        effort_model = self.runtime_models.effort_model
+        started = time.monotonic()
+        with logfire.span("gen_reply effort"):
+            responses = await self.client.responses.parse(
+                model=effort_model.name,
+                instructions=EFFORT_PROMPT,
+                input=cast("ResponseInputParam", message_list),
+                text_format=EffortGrade,
+                reasoning=effort_model.reasoning,
+                **litellm_call_kwargs(end_user_id=message.author.name),
+            )
+        parsed = responses.output_parsed
+        grade = parsed if parsed is not None else EffortGrade(effort="high")
+        logfire.info(
+            "gen_reply effort done",
+            elapsed_seconds=time.monotonic() - started,
+            effort=grade.effort,
+        )
+        return grade
+
+    async def _resolve_effort(
+        self, *, effort_task: "asyncio.Task[EffortGrade]", route_done: asyncio.Event
+    ) -> Literal["low", "medium", "high"]:
+        """Resolves the parallel effort grade, bounded by the route like memory selection.
+
+        Falls back to "high" on the post-route grace timeout or any grading error, so a slow
+        or failed effort call never stalls or silently degrades the reply.
+        """
+        try:
+            grade = await _await_gated(
+                task=effort_task, route_done=route_done, grace_seconds=EFFORT_GRACE_SECONDS
+            )
+        except TimeoutError:
+            logfire.warn(
+                "Effort grading exceeded the post-route grace; defaulting to high effort",
+                grace_seconds=EFFORT_GRACE_SECONDS,
+            )
+            return "high"
+        except Exception:
+            logfire.warn("Effort grading failed; defaulting to high effort", _exc_info=True)
+            return "high"
+        return grade.effort
 
     async def _select_user_memories(
         self,
@@ -782,32 +879,6 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
-    async def _await_selection_gated(
-        self, *, selection_task: "asyncio.Task[MemorySelection]", route_done: asyncio.Event
-    ) -> MemorySelection:
-        """Awaits memory selection, bounded by the route call instead of a fixed timeout.
-
-        Selection overlaps the route for free, so while the route is still in flight it may
-        run unbounded; once the route completes a still-running selection gets only
-        `MEMORY_SELECT_GRACE_SECONDS` more before this raises TimeoutError and the reply
-        answers without memory. The selection task is always cancelled on exit so it never
-        orphans (e.g. when the speculative prep task is discarded on a non-QA route).
-        """
-        route_wait = asyncio.create_task(coro=route_done.wait())
-        try:
-            await asyncio.wait({selection_task, route_wait}, return_when=asyncio.FIRST_COMPLETED)
-            if selection_task.done():
-                return selection_task.result()
-            return await asyncio.wait_for(fut=selection_task, timeout=MEMORY_SELECT_GRACE_SECONDS)
-        finally:
-            route_wait.cancel()
-            with contextlib.suppress(BaseException):
-                await route_wait
-            if not selection_task.done():
-                selection_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await selection_task
-
     async def _prepare_reply_context(  # noqa: PLR0913 -- speculative prep needs the turn payload plus the route-done signal
         self,
         message: Message,
@@ -904,8 +975,10 @@ class ReplyGeneratorCogs(commands.Cog):
                                 server_memory_block=server_memory_block,
                             )
                         )
-                        selection = await self._await_selection_gated(
-                            selection_task=selection_task, route_done=route_done
+                        selection = await _await_gated(
+                            task=selection_task,
+                            route_done=route_done,
+                            grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                         )
                 except TimeoutError:
                     logfire.warn(
@@ -1091,6 +1164,7 @@ class ReplyGeneratorCogs(commands.Cog):
         parts_task: (
             asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]] | None
         ) = None
+        effort_task: asyncio.Task[EffortGrade] | None = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -1119,17 +1193,28 @@ class ReplyGeneratorCogs(commands.Cog):
                         route_done=route_done,
                     )
                 )
-                route = await self._route_message(
+                # Effort grading rides the same route_done gate as memory selection: it runs
+                # in parallel with the route and only the answer model (QA/SUMMARY) consumes
+                # it, so IMAGE/VIDEO cancel it below.
+                effort_task = asyncio.create_task(
+                    coro=self._grade_effort(
+                        message=message,
+                        reference_messages=text_reference,
+                        current_message=text_current,
+                    )
+                )
+                route = await self._route_classify(
                     message=message,
                     reference_messages=text_reference,
                     current_message=text_current,
                 )
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
-                pipeline_span.set_attribute(key="effort", value=route.effort)
                 if route.decision == "IMAGE":
                     await _discard_task(task=prep_task)
                     prep_task = None
+                    await _discard_task(task=effort_task)
+                    effort_task = None
                     # IMAGE loads raw bytes itself, so the background uploads are wasted.
                     await _discard_task(task=parts_task)
                     parts_task = None
@@ -1138,6 +1223,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 elif route.decision == "VIDEO":
                     await _discard_task(task=prep_task)
                     prep_task = None
+                    await _discard_task(task=effort_task)
+                    effort_task = None
                     await _discard_task(task=parts_task)
                     parts_task = None
                     reactions.advance(emoji="🎬")
@@ -1160,13 +1247,18 @@ class ReplyGeneratorCogs(commands.Cog):
                         route_done=route_done,
                     )
                     parts_task = None
+                    effort = await self._resolve_effort(
+                        effort_task=effort_task, route_done=route_done
+                    )
+                    effort_task = None
+                    pipeline_span.set_attribute(key="effort", value=effort)
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=SUMMARY_PROMPT,
                         context=context,
                         memory_enabled=False,
-                        effort=route.effort,
+                        effort=effort,
                         allow_voice=True,
                     )
                 else:
@@ -1177,18 +1269,25 @@ class ReplyGeneratorCogs(commands.Cog):
                     context = await prep_task
                     prep_task = None
                     parts_task = None
+                    effort = await self._resolve_effort(
+                        effort_task=effort_task, route_done=route_done
+                    )
+                    effort_task = None
+                    pipeline_span.set_attribute(key="effort", value=effort)
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=REPLY_PROMPT,
                         context=context,
-                        effort=route.effort,
+                        effort=effort,
                         allow_voice=True,
                     )
                 reactions.advance(emoji="🆗")
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task)
+            if effort_task is not None:
+                await _discard_task(task=effort_task)
             if parts_task is not None:
                 await _discard_task(task=parts_task)
 

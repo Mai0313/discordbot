@@ -82,7 +82,7 @@ When you attribute a topic, point, or conclusion to a specific participant, refe
 """
 
 ROUTE_PROMPT = """
-You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` and `effort` fields according to the rules below.
+You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
 
 Classification rules:
 - IMAGE: the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, OR the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
@@ -91,12 +91,16 @@ Classification rules:
 - QA: everything else — normal questions; image analysis; captioning; requests to summarize, explain, or make a 懶人包 for a URL, webpage, article, referenced message, attachment, or pasted content; and discussions about art that do NOT ask the bot to actually generate or edit an image. QA is also the default whenever no other category clearly applies.
 
 Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
+"""
 
-Effort rules (how much reasoning the answer model should spend):
+EFFORT_PROMPT = """
+You are an effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `effort` field with how much reasoning the answer model should spend on a reply.
+
+Effort rules:
 - low: casual chat, greetings, banter, short factual lookups, simple opinions — anything answerable without multi-step thinking.
 - medium: ordinary questions that need some synthesis — translations, short explanations, straightforward code or how-to questions, recaps of provided content.
 - high: multi-step reasoning, math, debugging or non-trivial code, planning, analysis, comparisons, or anything where answer quality depends on careful thinking.
-- When uncertain, choose high. For IMAGE and VIDEO the effort field is unused; fill in low.
+- When uncertain, choose high.
 """
 
 IMAGE_PROMPT = """
