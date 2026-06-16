@@ -40,7 +40,9 @@ from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
+    VIDEO_PROMPT,
     SUMMARY_PROMPT,
+    DESCRIPTION_PROMPT,
     MEMORY_SELECT_PROMPT,
     REQUEST_TIME_CONTEXT_PROMPT,
 )
@@ -71,6 +73,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
 
     from openai.types.responses import ResponseFunctionToolCall
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -382,12 +385,75 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
+    async def _refine_generation_prompt(
+        self,
+        *,
+        user_prompt: str,
+        instructions: str,
+        end_user_id: str,
+        image_bytes_list: list[bytes] | None = None,
+    ) -> str:
+        """Expands a thin IMAGE/VIDEO request into a rich, self-contained generation prompt.
+
+        Runs `prompt_model` with grounding tools so a vague request ("draw the heroine of some
+        anime") is looked up and resolved before the image/video model renders it. Any
+        already-loaded source bytes ride along as input images so the draft is grounded in them
+        without a re-download. Best-effort: an empty draft or ANY error falls back to the raw
+        `user_prompt`, so a director failure never aborts generation — the pipeline wraps the
+        caller in an error path and must not see an exception escape here.
+        """
+        prompt_model = self.runtime_models.prompt_model
+        director_content: list[
+            ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
+        ] = [
+            ResponseInputTextParam(
+                text=f"User generation request:\n{user_prompt}", type="input_text"
+            )
+        ]
+        for image_bytes in image_bytes_list or []:
+            director_content.append(
+                ResponseInputImageParam(
+                    image_url=convert_base64_to_data_uri(
+                        base64_image=base64.b64encode(image_bytes).decode()
+                    ),
+                    detail="auto",
+                    type="input_image",
+                )
+            )
+        director_input: list[EasyInputMessageParam] = [
+            EasyInputMessageParam(role="user", content=director_content)
+        ]
+        started = time.monotonic()
+        try:
+            with logfire.span("gen_reply prompt refine", model=prompt_model.name):
+                responses = await self.client.responses.create(
+                    model=prompt_model.name,
+                    instructions=instructions,
+                    input=cast("ResponseInputParam", director_input),
+                    reasoning=prompt_model.reasoning,
+                    tools=list(prompt_model.tools),
+                    **litellm_call_kwargs(end_user_id=end_user_id),
+                )
+            refined = (responses.output_text or "").strip()
+        except Exception:
+            logfire.warn("Prompt refinement failed; using raw user prompt", _exc_info=True)
+            return user_prompt
+        logfire.info(
+            "gen_reply prompt refine done",
+            elapsed_seconds=time.monotonic() - started,
+            refined=bool(refined),
+        )
+        return refined or user_prompt
+
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
+        refined_prompt = await self._refine_generation_prompt(
+            user_prompt=user_prompt, instructions=VIDEO_PROMPT, end_user_id=message.author.name
+        )
         video = await self.client.videos.create(
             model=video_model.name,
-            prompt=user_prompt or "請依照訊息內容生成一段影片。",
+            prompt=refined_prompt or "請依照訊息內容生成一段影片。",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
         async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
@@ -416,10 +482,17 @@ class ReplyGeneratorCogs(commands.Cog):
         else:
             image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
+        refined_prompt = await self._refine_generation_prompt(
+            user_prompt=user_prompt,
+            instructions=IMAGE_PROMPT,
+            end_user_id=message.author.name,
+            image_bytes_list=image_bytes_list or None,
+        )
+
         if image_bytes_list:
             result = await self.client.images.edit(
                 image=image_bytes_list,
-                prompt=user_prompt or "請依照附件內容進行編輯或優化。",
+                prompt=refined_prompt or "請依照附件內容進行編輯或優化。",
                 model=image_model.name,
                 n=1,
                 response_format="b64_json",
@@ -429,7 +502,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         else:
             result = await self.client.images.generate(
-                prompt=user_prompt or "請生成一張圖片。",
+                prompt=refined_prompt or "請生成一張圖片。",
                 model=image_model.name,
                 n=1,
                 response_format="b64_json",
@@ -468,7 +541,7 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             image_responses = await self.client.responses.create(
                 model=fast_model.name,
-                instructions=IMAGE_PROMPT,
+                instructions=DESCRIPTION_PROMPT,
                 input=cast("ResponseInputParam", image_description_input),
                 reasoning=fast_model.reasoning,
                 **litellm_call_kwargs(end_user_id=message.author.name),

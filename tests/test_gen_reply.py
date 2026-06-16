@@ -35,7 +35,7 @@ from discordbot.cogs._gen_reply.voice import (
     strip_partial_voice_marker,
 )
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
-from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
+from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.memory_tool import (
@@ -287,6 +287,9 @@ class FakeResponses:
         self.parse_models: list[str] = []
         self.parse_inputs: list[object] = []
         self.output_text = "caption"
+        # When set, create() raises this on tool-bearing calls only (the prompt director),
+        # leaving the tool-free caption call working, to exercise best-effort fallback.
+        self.create_error: Exception | None = None
         self.output_parsed = RouteDecision(decision="SUMMARY")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
@@ -316,6 +319,8 @@ class FakeResponses:
         self.create_inputs.append(input)
         self.create_streams.append(stream)
         self.create_tools.append(tools)
+        if self.create_error is not None and tools:
+            raise self.create_error
         if stream:
             events = (
                 self.stream_queue.pop(0) if self.stream_queue else list(_default_turn_events())
@@ -1661,11 +1666,12 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     await cog._handle_video_reply(message=message, user_prompt="video")
     assert len(message.replies) == 1
-    assert cog.client.videos.create_prompts == ["video"]
+    # The prompt director runs first, so video generation receives its refined output.
+    assert cog.client.videos.create_prompts == ["caption"]
 
     await cog._handle_image_reply(message=message, user_prompt="image")
     assert cog.client.images.generate_calls
-    assert cog.client.images.generate_prompts == ["image"]
+    assert cog.client.images.generate_prompts == ["caption"]
     assert isinstance(message.replies[-1].content, str)
     assert message.replies[-1].content.startswith("<@1> caption")
 
@@ -1799,6 +1805,81 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
 
     assert cog.client.images.edit_calls == 1
     assert cog.client.images.generate_calls == 0
+
+
+async def test_handle_image_reply_refines_prompt_for_generate() -> None:
+    """The prompt director runs before generate, on prompt_model with grounding tools."""
+    cog = _cog()
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+
+    await cog._handle_image_reply(message=message, user_prompt="draw a cat")
+
+    # The director's refined output (the fake's "caption") is what reaches images.generate.
+    assert cog.client.images.generate_prompts == ["caption"]
+    # The director is the first responses.create: prompt_model, IMAGE_PROMPT, non-stream, tools.
+    assert cog.client.responses.create_models[0] == cog.runtime_models.prompt_model.name
+    assert cog.client.responses.create_instructions[0] == IMAGE_PROMPT
+    assert cog.client.responses.create_streams[0] is False
+    assert cog.client.responses.create_tools[0] == list(cog.runtime_models.prompt_model.tools)
+
+
+async def test_handle_image_reply_director_receives_attached_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On the edit path the director receives the already-loaded bytes as an input image."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
+    ]
+
+    await cog._handle_image_reply(message=message, user_prompt="make it blue")
+
+    assert cog.client.images.edit_calls == 1
+    director_input = cog.client.responses.create_inputs[0]
+    parts = director_input[0]["content"]
+    assert any(part.get("type") == "input_text" for part in parts)
+    assert any(part.get("type") == "input_image" for part in parts)
+
+
+async def test_handle_image_reply_falls_back_when_director_fails() -> None:
+    """A director failure keeps the raw prompt and still delivers the image."""
+    cog = _cog()
+    cog.client.responses.create_error = RuntimeError("director boom")
+    message = FakeMessage(content="image", author=FakeAuthor(user_id=1))
+
+    await cog._handle_image_reply(message=message, user_prompt="image")
+
+    # Generation fell back to the raw prompt; the image is still delivered (no error surfaced).
+    assert cog.client.images.generate_prompts == ["image"]
+    assert isinstance(message.replies[-1].content, str)
+    assert message.replies[-1].content.startswith("<@1>")
+
+
+async def test_handle_video_reply_refines_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Video generation runs the text-only director on VIDEO_PROMPT first."""
+    cog = _cog()
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+
+    await cog._handle_video_reply(message=message, user_prompt="video")
+
+    assert cog.client.videos.create_prompts == ["caption"]
+    assert cog.client.responses.create_models[0] == cog.runtime_models.prompt_model.name
+    assert cog.client.responses.create_instructions[0] == VIDEO_PROMPT
+    # Video has no attachments, so the director request is text-only.
+    director_input = cog.client.responses.create_inputs[0]
+    parts = director_input[0]["content"]
+    assert all(part.get("type") != "input_image" for part in parts)
 
 
 @pytest.mark.parametrize(
@@ -2118,7 +2199,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))
     assert cog.runtime_models.fast_model == catalog.fast_model
     assert isinstance(catalog.fast_model, ModelSettings)
-    assert catalog.image_model.name.endswith("image-preview")
+    assert "image" in catalog.image_model.name
     assert catalog.video_model.name.startswith("veo")
     assert catalog.slow_model.effort == "high"
     # Code execution is omitted on purpose: it 400s the request on file attachments.

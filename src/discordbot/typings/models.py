@@ -18,7 +18,7 @@ class ModelSettings(BaseModel):
     name: str = Field(
         ...,
         description="LiteLLM model string dispatched on the Responses API.",
-        examples=["gemini-flash-latest", "gemini-3-pro-image-preview"],
+        examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
     )
     effort: ReasoningEffort = Field(
         default="none", description="Reasoning effort passed to the Responses API for this model."
@@ -92,7 +92,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        image_model = ModelSettings(name="gemini-3-pro-image-preview")
+        image_model = ModelSettings(name="gemini-3.1-flash-image")
         return image_model
 
     @property
@@ -106,6 +106,22 @@ class RuntimeModelCatalog(BaseModel):
         """
         video_model = ModelSettings(name="veo-3.1-fast-generate-preview")
         return video_model
+
+    @property
+    def prompt_model(self) -> ModelSettings:
+        """The model settings for the image/video generation prompt director.
+
+        Callers: `_refine_generation_prompt` (via `_handle_image_reply`, `_handle_video_reply`).
+
+        Returns:
+            Flash-with-high-effort settings for the director call that expands a thin user
+            request into a rich, self-contained generation prompt before the image/video
+            model draws it. Flash (not flash-lite) with high effort because the director must
+            reliably CALL grounding tools (googleSearch / urlContext) to look up named
+            subjects; effort is the latency lever since this call sits serially on the
+            IMAGE/VIDEO critical path before generation.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="high")
 
     @property
     def tts_model(self) -> ModelSettings:
