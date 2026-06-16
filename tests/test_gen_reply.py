@@ -3149,3 +3149,37 @@ async def test_memory_selection_timeout_without_author_memory_injects_nothing(
 
     assert context.memory_block is None
     assert context.memory_labels == []
+
+
+async def test_memory_selection_timeout_falls_back_to_author_and_reference_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reply makes the fallback read both the author and the referenced message's author."""
+    del memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲",
+        identity="Author (author) [id: 1]",
+    )
+    write_main_memory(
+        scope=user_scope(user_id=2),
+        content="v1\n\n## 使用者輪廓\n乙",
+        identity="Parent (parent) [id: 2]",
+    )
+    # _walk_reference_chain only follows a resolved message that passes isinstance(_, Message).
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
+    parent.id = 988
+    message.reference = FakeReference(resolved=parent)
+
+    context = await _prepare_context_with_hanging_selection(
+        cog=cog, message=message, monkeypatch=monkeypatch
+    )
+
+    assert context.memory_block is not None
+    blocks = extract_user_memory_blocks(request=[context.memory_block])
+    assert "甲" in (blocks.get(1) or "")
+    assert "乙" in (blocks.get(2) or "")
+    assert len(context.memory_labels) == 2
