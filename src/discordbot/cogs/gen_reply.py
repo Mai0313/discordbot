@@ -19,7 +19,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import litellm_call_kwargs, create_litellm_client
+from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
@@ -73,7 +73,6 @@ from discordbot.cogs._gen_reply.attachment.select import build_attachment_handle
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from openai.types.responses import ResponseFunctionToolCall
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 
@@ -467,7 +466,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     input=cast("ResponseInputParam", director_input),
                     reasoning=prompt_model.reasoning,
                     tools=list(prompt_model.tools),
-                    **litellm_call_kwargs(end_user_id=end_user_id),
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                    extra_body={"mock_testing_fallbacks": False},
                 )
             refined = (responses.output_text or "").strip()
         except Exception:
@@ -579,7 +580,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 instructions=DESCRIPTION_PROMPT,
                 input=cast("ResponseInputParam", image_description_input),
                 reasoning=fast_model.reasoning,
-                **litellm_call_kwargs(end_user_id=message.author.name),
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
             )
             image_description = (image_responses.output_text or "").strip()
         except Exception:
@@ -646,7 +649,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteClassification,
                     reasoning=route_model.reasoning,
-                    **litellm_call_kwargs(end_user_id=message.author.name),
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
                 )
             parsed = responses.output_parsed
             if parsed is None:
@@ -697,7 +702,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 input=cast("ResponseInputParam", message_list),
                 text_format=EffortGrade,
                 reasoning=effort_model.reasoning,
-                **litellm_call_kwargs(end_user_id=message.author.name),
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
             )
         parsed = responses.output_parsed
         grade = parsed if parsed is not None else EffortGrade(effort="high")
@@ -765,18 +772,19 @@ class ReplyGeneratorCogs(commands.Cog):
             reasoning=tool_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
             stream=False,
-            **litellm_call_kwargs(end_user_id=message.author.name),
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": message.author.name},
+            extra_body={"mock_testing_fallbacks": False},
         )
         memories: list[UserMemory] = []
         seen: set[str] = set()
         for item in responses.output:
             if item.type != "function_call":
                 continue
-            call = cast("ResponseFunctionToolCall", item)
-            if call.name != "get_user_memory":
+            if item.name != "get_user_memory":
                 continue
             for memory in resolve_user_memories(
-                user_id_list=parse_user_id_list(arguments=call.arguments), allowed=allowed
+                user_id_list=parse_user_id_list(arguments=item.arguments), allowed=allowed
             ):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
@@ -1070,7 +1078,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 reasoning=slow_model.reasoning,
                 tools=list(slow_model.tools),
                 stream=True,
-                **litellm_call_kwargs(end_user_id=message.author.name),
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
             )
             full_reply = await streamer.stream(responses=responses)
         if memory_enabled:

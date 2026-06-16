@@ -1,6 +1,6 @@
 """Factories for the runtime LiteLLM-proxy OpenAI client and the Gemini upload client."""
 
-from typing import Any, cast
+from typing import cast
 import asyncio
 
 from google import genai
@@ -11,23 +11,6 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-
-
-def litellm_call_kwargs(end_user_id: str) -> dict[str, Any]:
-    """Returns the shared kwargs every runtime Responses call passes to the LiteLLM proxy.
-
-    Centralizes the auto service tier, the per-end-user header LiteLLM keys spend and
-    rate-limit tracking on, and the flag that disables the proxy's mock fallbacks, so a
-    proxy-wide change lives here instead of being re-typed at every `responses.*` call site.
-    Spread it as `**litellm_call_kwargs(end_user_id=...)` next to the per-call model,
-    instructions, input, and reasoning. Returns a fresh dict each call so a caller can never
-    mutate shared state.
-    """
-    return {
-        "service_tier": "auto",
-        "extra_headers": {"x-litellm-end-user-id": end_user_id},
-        "extra_body": {"mock_testing_fallbacks": False},
-    }
 
 
 async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- shared best-effort call surface; all params are per-call inputs
@@ -42,10 +25,10 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
 ) -> StructuredT | None:
     """Runs one best-effort structured Responses.parse call, returning None on any failure.
 
-    Owns the shared call surface (`litellm_call_kwargs`), the timeout, and the failure
-    handling so each caller only maps None to its own fallback: a timeout, an empty or
-    refused output (`ValidationError` from parsing no text), an incomplete (truncated)
-    response, or any other error all degrade to None.
+    Owns the shared proxy call surface, the timeout, and the failure handling so each caller
+    only maps None to its own fallback: a timeout, an empty or refused output
+    (`ValidationError` from parsing no text), an incomplete (truncated) response, or any
+    other error all degrade to None.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -57,7 +40,9 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
                 ),
                 text_format=text_format,
                 reasoning=model.reasoning,
-                **litellm_call_kwargs(end_user_id=end_user_id),
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": end_user_id},
+                extra_body={"mock_testing_fallbacks": False},
             )
     except TimeoutError:
         logfire.warn(
@@ -95,9 +80,9 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
 ) -> str | None:
     """Runs one best-effort text Responses.create call, returning None on any failure.
 
-    Mirrors `parse_responses_or_none` for the non-structured callers: owns the shared call
-    surface, the timeout, and the failure handling, and returns the trimmed output text (or
-    None on timeout / any error) so each caller maps None to its own fallback line.
+    Mirrors `parse_responses_or_none` for the non-structured callers: owns the shared proxy
+    call surface, the timeout, and the failure handling, and returns the trimmed output text
+    (or None on timeout / any error) so each caller maps None to its own fallback line.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -108,7 +93,9 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
                     "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
                 ),
                 reasoning=model.reasoning,
-                **litellm_call_kwargs(end_user_id=end_user_id),
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": end_user_id},
+                extra_body={"mock_testing_fallbacks": False},
             )
     except TimeoutError:
         logfire.warn(
