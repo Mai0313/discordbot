@@ -108,6 +108,22 @@ class RuntimeModelCatalog(BaseModel):
         return video_model
 
     @property
+    def prompt_model(self) -> ModelSettings:
+        """The model settings for the image/video generation prompt director.
+
+        Callers: `_refine_generation_prompt` (via `_handle_image_reply`, `_handle_video_reply`).
+
+        Returns:
+            Flash-with-high-effort settings for the director call that expands a thin user
+            request into a rich, self-contained generation prompt before the image/video
+            model draws it. Flash (not flash-lite) with high effort because the director must
+            reliably CALL grounding tools (googleSearch / urlContext) to look up named
+            subjects; effort is the latency lever since this call sits serially on the
+            IMAGE/VIDEO critical path before generation.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="high")
+
+    @property
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
 
