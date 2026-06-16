@@ -18,7 +18,7 @@ class ModelSettings(BaseModel):
     name: str = Field(
         ...,
         description="LiteLLM model string dispatched on the Responses API.",
-        examples=["gemini-flash-latest", "gemini-3-pro-image-preview"],
+        examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
     )
     effort: ReasoningEffort = Field(
         default="none", description="Reasoning effort passed to the Responses API for this model."
@@ -92,7 +92,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        image_model = ModelSettings(name="gemini-3-pro-image-preview")
+        image_model = ModelSettings(name="gemini-3.1-flash-image")
         return image_model
 
     @property

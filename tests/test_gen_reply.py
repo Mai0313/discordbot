@@ -2199,7 +2199,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     cog = ReplyGeneratorCogs(bot=SimpleNamespace(user=SimpleNamespace(id=999)))
     assert cog.runtime_models.fast_model == catalog.fast_model
     assert isinstance(catalog.fast_model, ModelSettings)
-    assert catalog.image_model.name.endswith("image-preview")
+    assert "image" in catalog.image_model.name
     assert catalog.video_model.name.startswith("veo")
     assert catalog.slow_model.effort == "high"
     # Code execution is omitted on purpose: it 400s the request on file attachments.
