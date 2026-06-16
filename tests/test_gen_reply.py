@@ -483,14 +483,27 @@ class FakeOpenAIFiles:
         self.status = status
         self.file_id = file_id
         self.expires_at = expires_at
-        self.create_calls: list[tuple[str, bytes, str, dict[str, object]]] = []
+        self.create_calls: list[
+            tuple[str, bytes, str, str, dict[str, object], dict[str, object] | None]
+        ] = []
 
     async def create(
-        self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+        self,
+        file: tuple[str, BytesIO, str],
+        purpose: str,
+        expires_after: dict[str, object],
+        extra_body: dict[str, object] | None = None,
     ) -> SimpleNamespace:
         """Records an upload and returns a fake OpenAI file object."""
         filename, data, content_type = file
-        self.create_calls.append((filename, data.read(), content_type, expires_after))
+        self.create_calls.append((
+            filename,
+            data.read(),
+            content_type,
+            purpose,
+            expires_after,
+            extra_body,
+        ))
         return SimpleNamespace(
             id=self.file_id, status=self.status, expires_at=self.expires_at, purpose=purpose
         )
@@ -535,7 +548,7 @@ def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
 
 def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUploader:
     """An OpenAIFileUploader with its lazy client pre-seeded to a fake."""
-    uploader = OpenAIFileUploader()
+    uploader = OpenAIFileUploader(model_name=TEST_LLM_MODEL)
     uploader.__dict__["client"] = FakeOpenAIClient(files=files)
     return uploader
 
@@ -1418,7 +1431,9 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert load_calls == 1  # adopt path did not re-download the source
 
 
-async def test_openai_file_uploader_renders_image_and_file_parts() -> None:
+async def test_openai_file_uploader_renders_image_and_file_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """OpenAI uploads return file-id content parts for images and files."""
     files = FakeOpenAIFiles()
     renderer = _fake_openai_uploader(files=files)
@@ -1436,6 +1451,16 @@ async def test_openai_file_uploader_renders_image_and_file_parts() -> None:
     assert image_part["detail"] == "auto"
     assert image_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
+    url = "https://example.test/image.png"
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", lambda image_file: b"jpeg"
+    )
+    url_image_rendered = await renderer.render_image(source=url, cache_key=url)
+    assert url_image_rendered is not None
+    url_image_part, _url_image_expiry = url_image_rendered
+    assert url_image_part["type"] == "input_image"
+    assert url_image_part["file_id"] == "file-test"
+
     file_rendered = await renderer.render_file(
         attachment=FakeAttachment(
             filename="notes.txt", content_type="text/plain", payload=b"hello world"
@@ -1451,12 +1476,24 @@ async def test_openai_file_uploader_renders_image_and_file_parts() -> None:
 
     assert files.create_calls[0][0] == "pic.png"
     assert files.create_calls[0][2] == "image/jpeg"
-    assert files.create_calls[0][3] == {"anchor": "created_at", "seconds": 2_592_000}
+    assert files.create_calls[0][3] == "vision"
+    assert files.create_calls[0][4] == {"anchor": "created_at", "seconds": 2_592_000}
+    assert files.create_calls[0][5] == {"model": TEST_LLM_MODEL}
     assert files.create_calls[1] == (
+        "image.jpg",
+        b"jpeg",
+        "image/jpeg",
+        "vision",
+        {"anchor": "created_at", "seconds": 2_592_000},
+        {"model": TEST_LLM_MODEL},
+    )
+    assert files.create_calls[2] == (
         "notes.txt",
         b"hello world",
         "text/plain",
+        "user_data",
         {"anchor": "created_at", "seconds": 2_592_000},
+        {"model": TEST_LLM_MODEL},
     )
 
 
@@ -1464,20 +1501,30 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
     """OpenAI upload errors degrade to a dropped attachment."""
     errored = _fake_openai_uploader(files=FakeOpenAIFiles(status="error"))
     assert (
-        await errored._upload_file(filename="bad.txt", data=b"x", content_type="text/plain")
+        await errored._upload_file(
+            filename="bad.txt", data=b"x", content_type="text/plain", purpose="user_data"
+        )
         is None
     )
 
     boom = _fake_openai_uploader(files=FakeOpenAIFiles())
 
     async def _raise(
-        file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+        file: tuple[str, BytesIO, str],
+        purpose: str,
+        expires_after: dict[str, object],
+        extra_body: dict[str, object] | None = None,
     ) -> SimpleNamespace:
-        del file, purpose, expires_after
+        del file, purpose, expires_after, extra_body
         raise RuntimeError("upload failed")
 
     monkeypatch.setattr(boom.client.files, "create", _raise)
-    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    assert (
+        await boom._upload_file(
+            filename="x.txt", data=b"x", content_type="text/plain", purpose="user_data"
+        )
+        is None
+    )
 
 
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
