@@ -586,6 +586,13 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
 
 
+def test_prompts_record_tone_persona_independently() -> None:
+    # Tone stays in main.md but must be recorded as persona-independent qualities so a
+    # PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
+    assert "persona-independent" in PHASE1_PROMPT
+    assert "persona-independent" in PHASE2_PROMPT
+
+
 def test_redact_secrets_masks_token_shapes() -> None:
     # Joined at runtime so secret scanners do not flag the test fixture itself.
     jwt_like = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "x" * 30])

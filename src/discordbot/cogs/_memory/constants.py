@@ -1,9 +1,10 @@
 """Tunable thresholds shared by the per-user memory store, extraction, and pipeline."""
 
 # Raw entries accumulated before consolidation rewrites the main memory file.
-# Batching plus the consolidation cooldown keep heavy chatters from triggering
-# a whole-file rewrite on every other message.
-RAW_CONSOLIDATION_THRESHOLD = 4
+# Kept low so main.md is re-summarized from the full document often and stays
+# fresh; still above 1 (together with the consolidation cooldown) so a heavy
+# chatter does not trigger a whole-file rewrite on every single message.
+RAW_CONSOLIDATION_THRESHOLD = 2
 
 # Second consolidation trigger: verbose raw extractions consolidate early even
 # below the entry-count threshold, bypassing the cooldown as the escape hatch.
