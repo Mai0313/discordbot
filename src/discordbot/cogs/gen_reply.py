@@ -628,6 +628,32 @@ class ReplyGeneratorCogs(commands.Cog):
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
+    def _author_memory_fallback(
+        self, *, message: Message, allowed: dict[int, str]
+    ) -> tuple[EasyInputMessageParam | None, list[str]]:
+        """Builds the message author's own memory block as the selection fallback.
+
+        A selection timeout or error never returned a decision, so instead of dropping
+        memory the reply falls back to the author's own long-term memory: the most
+        relevant participant, and always allowlisted as a conversation author. A
+        completed selection that deliberately picked nobody is different and is still
+        honored (that path does not call this). Returns (None, []) when the author has
+        no stored memory, so a fallback never injects an empty block.
+        """
+        author_memory = read_main_memory(scope=user_scope(user_id=message.author.id))
+        if not author_memory:
+            return None, []
+        memories = [
+            UserMemory(
+                username=allowed.get(message.author.id, str(message.author.id)),
+                user_id=str(message.author.id),
+                memory=author_memory,
+            )
+        ]
+        return render_memory_context_block(memories=memories), memory_lookup_labels(
+            memories=memories
+        )
+
     def _read_server_memory(self, *, message: Message, memory_enabled: bool) -> str:
         """Reads the current guild's raw server memory, or "" when there is none.
 
@@ -794,12 +820,18 @@ class ReplyGeneratorCogs(commands.Cog):
                         )
                 except TimeoutError:
                     logfire.warn(
-                        "Memory selection exceeded the post-route grace; answering without memory",
+                        "Memory selection exceeded the post-route grace; falling back to author memory",
                         grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                    )
+                    memory_block, memory_labels = self._author_memory_fallback(
+                        message=message, allowed=allowed
                     )
                 except Exception:
                     logfire.warn(
-                        "Memory selection failed; answering without memory", _exc_info=True
+                        "Memory selection failed; falling back to author memory", _exc_info=True
+                    )
+                    memory_block, memory_labels = self._author_memory_fallback(
+                        message=message, allowed=allowed
                     )
                 else:
                     selection_input_tokens = selection.input_tokens

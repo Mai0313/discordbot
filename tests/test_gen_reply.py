@@ -2654,10 +2654,10 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         assert content.count(credited_once) == 1
 
 
-async def test_handle_message_reply_continues_when_selection_fails(
+async def test_handle_message_reply_falls_back_to_author_memory_when_selection_fails(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing memory-selection request must not break the reply; it answers without memory."""
+    """A failing memory-selection request still replies and falls back to the author's own memory."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
@@ -2668,11 +2668,9 @@ async def test_handle_message_reply_continues_when_selection_fails(
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
-    async def boom(
-        message: FakeMessage, message_list: list[object], allowed: dict[int, str]
-    ) -> object:
+    async def boom(**kwargs: object) -> object:
         """Simulates a selection-request failure."""
-        del message, message_list, allowed
+        del kwargs
         raise RuntimeError("selection provider error")
 
     monkeypatch.setattr(cog, "_select_user_memories", boom)
@@ -2684,9 +2682,10 @@ async def test_handle_message_reply_continues_when_selection_fails(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
 
-    # The answer request still ran and produced a reply, with no memory injected and no 🧠.
+    # The answer request still ran, and the author's own memory was injected as the fallback.
     assert (message.replies[0].content or "").startswith("照常回答")
-    assert "🧠" not in (message.replies[0].content or "")
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert "甲" in (extract_user_memory_blocks(request=answer).get(1) or "")
 
 
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
@@ -3087,11 +3086,10 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 
-async def test_memory_selection_timeout_degrades_to_no_memory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A selection slower than the post-route grace is dropped and the context has no memory."""
-    cog = _cog()
+async def _prepare_context_with_hanging_selection(
+    cog: ReplyGeneratorCogs, message: FakeMessage, monkeypatch: pytest.MonkeyPatch
+) -> ReplyContext:
+    """Builds reply context where selection hangs past the grace, so the fallback fires."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_GRACE_SECONDS", 0.01)
 
     async def slow_selection(**kwargs: object) -> None:
@@ -3100,20 +3098,53 @@ async def test_memory_selection_timeout_degrades_to_no_memory(
         await asyncio.sleep(1)
 
     monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
     text_parts = await cog._get_reference_and_current_text_only(message=message)
-    # The route has already returned, so selection gets only the tiny grace before it is dropped.
+    # The route has already returned, so selection gets only the tiny grace before it times out.
     route_done = asyncio.Event()
     route_done.set()
-
-    context = await cog._prepare_reply_context(
+    return await cog._prepare_reply_context(
         message=message,
         history_limit=2,
         memory_enabled=True,
         parts_task=parts_task,
         text_parts=text_parts,
         route_done=route_done,
+    )
+
+
+async def test_memory_selection_timeout_falls_back_to_author_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selection slower than the grace falls back to the message author's own memory."""
+    del memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n甲",
+        identity="Tester (tester) [id: 1]",
+    )
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+
+    context = await _prepare_context_with_hanging_selection(
+        cog=cog, message=message, monkeypatch=monkeypatch
+    )
+
+    assert context.memory_block is not None
+    assert "甲" in (extract_user_memory_blocks(request=[context.memory_block]).get(1) or "")
+    assert context.memory_labels
+
+
+async def test_memory_selection_timeout_without_author_memory_injects_nothing(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback injects nothing when the author has no stored memory."""
+    del memory_isolated_dir
+    cog = _cog()
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+
+    context = await _prepare_context_with_hanging_selection(
+        cog=cog, message=message, monkeypatch=monkeypatch
     )
 
     assert context.memory_block is None

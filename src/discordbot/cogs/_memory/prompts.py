@@ -31,6 +31,10 @@ WHAT TO REMEMBER (high signal only):
 4. Recurring request patterns a future reply should anticipate without being asked.
 5. Notable ongoing situations the user is in: active projects, plans, trips, life events a near-future reply should be aware of. A single ongoing situation may be recorded only as `recent_context`, with `promotion_eligible=false` and a TTL.
 
+TONE PREFERENCES (record persona-independently):
+* When the user reveals how they want the bot to *sound* (tone, banter / sarcasm / profanity tolerance, formality, warmth, terse vs verbose), record it as a persona-independent quality, e.g. "偏好禮貌、就事論事，不喜歡人身攻擊式的嘲諷".
+* NEVER phrase it as liking or disliking a specific named persona or the bot's current voice (e.g. not "喜歡臭嘴老哥"). The note must stay valid if the bot's default persona later changes, so describe the qualities the user wants, not the character delivering them.
+
 DETAIL LEVEL:
 * Be information-dense, not brief: a future reply should be able to act on a bullet without guessing. Keep the concrete specifics that carry the signal (numbers, names, which game or feature, dates the user mentioned, short verbatim quotes of their wording) instead of flattening them into vague summaries.
 * Dense does not mean indiscriminate: the no-op gate and the high-signal bar above still decide WHAT is worth recording; this rule only decides how much of the qualifying signal to keep.
@@ -99,6 +103,7 @@ HOW TO MERGE:
 * Preserve the user's distinctive wording fragments and attribution phrasing (「使用者多次要求...」) instead of flattening everything into unattributed facts.
 * Do not invent anything not present in the inputs. Never store secrets; keep [REDACTED_SECRET] markers as-is.
 * Keep the file focused on stable preferences, stable facts, and interaction style. Promote recent events that proved durable into the stable sections; keep genuinely time-bound context in 近期脈絡 with its date.
+* Tone and voice preferences must stay persona-independent: record them as the qualities the user wants (formality, warmth, how much teasing or profanity, terse vs verbose), never tied to a specific named persona or the bot's current voice. Rephrase any existing persona-bound tone bullet (e.g. "喜歡臭嘴老哥") into a persona-independent quality so it stays valid if the persona later changes.
 * For `recent_context`, use the raw entry timestamp plus `ttl_days` against `today`; drop expired context unless newer evidence repeats it or clearly promotes it into durable memory.
 * Treat existing memory as provisional. Drop or demote existing bullets that are only supported by weak, one-off, casual, hypothetical, bot-originated, or misattributed evidence.
 * Structured raw entries include `promotion_eligible`, `confidence`, `durability`, `evidence_kind`, `ttl_days`, and `normalized_key`; use these fields as hard evidence gates, not decorative metadata.
