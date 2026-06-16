@@ -6,7 +6,7 @@ ready to rely on uploaded files instead of inline parts.
 """
 
 import io
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
 type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
+type OpenAIFilePurpose = Literal["user_data", "vision"]
 
 DEAD_SOURCE_TTL = timedelta(minutes=30)
 MEDIA_CONCURRENCY = 8
@@ -43,8 +44,10 @@ class OpenAIFileUploader(AttachmentRenderer):
 
     Attributes:
         config: Runtime LLM config supplying the OpenAI-compatible client settings.
+        model_name: Selected answer model name used by LiteLLM to route file uploads.
     """
 
+    model_name: str = Field(description="Selected answer model name for LiteLLM file routing.")
     config: LLMConfig = Field(
         default_factory=LLMConfig,
         description="Runtime LLM config supplying the OpenAI-compatible file upload client.",
@@ -66,7 +69,7 @@ class OpenAIFileUploader(AttachmentRenderer):
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
         if isinstance(source, str):
-            source_name = "image"
+            source_name = "image.jpg"
         else:
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
@@ -75,6 +78,7 @@ class OpenAIFileUploader(AttachmentRenderer):
             cache_key=cache_key,
             filename=source_name,
             load_data=lambda: load_image_bytes(source=source),
+            purpose="vision",
             allow_dead_cache=allow_dead_cache,
         )
         if uploaded is None:
@@ -96,6 +100,7 @@ class OpenAIFileUploader(AttachmentRenderer):
             cache_key=cache_key,
             filename=attachment.filename,
             load_data=lambda: load_attachment_bytes(attachment=attachment),
+            purpose="user_data",
             allow_dead_cache=allow_dead_cache,
         )
         if uploaded is None:
@@ -129,6 +134,7 @@ class OpenAIFileUploader(AttachmentRenderer):
         cache_key: int | str,
         filename: str,
         load_data: "FileBytesLoader",
+        purpose: OpenAIFilePurpose,
         allow_dead_cache: bool = False,
     ) -> tuple[str, datetime] | None:
         """Returns an uploaded OpenAI file id and its cache expiry."""
@@ -142,17 +148,20 @@ class OpenAIFileUploader(AttachmentRenderer):
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
                 return None
-            return await self._upload_file(filename=filename, data=data, content_type=content_type)
+            return await self._upload_file(
+                filename=filename, data=data, content_type=content_type, purpose=purpose
+            )
 
     async def _upload_file(
-        self, filename: str, data: bytes, content_type: str
+        self, filename: str, data: bytes, content_type: str, purpose: OpenAIFilePurpose
     ) -> tuple[str, datetime] | None:
         """Uploads bytes to OpenAI Files API and returns `(file_id, expires_at)`."""
         try:
             uploaded = await self.client.files.create(
                 file=(filename, io.BytesIO(data), content_type),
-                purpose="user_data",
+                purpose=purpose,
                 expires_after={"anchor": "created_at", "seconds": OPENAI_FILE_EXPIRY_SECONDS},
+                extra_body={"model": self.model_name},
             )
         except Exception:
             logfire.warn(f"Failed to upload attachment to OpenAI Files API: {filename}")

@@ -18,5 +18,5 @@ def build_attachment_handler(model_name: str) -> AttachmentRenderer:
     if "gemini" in model_name:
         return GeminiFileUploader()
     # if "gpt" in model_name:
-    #     return OpenAIFileUploader()
+    #     return OpenAIFileUploader(model_name=model_name)
     return InlineRenderer()
