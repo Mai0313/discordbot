@@ -153,12 +153,28 @@ class RuntimeModelCatalog(BaseModel):
     def route_model(self) -> ModelSettings:
         """The model settings for the route classification decision.
 
-        Callers: `_route_message`.
+        Callers: `_route_classify`.
 
         Returns:
-            Fast no-reasoning settings for the route + effort grading call. The route's
-            main job is classification and the effort grade follows simple complexity
-            rules, so flash-lite is enough here and keeps the QA critical path short.
+            Fast no-reasoning settings for the route classification call. The route's
+            only job is picking the reply mode; the effort grade runs as a separate
+            parallel call on `effort_model`, so flash-lite is enough here and keeps the
+            QA critical path short.
+        """
+        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
+
+    @property
+    def effort_model(self) -> ModelSettings:
+        """The model settings for the answer-effort grading decision.
+
+        Callers: `_grade_effort`.
+
+        Returns:
+            Fast no-reasoning settings for the effort grading call that runs in parallel
+            with the route. Grading how much the answer model should think follows simple
+            complexity rules, so flash-lite is enough; the call is bounded by the same
+            `route_done` gate as memory selection, so its latency hides behind the route
+            and adds nothing to the critical path.
         """
         return ModelSettings(name="gemini-flash-lite-latest", effort="none")
 
@@ -244,17 +260,28 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-flash-latest", effort="minimal")
 
 
-class RouteDecision(BaseModel):
-    """Structured routing decision returned by the model.
+class RouteClassification(BaseModel):
+    """Structured reply-mode classification returned by the route model.
 
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
-        effort: Reasoning effort the answer model should spend on this message.
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
         ..., description="Reply mode selected for the incoming Discord message."
     )
+
+
+class EffortGrade(BaseModel):
+    """Structured answer-effort grade returned by the effort model.
+
+    Graded by a call that runs in parallel with the route; the answer model's effort is
+    overridden with it on the QA and SUMMARY paths.
+
+    Attributes:
+        effort: Reasoning effort the answer model should spend on this message.
+    """
+
     effort: Literal["low", "medium", "high"] = Field(
         default="high",
         description=(
@@ -265,4 +292,4 @@ class RouteDecision(BaseModel):
     )
 
 
-__all__ = ["ModelSettings", "RouteDecision", "RuntimeModelCatalog"]
+__all__ = ["EffortGrade", "ModelSettings", "RouteClassification", "RuntimeModelCatalog"]
