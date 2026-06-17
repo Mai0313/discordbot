@@ -1,6 +1,5 @@
 """Cog that expands Threads post URLs into Discord embeds and media files."""
 
-import re
 import asyncio
 from pathlib import Path
 import tempfile
@@ -10,11 +9,16 @@ import logfire
 from nextcord import File, Color, Embed, Message
 from nextcord.ext import commands
 
-from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
+from discordbot.utils.threads import (
+    THREADS_URL_RE,
+    ThreadsOutput,
+    ThreadsDownloader,
+    threads_expansion_relay,
+)
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
-URL_REGEX = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
+URL_REGEX = THREADS_URL_RE
 
 
 class ThreadsCogs(commands.Cog):
@@ -156,8 +160,13 @@ class ThreadsCogs(commands.Cog):
             return
 
         url = match.group(0)
+        # Register the pending slot up front so the reply pipeline (which awaits the same key)
+        # is never left waiting on a future we would otherwise resolve before it asked. The
+        # posted expansion is published on every exit path via the outer finally below.
+        threads_expansion_relay.get_or_create(message_id=message.id)
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
+        posted_reply: Message | None = None
         try:
             # parse() blocks on HTTP fetch + media downloads, so run its enter
             # off the event loop; the reply runs while the temp files still exist
@@ -200,7 +209,7 @@ class ThreadsCogs(commands.Cog):
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
-                await message.reply(
+                posted_reply = await message.reply(
                     embeds=embeds,
                     mention_author=False,
                     **embed_spacer_payload(
@@ -218,6 +227,10 @@ class ThreadsCogs(commands.Cog):
                 await update_reaction(
                     message=message, bot_user=self.bot.user, emoji="❌", previous=current_emoji
                 )
+        finally:
+            # Always publish: a success hands over the expanded reply, every other path (empty,
+            # oversized, fetch error) hands over None so a waiting reply pipeline stops waiting.
+            threads_expansion_relay.resolve(message_id=message.id, message=posted_reply)
 
 
 def setup(bot: commands.Bot) -> None:

@@ -16,7 +16,9 @@ import nextcord
 from nextcord import File, Embed
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.utils.threads import threads_expansion_relay
 from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
@@ -64,11 +66,14 @@ from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUplo
 from tests.helpers.llm_input import (
     request_index,
     request_input,
+    iter_text_blocks,
     tool_names_for_call,
     has_memory_context_block,
     extract_callable_user_ids,
+    has_threads_context_block,
     extract_user_memory_blocks,
     extract_server_memory_block,
+    extract_threads_context_block,
 )
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -607,6 +612,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     history_limit: int = 2,
     memory_enabled: bool = True,
     effort: Literal["low", "medium", "high"] = "high",
+    threads_task: asyncio.Task[EasyInputMessageParam | None] | None = None,
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
@@ -620,6 +626,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
         parts_task=parts_task,
         text_parts=text_parts,
         route_done=route_done,
+        threads_task=threads_task,
     )
     await cog._handle_message_reply(
         message=message,
@@ -1962,9 +1969,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         parts_task: object,
         text_parts: object,
         route_done: object,
+        threads_task: object = None,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
-        del message, parts_task, text_parts, route_done
+        del message, parts_task, text_parts, route_done, threads_task
         prep_requests.append((history_limit, memory_enabled))
         return prepared_context
 
@@ -2111,9 +2119,18 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         parts_task: object,
         text_parts: object,
         route_done: object,
+        threads_task: object = None,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del (
+            message,
+            history_limit,
+            memory_enabled,
+            parts_task,
+            text_parts,
+            route_done,
+            threads_task,
+        )
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_classify", boom)
@@ -2178,9 +2195,18 @@ async def test_on_message_discards_speculative_context_on_image_route(
         parts_task: object,
         text_parts: object,
         route_done: object,
+        threads_task: object = None,
     ) -> ReplyContext:
         """Blocks until cancelled, recording the cancellation."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del (
+            message,
+            history_limit,
+            memory_enabled,
+            parts_task,
+            text_parts,
+            route_done,
+            threads_task,
+        )
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -3207,9 +3233,18 @@ async def test_on_message_cancels_effort_task_on_image_route(
         parts_task: object,
         text_parts: object,
         route_done: object,
+        threads_task: object = None,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del (
+            message,
+            history_limit,
+            memory_enabled,
+            parts_task,
+            text_parts,
+            route_done,
+            threads_task,
+        )
         return ReplyContext()
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
@@ -3243,6 +3278,278 @@ async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None)
     await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False, effort="low")
 
     assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
+
+
+async def test_threads_expansion_injected_before_current(economy_isolated_db: None) -> None:
+    """A resolved expansion rides into the answer behind its separator, before the current message."""
+    del economy_isolated_db
+    cog = _cog()
+    message = FakeMessage(
+        content="<@999> what about https://www.threads.com/@u/post/ABC",
+        author=FakeAuthor(user_id=1),
+    )
+    block = EasyInputMessageParam(
+        role="user",
+        content=[ResponseInputTextParam(text="THREADS BODY about cats", type="input_text")],
+    )
+
+    async def _resolved() -> EasyInputMessageParam:
+        """Stands in for the rendered parse_threads expansion."""
+        return block
+
+    threads_task = asyncio.create_task(coro=_resolved())
+    await _reply_via_pipeline(
+        cog=cog, message=message, memory_enabled=False, threads_task=threads_task
+    )
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert extract_threads_context_block(request=answer) == "THREADS BODY about cats"
+    blocks = list(iter_text_blocks(request=answer))
+    threads_pos = next(
+        i for i, (_, text) in enumerate(blocks) if text == "THREADS BODY about cats"
+    )
+    # The current user message stays last so the model answers it, not the injected block.
+    assert threads_pos < len(blocks) - 1
+
+
+async def test_threads_expansion_none_injects_nothing(economy_isolated_db: None) -> None:
+    """A private/unparsable post (relay resolves None) leaves the answer without a block."""
+    del economy_isolated_db
+    cog = _cog()
+    message = FakeMessage(
+        content="<@999> see https://www.threads.com/@u/post/ABC", author=FakeAuthor(user_id=1)
+    )
+
+    async def _empty() -> EasyInputMessageParam | None:
+        """Stands in for a post that could not be expanded."""
+        return None
+
+    threads_task = asyncio.create_task(coro=_empty())
+    await _reply_via_pipeline(
+        cog=cog, message=message, memory_enabled=False, threads_task=threads_task
+    )
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert not has_threads_context_block(request=answer)
+
+
+async def test_threads_expansion_timeout_falls_back(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """A slow expansion is dropped after the grace and the reply still answers."""
+    del economy_isolated_db
+    monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_FETCH_GRACE_SECONDS", 0.01)
+    cog = _cog()
+    message = FakeMessage(
+        content="<@999> read https://www.threads.com/@u/post/ABC", author=FakeAuthor(user_id=1)
+    )
+
+    async def _never() -> EasyInputMessageParam | None:
+        """Outlives the post-route grace window."""
+        await asyncio.Event().wait()
+        return None
+
+    threads_task = asyncio.create_task(coro=_never())
+    await _reply_via_pipeline(
+        cog=cog, message=message, memory_enabled=False, threads_task=threads_task
+    )
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert not has_threads_context_block(request=answer)
+    # The answer was produced despite the dropped expansion.
+    assert cog.client.responses.create_streams[-1] is True
+
+
+async def test_await_threads_expansion_renders_relay_reply() -> None:
+    """The expansion wait re-fetches the published reply and renders its embed content."""
+    cog = _cog()
+    message = FakeMessage(content="https://www.threads.com/@u/post/ABC")
+    posted = FakeMessage(content="", author=FakeAuthor(bot=True, user_id=999))
+    posted.id = 555
+    posted.embeds = [Embed(description="A post about robots")]
+
+    async def _fetch(message_id: int) -> FakeMessage:
+        """Returns the freshly-fetched expansion reply (proxied embed urls)."""
+        assert message_id == 555
+        return posted
+
+    message.channel.fetch_message = _fetch
+    threads_expansion_relay.get_or_create(message_id=message.id).set_result(posted)
+
+    rendered = await cog._await_threads_expansion(message=message)
+
+    assert rendered is not None
+    _, body = next(iter_text_blocks(request=[rendered]))
+    assert "A post about robots" in body
+
+
+async def test_await_threads_expansion_returns_none_when_relay_empty() -> None:
+    """A None published by parse_threads (no post) yields no block to inject."""
+    cog = _cog()
+    message = FakeMessage(content="https://www.threads.com/@u/post/ABC")
+    threads_expansion_relay.get_or_create(message_id=message.id).set_result(None)
+
+    assert await cog._await_threads_expansion(message=message) is None
+
+
+async def test_await_threads_expansion_feeds_embed_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The expanded reply's embed images reach the answer as rendered image parts, not just text."""
+    cog = _cog()
+    message = FakeMessage(content="https://www.threads.com/@u/post/ABC")
+    posted = FakeMessage(content="便當開箱", author=FakeAuthor(bot=True, user_id=999))
+    posted.id = 777
+    embed = Embed(description="便當開箱")
+    embed.set_image(url="https://media.discordapp.net/external/bento.png")
+    posted.embeds = [embed]
+
+    async def _fetch(message_id: int) -> FakeMessage:
+        """Returns the freshly-fetched expansion reply (proxied embed urls)."""
+        del message_id
+        return posted
+
+    message.channel.fetch_message = _fetch
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data",
+        lambda image_file: base64.b64decode(_png_b64()),
+    )
+    threads_expansion_relay.get_or_create(message_id=message.id).set_result(posted)
+
+    rendered = await cog._await_threads_expansion(message=message)
+
+    assert rendered is not None
+    content = rendered["content"]
+    assert isinstance(content, list)
+    assert any(
+        isinstance(part, dict) and part.get("type") in {"input_file", "input_image"}
+        for part in content
+    )
+
+
+async def test_on_message_cancels_threads_task_on_image_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The IMAGE route cancels the expansion wait it will never consume."""
+    cog = _cog()
+    cancelled: list[bool] = []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes to IMAGE after yielding so the expansion task starts."""
+        del message, reference_messages, current_message
+        await asyncio.sleep(0)
+        return RouteClassification(decision="IMAGE")
+
+    async def fake_grade(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> EffortGrade:
+        """Returns immediately; the IMAGE route discards it anyway."""
+        del message, reference_messages, current_message
+        return EffortGrade(effort="low")
+
+    async def fake_expansion(message: FakeMessage) -> EasyInputMessageParam | None:
+        """Blocks until cancelled, recording the cancellation."""
+        del message
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return None
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+        threads_task: object = None,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del (
+            message,
+            history_limit,
+            memory_enabled,
+            parts_task,
+            text_parts,
+            route_done,
+            threads_task,
+        )
+        return ReplyContext()
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    async def fake_reaction(
+        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+    ) -> str:
+        """Skips real reaction calls."""
+        del message, bot_user, previous
+        return emoji
+
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_grade_effort", fake_grade)
+    monkeypatch.setattr(cog, "_await_threads_expansion", fake_expansion)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
+
+    message = FakeMessage(
+        content="<@!999> draw https://www.threads.com/@u/post/ABC", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=message)
+    assert cancelled == [True]
+
+
+async def test_on_message_skips_threads_expansion_without_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A message with no Threads link never starts the expansion wait."""
+    cog = _cog()
+    called: list[bool] = []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes to IMAGE to keep dispatch trivial."""
+        del message, reference_messages, current_message
+        return RouteClassification(decision="IMAGE")
+
+    async def fake_grade(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> EffortGrade:
+        """Returns immediately."""
+        del message, reference_messages, current_message
+        return EffortGrade(effort="low")
+
+    async def fake_expansion(message: FakeMessage) -> EasyInputMessageParam | None:
+        """Records that the expansion wait was started."""
+        del message
+        called.append(True)
+        return None
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    async def fake_reaction(
+        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+    ) -> str:
+        """Skips real reaction calls."""
+        del message, bot_user, previous
+        return emoji
+
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_grade_effort", fake_grade)
+    monkeypatch.setattr(cog, "_await_threads_expansion", fake_expansion)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
+
+    message = FakeMessage(content="<@!999> just draw a cat", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+    assert called == []
 
 
 async def test_route_input_excludes_attachment_payloads() -> None:
