@@ -14,8 +14,13 @@ import requests
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
-# context). Matches `@user/post/<code>` on both threads.net and threads.com.
-THREADS_URL_RE = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
+# context). Matches `@user/post/<code>` on both threads.net and threads.com. The final
+# character class forbids the match from ending in sentence punctuation so a link written
+# mid-sentence (`.../post/ABC123.` or `...,`) does not swallow the trailing `.`/`,` into
+# the short code, which would otherwise make the parse fail on an otherwise valid link.
+THREADS_URL_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]*[^\s\"'<>).,!?;:]"
+)
 
 
 class _ThreadsModel(BaseModel):

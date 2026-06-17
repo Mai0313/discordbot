@@ -182,6 +182,14 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
             "<@1> look https://www.threads.net/@c.d/post/Q_-1?hl=zh",
             "https://www.threads.net/@c.d/post/Q_-1?hl=zh",
         ),
+        (
+            "check this https://www.threads.com/@a/post/ABC123. it is wild",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
+        (
+            "see https://www.threads.com/@a/post/ABC123, then reply",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
     ],
 )
 def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:
