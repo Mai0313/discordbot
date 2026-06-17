@@ -3392,6 +3392,39 @@ async def test_await_threads_expansion_returns_none_when_relay_empty() -> None:
     assert await cog._await_threads_expansion(message=message) is None
 
 
+async def test_await_threads_expansion_feeds_embed_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The expanded reply's embed images reach the answer as rendered image parts, not just text."""
+    cog = _cog()
+    message = FakeMessage(content="https://www.threads.com/@u/post/ABC")
+    posted = FakeMessage(content="便當開箱", author=FakeAuthor(bot=True, user_id=999))
+    posted.id = 777
+    embed = Embed(description="便當開箱")
+    embed.set_image(url="https://media.discordapp.net/external/bento.png")
+    posted.embeds = [embed]
+
+    async def _fetch(message_id: int) -> FakeMessage:
+        """Returns the freshly-fetched expansion reply (proxied embed urls)."""
+        del message_id
+        return posted
+
+    message.channel.fetch_message = _fetch
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data",
+        lambda image_file: base64.b64decode(_png_b64()),
+    )
+    threads_expansion_relay.get_or_create(message_id=message.id).set_result(posted)
+
+    rendered = await cog._await_threads_expansion(message=message)
+
+    assert rendered is not None
+    content = rendered["content"]
+    assert isinstance(content, list)
+    assert any(
+        isinstance(part, dict) and part.get("type") in {"input_file", "input_image"}
+        for part in content
+    )
+
+
 async def test_on_message_cancels_threads_task_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

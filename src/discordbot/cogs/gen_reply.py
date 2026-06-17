@@ -98,17 +98,24 @@ EFFORT_GRACE_SECONDS = 5.0
 # leave the message handler waiting forever.
 VIDEO_GENERATION_TIMEOUT_SECONDS = 600.0
 
-# Separates the injected Threads expansion from the rest of the input so the answer model
-# reads the block as the linked post's content rather than as its own earlier turn.
-THREADS_CONTEXT_SEPARATOR = "==== Expanded content of the Threads link in the user's message. ===="
+# Separates the injected Threads expansion from the rest of the input. Phrased as an explicit
+# instruction (not just a label) so the model treats the block as the link's real content and
+# does not fall back to the COMMON_PROMPT "say why you could not read the page" rule, which
+# would otherwise make it lecture about 反爬蟲 / login walls for a link it can actually see.
+THREADS_CONTEXT_SEPARATOR = (
+    "==== The Threads link in the user's message, already fetched for you below (the post's "
+    "text and images). This IS the linked post's content; answer about it directly and do NOT "
+    "say you cannot open or read the link. ===="
+)
 
 # When the current message carries a Threads link, the reply waits for the parse_threads cog
 # to post its expansion (the bot already parses every Threads URL) and reads it instead of
-# re-fetching. The wait rides the same `route_done` gate as memory/effort: unbounded while
-# the route is in flight, then only this grace once the route returns. A slow or failed parse
-# (e.g. a private post) falls back to answering without it. Tune against the
-# `gen_reply threads context done` latency log.
-THREADS_FETCH_GRACE_SECONDS = 5.0
+# re-fetching. The wait rides the same `route_done` gate as memory/effort: unbounded while the
+# route is in flight, then only this grace once the route returns. parse_threads only resolves
+# after it has fetched, downloaded any video, and posted, so the grace is generous; a private
+# or failed post resolves None fast (no wait) and falls back to answering without it. Tune
+# against the `gen_reply threads context done` latency log.
+THREADS_FETCH_GRACE_SECONDS = 10.0
 
 
 def _message_has_url(content: str) -> bool:
