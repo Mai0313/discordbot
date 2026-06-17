@@ -2405,7 +2405,7 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
 
 
 async def test_handle_message_reply_orders_reference_after_memory_before_current(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The answer input puts memory first, then the reference message, then the current message.
 
@@ -2413,7 +2413,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     reply pair stays adjacent and reads as the primary context, and the strengthened headers
     spell out the reply relationship.
     """
-    del memory_isolated_dir
+    del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
