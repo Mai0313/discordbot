@@ -153,11 +153,15 @@ class FakeInteraction:
     """Interaction stub shared by cog command and view tests."""
 
     def __init__(
-        self, user: FakeUser | None = None, message: FakeDiscordMessage | object | None = None
+        self,
+        user: FakeUser | None = None,
+        message: FakeDiscordMessage | object | None = None,
+        filesize_limit: int = 25 * 1024 * 1024,
     ) -> None:
-        """Initializes user, response, followup, message, and edit records."""
+        """Initializes user, guild upload limit, response, followup, message, and edit records."""
         self.user = user or FakeUser()
         self.message = message
+        self.guild = SimpleNamespace(filesize_limit=filesize_limit)
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edits: list[OriginalEditPayload] = []

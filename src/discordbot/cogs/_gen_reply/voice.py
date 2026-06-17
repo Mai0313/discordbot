@@ -48,13 +48,13 @@ TTS_SPEED = 1.5
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
 VOICE_REPLY_FILENAME = "reply.wav"
 
-# Bounds: cap spoken text so a long reply cannot balloon the WAV past Discord's upload limit,
-# and a request timeout so a slow/hung clip cannot keep this message's own pipeline (its 🆗
-# reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text
-# is already on screen, so the wait only delays its own message, never others.
-VOICE_MAX_INPUT_CHARS = 400
-VOICE_MAX_AUDIO_BYTES = 8 * 1024 * 1024
-VOICE_TIMEOUT_SECONDS = 30.0
+# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its 🆗
+# reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
+# already on screen, so the wait only delays its own message, never others; it is generous so a
+# longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
+# model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
+# where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
+VOICE_TIMEOUT_SECONDS = 120.0
 
 
 def strip_voice_marker(*, text: str) -> tuple[str, bool]:
@@ -156,7 +156,7 @@ class VoiceSynthesizer(BaseModel):
     async def synthesize(self, *, text: str, end_user_id: str) -> bytes | None:
         """Renders reply text to WAV bytes, or None when it should be skipped or failed."""
         spoken = text.strip()
-        if not spoken or len(spoken) > VOICE_MAX_INPUT_CHARS:
+        if not spoken:
             return None
         try:
             responses = await self.client.audio.speech.create(
@@ -167,15 +167,8 @@ class VoiceSynthesizer(BaseModel):
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 timeout=VOICE_TIMEOUT_SECONDS,
             )
-            audio = await responses.aread()
+            return await responses.aread()
         except Exception:
             # Best-effort: a timeout or any provider error degrades to a plain text reply.
             logfire.warn("Voice synthesis failed; replying without audio")
             return None
-        if len(audio) > VOICE_MAX_AUDIO_BYTES:
-            logfire.warn(
-                "Synthesized voice exceeds the Discord upload bound; dropping audio",
-                audio_bytes=len(audio),
-            )
-            return None
-        return audio

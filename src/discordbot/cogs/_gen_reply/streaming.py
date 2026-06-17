@@ -381,6 +381,19 @@ class ResponseStreamer(BaseModel):
         )
         if audio is None:
             return
+        # Drop a clip past the guild's upload limit so the answer model is free to choose the
+        # spoken length; a DM has no guild to query, so fall back to Discord's non-Nitro base of
+        # 10MB (the guild path trusts nextcord's filesize_limit, correct for boosted 50/100MB).
+        upload_limit = (
+            self.message.guild.filesize_limit if self.message.guild else 10 * 1024 * 1024
+        )
+        if len(audio) > upload_limit:
+            logfire.warn(
+                "Synthesized voice exceeds the guild upload limit; dropping audio",
+                audio_bytes=len(audio),
+                upload_limit=upload_limit,
+            )
+            return
         with contextlib.suppress(Exception):
             await self.reply.edit(file=File(fp=BytesIO(audio), filename=VOICE_REPLY_FILENAME))
 
