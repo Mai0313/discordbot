@@ -145,8 +145,10 @@ async def build_threads_context_messages(
         )
         for index, post in enumerate(results)
     ]
-    # Walk the target first so its media fills the cap before any ancestor's.
-    ordered = [results[target_index], *results[:target_index]]
+    # Collect media target first, then nearest ancestor outward (direct parent before root):
+    # `results` is oldest-first, so reverse the ancestor slice. This way, when the media cap is
+    # hit, the closest reply-chain context survives over a distant root, matching the cog.
+    ordered = [results[target_index], *reversed(results[:target_index])]
 
     if answer_model_is_gemini:
         media_parts: list[ResponseInputImageParam | ResponseInputFileParam] = []

@@ -98,6 +98,25 @@ async def test_build_collects_target_media_first(monkeypatch: pytest.MonkeyPatch
     assert images[0] == "https://cdn.test/target.jpg"
 
 
+async def test_build_media_priority_is_target_then_nearest_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Media is ordered target, then direct parent, then root, so the cap drops the root first."""
+    root = _post(text="root", images=["https://cdn.test/root.jpg"])
+    parent = _post(text="parent", images=["https://cdn.test/parent.jpg"])
+    target = _post(text="target", images=["https://cdn.test/target.jpg"])
+    _stub_parse(monkeypatch, [root, parent, target])  # oldest-first
+
+    blocks = await build_threads_context_messages(url=_URL, answer_model_is_gemini=True)
+
+    images = [part["image_url"] for part in blocks[1]["content"] if part["type"] == "input_image"]
+    assert images == [
+        "https://cdn.test/target.jpg",
+        "https://cdn.test/parent.jpg",
+        "https://cdn.test/root.jpg",
+    ]
+
+
 async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A long reply chain is trimmed to the target plus its nearest ancestors."""
     chain = [
