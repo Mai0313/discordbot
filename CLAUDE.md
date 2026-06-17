@@ -66,14 +66,14 @@ When debugging, check `./data/logs` for the full runtime logs.
 - Invariant: every applied positive delta bumps `total_earned`, every negative bumps `total_spent`, so `total_earned - total_spent == balance`. There is no transaction table.
 - Money inputs are string `SlashOption`s parsed via `utils.amount_parsing.parse_decimal_amount`, wrapped per domain (`_parse_positive_amount` / `_parse_collect_amount`, `parse_wager_amount`, `parse_bait_quantity`); malformed text returns `build_invalid_amount_embed` ephemerally before any mutation. Reuse this for any numeric input that can exceed Discord's int cap.
 - `UserAccount.avatar_url` is a last-seen cache via `utils.avatars.guild_avatar_url`; do not backfill existing URLs.
-- `credit_with_repayment` is the single income facade (message reward, chat reward, casino payout); passive income and `/give` recipients do not auto-repay debt.
+- `credit_with_repayment` is the single income facade (message reward, casino payout); passive income and `/give` recipients do not auto-repay debt.
 - Loans: personal loans debit the lender on acceptance; central-bank loans mint on approval and burn on repayment / collection (no lender credit). Proposals expire after `LOAN_PROPOSAL_TIMEOUT_SECONDS` (180s). Acceptance prepays `MIN_INTEREST_DAYS` of interest, so do not zero `interest_due` at contract creation.
 - `is_central_banker` (set offline by direct DB write) is separate from Discord admin; keep `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL` unset or `false` in production.
 - Admin tweaks go through `adjust_balance(..., allow_negative=...)`, never casino settlement helpers (it skips loans and daily casino counters).
 - `/leaderboard` sorts `StoredInteger` text DB-side with `LIMIT` before rows reach Python (`top_n`); `hide_from_leaderboard` accounts are omitted; write paths must call `invalidate_economy_leaderboard_cache()`. `/loss_leaderboard` reads gross `daily_loss` from `casino_account` (player-side Blackjack and Dragon Gate deltas only, so wins do not offset it). The bot is just another player here.
 - Casino-system P&L lives in the `casino_ledger` row in `economy.db`; `/casino` reads the ledger, `/pocat` reads the bot's wallet. Do not reuse the bot's `user_wallet` as the house ledger. Player wallet and casino ledger commit in one atomic transaction (`apply_round_settlement`).
 - Ephemeral vs public boundary: shared social / market / settlement events are public embeds with scheduled cleanup; personal state and validation / permission failures are ephemeral.
-- Only two faucets exist: `cli.py` grants the cooldown-gated per-message reward; `_gen_reply/streaming.py` (`ResponseStreamer`) adds the token-based chat reward after a streamed reply. Other cogs must not invent action rewards.
+- Only one faucet exists: `cli.py` grants the cooldown-gated per-message reward. Other cogs must not invent action rewards.
 - Anti-inflation levers in `typings/economy.py`: `transfer()` burns `TRANSFER_TAX_BPS` of every `/give` as a permanent sink, casino wagers cap at `MAX_SINGLE_BET` at the shared chokepoints, and the VIP casino multiplier is 1.2x (`apply_vip_blackjack_bonus`). Re-measure before changing.
 
 ## Stocks
