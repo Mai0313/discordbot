@@ -185,8 +185,8 @@ class ThreadsCogs(commands.Cog):
                 # Discord measures the full multipart request body, not just file bytes,
                 # so reserve 1 MiB for the multipart envelope + embeds JSON. Pull the
                 # actual per-guild limit from nextcord (boost tier 2/3 raises it to 50/100 MiB);
-                # message.guild is None in DMs, so fall back to the unboosted 25 MiB.
-                guild_limit = message.guild.filesize_limit if message.guild else 25 * 1024 * 1024
+                # message.guild is None in DMs, so fall back to Discord's non-Nitro base of 10 MiB.
+                guild_limit = message.guild.filesize_limit if message.guild else 10 * 1024 * 1024
                 max_size = guild_limit - 1024 * 1024
 
                 # Image count is no longer guarded here: _build_embeds caps the message at

@@ -260,7 +260,7 @@ async def test_video_deliver_and_download_branches(
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
     big = tmp_path / "big.mp4"
-    big.write_bytes(data=b"0" * (video._DISCORD_FILE_LIMIT_BYTES + 1))
+    big.write_bytes(data=b"0" * 300)
     low = tmp_path / "low.mp4"
     low.write_bytes(data=b"1" * 100)
 
@@ -281,7 +281,7 @@ async def test_video_deliver_and_download_branches(
         results=[DownloadResultStub(filename=big), DownloadResultStub(filename=low)]
     )
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
-    retry_interaction = FakeInteraction()
+    retry_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
         cog, retry_interaction, url="https://x.test", quality="best"
     )
@@ -290,7 +290,7 @@ async def test_video_deliver_and_download_branches(
     assert "來源: <https://x.test>" in retry_interaction.edits[-1]["content"]
     assert retry_interaction.followup.sent == []
 
-    fail_interaction = FakeInteraction()
+    fail_interaction = FakeInteraction(filesize_limit=200)
     monkeypatch.setattr(
         video,
         "VideoDownloader",

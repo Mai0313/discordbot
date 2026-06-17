@@ -12,10 +12,6 @@ from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
 
-# Hard-cap aligned with the unboosted Discord upload limit. The downloader
-# already retries at low quality once when this is exceeded.
-_DISCORD_FILE_LIMIT_BYTES = 25 * 1024 * 1024
-
 
 class VideoCogs(commands.Cog):
     """Downloads videos from slash command requests.
@@ -70,13 +66,17 @@ class VideoCogs(commands.Cog):
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
 
+        # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
+        # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.
+        upload_limit = interaction.guild.filesize_limit if interaction.guild else 10 * 1024 * 1024
+
         try:
             downloader = VideoDownloader(output_folder=tempfile.gettempdir())
             result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
             with result:
                 size_bytes = result.filename.stat().st_size
                 file_size_mb = size_bytes / 1024 / 1024
-                if size_bytes <= _DISCORD_FILE_LIMIT_BYTES:
+                if size_bytes <= upload_limit:
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
@@ -98,7 +98,7 @@ class VideoCogs(commands.Cog):
                 with low_result:
                     low_size_bytes = low_result.filename.stat().st_size
                     file_size_mb = low_size_bytes / 1024 / 1024
-                    if low_size_bytes > _DISCORD_FILE_LIMIT_BYTES:
+                    if low_size_bytes > upload_limit:
                         await interaction.edit_original_message(
                             content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                         )

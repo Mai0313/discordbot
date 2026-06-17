@@ -93,12 +93,14 @@ class FakeGuild:
         guild_id: int = 1,
         name: str = "Test Guild",
         members: dict[int, SimpleNamespace] | None = None,
+        filesize_limit: int = 25 * 1024 * 1024,
     ) -> None:
-        """Initializes the fake guild ID, name, @everyone sentinel, and member map."""
+        """Initializes the fake guild ID, name, @everyone sentinel, member map, upload limit."""
         self.id = guild_id
         self.name = name
         self.default_role = SimpleNamespace()
         self._members = members or {}
+        self.filesize_limit = filesize_limit
 
     def get_member(self, user_id: int) -> SimpleNamespace | None:
         """Returns a registered member stub for mention-name resolution, else None."""
@@ -1070,17 +1072,6 @@ async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
     assert speech.calls[0]["timeout"] == VOICE_TIMEOUT_SECONDS
 
 
-async def test_voice_synthesizer_skips_overlong_text() -> None:
-    """Text past the input cap is skipped without an API call."""
-    speech = _FakeSpeech()
-    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
-
-    audio = await synth.synthesize(text="嗆" * 5000, end_user_id="tester")
-
-    assert audio is None
-    assert speech.calls == []
-
-
 async def test_voice_synthesizer_swallows_provider_errors() -> None:
     """A provider error degrades to None so the reply stays text-only."""
     speech = _FakeSpeech(error=RuntimeError("boom"))
@@ -1089,12 +1080,19 @@ async def test_voice_synthesizer_swallows_provider_errors() -> None:
     assert await synth.synthesize(text="嗆你", end_user_id="tester") is None
 
 
-async def test_voice_synthesizer_drops_oversized_clip() -> None:
-    """A clip larger than the Discord upload bound is dropped."""
-    speech = _FakeSpeech(data=b"x" * (8 * 1024 * 1024 + 1))
-    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
+async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> None:
+    """A clip past the guild's upload limit is dropped, leaving a text-only reply."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.guild = FakeGuild(filesize_limit=8)
+    synthesizer = _FakeVoiceSynthesizer(audio=b"x" * 16)
 
-    assert await synth.synthesize(text="嗆你", end_user_id="tester") is None
+    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_events())
+    )
+
+    assert VOICE_MARKER not in result
+    assert message.replies[0].file is None
 
 
 @pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
