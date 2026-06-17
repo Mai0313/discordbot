@@ -29,6 +29,12 @@ from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 # input. Media is collected target-post-first, so the linked post never loses a slot.
 MAX_THREADS_MEDIA_PARTS = 10
 
+# Cap on posts rendered from a reply chain, mirroring the cog's deep-chain trim
+# (`results[-max_embeds:]`): a linked reply deep in a long Threads thread would otherwise
+# render every ancestor's text and bloat or overflow the answer input. The chain is
+# ordered oldest-first, so the tail keeps the target plus its nearest ancestors.
+MAX_THREADS_POSTS = 6
+
 # Leads the injected blocks. The wording is load-bearing: it tells the model the link
 # is ALREADY fetched below, so it answers about the post instead of falling back to
 # "I cannot open this link" (the exact failure the reverted design produced).
@@ -98,6 +104,10 @@ async def build_threads_context_messages(
 
     if not results:
         return [_system_block(text=THREADS_UNAVAILABLE_NOTICE)]
+
+    # Trim a long chain to the target plus its nearest ancestors before rendering, so the
+    # text side is bounded like the media side (the tail is closest to the linked post).
+    results = results[-MAX_THREADS_POSTS:]
 
     # The chain is [root, ..., direct_parent, target]; the target (last) is the linked post.
     target_index = len(results) - 1

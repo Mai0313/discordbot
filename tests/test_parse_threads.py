@@ -4,6 +4,7 @@ import pytest
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 from discordbot.cogs._parse_threads.builder import (
+    MAX_THREADS_POSTS,
     MAX_THREADS_MEDIA_PARTS,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
@@ -95,6 +96,25 @@ async def test_build_collects_target_media_first(monkeypatch: pytest.MonkeyPatch
 
     images = [part["image_url"] for part in blocks[1]["content"] if part["type"] == "input_image"]
     assert images[0] == "https://cdn.test/target.jpg"
+
+
+async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long reply chain is trimmed to the target plus its nearest ancestors."""
+    chain = [
+        _post(text=f"post {index}", author=f"user{index}")
+        for index in range(MAX_THREADS_POSTS + 4)
+    ]  # oldest-first; the last is the target
+    _stub_parse(monkeypatch, chain)
+
+    blocks = await build_threads_context_messages(url=_URL, answer_model_is_gemini=True)
+
+    text = blocks[1]["content"][0]["text"]
+    # The target and the nearest ancestors are kept; the oldest posts are dropped.
+    assert "TARGET" in text
+    assert f"post {MAX_THREADS_POSTS + 3}" in text  # the target (last) survives
+    assert "post 0" not in text  # the oldest ancestor is trimmed
+    rendered_posts = text.count("ANCESTOR") + text.count("TARGET")
+    assert rendered_posts == MAX_THREADS_POSTS
 
 
 async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
