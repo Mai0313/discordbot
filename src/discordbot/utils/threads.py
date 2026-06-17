@@ -12,6 +12,19 @@ from collections.abc import Iterator
 from pydantic import Field, BaseModel, ValidationInfo, computed_field, field_validator
 import requests
 
+# Single source of truth for detecting a Threads post URL, shared by the parse_threads
+# cog (which expands it into embeds) and gen_reply (which self-parses it into answer
+# context). Matches `@user/post/<code>` on both threads.net and threads.com. The shortcode +
+# query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
+# characters a valid Threads code or query value ends in). Restricting to ASCII stops the match
+# at any non-ASCII terminator, and the trailing class strips ASCII sentence punctuation, so a
+# link written mid-sentence is matched cleanly in both English (`.../post/ABC123.`) and zh/ja
+# (`...ABC123。`, `...ABC123】super`) text instead of swallowing the terminator into the code,
+# which would otherwise make the parse fail on an otherwise valid link.
+THREADS_URL_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
+)
+
 
 class _ThreadsModel(BaseModel):
     """Base model tolerating an explicit JSON null on plain string fields.
@@ -689,6 +702,32 @@ class ThreadsDownloader(BaseModel):
         finally:
             for output in results:
                 output.unlink()
+
+    def parse_metadata(self, *, url: str) -> list[ThreadsOutput]:
+        """Parses a Threads post URL into the reply chain WITHOUT downloading media.
+
+        Mirrors `parse` but builds every post with `download=False`, so no video is
+        written to disk and there is nothing to clean up (not a context manager). The
+        reply pipeline uses this: it feeds the post's media to the answer model as URLs,
+        not local files.
+
+        Args:
+            url: The Threads post URL.
+
+        Returns:
+            Ordered posts `[root, ..., direct_parent, target]`; empty when no post is found.
+        """
+        post, parent_posts = self.extract_post_data(url=url)
+        results: list[ThreadsOutput] = []
+        if post:
+            for parent in parent_posts:
+                results.append(
+                    self._build_output(
+                        post=parent, url=self._post_url(post=parent), download=False
+                    )
+                )
+            results.append(self._build_output(post=post, url=url, download=False))
+        return results
 
 
 if __name__ == "__main__":

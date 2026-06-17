@@ -52,6 +52,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
+from discordbot.cogs._parse_threads.builder import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import (
@@ -64,11 +65,14 @@ from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUplo
 from tests.helpers.llm_input import (
     request_index,
     request_input,
+    iter_text_blocks,
     tool_names_for_call,
     has_memory_context_block,
     extract_callable_user_ids,
+    has_threads_context_block,
     extract_user_memory_blocks,
     extract_server_memory_block,
+    extract_threads_context_block,
 )
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -2205,6 +2209,189 @@ async def test_on_message_discards_speculative_context_on_image_route(
     message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
     assert cancelled == [True]
+
+
+class _ThreadsStreamer:
+    """Answer-phase streamer stub returning a fixed reply without real streaming."""
+
+    def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
+        self,
+        message: FakeMessage,
+        memory_lookups: list[str] | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model_effort: str = "",
+        voice_synthesizer: object | None = None,
+    ) -> None:
+        """Stores the streaming target message and ignores the rest."""
+        del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+        self.message = message
+
+    async def stream(self, *, responses: object) -> str:
+        """Returns placeholder reply content."""
+        del responses
+        return "完整回覆"
+
+
+async def _silent_reaction(
+    message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
+) -> str:
+    """Skips real reaction calls during pipeline integration tests."""
+    del message, bot_user, previous
+    return emoji
+
+
+def _threads_block(body: str = "MOCK THREADS POST BODY") -> list[dict[str, object]]:
+    """Builds a builder-shaped Threads block: the real separator plus a user content message."""
+    return [
+        {"role": "system", "content": [{"type": "input_text", "text": THREADS_CONTEXT_SEPARATOR}]},
+        {"role": "user", "content": [{"type": "input_text", "text": body}]},
+    ]
+
+
+async def test_on_message_injects_threads_context_before_current(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A QA message with a Threads URL injects the parsed post just before the current message."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    seen_urls: list[str] = []
+
+    async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+        """Returns a recognizable Threads block instead of hitting the network."""
+        del answer_model_is_gemini
+        seen_urls.append(url)
+        return _threads_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    url = "https://www.threads.com/@a/post/ABC123"
+    message = FakeMessage(content=f"<@999> what is this {url}", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+
+    assert seen_urls == [url]
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert has_threads_context_block(request=answer)
+    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+
+    # The block lands after memory but before the current message (which stays last).
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    separator_index = headers.index(THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert separator_index < current_index
+
+
+async def test_on_message_cancels_threads_context_on_image_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-QA route cancels the in-flight Threads parse instead of orphaning it."""
+    cog = _cog()
+    cancelled: list[bool] = []
+
+    async def hanging_builder(
+        *, url: str, answer_model_is_gemini: bool
+    ) -> list[dict[str, object]]:
+        """Blocks until cancelled, recording the cancellation."""
+        del url, answer_model_is_gemini
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes every message to IMAGE after yielding so the parse starts."""
+        del reference_messages, current_message
+        await asyncio.sleep(0)
+        return RouteClassification(decision="IMAGE")
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_threads_context_messages", hanging_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> draw https://www.threads.com/@a/post/ABC123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=message)
+    assert cancelled == [True]
+
+
+async def test_on_message_skips_threads_context_without_url(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message with no Threads URL never starts the parse and injects no block."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    called: list[str] = []
+
+    async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+        """Records any call so the test can assert it never runs."""
+        del answer_model_is_gemini
+        called.append(url)
+        return _threads_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(content="<@999> just a plain question", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+
+    assert called == []
+    assert not has_threads_context_block(
+        request=request_input(responses=cog.client.responses, phase="answer")
+    )
+
+
+async def test_on_message_threads_context_grace_timeout_injects_notice(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
+    cog = _cog()
+    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
+
+    async def slow_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+        """Outlasts the grace so the gate drops it."""
+        del url, answer_model_is_gemini
+        await asyncio.sleep(5)
+        return _threads_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", slow_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> what is this https://www.threads.com/@a/post/ABC123",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    # The slow parse is dropped, but a deterministic timeout notice keeps the model from
+    # claiming it cannot open the link, and the answer still streams.
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert has_threads_context_block(request=answer)
+    assert "did not respond in time" in str(answer)
 
 
 def test_reply_context_message_list_orders_hist_ref_current() -> None:

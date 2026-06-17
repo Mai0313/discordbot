@@ -22,6 +22,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
@@ -68,6 +69,10 @@ from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
+from discordbot.cogs._parse_threads.builder import (
+    build_threads_context_messages,
+    threads_timeout_context_messages,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
@@ -92,6 +97,14 @@ MEMORY_SELECT_GRACE_SECONDS = 5.0
 # is consumed only just before the answer model starts, so this latency hides behind the
 # route. Tune against the `gen_reply effort done` latency log.
 EFFORT_GRACE_SECONDS = 5.0
+
+# Threads-context parse rides the same route_done gate: it runs unbounded while the route
+# is in flight and gets only this grace once the route returns before the reply answers
+# without the post's media. Slightly wider than memory/effort because the parse is a single
+# HTTP fetch and missing the whole post is worse than waiting a beat. The parse overlaps the
+# route window for free, so this latency hides behind the route. Tune against the
+# `gen_reply threads context done` latency log.
+THREADS_GRACE_SECONDS = 8.0
 
 # Hard ceiling on the video-generation polling loop so a hung provider job cannot
 # leave the message handler waiting forever.
@@ -738,6 +751,40 @@ class ReplyGeneratorCogs(commands.Cog):
             return "high"
         return grade.effort
 
+    async def _resolve_threads_block(
+        self,
+        *,
+        threads_task: "asyncio.Task[list[EasyInputMessageParam]]",
+        route_done: asyncio.Event,
+    ) -> list[EasyInputMessageParam]:
+        """Resolves the parallel Threads-context parse, bounded by the route like effort.
+
+        On the post-route grace timeout it injects a short "could not read it in time" notice
+        instead of nothing, so a slow parse keeps deterministic context rather than re-exposing
+        the "I cannot open this link" fallback; on any other error (e.g. cancellation) it
+        returns []. The builder itself never raises (it degrades to an unavailable notice).
+        """
+        started = time.monotonic()
+        try:
+            blocks = await _await_gated(
+                task=threads_task, route_done=route_done, grace_seconds=THREADS_GRACE_SECONDS
+            )
+        except TimeoutError:
+            logfire.warn(
+                "Threads context parse exceeded the post-route grace; injecting timeout notice",
+                grace_seconds=THREADS_GRACE_SECONDS,
+            )
+            return threads_timeout_context_messages()
+        except Exception:
+            logfire.warn("Threads context parse failed; answering without it", _exc_info=True)
+            return []
+        logfire.info(
+            "gen_reply threads context done",
+            elapsed_seconds=time.monotonic() - started,
+            blocks=len(blocks),
+        )
+        return blocks
+
     async def _select_user_memories(
         self,
         *,
@@ -1056,6 +1103,9 @@ class ReplyGeneratorCogs(commands.Cog):
             for block in (context.server_memory_block, context.memory_block)
             if block is not None
         )
+        # The Threads post the user linked rides just before the current message (its own
+        # separator leads the block); empty unless the message carried a Threads URL.
+        answer_input.extend(context.threads_block)
         answer_input.extend(context.current_message)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
@@ -1166,7 +1216,7 @@ class ReplyGeneratorCogs(commands.Cog):
         finally:
             await reactions.flush()
 
-    async def _run_reply_pipeline(  # noqa: PLR0915 -- orchestrates route, speculative prep, and per-route dispatch in sequence
+    async def _run_reply_pipeline(  # noqa: PLR0915, C901, PLR0912 -- orchestrates route, speculative prep, threads context, and per-route dispatch in sequence
         self, message: Message, user_prompt: str, reactions: ReactionStatusChain
     ) -> None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
@@ -1175,6 +1225,7 @@ class ReplyGeneratorCogs(commands.Cog):
             asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]] | None
         ) = None
         effort_task: asyncio.Task[EffortGrade] | None = None
+        threads_task: asyncio.Task[list[EasyInputMessageParam]] | None = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -1187,6 +1238,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 parts_task = asyncio.create_task(
                     coro=self._get_reference_and_current(message=message)
                 )
+                # A Threads URL in the current message is self-parsed (metadata only) into
+                # answer-context blocks. Started here so its single HTTP fetch overlaps the
+                # whole route/prep window for free; only the QA route consumes it, others
+                # cancel it. Resolution is route_done-gated like effort, never a fixed wait.
+                threads_match = THREADS_URL_RE.search(string=message.content)
+                if threads_match:
+                    threads_task = asyncio.create_task(
+                        coro=build_threads_context_messages(
+                            url=threads_match.group(0),
+                            answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
+                        )
+                    )
                 text_reference, text_current = await self._get_reference_and_current_text_only(
                     message=message
                 )
@@ -1228,6 +1291,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     # IMAGE loads raw bytes itself, so the background uploads are wasted.
                     await _discard_task(task=parts_task)
                     parts_task = None
+                    if threads_task is not None:
+                        await _discard_task(task=threads_task)
+                        threads_task = None
                     reactions.advance(emoji="🎨")
                     await self._handle_image_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "VIDEO":
@@ -1237,11 +1303,20 @@ class ReplyGeneratorCogs(commands.Cog):
                     effort_task = None
                     await _discard_task(task=parts_task)
                     parts_task = None
+                    if threads_task is not None:
+                        await _discard_task(task=threads_task)
+                        threads_task = None
                     reactions.advance(emoji="🎬")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None
+                    # A digest recaps channel history, not one linked post, so the Threads
+                    # block is not injected here. A URL-bearing SUMMARY is already rerouted to
+                    # QA in `_route_classify`, so this is normally None; discard defensively.
+                    if threads_task is not None:
+                        await _discard_task(task=threads_task)
+                        threads_task = None
                     reactions.advance(emoji="📖")
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
@@ -1283,6 +1358,14 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort_task=effort_task, route_done=route_done
                     )
                     effort_task = None
+                    # The parse ran in parallel since before the route; resolve it under the
+                    # same route_done gate and fold the post's blocks into the answer context.
+                    if threads_task is not None:
+                        threads_block = await self._resolve_threads_block(
+                            threads_task=threads_task, route_done=route_done
+                        )
+                        threads_task = None
+                        context = context.model_copy(update={"threads_block": threads_block})
                     pipeline_span.set_attribute(key="effort", value=effort)
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
@@ -1300,6 +1383,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=effort_task)
             if parts_task is not None:
                 await _discard_task(task=parts_task)
+            if threads_task is not None:
+                await _discard_task(task=threads_task)
 
 
 def setup(bot: commands.Bot) -> None:

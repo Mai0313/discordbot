@@ -24,6 +24,12 @@ from discordbot.cogs._gen_reply.memory_tool import (
     render_callable_users_block,
     render_memory_context_block,
 )
+from discordbot.cogs._parse_threads.builder import (
+    THREADS_TIMEOUT_NOTICE,
+    THREADS_CONTEXT_SEPARATOR,
+    THREADS_UNAVAILABLE_NOTICE,
+    THREADS_TEXT_ONLY_SEPARATOR,
+)
 
 
 class RecordedResponses(Protocol):
@@ -65,6 +71,14 @@ def _header_line(block: Mapping[str, object]) -> str:
 _PARTICIPANT_HEADER = _header_line(block=render_memory_context_block(memories=[]))
 _SERVER_HEADER = _header_line(block=render_server_memory_block(memory=""))
 _CALLABLE_HEADER = _header_line(block=render_callable_users_block(allowed={}))
+_THREADS_SEPARATOR_HEADS = (
+    THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    THREADS_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+)
+_THREADS_NOTICE_HEADS = (
+    THREADS_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    THREADS_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
 _ID_MARKER = re.compile(r"\[id: (\d+)\]")
@@ -126,6 +140,29 @@ def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
         if role == "system" and text.split("\n", 1)[0] == _CALLABLE_HEADER:
             return {int(match) for match in _ID_MARKER.findall(text)}
     return set()
+
+
+def extract_threads_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Threads separator, or None if absent.
+
+    The builder emits a ``role="system"`` separator immediately followed by the
+    ``role="user"`` message carrying the post's text and media; this anchors on the
+    separator's header line and returns that next block's text.
+    """
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _THREADS_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_threads_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Threads separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _THREADS_SEPARATOR_HEADS or head in _THREADS_NOTICE_HEADS:
+            return True
+    return False
 
 
 def tool_names_for_call(responses: RecordedResponses, n: int) -> list[str]:
