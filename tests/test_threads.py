@@ -6,12 +6,14 @@ from pathlib import Path
 import pytest
 
 from discordbot.utils.threads import (
+    THREADS_URL_RE,
     Post,
     ThreadData,
     ThreadItem,
     ThreadsURL,
     ThreadsOutput,
     ThreadsDownloader,
+    ThreadsExpansionRelay,
 )
 
 
@@ -189,3 +191,55 @@ def test_post_tolerates_null_string_fields() -> None:
     assert post.text_post_app_info is not None
     assert post.text_post_app_info.link_preview_attachment is not None
     assert post.text_post_app_info.link_preview_attachment.image_url == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("https://www.threads.com/@user/post/ABC123", True),
+        ("https://threads.net/@u/post/XyZ", True),
+        ("look @bot https://www.threads.com/@a.b/post/DZZ?x=1 ok", True),
+        ("https://www.instagram.com/p/abc/", False),
+        ("https://www.threads.com/@user", False),
+        ("no url here at all", False),
+    ],
+)
+def test_threads_url_re_matches_post_links(text: str, expected: bool) -> None:
+    """The shared regex matches Threads post URLs and nothing else."""
+    assert (THREADS_URL_RE.search(string=text) is not None) is expected
+
+
+async def test_expansion_relay_get_or_create_is_idempotent() -> None:
+    """Both cogs reach the same future for one message, and resolve sets its result once."""
+    relay = ThreadsExpansionRelay()
+    first = relay.get_or_create(message_id=1)
+    assert relay.get_or_create(message_id=1) is first
+
+    relay.resolve(message_id=1, message=None)
+    assert first.done()
+    assert await first is None
+
+
+async def test_expansion_relay_resolve_unknown_is_noop() -> None:
+    """Resolving a message nobody registered does not raise and creates nothing lingering."""
+    relay = ThreadsExpansionRelay()
+    relay.resolve(message_id=999, message=None)
+
+    pending = relay.get_or_create(message_id=999)
+    assert not pending.done()
+    pending.cancel()
+
+
+async def test_expansion_relay_evicts_oldest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pending map is bounded so unawaited expansions cannot grow it without limit."""
+    monkeypatch.setattr("discordbot.utils.threads._MAX_PENDING_EXPANSIONS", 2)
+    relay = ThreadsExpansionRelay()
+    relay.get_or_create(message_id=1)
+    relay.get_or_create(message_id=2)
+    relay.get_or_create(message_id=3)
+
+    # id 1 was evicted: resolving it is a no-op and a fresh lookup yields a new pending future.
+    relay.resolve(message_id=1, message=None)
+    refreshed = relay.get_or_create(message_id=1)
+    assert not refreshed.done()
+    refreshed.cancel()

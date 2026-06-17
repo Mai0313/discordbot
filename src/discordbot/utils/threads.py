@@ -2,15 +2,34 @@
 
 import re
 import json
+from typing import TYPE_CHECKING
+import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
 from functools import cached_property
 import contextlib
+from collections import OrderedDict
 from urllib.parse import urlparse
 from collections.abc import Iterator
 
-from pydantic import Field, BaseModel, ValidationInfo, computed_field, field_validator
+from pydantic import (
+    Field,
+    BaseModel,
+    ConfigDict,
+    PrivateAttr,
+    ValidationInfo,
+    computed_field,
+    field_validator,
+)
 import requests
+
+if TYPE_CHECKING:
+    from nextcord import Message
+
+
+# Shared by the parse_threads cog (auto-expansion) and the reply pipeline (so it can wait
+# for that expansion); one definition keeps both sides matching the same post-URL shape.
+THREADS_URL_RE = re.compile(r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]+")
 
 
 class _ThreadsModel(BaseModel):
@@ -689,6 +708,62 @@ class ThreadsDownloader(BaseModel):
         finally:
             for output in results:
                 output.unlink()
+
+
+# Caps the relay's pending-future map. parse_threads registers an entry for every Threads
+# message (whether or not the bot was tagged), so the bound stops links nobody asked the bot
+# about from growing it without limit; 128 comfortably covers concurrent in-flight expansions.
+_MAX_PENDING_EXPANSIONS = 128
+
+
+class ThreadsExpansionRelay(BaseModel):
+    """Hands the embed reply parse_threads posts to the reply pipeline, keyed by source message.
+
+    parse_threads and the reply pipeline both fire on the same message: parse_threads
+    publishes the expanded reply it posts (or None when the post is private / unparsable)
+    and the reply pipeline awaits it, so the answer model can read the post without a second
+    fetch. Futures are created in the running loop on first touch by either side (race-safe),
+    and the map is bounded so expansions nobody awaits cannot grow it without limit.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    _pending: "OrderedDict[int, asyncio.Future[Message | None]]" = PrivateAttr(
+        default_factory=OrderedDict
+    )
+
+    def get_or_create(self, *, message_id: int) -> "asyncio.Future[Message | None]":
+        """Returns the pending future for a message, creating it in the running loop if absent.
+
+        A future bound to a different loop (a fresh test loop reusing the module-level
+        singleton) is treated as absent and replaced, so the relay stays correct across runs.
+        """
+        loop = asyncio.get_running_loop()
+        existing = self._pending.get(message_id)
+        if existing is not None and existing.get_loop() is loop:
+            self._pending.move_to_end(message_id)
+            return existing
+        future: asyncio.Future[Message | None] = loop.create_future()
+        self._pending[message_id] = future
+        self._pending.move_to_end(message_id)
+        while len(self._pending) > _MAX_PENDING_EXPANSIONS:
+            self._pending.popitem(last=False)
+        return future
+
+    def resolve(self, *, message_id: int, message: "Message | None") -> None:
+        """Resolves a pending future with the posted expansion, or None when there is none."""
+        future = self._pending.get(message_id)
+        if (
+            future is not None
+            and not future.done()
+            and future.get_loop() is asyncio.get_running_loop()
+        ):
+            future.set_result(message)
+
+
+# Module-level singleton shared by the two cogs (same pattern as the DB engines): both import
+# this instance so a publish on one side is visible to the awaiter on the other.
+threads_expansion_relay = ThreadsExpansionRelay()
 
 
 if __name__ == "__main__":

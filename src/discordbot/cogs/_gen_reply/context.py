@@ -54,6 +54,10 @@ class ReplyContext(BaseModel):
     memory_block: SkipValidation[EasyInputMessageParam | None] = Field(
         default=None, description="Rendered selected-user-memory context block, if any."
     )
+    threads_block: SkipValidation[EasyInputMessageParam | None] = Field(
+        default=None,
+        description="Rendered Threads expansion the user asked about, injected before current.",
+    )
     memory_labels: list[str] = Field(
         default_factory=list, description="Footer labels of users whose memory was injected."
     )
