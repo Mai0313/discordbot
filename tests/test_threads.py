@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from discordbot.utils.threads import (
+    THREADS_URL_RE,
     Post,
     ThreadData,
     ThreadItem,
@@ -167,6 +168,106 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
         assert target.author_name, "author_name should not be empty"
         assert target.taken_at is not None, "taken_at should not be None"
     assert fetched_urls == [threads_url.clean_url]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "see https://www.threads.com/@a/post/ABC123 now",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
+        ("https://threads.net/@b/post/XYZ", "https://threads.net/@b/post/XYZ"),
+        (
+            "<@1> look https://www.threads.net/@c.d/post/Q_-1?hl=zh",
+            "https://www.threads.net/@c.d/post/Q_-1?hl=zh",
+        ),
+    ],
+)
+def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:
+    """The shared regex extracts a Threads post URL from surrounding text, query included."""
+    match = THREADS_URL_RE.search(string=text)
+    assert match is not None
+    assert match.group(0) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no url here at all",
+        "https://www.threads.com/@profile_only",
+        "https://www.instagram.com/p/ABC/",
+    ],
+)
+def test_threads_url_re_rejects_non_posts(text: str) -> None:
+    """Profile URLs, Instagram URLs, and plain text are not matched as posts."""
+    assert THREADS_URL_RE.search(string=text) is None
+
+
+def _thread_html_with_video(post_code: str) -> str:
+    """Builds Threads SJS HTML whose single target post carries a video rendition."""
+    payload = {
+        "require": [
+            {
+                "__bbox": {
+                    "result": {
+                        "data": {
+                            "thread_items": [
+                                {
+                                    "post": {
+                                        "code": post_code,
+                                        "caption": {"text": f"Video post {post_code}"},
+                                        "user": {"username": "vid_author", "profile_pic_url": ""},
+                                        "video_versions": [
+                                            {"url": f"https://cdn.example/{post_code}.mp4"}
+                                        ],
+                                        "text_post_app_info": {
+                                            "direct_reply_count": 0,
+                                            "repost_count": 0,
+                                            "quote_count": 0,
+                                            "reshare_count": 0,
+                                        },
+                                        "like_count": 0,
+                                        "taken_at": 1_735_689_600,
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        ]
+    }
+    return (
+        f'<html><script type="application/json" data-sjs>{json.dumps(obj=payload)}</script></html>'
+    )
+
+
+def test_parse_metadata_returns_chain_without_downloading(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """parse_metadata yields the ordered chain with video URLs but no local files or downloads."""
+    url = "https://www.threads.com/@root_author/post/TARGET"
+    threads_url = ThreadsURL(raw_url=url)
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Returns deterministic HTML with a video target for the requested URL."""
+        del url
+        return _thread_html_with_video(post_code=threads_url.post_code)
+
+    def fail_download(self: ThreadsDownloader, url: str, filename: str) -> None:
+        """Fails loudly if the metadata path ever tries to download media."""
+        raise AssertionError("parse_metadata must not download media")
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fail_download)
+
+    results = downloader.parse_metadata(url=url)
+
+    assert results, "should return at least the target post"
+    target = results[-1]
+    assert target.video_urls == [f"https://cdn.example/{threads_url.post_code}.mp4"]
+    assert all(post.video_paths == [] for post in results)
 
 
 def test_post_tolerates_null_string_fields() -> None:
