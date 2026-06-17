@@ -2361,10 +2361,10 @@ async def test_on_message_skips_threads_context_without_url(
     )
 
 
-async def test_on_message_threads_context_grace_timeout_degrades(
+async def test_on_message_threads_context_grace_timeout_injects_notice(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A parse slower than the post-route grace is dropped; the answer still streams."""
+    """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(voice_reply_enabled=False)
@@ -2387,8 +2387,11 @@ async def test_on_message_threads_context_grace_timeout_degrades(
     )
     await cog.on_message(message=message)
 
+    # The slow parse is dropped, but a deterministic timeout notice keeps the model from
+    # claiming it cannot open the link, and the answer still streams.
     answer = request_input(responses=cog.client.responses, phase="answer")
-    assert not has_threads_context_block(request=answer)
+    assert has_threads_context_block(request=answer)
+    assert "did not respond in time" in str(answer)
 
 
 def test_reply_context_message_list_orders_hist_ref_current() -> None:

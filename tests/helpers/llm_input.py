@@ -25,6 +25,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     render_memory_context_block,
 )
 from discordbot.cogs._parse_threads.builder import (
+    THREADS_TIMEOUT_NOTICE,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
 )
@@ -70,7 +71,10 @@ _PARTICIPANT_HEADER = _header_line(block=render_memory_context_block(memories=[]
 _SERVER_HEADER = _header_line(block=render_server_memory_block(memory=""))
 _CALLABLE_HEADER = _header_line(block=render_callable_users_block(allowed={}))
 _THREADS_SEPARATOR_HEAD = THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0]
-_THREADS_UNAVAILABLE_HEAD = THREADS_UNAVAILABLE_NOTICE.split("\n", 1)[0]
+_THREADS_NOTICE_HEADS = (
+    THREADS_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    THREADS_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
 _ID_MARKER = re.compile(r"\[id: (\d+)\]")
@@ -149,9 +153,10 @@ def extract_threads_context_block(request: ResponseInputParam | str) -> str | No
 
 
 def has_threads_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Threads separator or unavailable-notice block."""
+    """Whether the input carries an injected Threads separator or notice block."""
     for _role, text in iter_text_blocks(request=request):
-        if text.split("\n", 1)[0] in (_THREADS_SEPARATOR_HEAD, _THREADS_UNAVAILABLE_HEAD):
+        head = text.split("\n", 1)[0]
+        if head == _THREADS_SEPARATOR_HEAD or head in _THREADS_NOTICE_HEADS:
             return True
     return False
 

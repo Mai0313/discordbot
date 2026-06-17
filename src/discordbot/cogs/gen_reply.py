@@ -69,7 +69,10 @@ from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
-from discordbot.cogs._parse_threads.builder import build_threads_context_messages
+from discordbot.cogs._parse_threads.builder import (
+    build_threads_context_messages,
+    threads_timeout_context_messages,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
@@ -756,10 +759,10 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> list[EasyInputMessageParam]:
         """Resolves the parallel Threads-context parse, bounded by the route like effort.
 
-        Returns [] on the post-route grace timeout or any error, so a slow or failed parse
-        never stalls or breaks the reply; the answer just proceeds without the post's media.
-        The builder itself never raises (it degrades to an unavailable notice), so this guard
-        only covers the gate timeout and cancellation.
+        On the post-route grace timeout it injects a short "could not read it in time" notice
+        instead of nothing, so a slow parse keeps deterministic context rather than re-exposing
+        the "I cannot open this link" fallback; on any other error (e.g. cancellation) it
+        returns []. The builder itself never raises (it degrades to an unavailable notice).
         """
         started = time.monotonic()
         try:
@@ -768,10 +771,10 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         except TimeoutError:
             logfire.warn(
-                "Threads context parse exceeded the post-route grace; answering without it",
+                "Threads context parse exceeded the post-route grace; injecting timeout notice",
                 grace_seconds=THREADS_GRACE_SECONDS,
             )
-            return []
+            return threads_timeout_context_messages()
         except Exception:
             logfire.warn("Threads context parse failed; answering without it", _exc_info=True)
             return []

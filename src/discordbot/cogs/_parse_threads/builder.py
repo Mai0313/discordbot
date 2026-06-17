@@ -56,12 +56,31 @@ THREADS_UNAVAILABLE_NOTICE = (
     "not invent the post's contents. ===="
 )
 
+# Injected by gen_reply when the parse does not finish within the post-route grace. Keeps the
+# deterministic context so a slow fetch does not re-expose the "I cannot open this link"
+# fallback the feature exists to prevent.
+THREADS_TIMEOUT_NOTICE = (
+    "==== We tried to fetch the Threads link in the user's message but it did not respond in "
+    "time, so its content could not be read for this reply. Tell the user this plainly and "
+    "suggest they try again; do not invent the post's contents. ===="
+)
+
 
 def _system_block(text: str) -> EasyInputMessageParam:
     """Wraps one separator/notice string as a low-authority system block."""
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
+
+
+def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
+    """Blocks injected when the Threads parse exceeds gen_reply's post-route grace.
+
+    A timed-out parse otherwise leaves the answer with only the raw URL, which can re-expose
+    the "I cannot open this link" fallback; this keeps a deterministic "could not read it in
+    time" notice instead.
+    """
+    return [_system_block(text=THREADS_TIMEOUT_NOTICE)]
 
 
 def _render_post_text(post: ThreadsOutput, label: str) -> str:
