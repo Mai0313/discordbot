@@ -190,6 +190,14 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
             "see https://www.threads.com/@a/post/ABC123, then reply",
             "https://www.threads.com/@a/post/ABC123",
         ),
+        (
+            "看這篇 https://www.threads.com/@a/post/ABC123。很扯",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
+        (
+            "貼文【https://www.threads.com/@a/post/ABC123】super",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
     ],
 )
 def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:

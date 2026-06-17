@@ -14,12 +14,15 @@ import requests
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
-# context). Matches `@user/post/<code>` on both threads.net and threads.com. The final
-# character class forbids the match from ending in sentence punctuation so a link written
-# mid-sentence (`.../post/ABC123.` or `...,`) does not swallow the trailing `.`/`,` into
-# the short code, which would otherwise make the parse fail on an otherwise valid link.
+# context). Matches `@user/post/<code>` on both threads.net and threads.com. The shortcode +
+# query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
+# characters a valid Threads code or query value ends in). Restricting to ASCII stops the match
+# at any non-ASCII terminator, and the trailing class strips ASCII sentence punctuation, so a
+# link written mid-sentence is matched cleanly in both English (`.../post/ABC123.`) and zh/ja
+# (`...ABC123。`, `...ABC123】super`) text instead of swallowing the terminator into the code,
+# which would otherwise make the parse fail on an otherwise valid link.
 THREADS_URL_RE = re.compile(
-    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[^\s\"'<>)]*[^\s\"'<>).,!?;:]"
+    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
 )
 
 
