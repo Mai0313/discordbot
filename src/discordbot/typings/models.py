@@ -124,6 +124,22 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-flash-latest", effort="high")
 
     @property
+    def image_reply_model(self) -> ModelSettings:
+        """The model settings for the conversational reply that rides a generated image.
+
+        Callers: `_handle_image_reply`.
+
+        Returns:
+            Flash, the middle tier between the flash-lite caption it replaces and the
+            gemini-pro answer model: it reads conversation history and the selected user
+            memory and answers in persona while holding the image it just made,
+            rather than coldly describing it. `effort="low"` keeps it snappy yet still
+            emits a reasoning summary, so the streaming `💭` preview shows; the image is
+            already on screen, so this text streams in after with no added image latency.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="low")
+
+    @property
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
 
@@ -139,12 +155,11 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_handle_image_reply`, `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        Callers: `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
 
         Returns:
-            Fast model settings used for image captions, short Discord
-            replies, casino system narrator lines, auto-unmute replies,
-            and stock news generation.
+            Fast model settings used for short Discord replies, casino system
+            narrator lines, auto-unmute replies, and stock news generation.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
