@@ -45,12 +45,13 @@ WHAT NOT TO REMEMBER:
 * The bot's own suggestions or jokes, unless the user clearly adopted them.
 * Long verbatim copies of messages.
 * Display names as facts; only record a name or nickname the user explicitly asked to be called.
+* Personal-attack labels and slurs aimed at a person — the user, the bot, or anyone else (e.g. 廢物 / 白嫖仔 / 傻逼 / 狗逼). Recording that the user gives or enjoys harsh, profane banter IS in scope, but state it as a general tolerance or style ("偏好高強度的粗口互嗆"); never reproduce, list, or quote the specific demeaning labels themselves.
 
 EVIDENCE RULES:
 * User messages are the primary evidence. Read much more into user messages than bot replies.
 * Stable preferences and stable interests require explicit target-user evidence: repeated behavior, a correction, enforcement, or a direct statement of preference.
 * A single joke, hypothetical, one-time mood, or one-time topic mention is not a stable preference or interest.
-* Preserve one short verbatim fragment in `evidence_quote` when possible.
+* Preserve one short verbatim fragment in `evidence_quote` when possible, but never choose a fragment that is itself a personal attack or slur; pick neutral wording, paraphrase it, or omit the quote instead.
 * Use `normalized_key` as a stable dedupe key, e.g. `preference.reply_language.zh_tw` or `recent.project.discordbot_memory`.
 
 SAFETY:
@@ -73,6 +74,7 @@ Bias:
 * Do not promote a one-off mention into an interest.
 * Do not treat a request for a friend, a hypothetical, an example, a joke, or another participant's message as the target user's preference.
 * Do not preserve duplicate observations. Keep the clearest version for each `normalized_key`.
+* Strip personal-attack labels and slurs from any observation you keep: preserve the behavioral signal (e.g. high tolerance for profane banter) but remove the specific demeaning labels, and drop any `evidence_quote` whose content is itself an insult.
 
 Promotion rules:
 * Stable preferences, stable facts, interaction style, and recurring patterns need high confidence and target-user evidence.
@@ -107,6 +109,7 @@ HOW TO MERGE:
 * For `recent_context`, use the raw entry timestamp plus `ttl_days` against `today`; drop expired context unless newer evidence repeats it or clearly promotes it into durable memory.
 * Treat existing memory as provisional. Drop or demote existing bullets that are only supported by weak, one-off, casual, hypothetical, bot-originated, or misattributed evidence.
 * Structured raw entries include `promotion_eligible`, `confidence`, `durability`, `evidence_kind`, `ttl_days`, and `normalized_key`; use these fields as hard evidence gates, not decorative metadata.
+* Never carry personal-attack labels or slurs into the consolidated file: keep the interaction-style signal (tolerance for harsh, profane banter) as a general statement, but do not reproduce, list, or quote the specific demeaning labels aimed at the user, the bot, or anyone, and rephrase any existing bullet that still does.
 
 SIZE AND FORMAT:
 * There is no hard length target. Never sacrifice well-supported durable preferences or facts for brevity; unsupported or weak items should be dropped, not preserved.
