@@ -19,7 +19,6 @@ from collections.abc import Mapping, Iterator, Sequence
 
 from openai.types.responses import ResponseInputParam
 
-from discordbot.cogs.gen_reply import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.memory_tool import (
     render_server_memory_block,
     render_callable_users_block,
@@ -115,24 +114,6 @@ def extract_server_memory_block(request: ResponseInputParam | str) -> str | None
         if role == "assistant" and text.split("\n", 1)[0] == _SERVER_HEADER:
             return text
     return None
-
-
-def extract_threads_context_block(request: ResponseInputParam | str) -> str | None:
-    """Returns the rendered Threads expansion that follows its separator, or None if absent.
-
-    The pipeline injects a system separator immediately followed by the rendered expansion
-    message, so the block is the item after the separator in the recorded input.
-    """
-    blocks = list(iter_text_blocks(request=request))
-    for index, (role, text) in enumerate(blocks):
-        if role == "system" and text.split("\n", 1)[0] == THREADS_CONTEXT_SEPARATOR:
-            return blocks[index + 1][1] if index + 1 < len(blocks) else ""
-    return None
-
-
-def has_threads_context_block(request: ResponseInputParam | str) -> bool:
-    """Whether the input carries an injected Threads expansion block."""
-    return extract_threads_context_block(request=request) is not None
 
 
 def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
