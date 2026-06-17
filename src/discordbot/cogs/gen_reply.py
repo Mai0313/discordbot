@@ -167,16 +167,26 @@ def _walk_reference_chain(message: Message) -> list[Message]:
     return chain
 
 
-def _reference_header(ref: Message) -> EasyInputMessageParam:
-    """Builds the system separator that precedes one reference-chain message."""
+def _reference_header(ref: Message, is_direct: bool) -> EasyInputMessageParam:
+    """Builds the system separator that precedes one reference-chain message.
+
+    `is_direct` marks the message the user is actually replying to (the immediate parent);
+    older ancestors in the chain are labelled as thread context so only the real reply
+    target reads as the primary context.
+    """
+    relation = (
+        "The user is directly replying to this message; it is the primary context for the "
+        "Current Message below."
+        if is_direct
+        else "An earlier message in the reply thread, for context."
+    )
     return EasyInputMessageParam(
         role="system",
         content=[
             ResponseInputTextParam(
                 text=(
                     f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}] that might be helpful "
-                    "for answering. ===="
+                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. {relation} ===="
                 ),
                 type="input_text",
             )
@@ -184,13 +194,18 @@ def _reference_header(ref: Message) -> EasyInputMessageParam:
     )
 
 
-def _current_header(message: Message) -> EasyInputMessageParam:
-    """Builds the system separator that precedes the current message."""
+def _current_header(message: Message, has_reference: bool) -> EasyInputMessageParam:
+    """Builds the system separator that precedes the current message.
+
+    When the message is a reply, the header points back to the Reference Message block
+    (rendered just above) so the model reads the reply pair as one unit.
+    """
+    reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
     return EasyInputMessageParam(
         role="system",
         content=[
             ResponseInputTextParam(
-                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}]. ====",
+                text=f"==== Current Message that needs to be answered from {sanitize_identity(value=message.author.display_name)} ({sanitize_identity(value=message.author.name)}) [id: {message.author.id}].{reply_note} ====",
                 type="input_text",
             )
         ],
@@ -414,7 +429,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         messages: list[EasyInputMessageParam] = []
         for ref, processed_ref in zip(reversed(chain), reversed(processed), strict=True):
-            messages.append(_reference_header(ref=ref))
+            messages.append(_reference_header(ref=ref, is_direct=ref is chain[0]))
             messages.append(processed_ref)
         return messages
 
@@ -422,7 +437,10 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
-        messages: list[EasyInputMessageParam] = [_current_header(message=message)]
+        has_reference = bool(_walk_reference_chain(message=message))
+        messages: list[EasyInputMessageParam] = [
+            _current_header(message=message, has_reference=has_reference)
+        ]
         if text_only:
             current_msg = await self.input_builder.process_single_message_text_only(
                 message=message
@@ -1094,15 +1112,17 @@ class ReplyGeneratorCogs(commands.Cog):
             self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
         )
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
-        # Keep the current user message LAST so the model answers it rather than continuing
-        # the assistant memory note: the memory rides as earlier context, after history and
-        # reference but before the current message.
-        answer_input: ResponseInputParam = [*context.hist_messages, *context.reference_messages]
+        # Keep the current user message LAST so the model answers it. Memory rides earliest as
+        # low-authority background; the reference message then sits just above the current
+        # message so the reply pair (reference -> current) stays adjacent and reads as the
+        # primary context rather than getting buried up near history.
+        answer_input: ResponseInputParam = [*context.hist_messages]
         answer_input.extend(
             block
             for block in (context.server_memory_block, context.memory_block)
             if block is not None
         )
+        answer_input.extend(context.reference_messages)
         # The Threads post the user linked rides just before the current message (its own
         # separator leads the block); empty unless the message carried a Threads URL.
         answer_input.extend(context.threads_block)
