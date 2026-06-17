@@ -373,13 +373,32 @@ class ResponseStreamer(BaseModel):
         Runs only when the answer model asked for a spoken reply and voice is enabled for
         this turn. The text reply is already on screen, so synthesis adds no latency to it;
         the clip is best-effort and any failure (or a too-long reply) leaves a text reply.
+        Every skip reason is logged so a missing voice clip is never silent.
         """
-        if self.voice_synthesizer is None or not self.voice_requested or self.reply is None:
+        if not self.voice_requested:
+            # The expected common path: the answer model chose a text-only reply.
+            logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return
+        if self.voice_synthesizer is None:
+            logfire.info(
+                "Voice requested but disabled for this turn; replying without audio",
+                message_id=self.message.id,
+            )
+            return
+        if self.reply is None:
+            logfire.warn(
+                "Voice requested but the reply was never sent; dropping audio",
+                message_id=self.message.id,
+            )
+            return
+        logfire.info(
+            "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
+        )
         audio = await self.voice_synthesizer.synthesize(
             text=self.voice_text, end_user_id=self.message.author.name
         )
         if audio is None:
+            # synthesize() already logged the specific reason (empty input or provider error).
             return
         # Drop a clip past the guild's upload limit so the answer model is free to choose the
         # spoken length; a DM has no guild to query, so fall back to Discord's non-Nitro base of
@@ -390,12 +409,22 @@ class ResponseStreamer(BaseModel):
         if len(audio) > upload_limit:
             logfire.warn(
                 "Synthesized voice exceeds the guild upload limit; dropping audio",
+                message_id=self.message.id,
                 audio_bytes=len(audio),
                 upload_limit=upload_limit,
             )
             return
-        with contextlib.suppress(Exception):
+        try:
             await self.reply.edit(file=File(fp=BytesIO(audio), filename=VOICE_REPLY_FILENAME))
+        except Exception:
+            logfire.warn(
+                "Failed to attach the voice clip onto the reply",
+                message_id=self.message.id,
+                audio_bytes=len(audio),
+                _exc_info=True,
+            )
+            return
+        logfire.info("Voice reply attached", message_id=self.message.id, audio_bytes=len(audio))
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""

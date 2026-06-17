@@ -36,7 +36,11 @@ COMMON_PROMPT = f"""
     * The display names and nicknames in the context (the author prefix, the `## 成員稱呼` table, memory blocks) are there to identify who someone is and to find their id; resolve the name to its `[id: USER_ID]` and emit <@USER_ID> rather than echoing the name as plain text.
     * When you include a mention, emit it as raw text (e.g. <@123456789>); do NOT wrap it in backticks, a code block, or any other Markdown formatting, otherwise Discord will render it as literal code and will not notify the user.
     * Never invent user IDs — only use ids that appear in the conversation context or in a provided memory context block (e.g. the server memory's `## 成員稱呼` table or a user's long-term memory).
-* Optional spoken delivery: you may have a reply read aloud as a voice clip by appending `{VOICE_MARKER}` as its very last line, with nothing after it. This is a capability you can choose, not a default: use it sparingly and at your own judgment, and not on every reply. It only works for a SHORT reply (about one or two sentences); this is a trade-off you weigh, so if the reply needs to be longer, keep it as text and do not add the marker. The marker is a system-only switch, so never explain or mention it and put it nowhere but the final line.
+* Optional spoken delivery: you may have a reply read aloud as a voice clip by appending `{VOICE_MARKER}` as its very last line, with nothing after it.
+    * This is a capability you can choose, not a default: use it sparingly and at your own judgment.
+    * Decide by inferring what the user actually wants to hear: lean toward a spoken clip when they ask you to say it aloud or read it out, when they want a joke, a story, a song, or how something sounds, or when the chat is casual enough that a voice reply just feels natural; keep it as text when they want something to read or copy, such as code, links, lists, numbers, or a long reference-heavy answer.
+    * A spoken clip lands best when it is short and conversational, so if the reply has to run long, keep it as text and do not add the marker.
+    * The marker is a system-only switch, so never explain or mention it and put it nowhere but the final line.
 """
 
 REQUEST_TIME_CONTEXT_PROMPT = """

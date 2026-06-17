@@ -54,7 +54,7 @@ VOICE_REPLY_FILENAME = "reply.wav"
 # longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
 # model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
 # where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
-VOICE_TIMEOUT_SECONDS = 120.0
+VOICE_TIMEOUT_SECONDS = 180.0
 
 
 def strip_voice_marker(*, text: str) -> tuple[str, bool]:
@@ -157,6 +157,7 @@ class VoiceSynthesizer(BaseModel):
         """Renders reply text to WAV bytes, or None when it should be skipped or failed."""
         spoken = text.strip()
         if not spoken:
+            logfire.info("Voice synthesis skipped: reply text was empty after stripping")
             return None
         try:
             responses = await self.client.audio.speech.create(
@@ -167,8 +168,17 @@ class VoiceSynthesizer(BaseModel):
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 timeout=VOICE_TIMEOUT_SECONDS,
             )
-            return await responses.aread()
+            audio = await responses.aread()
+            logfire.debug(
+                "Voice synthesis succeeded", text_chars=len(spoken), audio_bytes=len(audio)
+            )
+            return audio
         except Exception:
             # Best-effort: a timeout or any provider error degrades to a plain text reply.
-            logfire.warn("Voice synthesis failed; replying without audio")
+            logfire.warn(
+                "Voice synthesis failed; replying without audio",
+                model=self.model_name,
+                text_chars=len(spoken),
+                _exc_info=True,
+            )
             return None
