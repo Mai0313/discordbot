@@ -58,11 +58,12 @@ WHAT NOT TO REMEMBER:
 * The bot's own suggestions or jokes, unless the community adopted them.
 * Personal or private information about any individual member.
 * Long verbatim copies of messages.
+* Personal-attack labels and slurs aimed at a person — any member, the bot, or anyone else (e.g. 廢物 / 白嫖仔 / 傻逼 / 狗逼). Recording the community's tolerance for harsh, profane banter IS in scope, but state it as a general culture trait ("社群慣於高強度的粗口互嗆"); never reproduce, list, or quote the specific demeaning labels. This does NOT apply to the `## 成員稱呼` alias table, which holds community-used nicknames, not attacks.
 
 EVIDENCE RULES:
 * A recurring community pattern requires evidence that it recurs across the conversation, not a single instance.
 * A single joke, hypothetical, or one-time topic mention is not a stable community trait.
-* Preserve one short verbatim fragment in `evidence_quote` when possible.
+* Preserve one short verbatim fragment in `evidence_quote` when possible, but never choose a fragment that is itself a personal attack or slur; pick neutral wording, paraphrase it, or omit the quote instead.
 * Use `normalized_key` as a stable dedupe key, e.g. `culture.banter_tolerance.high` or `recent.event.server_tournament`.
 
 SAFETY:
@@ -86,6 +87,7 @@ Bias:
 * Do not keep anything that is really a personal fact about one individual member; that belongs to per-user memory, not server memory.
 * EXCEPTION: a member's commonly-used community nickname/alias (the name↔member mapping with its `[id: USER_ID]`) IS community vocabulary and should be kept; only the member's actual personal facts are dropped.
 * Do not preserve duplicate observations. Keep the clearest version for each `normalized_key`.
+* Strip personal-attack labels and slurs from any observation you keep: preserve the behavioral signal (e.g. the community's tolerance for profane banter) but remove the specific demeaning labels, and drop any `evidence_quote` whose content is itself an insult.
 
 Promotion rules:
 * Community culture, recurring topics, server norms, and stable server facts need high confidence and evidence that they characterize the server as a whole.
@@ -119,6 +121,7 @@ HOW TO MERGE:
 * For `recent_context`, use the raw entry timestamp plus `ttl_days` against `today`; drop expired context unless newer evidence repeats it.
 * Treat existing memory as provisional. Drop or demote bullets supported only by weak, one-off, casual, hypothetical, bot-originated, or individual-scoped evidence.
 * Structured raw entries include `promotion_eligible`, `confidence`, `durability`, `evidence_kind`, `ttl_days`, and `normalized_key`; use these fields as hard evidence gates, not decorative metadata.
+* Never carry personal-attack labels or slurs into the consolidated file: keep the culture signal (the community's tolerance for harsh, profane banter) as a general statement, but do not reproduce, list, or quote the specific demeaning labels aimed at any member, the bot, or anyone. This does NOT apply to the `## 成員稱呼` alias table.
 
 SIZE AND FORMAT:
 * There is no hard length target. Never sacrifice well-supported durable community traits for brevity; unsupported or weak items should be dropped, not preserved.
