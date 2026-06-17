@@ -50,6 +50,13 @@ nav:
                   - shoe: Reference/discordbot/cogs/_games/shoe.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
+                  - attachment:
+                      - base: Reference/discordbot/cogs/_gen_reply/attachment/base.md
+                      - gemini_file_api: Reference/discordbot/cogs/_gen_reply/attachment/gemini_file_api.md
+                      - inline: Reference/discordbot/cogs/_gen_reply/attachment/inline.md
+                      - loaders: Reference/discordbot/cogs/_gen_reply/attachment/loaders.md
+                      - openai_file_api: Reference/discordbot/cogs/_gen_reply/attachment/openai_file_api.md
+                      - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
                   - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
