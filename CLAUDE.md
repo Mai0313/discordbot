@@ -13,6 +13,8 @@ uv run pre-commit run -a         # canonical pre-push check (= make fmt)
 make gen-docs                    # regenerate docs/ from sources
 ```
 
+When debugging, check `./data/logs` for the full runtime logs.
+
 ## Runtime Shape
 
 - `src/discordbot/cli.py` defines `DiscordBot(commands.Bot)`; intents are `Intents.all()` minus `members` and `presences`.
