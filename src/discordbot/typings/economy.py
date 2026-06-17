@@ -26,10 +26,6 @@ MAX_SINGLE_BET: Final[int] = 1_000_000
 # Per-user cooldown between message rewards, so the flat per-message grant cannot
 # be farmed by spamming. Tracked process-locally; resets on restart by design.
 MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
-# Chat reward is token-based; divide and cap so a single long (e.g. web-search)
-# reply cannot mint tens of thousands of points at once.
-CHAT_REWARD_TOKEN_DIVISOR: Final[int] = 100
-CHAT_REWARD_MAX_PER_REPLY: Final[int] = 50
 # Permanent money sink: a burn on every /give transfer, in basis points.
 TRANSFER_TAX_BPS: Final[int] = 500
 
@@ -512,8 +508,6 @@ class PortfolioView(BaseModel):
 __all__ = [
     "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
-    "CHAT_REWARD_MAX_PER_REPLY",
-    "CHAT_REWARD_TOKEN_DIVISOR",
     "CHECKIN_STREAK_CYCLE",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",

@@ -708,39 +708,9 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     result = await ResponseStreamer(message=message).stream(responses=_stream_events())
 
-    # 46 tokens // 100 divisor rounds down to a 0 chat reward.
-    expected = (
-        f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
-        " · 0 虛擬歡樂豆 (0 虛擬歡樂豆)"
-    )
+    expected = f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert result == expected
     assert message.replies[0].content == result
-
-
-async def test_handle_streaming_chat_reward_divided_and_capped(economy_isolated_db: None) -> None:
-    """A long reply's chat reward is divided by the token divisor and capped."""
-    del economy_isolated_db
-    message = FakeMessage()
-    events = [
-        SimpleNamespace(type="response.output_text.delta", delta="hi"),
-        SimpleNamespace(
-            type="response.completed",
-            response=SimpleNamespace(
-                model=TEST_LLM_MODEL,
-                usage=SimpleNamespace(
-                    input_tokens=3_000, output_tokens=3_000, output_tokens_details=None
-                ),
-            ),
-        ),
-    ]
-
-    result = await ResponseStreamer(message=message).stream(
-        responses=_stream_events_from(events=events)
-    )
-
-    # 6,000 tokens // 100 = 60, capped at 50; the footer shows the credited amount.
-    assert "⬆ 3,000 ⬇ 3,000" in result
-    assert "· 50 虛擬歡樂豆 (+50 虛擬歡樂豆)" in result
 
 
 async def test_handle_streaming_continues_long_reply_as_reply_chain(
@@ -767,8 +737,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
         )
     )
 
-    # 3 tokens // 100 divisor rounds down to a 0 chat reward.
-    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000 · 0 虛擬歡樂豆 (0 虛擬歡樂豆)"
+    usage_footer = f"\n\n-# {TEST_LLM_MODEL} · ⬆ 1 ⬇ 2 · $0.00000000"
     assert result == f"{body}{usage_footer}"
 
     parent = message.replies[0]
@@ -2402,6 +2371,63 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
         current_message=[{"role": "user", "content": "now"}],
     )
     assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
+
+
+async def test_handle_message_reply_orders_reference_after_memory_before_current(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer input puts memory first, then the reference message, then the current message.
+
+    The reference (the message being replied to) rides just above the current message so the
+    reply pair stays adjacent and reads as the primary context, and the strengthened headers
+    spell out the reply relationship.
+    """
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        identity="U1 (u1) [id: 1]",
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    parent_author = FakeAuthor(user_id=4)
+    parent_author.name, parent_author.display_name = "parent", "Parent"
+    parent = FakeMessage(content="原訊息", author=parent_author)
+    parent.id = 988
+    message.reference = FakeReference(resolved=parent)
+
+    cog.client.responses.select_queue = [
+        [_function_call_item(call_id="c0", arguments=json.dumps({"user_id_list": ["1"]}))]
+    ]
+    cog.client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    answer = request_input(responses=cog.client.responses, phase="answer")
+    blocks = list(iter_text_blocks(request=answer))
+    memory_index = next(
+        index
+        for index, (role, text) in enumerate(blocks)
+        if role == "assistant" and text.startswith("(My long-term memory about participants")
+    )
+    reference_index = next(
+        index
+        for index, (_role, text) in enumerate(blocks)
+        if text.startswith("==== Reference Message")
+    )
+    current_index = next(
+        index
+        for index, (_role, text) in enumerate(blocks)
+        if text.startswith("==== Current Message")
+    )
+    assert memory_index < reference_index < current_index
+    assert "directly replying to this message" in blocks[reference_index][1]
+    assert "reply to the Reference Message above" in blocks[current_index][1]
 
 
 def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
