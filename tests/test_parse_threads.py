@@ -8,6 +8,7 @@ from discordbot.cogs._parse_threads.builder import (
     MAX_THREADS_MEDIA_PARTS,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
+    THREADS_TEXT_ONLY_SEPARATOR,
     build_threads_context_messages,
 )
 
@@ -144,6 +145,8 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
 
     blocks = await build_threads_context_messages(url=_URL, answer_model_is_gemini=False)
 
+    # The separator must not claim the media was fetched, since only its URLs are supplied.
+    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
     parts = blocks[1]["content"]
     assert [part["type"] for part in parts] == ["input_text"]
     text = parts[0]["text"]
