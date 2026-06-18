@@ -127,6 +127,7 @@ repos:
           - "Types-urllib3"
           - "openai"
           - "google-genai"
+          - "anthropic"
           - "sqlalchemy[asyncio]"
           - "pydantic-settings"
           - "pillow"
