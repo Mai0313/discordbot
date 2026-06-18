@@ -1,17 +1,14 @@
 """Casino-style games (`/games blackjack`, `/games dragon_gate`) wagering economy points."""
 
 from random import SystemRandom
-from functools import partial, cached_property
+from functools import partial
 from collections.abc import Callable
 
-from openai import AsyncOpenAI
 import logfire
 import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
-from discordbot.utils.llm import create_litellm_client
-from discordbot.typings.llm import LLMConfig
 from discordbot.typings.games import (
     SystemIdentity,
     GameParticipant,
@@ -20,9 +17,7 @@ from discordbot.typings.games import (
     ParticipantPreparationResult,
 )
 from discordbot.utils.avatars import guild_avatar_url
-from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._games.shoe import BlackjackShoeStore
-from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import WagerMode, parse_wager_amount, build_wager_participant
 from discordbot.cogs._fishing.views import FishingPanelView
 from discordbot.cogs._games.database import fetch_recent_blackjack_rounds
@@ -34,7 +29,7 @@ from discordbot.utils.message_cleanup import (
 )
 from discordbot.cogs._economy.database import get_account, get_balance
 from discordbot.cogs._fishing.database import get_fishing_panel, get_grade_config_map
-from discordbot.cogs._games.bot_player import BotPlayerAI, kelly_bet, count_adjusted_edge
+from discordbot.cogs._games.bot_player import kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
@@ -59,7 +54,6 @@ class GamesCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration loaded for the system narrator.
         rng: System randomness used for card draws.
     """
 
@@ -70,31 +64,9 @@ class GamesCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.config = LLMConfig()
-        self.runtime_models = RuntimeModelCatalog()
         self.rng = SystemRandom()
         self._startup_cleanup_done = False
         self._blackjack_shoes = BlackjackShoeStore()
-
-    @cached_property
-    def client(self) -> AsyncOpenAI:
-        """The cached OpenAI-compatible client used for the system narrator and bot AI."""
-        return create_litellm_client(config=self.config)
-
-    @cached_property
-    def narrator(self) -> SystemNarrator:
-        """The cached casino system narrator reused across game commands."""
-        return SystemNarrator(client=self.client, model=self.runtime_models.fast_model)
-
-    @cached_property
-    def bot_player_ai(self) -> BotPlayerAI:
-        """The cached bot-player decision AI shared across Blackjack tables.
-
-        Uses `player_model` (pinned to `gemini-flash-latest`) so bot turns
-        between human players stay snappy and do not inherit any future
-        promotion of `slow_model` to a heavier Pro tier.
-        """
-        return BotPlayerAI(client=self.client, model=self.runtime_models.player_model)
 
     async def _system_identity(self, guild: nextcord.Guild | None = None) -> SystemIdentity:
         """Returns the casino system identity used for narrator embeds.
@@ -376,7 +348,6 @@ class GamesCogs(commands.Cog):
             owner=owner,
             requested_bet=table_bet,
             rng=self.rng,
-            narrator=self.narrator,
             system_name=system_identity.system_name,
             system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(
@@ -386,7 +357,6 @@ class GamesCogs(commands.Cog):
                 insufficient_embed_builder=self._insufficient_balance_embed,
             ),
             refresh_participants=partial(self._refresh_participants, mode="clamp"),
-            bot_player_ai=self.bot_player_ai,
             bot_user_id=bot_participant.user_id if bot_participant is not None else None,
             extra_initial_participants=extra_initial_participants,
             shoe_store=self._blackjack_shoes,
@@ -450,7 +420,6 @@ class GamesCogs(commands.Cog):
         view = DragonGateLobbyView(
             owner=owner,
             rng=self.rng,
-            narrator=self.narrator,
             system_name=system_identity.system_name,
             system_avatar_url=system_identity.system_avatar_url,
             prepare_participant=partial(

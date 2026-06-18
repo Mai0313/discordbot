@@ -2,10 +2,7 @@
 
 from typing import Final, Literal
 
-from nextcord import Embed
-
 from discordbot.typings.games import SettleOutcome
-from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs._economy.presentation import amount_code
 
 WIN_COLOR = 0x57F287
@@ -28,18 +25,6 @@ DEALER_BUST_RESULT_EMOJI = "🎊"
 NATURAL_RESULT_EMOJI = "✨"
 
 PlayerStatusKind = Literal["blackjack", "bust", "active", "stand", "waiting"]
-
-SETTLEMENT_FALLBACK_LINES: Final[dict[SettleOutcome, str]] = {
-    "win": "本局玩家獲勝, 賭場已支付賠付",
-    "lose": "本局玩家未過關, 籌碼歸入賭場",
-    "push": "本局雙方點數一致, 押注全額退回",
-    "blackjack": "Blackjack 達成, 賭場依規則支付 1.5 倍賠付",
-    "five_card_win": "過五關未爆, 玩家獲得本局勝利",
-    "five_card_twenty_one": "過五關 21 點, 額外加碼支付",
-    "player_bust": "玩家點數超過 21, 本局結算為輸",
-    "dealer_bust": "莊家點數超過 21, 本局玩家獲勝",
-    "surrender": "玩家投降, 退回一半本金",
-}
 
 
 def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
@@ -100,30 +85,6 @@ def card_line(cards_text: str) -> str:
 def metadata_line(text: str) -> str:
     """Formats a `-#` small text metadata line."""
     return f"-# {text}"
-
-
-def system_talk_field_value(text: str) -> str:
-    """Formats the system narrator line for placement inside its own embed field."""
-    if not text:
-        return "> ..."
-    return "> " + text.replace("\n", "\n> ")
-
-
-def build_system_talk_embed(
-    system_line: str, system_name: str, system_avatar_url: str = ""
-) -> Embed:
-    """Builds a standalone embed dedicated to the system narrator quote.
-
-    The author slot shows the system name and avatar in the top-left corner so
-    readers immediately know who is broadcasting; the description carries the
-    quoted line itself.
-    """
-    embed = Embed(description=system_talk_field_value(text=system_line), color=IN_PROGRESS_COLOR)
-    if system_avatar_url:
-        embed.set_author(name=system_name, icon_url=system_avatar_url)
-    else:
-        embed.set_author(name=system_name)
-    return embed
 
 
 def lobby_participant_line(

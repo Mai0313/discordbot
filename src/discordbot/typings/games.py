@@ -435,64 +435,6 @@ class BlackjackDealerDecision(BaseModel):
     reason: str = Field(..., description="Rationale for the dealer's decision.")
 
 
-class BotPlayerActionDecision(BaseModel):
-    """Structured hit / stand / double / split / surrender decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    action: BotAction = Field(..., description="Chosen Blackjack action for the current hand.")
-    reason: str = Field(
-        ..., description="Short Traditional Chinese rationale shown on the bot's seat."
-    )
-
-
-class BotPlayerInsuranceDecision(BaseModel):
-    """Structured insurance-take / decline decision."""
-
-    model_config = ConfigDict(frozen=True)
-
-    take_insurance: bool = Field(..., description="Whether the bot takes the insurance side bet.")
-    reason: str = Field(
-        ..., description="Short Traditional Chinese rationale shown on the bot's seat."
-    )
-
-
-class BotFinancialContext(BaseModel):
-    """Bot's lifetime + daily financial snapshot for decision context.
-
-    `balance` is the spendable wallet today; `total_earned` / `total_spent` are
-    lifetime gross flows. The three `daily_*` fields are zero outside today's
-    Taipei calendar day so the model treats yesterday's loss as already
-    "forgotten" — same convention as the loss leaderboard.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    balance: int = Field(..., description="Spendable wallet balance today.")
-    total_earned: int = Field(..., description="Lifetime gross points earned.")
-    total_spent: int = Field(..., description="Lifetime gross points spent.")
-    daily_loss: int = Field(
-        ..., description="Casino loss accrued during today's Taipei calendar day."
-    )
-    daily_win: int = Field(
-        ..., description="Casino win accrued during today's Taipei calendar day."
-    )
-    daily_net: int = Field(
-        ..., description="Net casino result during today's Taipei calendar day."
-    )
-
-
-class OtherPlayerView(BaseModel):
-    """One non-bot player's table state visible to the bot."""
-
-    model_config = ConfigDict(frozen=True)
-
-    display_name: str = Field(..., description="Guild-aware display name of the other player.")
-    bet: int = Field(..., description="That player's effective wager.")
-    hands: list[str] = Field(..., description="Human-readable summaries of that player's hands.")
-    is_finished: bool = Field(..., description="True when that player has finished their turn.")
-
-
 class DealerOutcome(BaseModel):
     """Dealer final-total distribution under H17 over a no-replacement shoe.
 
@@ -646,16 +588,12 @@ __all__ = [
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
     "BotAction",
-    "BotFinancialContext",
-    "BotPlayerActionDecision",
-    "BotPlayerInsuranceDecision",
     "Card",
     "DealerOutcome",
     "DragonGatePlayerResult",
     "GameKind",
     "GameParticipant",
     "GameParticipantIdentity",
-    "OtherPlayerView",
     "ParticipantPreparationResult",
     "RefreshParticipantsResult",
     "SettleOutcome",

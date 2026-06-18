@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import nextcord
@@ -21,7 +20,6 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
-from discordbot.typings.models import ModelSettings
 from discordbot.typings.economy import (
     PortfolioView,
     LoanLenderType,
@@ -40,7 +38,6 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
-from discordbot.cogs._games.dealer import SystemNarrator
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
@@ -65,13 +62,10 @@ from tests.helpers.discord_mocks import (
     FakeDiscordMessage,
 )
 
-TEST_DEALER_MODEL = "test-dealer-llm-model"
-
 if TYPE_CHECKING:
     from pathlib import Path
     from collections.abc import Callable, Awaitable, AsyncIterator
 
-    from openai import AsyncOpenAI
     import pytest
 
 
@@ -80,28 +74,6 @@ class SelfTimeoutCall(TypedDict):
 
     member: SimpleNamespace
     until: datetime
-
-
-class HangingResponses:
-    """Fake Responses API resource that sleeps longer than dealer timeout."""
-
-    async def create(self, **_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Sleeps before returning a late response."""
-        await asyncio.sleep(delay=10)
-        return SimpleNamespace(output_text="late")
-
-    async def parse(self, **_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Sleeps before returning a late parsed response."""
-        await asyncio.sleep(delay=10)
-        return SimpleNamespace(output_parsed=None)
-
-
-class HangingClient:
-    """Fake OpenAI client containing the hanging Responses resource."""
-
-    def __init__(self) -> None:
-        """Initializes the hanging responses resource."""
-        self.responses = HangingResponses()
 
 
 class DownloadResultStub:
@@ -1505,30 +1477,6 @@ async def fake_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
     return JackpotSnapshot(balance=100_000)
 
 
-class FakeDealer:
-    """Fake casino dealer that returns deterministic banter."""
-
-    async def taunt_bet(
-        self, author_name: str, player_name: str, balance_at_start: int, bet: int, game: str
-    ) -> str:
-        """Returns deterministic opening banter."""
-        return "taunt"
-
-    async def settle(  # noqa: PLR0913 -- mirrors SystemNarrator.settle signature
-        self,
-        author_name: str,
-        player_name: str,
-        outcome: str,
-        bet: int,
-        delta: int,
-        new_balance: int,
-        game: str,
-        detail: str,
-    ) -> str:
-        """Returns deterministic settlement banter."""
-        return "settled"
-
-
 async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1614,7 +1562,6 @@ async def test_games_commands_run_with_patched_settlement(
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
@@ -1650,7 +1597,6 @@ async def test_blackjack_lobby_start_is_owner_only(
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="10")
@@ -1681,7 +1627,6 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="1,000,000")
@@ -1757,7 +1702,6 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="9,007,199,254,740,993")
@@ -1798,7 +1742,6 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1818,7 +1761,6 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1861,7 +1803,6 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
     )
 
     cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
-    cog.__dict__["narrator"] = FakeDealer()
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, owner_interaction)
@@ -1876,21 +1817,6 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
 
     assert other_interaction.response.sent
     assert isinstance(other_interaction.response.sent[0]["content"], str)
-
-
-async def test_system_narrator_times_out_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies SystemNarrator returns fallback narration when the LLM call times out."""
-    monkeypatch.setattr("discordbot.cogs._games.dealer.NARRATOR_AI_TIMEOUT_SECONDS", 0.01)
-    narrator = SystemNarrator(
-        client=cast("AsyncOpenAI", HangingClient()),
-        model=ModelSettings(name=TEST_DEALER_MODEL, effort="none"),
-    )
-
-    line = await narrator.taunt_bet(
-        player_name="Alice", balance_at_start=100, bet=10, game="dragon_gate"
-    )
-
-    assert line == "賭場已收到下注, 牌桌即將發牌"
 
 
 async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.MonkeyPatch) -> None:

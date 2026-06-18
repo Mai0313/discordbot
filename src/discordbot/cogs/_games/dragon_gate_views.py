@@ -55,17 +55,14 @@ from discordbot.cogs._games.presentation import (
     LOBBY_PLAYERS_FIELD_EMOJI,
     metadata_line,
     lobby_participant_line,
-    build_system_talk_embed,
 )
 from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs._economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
-    from collections.abc import Coroutine
 
     from discordbot.typings.economy import JackpotSnapshot
-    from discordbot.cogs._games.dealer import SystemNarrator
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
@@ -176,25 +173,6 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
             return f"{cards}\n### ⚠️ 同點門柱\n{hint}"
         return f"{cards}\n### {_direction_label(direction=turn.direction)}"
     return cards
-
-
-def _table_result_detail(results: list[DragonGatePlayerResult]) -> str:
-    """Formats compact table settlement details for system narrator broadcast."""
-    lines: list[str] = []
-    for result in results:
-        delta = currency_text(amount=result.delta, signed=True, compact=True)
-        lines.append(f"{result.participant.display_name}: {delta}")
-    return ";".join(lines)
-
-
-def _fallback_table_settlement_line(results: list[DragonGatePlayerResult]) -> str:
-    """Returns deterministic final table banter while LLM text refreshes later."""
-    total_delta = sum(result.delta for result in results)
-    if total_delta > 0:
-        return "這桌先讓你們贏，彩金池會記著"
-    if total_delta < 0:
-        return "這桌收工，彩金池又厚了一點"
-    return "這桌打平，不賺不賠"
 
 
 def _table_color(results: list[DragonGatePlayerResult]) -> int:
@@ -367,7 +345,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        narrator: SystemNarrator,
         system_name: str,
         system_avatar_url: str,
         prepare_participant: PrepareParticipant,
@@ -379,7 +356,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            narrator=narrator,
             system_name=system_name,
             system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,
@@ -405,20 +381,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         round_state = DragonGateRound.from_participants(
             rng=self.rng, participants=self.participants
         )
-        table_balance = sum(participant.balance_at_start for participant in self.participants)
-        system_line = await self.narrator.taunt_bet(
-            player_name=f"{len(self.participants)} 位玩家",
-            balance_at_start=table_balance,
-            bet=ANTE * len(self.participants),
-            game="dragon_gate",
-        )
         view = DragonGateView(
-            narrator=self.narrator,
             round_state=round_state,
             owner=self.owner,
             system_name=self.system_name,
             system_avatar_url=self.system_avatar_url,
-            system_line=system_line,
             jackpot_snapshot=self._jackpot_snapshot,
             jackpot_generation=self._jackpot_generation,
             final_balances=final_balances,
@@ -437,13 +404,11 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
 class DragonGateView(View):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
 
-    def __init__(  # noqa: PLR0913 -- view needs round, narrator, jackpot, and initial balances
+    def __init__(  # noqa: PLR0913 -- view needs round, jackpot, and initial balances
         self,
-        narrator: SystemNarrator,
         round_state: DragonGateRound,
         owner: GameParticipant,
         system_name: str,
-        system_line: str,
         jackpot_snapshot: int,
         final_balances: dict[int, int],
         system_avatar_url: str = "",
@@ -451,7 +416,6 @@ class DragonGateView(View):
     ) -> None:
         """Initializes the active 射龍門 table view."""
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
-        self.narrator = narrator
         self.round_state = round_state
         self.owner = owner
         self.system_name = system_name
@@ -459,13 +423,11 @@ class DragonGateView(View):
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
-        self._system_line = system_line
         self._history: list[DragonGateTurnResult] = []
         self._jackpot_snapshot = jackpot_snapshot
         self._jackpot_generation = jackpot_generation
         self._final_balances: dict[int, int] = dict(final_balances)
         self._refunded_to_pool: dict[int, int] = {}
-        self._background_tasks: set[asyncio.Task[None]] = set()
         self._buttons: dict[str, Button] = {
             "dg:higher": cast("Button", self.choose_higher),
             "dg:lower": cast("Button", self.choose_lower),
@@ -810,16 +772,11 @@ class DragonGateView(View):
             )
 
     def in_progress_embeds(self) -> list[Embed]:
-        """Builds the current narrator, table, and optional history embeds."""
+        """Builds the current table and optional history embeds."""
         embeds: list[Embed] = [
-            build_system_talk_embed(
-                system_line=self._system_line,
-                system_name=self.system_name,
-                system_avatar_url=self.system_avatar_url,
-            ),
             build_dragon_gate_in_progress_embed(
                 round_state=self.round_state, jackpot=self._jackpot_snapshot
-            ),
+            )
         ]
         history_embed = build_dragon_gate_history_embed(
             history=self._history, round_state=self.round_state
@@ -871,18 +828,13 @@ class DragonGateView(View):
                 )
             )
 
-        talk_embed = build_system_talk_embed(
-            system_line=_fallback_table_settlement_line(results=results),
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
-        )
         final_embed = build_dragon_gate_final_embed(
             round_state=self.round_state,
             results=results,
             jackpot=self._jackpot_snapshot,
             reason=reason,
         )
-        embeds: list[Embed] = [talk_embed, final_embed]
+        embeds: list[Embed] = [final_embed]
         history_embed = build_dragon_gate_history_embed(
             history=self._history, round_state=self.round_state
         )
@@ -897,55 +849,7 @@ class DragonGateView(View):
                 ),
                 timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
             )
-        self._track_background_task(
-            coroutine=self._refresh_settlement_line_later(
-                message=message,
-                results=results,
-                final_embed=final_embed,
-                history_embed=history_embed,
-            )
-        )
         schedule_public_message_delete(message=message, user_name=self.owner.account_name)
-
-    async def _refresh_settlement_line_later(
-        self,
-        message: Message,
-        results: list[DragonGatePlayerResult],
-        final_embed: Embed,
-        history_embed: Embed | None,
-    ) -> None:
-        """Refreshes the final narrator line after the table result is already visible."""
-        try:
-            system_line = await self.narrator.table_settle(
-                table_name="射龍門",
-                player_count=len(results),
-                net_delta=sum(result.delta for result in results),
-                game="dragon_gate",
-                detail=_table_result_detail(results=results),
-            )
-        except Exception:
-            logfire.warn("Dragon Gate settlement banter refresh failed", _exc_info=True)
-            return
-        async with self._round_lock:
-            if not self._settled:
-                return
-            embeds: list[Embed] = [
-                build_system_talk_embed(
-                    system_line=system_line,
-                    system_name=self.system_name,
-                    system_avatar_url=self.system_avatar_url,
-                ),
-                final_embed,
-            ]
-            if history_embed is not None:
-                embeds.append(history_embed)
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(
-                    message.edit(
-                        **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
-                    ),
-                    timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
-                )
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
         """Returns the participant matching a Discord user ID."""
@@ -1010,21 +914,6 @@ class DragonGateView(View):
             user_id=getattr(interaction.user, "id", None),
             _exc_info=(type(error), error, error.__traceback__),
         )
-
-    def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
-        """Tracks a background UI refresh task until it finishes."""
-        task = asyncio.create_task(coro=coroutine)
-        self._background_tasks.add(task)
-
-        def _discard_task(done_task: asyncio.Task[None]) -> None:
-            self._background_tasks.discard(done_task)
-
-        task.add_done_callback(_discard_task)
-
-    async def wait_for_background_tasks(self) -> None:
-        """Waits for currently scheduled background UI refreshes."""
-        while self._background_tasks:
-            await asyncio.gather(*tuple(self._background_tasks))
 
 
 class DragonGateBetModal(Modal):

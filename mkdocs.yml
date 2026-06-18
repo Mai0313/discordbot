@@ -38,19 +38,18 @@ nav:
                   - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
                   - bot_player: Reference/discordbot/cogs/_games/bot_player.md
                   - database: Reference/discordbot/cogs/_games/database.md
-                  - dealer: Reference/discordbot/cogs/_games/dealer.md
                   - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
                   - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
                   - history_text: Reference/discordbot/cogs/_games/history_text.md
                   - interactions: Reference/discordbot/cogs/_games/interactions.md
                   - lobby: Reference/discordbot/cogs/_games/lobby.md
                   - presentation: Reference/discordbot/cogs/_games/presentation.md
-                  - prompts: Reference/discordbot/cogs/_games/prompts.md
                   - settlement: Reference/discordbot/cogs/_games/settlement.md
                   - shoe: Reference/discordbot/cogs/_games/shoe.md
                   - wagers: Reference/discordbot/cogs/_games/wagers.md
               - _gen_reply:
                   - attachment:
+                      - anthropic_file_api: Reference/discordbot/cogs/_gen_reply/attachment/anthropic_file_api.md
                       - base: Reference/discordbot/cogs/_gen_reply/attachment/base.md
                       - gemini_file_api: Reference/discordbot/cogs/_gen_reply/attachment/gemini_file_api.md
                       - inline: Reference/discordbot/cogs/_gen_reply/attachment/inline.md
@@ -82,6 +81,8 @@ nav:
                   - server_prompts: Reference/discordbot/cogs/_memory/server_prompts.md
                   - store: Reference/discordbot/cogs/_memory/store.md
                   - views: Reference/discordbot/cogs/_memory/views.md
+              - _parse_threads:
+                  - builder: Reference/discordbot/cogs/_parse_threads/builder.md
               - _stock:
                   - chart: Reference/discordbot/cogs/_stock/chart.md
                   - database: Reference/discordbot/cogs/_stock/database.md
