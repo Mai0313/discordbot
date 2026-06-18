@@ -64,11 +64,10 @@ class AnthropicFileUploader(AttachmentRenderer):
     def anthropic_client(self) -> AsyncAnthropic:
         """The Anthropic client for direct Files API uploads, built lazily on first use.
 
-        Built here rather than via a shared `utils/llm.py` factory on purpose: `anthropic` is
-        a dev-only dependency today, so keeping the import inside this disabled module keeps it
-        out of the live request-path module graph (`utils/llm.py` is imported there). Promote
-        `anthropic` to a runtime dependency and wire this into `select.py` together. A missing
-        key does not fail construction; it surfaces at the upload call.
+        Built inside this module rather than via a shared `utils/llm.py` factory while the
+        renderer is still disabled in `select.py`: that keeps the `anthropic` import out of the
+        live request-path module graph (`utils/llm.py` is imported there) until the Claude path
+        is wired on. A missing key does not fail construction; it surfaces at the upload call.
 
         Returns:
             An Anthropic client reused across uploads.
