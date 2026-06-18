@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
-    from discordbot.cogs._games.dealer import SystemNarrator
 
 
 class PrepareParticipant(Protocol):
@@ -65,7 +64,6 @@ class BaseGameLobbyView(View):
         self,
         owner: GameParticipant,
         rng: Random,
-        narrator: SystemNarrator,
         system_name: str,
         system_avatar_url: str,
         prepare_participant: PrepareParticipant,
@@ -77,7 +75,6 @@ class BaseGameLobbyView(View):
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
-        self.narrator = narrator
         self.system_name = system_name
         self.system_avatar_url = system_avatar_url
         self.prepare_participant = prepare_participant
@@ -240,7 +237,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self,
         owner: GameParticipant,
         rng: Random,
-        narrator: SystemNarrator,
         system_name: str,
         system_avatar_url: str,
         prepare_participant: PrepareParticipant,
@@ -254,7 +250,6 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         super().__init__(
             owner=owner,
             rng=rng,
-            narrator=narrator,
             system_name=system_name,
             system_avatar_url=system_avatar_url,
             prepare_participant=prepare_participant,

@@ -1,17 +1,15 @@
 """Button-state matrix and dealer / bot turn tests for `BlackjackView`.
 
-Each test instantiates the view with a stubbed `SystemNarrator` and a
-deterministic `BlackjackRound`, then asserts which action / insurance buttons
-are attached across the round lifecycle. Dealer play is now deterministic
-(H17), so dealer tests cover the rule path; bot-turn tests cover the new bot
-player AI integration.
+Each test instantiates the view with a deterministic `BlackjackRound`, then
+asserts which action / insurance buttons are attached across the round
+lifecycle. Dealer play is deterministic (H17), so dealer tests cover the rule
+path; bot-turn tests cover the deterministic bot player decisions.
 """
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
 from types import SimpleNamespace
 from random import Random
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +18,6 @@ from nextcord import Embed, Interaction
 from discordbot.cogs._games import blackjack_views
 from discordbot.typings.games import (
     GameParticipant,
-    BotFinancialContext,
     BlackjackPlayerResult,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
@@ -28,12 +25,6 @@ from discordbot.typings.games import (
 from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.bot_player import (
-    BotPlayerAI,
-    BotActionReasonRequest,
-    BotPlayerActionContext,
-    format_action_context,
-)
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
 
 
@@ -64,16 +55,13 @@ def _round_with_two_cards(
 
 
 def _make_view(round_state: BlackjackRound) -> BlackjackView:
-    """Builds a BlackjackView with a stubbed narrator for button inspection."""
-    narrator = MagicMock()
+    """Builds a BlackjackView for button inspection."""
     return BlackjackView(
-        narrator=narrator,
         round_state=round_state,
         starter_id=1,
         author_name="alice",
         system_name="賭場系統",
         system_avatar_url="",
-        system_line="...",
     )
 
 
@@ -466,14 +454,14 @@ async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None
     assert final_step.source == "auto"
 
 
-async def test_bot_dispatcher_skips_when_bot_player_ai_missing() -> None:
+async def test_bot_dispatcher_skips_when_no_bot_seated() -> None:
     """The bot turn dispatcher is a no-op when no bot is seated."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="9", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
-    assert view.bot_player_ai is None
+    assert view.bot_user_id is None
     message = MagicMock()
     await view._maybe_play_bot_turn_locked(message=message)
     assert message.edit.called is False
@@ -486,13 +474,12 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
-    bot_ai = MagicMock()
-    view.bot_player_ai = bot_ai
     view.bot_user_id = 999
     message = MagicMock()
     await view._maybe_play_bot_turn_locked(message=message)
-    assert bot_ai.narrate_bot_action_reason.called is False
-    assert bot_ai.narrate_bot_insurance_reason.called is False
+    # The human's hand is untouched because the bot never acts on a human seat.
+    assert message.edit.called is False
+    assert len(round_state.players[0].hands[0].cards) == 2
 
 
 async def test_bot_dispatcher_breaks_when_action_does_not_advance(
@@ -504,7 +491,6 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
-    view.bot_player_ai = MagicMock()
     view.bot_user_id = 1
     calls = 0
 
@@ -526,7 +512,6 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
-    view.bot_player_ai = MagicMock()
     view.bot_user_id = 1
     dispatch_calls = 0
     sleep_calls: list[float] = []
@@ -550,10 +535,8 @@ async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.Monk
     assert sleep_calls == [blackjack_views.BOT_TURN_EDIT_DELAY_SECONDS]
 
 
-async def test_bot_action_plays_ev_action_and_narrates_up_card_only_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bot plays the EV action deterministically and narrates up-card-only context later."""
+async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bot plays the EV action deterministically (no LLM involved)."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="2", suit="♠"), Card(rank="3", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="10", suit="♦")],
@@ -567,44 +550,12 @@ async def test_bot_action_plays_ev_action_and_narrates_up_card_only_context(
         Card(rank="2", suit="♥"),
     ]
     view = _make_view(round_state=round_state)
-
-    class _BotAI:
-        def __init__(self) -> None:
-            self.request: BotActionReasonRequest | None = None
-
-        async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:
-            self.request = request
-            return "補牌安全"
-
-    bot_ai = _BotAI()
-
-    async def fake_finance(*, user_id: int) -> BotFinancialContext:
-        assert user_id == 1
-        return BotFinancialContext(
-            balance=1_000, total_earned=0, total_spent=0, daily_loss=0, daily_win=0, daily_net=0
-        )
-
-    monkeypatch.setattr(view, "_build_bot_finance_context", fake_finance)
     monkeypatch.setattr(view, "_edit_in_progress_locked", AsyncMock())
 
-    await view._dispatch_bot_action_locked(
-        message=MagicMock(), active=round_state.players[0], bot_ai=cast("BotPlayerAI", bot_ai)
-    )
-    await view.wait_for_background_tasks()
+    await view._dispatch_bot_action_locked(message=MagicMock(), active=round_state.players[0])
 
     # A stiff hard 5 is always a hit, so the EV engine drives the deterministic action.
     assert round_state.players[0].hands[0].cards[-1] == Card(rank="4", suit="♠")
-    request = bot_ai.request
-    assert request is not None
-    assert request.action == "hit"
-    context = request.action_context
-    assert isinstance(context, BotPlayerActionContext)
-    assert context.dealer.up_card == "10♦"
-    assert context.dealer.up_value == 10
-    assert context.shoe_summary.total_cards == 6
-    # The dealer hole card (5♣) never reaches the narration context.
-    assert "5♣" not in format_action_context(context=context)
-    assert view._bot_reasons[1] == "hit: 補牌安全"
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
@@ -648,12 +599,7 @@ async def test_finalize_persists_remaining_shoe_to_the_store(
         Card(rank="3", suit="♣"),
     ]
     view = BlackjackView(
-        narrator=MagicMock(),
-        round_state=round_state,
-        starter_id=1,
-        author_name="alice",
-        shoe_store=store,
-        channel_id=42,
+        round_state=round_state, starter_id=1, author_name="alice", shoe_store=store, channel_id=42
     )
     view.message = MagicMock()
     monkeypatch.setattr(view, "_safe_edit_view_locked", AsyncMock())

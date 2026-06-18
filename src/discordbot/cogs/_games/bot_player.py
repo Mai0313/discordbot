@@ -1,41 +1,21 @@
-"""AI that decides the bot player's bet, action, and insurance choices.
+"""Deterministic decision logic for the Blackjack bot player.
 
-The bot is a regular Blackjack player; the casino system is the dealer. This
-module mirrors `SystemNarrator` shape (BaseModel + AsyncOpenAI client +
-ModelSettings) and provides deterministic fallbacks so a slow or failing LLM
-never blocks the bot's turn at the table.
-
-Decision-time context is verbose by design: the LLM sees its lifetime balance,
-today's casino loss/win/net, this round's bet and remaining wallet, every
-other player's hands plus bets, and its own other split hands. The goal is to
-let the model reason from the actual table state rather than fall back on a
-prescriptive script.
+The bot is a regular Blackjack player; the casino system is the dealer. Its
+bet sizing, action, and insurance choices are computed without any LLM:
+fractional-Kelly betting off the channel shoe's Hi-Lo true count, the hole-aware
+EV engine for the action, and a count-based +EV rule for insurance.
 """
 
 from typing import Final
 
-from openai import AsyncOpenAI
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.utils.llm import parse_responses_or_none
-from discordbot.typings.games import (
-    Card,
-    BotAction,
-    OtherPlayerView,
-    ActionEvAnalysis,
-    BotFinancialContext,
-    BotPlayerActionDecision,
-    BotPlayerInsuranceDecision,
-)
-from discordbot.typings.models import ModelSettings
-from discordbot.cogs._games.prompts import BOT_PLAYER_ACTION_PROMPT, BOT_PLAYER_INSURANCE_PROMPT
+from discordbot.typings.games import Card, BotAction, ActionEvAnalysis
 from discordbot.cogs._games.blackjack import is_soft_total, _card_blackjack_value
 from discordbot.cogs._games.blackjack_ev import compute_action_evs
 from discordbot.cogs._economy.presentation import CURRENCY_NAME
 
-BOT_ACTION_AI_TIMEOUT_SECONDS = 30.0
-BOT_INSURANCE_AI_TIMEOUT_SECONDS = 30.0
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
 # play, measured by offline simulation (neutral-count edge ~ +0.13, sigma^2 ~ 1.34).
 # The edge is large because the EV engine plays the dealer hole card and this
@@ -52,11 +32,6 @@ BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # this table's five-card rules amplify a ten-rich shoe. Re-measure if the rules
 # change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
-# Bot decisions are system-side LLM calls. ASCII labels per method let LiteLLM
-# telemetry split bet / action / insurance traffic, mirroring the
-# `auto_unmute.py` / `_stock/news.py` / `prompt_dev.py` pattern.
-_ACTION_END_USER_ID: Final[str] = "bot_player_action"
-_INSURANCE_END_USER_ID: Final[str] = "bot_player_insurance"
 _RANK_ORDER: Final[tuple[str, ...]] = (
     "A",
     "2",
@@ -659,8 +634,7 @@ def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors t
 
     The action is the EV engine's hole-aware recommendation carried on the
     action context (always one of `allowed_actions`); it degrades to the
-    up-card-only basic-strategy fallback only when the context is missing. The
-    LLM never chooses the action; it only narrates the reason afterwards.
+    up-card-only basic-strategy fallback only when the context is missing.
     """
     if action_context is not None:
         return action_context.action_analysis.basic_strategy_action
@@ -671,15 +645,6 @@ def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors t
         is_pair_hand=is_pair_hand,
         allowed_actions=allowed_actions,
     )
-
-
-def action_decision_reason(*, action_context: BotPlayerActionContext | None) -> str:
-    """Returns the instant Traditional Chinese reason shown before LLM narration."""
-    if action_context is not None and action_context.action_analysis.ev_analysis is not None:
-        return (
-            f"EV {action_context.action_analysis.ev_analysis.recommended_expected_value:+.2f} 最佳"
-        )
-    return "基本策略最佳"
 
 
 def build_bot_insurance_context(
@@ -723,326 +688,8 @@ def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = 
 
     This is the bot's authoritative insurance choice, not just a failure
     fallback: insurance is +EV only when the remaining-shoe ten density clears
-    one third, so the deterministic count drives the decision and the LLM only
-    narrates it.
+    one third, so the deterministic count drives the decision.
     """
     if insurance_context is None:
         return False
     return insurance_context.insurance_recommendation == "take"
-
-
-def insurance_decision_reason(
-    *, take_insurance: bool, insurance_context: BotPlayerInsuranceContext | None
-) -> str:
-    """Returns the instant Traditional Chinese reason shown before LLM narration."""
-    if insurance_context is None:
-        return "無牌堆資料, 不買保險"
-    ten_percent = insurance_context.ten_value_probability * 100
-    if take_insurance:
-        return f"牌堆十點 {ten_percent:.0f}%, 保險划算"
-    return f"牌堆十點僅 {ten_percent:.0f}%, 不買"
-
-
-def _format_percent(value: float) -> str:
-    """Formats a probability as one decimal-place percentage."""
-    return f"{value * 100:.1f}%"
-
-
-def _format_rank_counts(rank_counts: dict[str, int]) -> str:
-    """Formats stable rank counts for prompt context."""
-    return ", ".join(f"{rank}:{rank_counts.get(rank, 0)}" for rank in _RANK_ORDER)
-
-
-def _format_draw_odds(*, label: str, odds: DrawOdds | None) -> list[str]:
-    """Formats one-card draw odds as prompt lines."""
-    if odds is None:
-        return [f"- {label}: not_allowed"]
-    return [
-        f"- {label}.total_draws: {odds.total_draws}",
-        f"- {label}.bust_probability: {_format_percent(odds.bust_probability)}",
-        f"- {label}.twenty_one_probability: {_format_percent(odds.twenty_one_probability)}",
-        (
-            f"- {label}.seventeen_to_twenty_one_probability: "
-            f"{_format_percent(odds.seventeen_to_twenty_one_probability)}"
-        ),
-        (
-            f"- {label}.five_card_non_bust_probability: "
-            f"{_format_percent(odds.five_card_non_bust_probability)}"
-        ),
-        (
-            f"- {label}.five_card_twenty_one_probability: "
-            f"{_format_percent(odds.five_card_twenty_one_probability)}"
-        ),
-    ]
-
-
-def _format_ev_block(*, ev_analysis: ActionEvAnalysis | None) -> list[str]:
-    """Renders the dealer outcome distribution and per-action EV as prompt lines."""
-    if ev_analysis is None:
-        return ["- ev_analysis: unavailable"]
-    outcome = ev_analysis.dealer_outcome
-    lines = [
-        f"- dealer_outcome.bust_probability: {_format_percent(outcome.bust_probability)}",
-        f"- dealer_outcome.total_17_probability: {_format_percent(outcome.total_17_probability)}",
-        f"- dealer_outcome.total_18_probability: {_format_percent(outcome.total_18_probability)}",
-        f"- dealer_outcome.total_19_probability: {_format_percent(outcome.total_19_probability)}",
-        f"- dealer_outcome.total_20_probability: {_format_percent(outcome.total_20_probability)}",
-        f"- dealer_outcome.total_21_probability: {_format_percent(outcome.total_21_probability)}",
-    ]
-    for action_ev in ev_analysis.action_evs:
-        suffix = " (estimate)" if action_ev.is_estimate else ""
-        lines.append(
-            f"- expected_value.{action_ev.action}: {action_ev.expected_value:+.2f}{suffix}"
-        )
-    lines.append(f"- recommended_action.action: {ev_analysis.recommended_action}")
-    lines.append(
-        f"- recommended_action.expected_value: {ev_analysis.recommended_expected_value:+.2f}"
-    )
-    lines.append(
-        "- ev_units_note: EV is in multiples of the base hand bet; higher is better; the dealer "
-        "outcome and EVs are estimated from the dealer up-card and the remaining shoe with the "
-        "hole card unknown, and include the five-card-21 bonus and this table's payouts."
-    )
-    return lines
-
-
-def format_action_context(*, context: BotPlayerActionContext | None) -> str:
-    """Renders computed action context for the LLM prompt."""
-    if context is None:
-        return "server_computed_context: unavailable"
-    shoe = context.shoe_summary
-    dealer = context.dealer
-    analysis = context.action_analysis
-    lines = [
-        "server_computed_context:",
-        f"- information_boundary: {context.information_boundary}",
-        f"- remaining_shoe.total_cards: {shoe.total_cards}",
-        f"- remaining_shoe.rank_counts: {_format_rank_counts(shoe.rank_counts)}",
-        f"- remaining_shoe.ace_count: {shoe.ace_count}",
-        f"- remaining_shoe.ten_value_count: {shoe.ten_value_count}",
-        f"- remaining_shoe.low_card_count_2_to_6: {shoe.low_card_count}",
-        f"- remaining_shoe.neutral_card_count_7_to_9: {shoe.neutral_card_count}",
-        f"- remaining_shoe.high_card_count_A_or_10_value: {shoe.high_card_count}",
-        f"- dealer.up_card: {dealer.up_card}",
-        f"- dealer.up_value: {dealer.up_value}",
-        *_format_ev_block(ev_analysis=analysis.ev_analysis),
-        f"- allowed_actions: {', '.join(analysis.allowed_actions)}",
-        f"- basic_strategy_hint.action: {analysis.basic_strategy_action}",
-        f"- basic_strategy_hint.reason: {analysis.basic_strategy_reason}",
-        f"- stand_summary: {analysis.stand_summary or 'not_applicable'}",
-        f"- split_summary: {analysis.split_summary or 'not_allowed'}",
-        f"- surrender_summary: {analysis.surrender_summary or 'not_allowed'}",
-    ]
-    lines.extend(_format_draw_odds(label="hit_odds", odds=analysis.hit_odds))
-    lines.extend(_format_draw_odds(label="double_odds", odds=analysis.double_odds))
-    return "\n".join(lines)
-
-
-def format_insurance_context(*, context: BotPlayerInsuranceContext | None) -> str:
-    """Renders computed insurance context for the LLM prompt."""
-    if context is None:
-        return "server_computed_context: unavailable"
-    shoe = context.shoe_summary
-    dealer = context.dealer
-    return "\n".join([
-        "server_computed_context:",
-        f"- information_boundary: {context.information_boundary}",
-        f"- remaining_shoe.total_cards: {shoe.total_cards}",
-        f"- remaining_shoe.rank_counts: {_format_rank_counts(shoe.rank_counts)}",
-        f"- remaining_shoe.ace_count: {shoe.ace_count}",
-        f"- remaining_shoe.ten_value_count: {shoe.ten_value_count}",
-        f"- dealer.up_card: {dealer.up_card}",
-        f"- dealer.up_value: {dealer.up_value}",
-        f"- ten_value_probability: {_format_percent(context.ten_value_probability)}",
-        f"- insurance_cost: {context.insurance_cost}",
-        f"- insurance_payout: {context.insurance_payout}",
-        f"- insurance_expected_value: {context.insurance_expected_value:+.0f} {CURRENCY_NAME}",
-        f"- insurance_recommendation: {context.insurance_recommendation}",
-        f"- insurance_analysis: {context.summary}",
-    ])
-
-
-def _format_finance_block(finance: BotFinancialContext) -> str:
-    """Renders the bot's lifetime + daily financial state as a prompt block."""
-    return (
-        f"bankroll_context:\n"
-        f"- current_balance_{CURRENCY_NAME}: {finance.balance}\n"
-        f"- lifetime_earned_{CURRENCY_NAME}: {finance.total_earned}\n"
-        f"- lifetime_spent_{CURRENCY_NAME}: {finance.total_spent}\n"
-        f"- today_win_{CURRENCY_NAME}: {finance.daily_win}\n"
-        f"- today_loss_{CURRENCY_NAME}: {finance.daily_loss}\n"
-        f"- today_net_{CURRENCY_NAME}: {finance.daily_net:+d}"
-    )
-
-
-def _format_other_players_block(other_players: list[OtherPlayerView]) -> str:
-    """Renders other players' visible table state, or a placeholder when empty."""
-    if not other_players:
-        return "other_players: none (only bot player and casino)"
-    lines: list[str] = ["other_players:"]
-    for index, other in enumerate(other_players, start=1):
-        status = "finished" if other.is_finished else "active"
-        hands_repr = " | ".join(other.hands) if other.hands else "not_dealt"
-        lines.append(f"- Player{index} (bet {other.bet} {CURRENCY_NAME}, {status}): {hands_repr}")
-    return "\n".join(lines)
-
-
-def _format_other_player_bets_block(other_player_bets: list[tuple[str, int]]) -> str:
-    """Renders the per-player bet list visible during the bet phase."""
-    if not other_player_bets:
-        return "other_player_bets: none"
-    lines: list[str] = ["other_player_bets:"]
-    for index, (_display_name, bet) in enumerate(other_player_bets, start=1):
-        lines.append(f"- Player{index}: {bet} {CURRENCY_NAME}")
-    return "\n".join(lines)
-
-
-class BotActionReasonRequest(BaseModel):
-    """Computed inputs for the background LLM narration of a chosen bot action.
-
-    The action is already decided deterministically by the EV engine; these
-    fields only let the model write a faithful Traditional Chinese reason for
-    that fixed action.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    action: BotAction = Field(
-        ..., description="The action already chosen by the EV engine to narrate."
-    )
-    hand_repr: str = Field(..., description="Text representation of the bot's active hand.")
-    hand_total: int = Field(..., description="Best total of the bot's active hand.")
-    dealer_up: Card | None = Field(
-        ..., description="The dealer's face-up card, or None when not yet dealt."
-    )
-    allowed_actions: tuple[BotAction, ...] = Field(
-        ..., description="Actions the bot was legally allowed to take this turn."
-    )
-    bet: int = Field(..., description="Current wager on the bot's active hand.")
-    balance_remaining: int = Field(
-        ..., description="Bot balance still uncommitted after current wagers."
-    )
-    finance: BotFinancialContext = Field(
-        ..., description="The bot's lifetime and daily financial state."
-    )
-    other_players: list[OtherPlayerView] = Field(
-        ..., description="Visible table state of the other seated players."
-    )
-    own_other_hands: list[str] = Field(
-        ..., description="Text representations of the bot's other split hands, if any."
-    )
-    action_context: BotPlayerActionContext | None = Field(
-        ..., description="Full computed action context, or None when unavailable."
-    )
-
-
-class BotInsuranceReasonRequest(BaseModel):
-    """Computed inputs for the background LLM narration of an insurance choice."""
-
-    model_config = ConfigDict(frozen=True)
-
-    take_insurance: bool = Field(
-        ..., description="The insurance decision already made, True to take it, to narrate."
-    )
-    dealer_up: Card | None = Field(
-        ..., description="The dealer's face-up card, or None when not yet dealt."
-    )
-    hand_repr: str = Field(..., description="Text representation of the bot's opening hand.")
-    bet: int = Field(..., description="The bot's main wager this round.")
-    finance: BotFinancialContext = Field(
-        ..., description="The bot's lifetime and daily financial state."
-    )
-    other_players: list[OtherPlayerView] = Field(
-        ..., description="Visible table state of the other seated players."
-    )
-    insurance_context: BotPlayerInsuranceContext | None = Field(
-        ..., description="Full computed insurance context, or None when unavailable."
-    )
-
-
-class BotPlayerAI(BaseModel):
-    """Wraps slow-model calls for the bot's player-side decisions.
-
-    Attributes:
-        client: The shared AsyncOpenAI client.
-        model: Slow-model settings for strategic Blackjack reasoning.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    client: AsyncOpenAI = Field(..., description="The shared AsyncOpenAI client.")
-    model: ModelSettings = Field(
-        ..., description="Slow-model settings for strategic Blackjack reasoning."
-    )
-
-    async def narrate_bot_action_reason(self, *, request: BotActionReasonRequest) -> str:
-        """Returns a Traditional Chinese reason for the already-chosen action.
-
-        The action is fixed by the EV engine; this call only produces flavor
-        text and runs off the table's critical path, so any timeout or failure
-        falls back to the deterministic template reason.
-        """
-        template = action_decision_reason(action_context=request.action_context)
-        dealer_label = str(request.dealer_up) if request.dealer_up else "unknown"
-        own_other = (
-            "own_other_split_hands: " + " | ".join(request.own_other_hands)
-            if request.own_other_hands
-            else "own_other_split_hands: none"
-        )
-        user_text = (
-            f"chosen_action: {request.action}\n\n"
-            f"{_format_finance_block(finance=request.finance)}\n\n"
-            f"active_hand_bet_{CURRENCY_NAME}: {request.bet}\n"
-            f"uncommitted_balance_{CURRENCY_NAME}: {request.balance_remaining}\n\n"
-            f"active_hand: {request.hand_repr}\n"
-            f"active_hand_total: {request.hand_total}\n"
-            f"{own_other}\n\n"
-            f"dealer_up_card: {dealer_label}\n"
-            f"{_format_other_players_block(other_players=request.other_players)}\n\n"
-            f"allowed_actions: [{', '.join(request.allowed_actions)}]\n\n"
-            f"{format_action_context(context=request.action_context)}"
-        )
-        decision = await parse_responses_or_none(
-            client=self.client,
-            model=self.model,
-            instructions=BOT_PLAYER_ACTION_PROMPT,
-            user_text=user_text,
-            end_user_id=_ACTION_END_USER_ID,
-            text_format=BotPlayerActionDecision,
-            timeout_seconds=BOT_ACTION_AI_TIMEOUT_SECONDS,
-        )
-        return decision.reason if decision is not None else template
-
-    async def narrate_bot_insurance_reason(self, *, request: BotInsuranceReasonRequest) -> str:
-        """Returns a Traditional Chinese reason for the already-made insurance choice.
-
-        The take/decline decision is fixed by the remaining-shoe ten density;
-        this call only narrates it off the critical path and degrades to the
-        deterministic template reason on timeout or failure.
-        """
-        template = insurance_decision_reason(
-            take_insurance=request.take_insurance, insurance_context=request.insurance_context
-        )
-        dealer_label = str(request.dealer_up) if request.dealer_up else "unknown"
-        insurance_cost = request.bet // 2
-        user_text = (
-            f"chosen_decision: {'take' if request.take_insurance else 'decline'}\n\n"
-            f"{_format_finance_block(finance=request.finance)}\n\n"
-            f"main_bet_{CURRENCY_NAME}: {request.bet}\n"
-            f"insurance_cost_{CURRENCY_NAME}: {insurance_cost}\n"
-            f"insurance_payout_if_won_{CURRENCY_NAME}: {insurance_cost * 2}\n\n"
-            f"opening_hand: {request.hand_repr}\n"
-            f"dealer_up_card: {dealer_label}\n"
-            f"{_format_other_players_block(other_players=request.other_players)}\n\n"
-            f"{format_insurance_context(context=request.insurance_context)}"
-        )
-        decision = await parse_responses_or_none(
-            client=self.client,
-            model=self.model,
-            instructions=BOT_PLAYER_INSURANCE_PROMPT,
-            user_text=user_text,
-            end_user_id=_INSURANCE_END_USER_ID,
-            text_format=BotPlayerInsuranceDecision,
-            timeout_seconds=BOT_INSURANCE_AI_TIMEOUT_SECONDS,
-        )
-        return decision.reason if decision is not None else template

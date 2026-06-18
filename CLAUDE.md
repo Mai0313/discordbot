@@ -102,19 +102,18 @@ When debugging, check `./data/logs` for the full runtime logs.
 - Settlement uses `BlackjackHandState` plus `BlackjackHandSettlement` / `BlackjackPlayerSettlement`; do not reintroduce the legacy single-hand path.
 - 過五關: a 5+ card non-bust hand auto-stands and wins regardless of dealer total. Five-card 21 adds a system-funded 1x bonus that counts as player-side payout but never moves `/casino`. The VIP bonus is `max(0.2x dealer-paid win, 0.2x five-card bonus)`, not the sum.
 - The dealer is the casino system, deterministic under H17 (`is_soft_17`), never an LLM.
-- The bot joins every table as a regular player (auto-added when its wallet > 0) and settles like any human. Its decisions are deterministic, never LLM-chosen: `kelly_bet` (fractional-Kelly, edge from the channel shoe's Hi-Lo true count), the EV engine's hole-aware `recommended_action` via `choose_bot_action`, and count-based insurance (take iff P(ten) > 1/3). Re-measure the Kelly / edge constants with an offline simulation before changing them.
-- `BotPlayerAI` only narrates `reason` text off the critical path (deterministic template shows first, the LLM upgrade is a revision-guarded background refresh). The model never sees the dealer hole card or anything derived from it: the per-action EVs shown to it come from `blackjack_ev.py`'s hole-independent marginal pass. Prompts in `cogs/_games/prompts.py` are narration-only; do not turn them back into decision-making or strategy lookup.
+- The bot joins every table as a regular player (auto-added when its wallet > 0) and settles like any human. Its decisions are deterministic, never LLM-chosen: `kelly_bet` (fractional-Kelly, edge from the channel shoe's Hi-Lo true count), the EV engine's hole-aware `recommended_action` via `choose_bot_action`, and count-based insurance (take iff P(ten) > 1/3). The bot never sees the dealer hole card. Re-measure the Kelly / edge constants with an offline simulation before changing them.
+- Blackjack and Dragon Gate make no LLM calls at all: the former AI narration (casino `SystemNarrator` banter and the bot-player `reason` text) was removed, the games carry no flavor text, and the games cog holds no LLM client. Do not reintroduce a casino narrator or an AI bot-player.
 - The shoe (default 4 decks) is persistent per channel via `shoe.py::BlackjackShoeStore` (in-memory, rebuilt past `RESHUFFLE_THRESHOLD_CARDS`) so card counting has signal.
 - Action buttons are presence-based: invalid controls are removed from the view, not left visible and disabled.
-- Player interactions and final result publication must not wait on LLM latency; hit hints and settlement banter are background refreshes.
-- Peek is a two-stage animation (`_animate_peek_reveal_bj_locked` / `_animate_peek_no_bj_locked`); do not collapse it into a single edit.
+- The only background task is off-critical-path round-history persistence (`_record_history_later`).
+- Peek is a two-stage animation (`_animate_peek_locked`: hidden hole then revealed, no caption); do not collapse it into a single edit.
 - `BlackjackView._finalize_locked` disables buttons and calls `self.stop()` before settlement; the final edit removes controls with `view=None`.
 - Player losses clamp at balance 0; `apply_round_settlement` mirrors only the actual collected debit into `casino_ledger`.
 - Dragon Gate is backed by the shared `jackpot_pool` row `game_id="dragon_gate"` in `economy.db`, not the casino ledger. Ante, losses, wins, and refunds settle through jackpot helpers; losses clamp at 0; on leave or timeout a positive running delta refunds into the pool unless a whole-pool win already cleared it.
 - Interactive views use 180s idle timeouts; terminal public messages schedule deletion through `utils.message_cleanup`. No cog-local delete loops.
-- Game messages send one embed per seat: `[talk, dealer_seat, *player_seat_embeds]` (`build_in_progress_embeds` / `build_final_embeds`). Markdown headings render reliably only inside `embed.description`. Player seats set the avatar thumbnail; the dealer seat omits it. Dealer seat color follows the casino-vs-table outcome: any player win red, all-loss green, all-push yellow.
-- The "dealer" is a label, not a Discord identity. `SystemNarrator` lines are sent by the bot account so `log_msg.py` records the speaker correctly.
-- `GamesCogs.narrator` and `GamesCogs.bot_player_ai` are `cached_property`s; each cog with an LLM client owns its own client intentionally.
+- Game messages send one embed per seat: `[dealer_seat, *player_seat_embeds]` (`build_in_progress_embeds` / `build_final_embeds`). Markdown headings render reliably only inside `embed.description`. Player seats set the avatar thumbnail; the dealer seat omits it. Dealer seat color follows the casino-vs-table outcome: any player win red, all-loss green, all-push yellow.
+- The "dealer" / casino system is a label, not a Discord identity; the games post no narrator messages.
 
 ## Fishing
 

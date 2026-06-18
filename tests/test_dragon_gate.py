@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from random import Random
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-import asyncio
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 import pytest
@@ -143,42 +142,6 @@ class InteractionStub:
         self.response = ResponseStub()
         self.followup = FollowupStub()
         self.data: dict[str, Any] = {"custom_id": custom_id}
-
-
-class DealerStub:
-    """Deterministic dealer stub for 射龍門 view tests."""
-
-    def __init__(self) -> None:
-        """Initializes dealer call records."""
-        self.table_settle_calls: list[dict[str, Any]] = []
-        self.taunt_calls: list[dict[str, Any]] = []
-
-    async def taunt_bet(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Returns a deterministic opening line."""
-        self.taunt_calls.append(kwargs)
-        return "taunt"
-
-    async def table_settle(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Returns a deterministic settlement line and records the call."""
-        self.table_settle_calls.append(kwargs)
-        return "settled"
-
-
-class BlockingDealerStub(DealerStub):
-    """Dealer stub that blocks settlement banter until the test releases it."""
-
-    def __init__(self) -> None:
-        """Initializes synchronization events for the blocking call."""
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def table_settle(self, **kwargs: Any) -> str:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Blocks until the test allows the background refresh to finish."""
-        self.table_settle_calls.append(kwargs)
-        self.started.set()
-        await self.release.wait()
-        return "background settled"
 
 
 _RIGGED_FILLER: tuple[str, ...] = ("2", "♠") * 32
@@ -601,11 +564,9 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
     )
     normal_view = DragonGateView(
-        narrator=DealerStub(),
         round_state=normal_round,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -618,11 +579,9 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
         rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
     )
     pair_view = DragonGateView(
-        narrator=DealerStub(),
         round_state=pair_round,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -689,7 +648,6 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        narrator=DealerStub(),
         system_name="Dealer",
         system_avatar_url="",
         prepare_participant=prepare_participant,
@@ -772,7 +730,6 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     view = DragonGateLobbyView(
         owner=owner,
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
-        narrator=DealerStub(),
         system_name="Dealer",
         system_avatar_url="",
         prepare_participant=prepare_participant,
@@ -807,13 +764,10 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
 
     message = MessageStub()
-    dealer = DealerStub()
     view = DragonGateView(
-        narrator=dealer,
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
@@ -854,11 +808,9 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 100},
     )
@@ -890,11 +842,9 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 15},
     )
@@ -926,11 +876,9 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 500_000},
     )
@@ -952,64 +900,6 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert isinstance(embeds, list)
     assert isinstance(embeds[1], Embed)
     assert isinstance(embeds[1].description, str)
-    await view.wait_for_background_tasks()
-
-
-async def test_dragon_gate_final_settlement_does_not_wait_for_dealer_banter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Final result is edited immediately while dealer table_settle refreshes later."""
-    owner = _participant(user_id=1, display_name="Alice")
-    round_state = DragonGateRound.from_participants(
-        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
-    )
-
-    state = JackpotState(initial_jackpot=10_000, initial_balance=500_000)
-    _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
-
-    message = MessageStub()
-    dealer = BlockingDealerStub()
-    view = DragonGateView(
-        narrator=dealer,
-        round_state=round_state,
-        owner=owner,
-        system_name="Dealer",
-        system_line="taunt",
-        jackpot_snapshot=state.jackpot,
-        final_balances={1: 500_000},
-    )
-    view.message = message
-
-    await asyncio.wait_for(
-        view._handle_bet_choice(
-            choice="max",
-            interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet"),
-        ),
-        timeout=0.2,
-    )
-
-    assert view._settled is True
-    assert message.edits[-1]["view"] is None
-    embeds = message.edits[-1]["embeds"]
-    assert isinstance(embeds, list)
-    assert isinstance(embeds[0], Embed)
-    assert isinstance(embeds[0].description, str)
-    assert "background settled" not in embeds[0].description
-
-    await asyncio.wait_for(dealer.started.wait(), timeout=0.2)
-    dealer.release.set()
-    await view.wait_for_background_tasks()
-
-    assert len(dealer.table_settle_calls) == 1
-    assert message.edits[-1]["view"] is None
-    assert message.edits[-1]["attachments"] == []
-    assert message.edits[-1]["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
-    refreshed_embeds = message.edits[-1]["embeds"]
-    assert isinstance(refreshed_embeds, list)
-    assert isinstance(refreshed_embeds[0], Embed)
-    assert isinstance(refreshed_embeds[0].description, str)
-    assert "background settled" in refreshed_embeds[0].description
-    assert refreshed_embeds[0].image.url == embed_spacer_url()
 
 
 async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
@@ -1049,11 +939,9 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=10_000,
         jackpot_generation=2,
         final_balances={1: 500_000},
@@ -1075,7 +963,6 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
     assert "+7,000" in final_embed.description
     assert "+10,000" not in final_embed.description
     assert view._jackpot_generation == 3
-    await view.wait_for_background_tasks()
 
 
 async def test_dragon_gate_view_single_player_zero_balance_finalizes(
@@ -1092,11 +979,9 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30},
     )
@@ -1125,7 +1010,6 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     assert isinstance(history_embed.description, str)
     assert "-30" in history_embed.description
     assert "-40" not in history_embed.description
-    await view.wait_for_background_tasks()
 
 
 async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
@@ -1145,11 +1029,9 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30, 2: 100_000},
     )
@@ -1188,11 +1070,9 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1232,11 +1112,9 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000},
     )
@@ -1268,11 +1146,9 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1304,11 +1180,9 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
     state = JackpotState()
     _install_jackpot_mock(monkeypatch=monkeypatch, state=state)
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1332,11 +1206,9 @@ async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")), participants=[owner]
     )
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=owner,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=1_000_000,
         final_balances={1: 1_000_000},
     )
@@ -1360,11 +1232,9 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
 
     message = MessageStub()
     view = DragonGateView(
-        narrator=DealerStub(),
         round_state=round_state,
         owner=alice,
         system_name="Dealer",
-        system_line="taunt",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
@@ -1384,7 +1254,6 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert all(isinstance(embed, Embed) for embed in embeds)
-    await view.wait_for_background_tasks()
 
 
 def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:

@@ -155,11 +155,11 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for lightweight reply-generation tasks.
 
-        Callers: `_generate_reply`, `SystemNarrator`, `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        Callers: `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
 
         Returns:
-            Fast model settings used for short Discord replies, casino system
-            narrator lines, auto-unmute replies, and stock news generation.
+            Fast model settings used for short auto-unmute replies and stock
+            news generation.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
         return fast_model
@@ -257,22 +257,6 @@ class RuntimeModelCatalog(BaseModel):
             Model settings for the background memory consolidation call.
         """
         return ModelSettings(name="gemini-pro-latest", effort="high")
-
-    @property
-    def player_model(self) -> ModelSettings:
-        """The model settings for the casino bot-player AI.
-
-        Pinned to `gemini-flash-latest` regardless of peak hours so bot turns
-        between human players stay snappy even if `slow_model` later promotes
-        to a heavier Pro tier.
-
-        Callers: `BotPlayerAI`.
-
-        Returns:
-            Model settings used by the Blackjack bot player for bet sizing,
-            hit/stand, double/split, surrender, and insurance decisions.
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="minimal")
 
 
 class RouteClassification(BaseModel):
