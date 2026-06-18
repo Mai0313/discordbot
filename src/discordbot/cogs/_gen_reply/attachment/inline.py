@@ -49,7 +49,7 @@ class InlineRenderer(AttachmentRenderer):
         try:
             file_bytes, content_type = await load_image_bytes(source=source)
         except Exception:
-            logfire.warn("Failed to convert this image")
+            logfire.warn("failed to convert this image")
             return None
         image_part = ResponseInputImageParam(
             type="input_image",
@@ -64,13 +64,15 @@ class InlineRenderer(AttachmentRenderer):
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
-                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
+                "skipping attachment with unknown MIME type",
+                filename=attachment.filename,
+                url=attachment.url,
             )
             return None
         try:
             file_bytes, _ = await load_attachment_bytes(attachment=attachment)
         except Exception:
-            logfire.warn(f"Failed to download this attachment: {attachment.url}")
+            logfire.warn("failed to download this attachment", url=attachment.url)
             return None
         return self._inline_file_part(
             filename=attachment.filename, data=file_bytes, mime_type=mime_type
@@ -96,7 +98,9 @@ class InlineRenderer(AttachmentRenderer):
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             logfire.warn(
-                f"Dropping non-text, non-PDF attachment for a non-Gemini model: {filename}"
+                "dropping non-text, non-PDF attachment for a non-Gemini model",
+                filename=filename,
+                mime_type=mime_type,
             )
             return None
         text_part = ResponseInputTextParam(

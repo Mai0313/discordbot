@@ -11,6 +11,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 from PIL import Image
+import httpx
+from openai import APITimeoutError
 import pytest
 import nextcord
 from nextcord import File, Embed
@@ -34,6 +36,8 @@ from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilde
 from discordbot.cogs._gen_reply.voice import (
     VOICE_MARKER,
     VOICE_TIMEOUT_SECONDS,
+    VoiceClip,
+    VoiceOutcome,
     VoiceSynthesizer,
     strip_voice_marker,
     speechify_discord_markup,
@@ -121,6 +125,7 @@ class FakeChannel:
         """Initializes the channel stub with its history coroutine and visibility."""
         self.history = history
         self.parent = None
+        self.id = 555
         self._view_channel = view_channel
         self.sent: list[FakeReply] = []
 
@@ -831,17 +836,20 @@ async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: 
 
 
 class _FakeVoiceSynthesizer:
-    """Records synthesize calls and returns configurable bytes for streamer voice tests."""
+    """Records synthesize calls and returns a configurable VoiceClip for streamer voice tests."""
 
-    def __init__(self, audio: bytes | None = b"RIFFfake-wav") -> None:
-        """Stores the audio bytes to return (None to simulate failure / skip)."""
+    def __init__(
+        self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = VoiceOutcome.OK
+    ) -> None:
+        """Stores the audio bytes (None to simulate failure) and the reported outcome."""
         self.audio = audio
+        self.outcome = outcome
         self.calls: list[dict[str, str]] = []
 
-    async def synthesize(self, *, text: str, end_user_id: str) -> bytes | None:
-        """Records the spoken-text request and returns the preset bytes."""
+    async def synthesize(self, *, text: str, end_user_id: str) -> VoiceClip:
+        """Records the spoken-text request and returns the preset VoiceClip."""
         self.calls.append({"text": text, "end_user_id": end_user_id})
-        return self.audio
+        return VoiceClip(audio=self.audio, outcome=self.outcome)
 
 
 def _voice_marker_events() -> list[SimpleNamespace]:
@@ -869,6 +877,8 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     assert synthesizer.calls == [{"text": "閉嘴啦白痴", "end_user_id": message.author.name}]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "reply.wav"
+    # A delivered clip is silent: no failure-hint reaction on the source message.
+    assert message.added_reactions == []
 
 
 async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
@@ -883,6 +893,8 @@ async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> No
 
     assert synthesizer.calls == []
     assert message.replies[0].file is None
+    # The model chose no voice, so there is nothing to hint about.
+    assert message.added_reactions == []
 
 
 async def test_voice_disabled_still_strips_marker(economy_isolated_db: None) -> None:
@@ -899,10 +911,10 @@ async def test_voice_disabled_still_strips_marker(economy_isolated_db: None) -> 
 
 
 async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: None) -> None:
-    """A None from the synthesizer (failure / too long) leaves a clean text reply, no file."""
+    """A synthesis error leaves a clean text reply, no file, and hints with a warning emoji."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer(audio=None)
+    synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.ERROR)
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
@@ -910,6 +922,23 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
 
     assert VOICE_MARKER not in result
     assert message.replies[0].file is None
+    # A non-timeout failure (most often a policy refusal) hints with the warning emoji.
+    assert message.added_reactions == ["⚠️"]
+
+
+async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: None) -> None:
+    """A synthesis timeout leaves a text reply and hints with the clock emoji, staying silent."""
+    del economy_isolated_db
+    message = FakeMessage()
+    synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.TIMEOUT)
+
+    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_events())
+    )
+
+    assert VOICE_MARKER not in result
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["⏱️"]
 
 
 def test_strip_voice_marker_variants() -> None:
@@ -1032,9 +1061,10 @@ async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
     speech = _FakeSpeech(data=b"RIFFwav")
     synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
 
-    audio = await synth.synthesize(text="閉嘴", end_user_id="tester")
+    clip = await synth.synthesize(text="閉嘴", end_user_id="tester")
 
-    assert audio == b"RIFFwav"
+    assert clip.outcome is VoiceOutcome.OK
+    assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
     # response_format is intentionally never sent (the proxy 500s on it).
@@ -1044,11 +1074,25 @@ async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
 
 
 async def test_voice_synthesizer_swallows_provider_errors() -> None:
-    """A provider error degrades to None so the reply stays text-only."""
+    """A provider error reports ERROR with no audio so the reply stays text-only."""
     speech = _FakeSpeech(error=RuntimeError("boom"))
     synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
 
-    assert await synth.synthesize(text="嗆你", end_user_id="tester") is None
+    clip = await synth.synthesize(text="嗆你", end_user_id="tester")
+
+    assert clip.audio is None
+    assert clip.outcome is VoiceOutcome.ERROR
+
+
+async def test_voice_synthesizer_reports_timeout() -> None:
+    """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
+    speech = _FakeSpeech(error=APITimeoutError(request=httpx.Request("POST", "http://proxy")))
+    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
+
+    clip = await synth.synthesize(text="嗆你", end_user_id="tester")
+
+    assert clip.audio is None
+    assert clip.outcome is VoiceOutcome.TIMEOUT
 
 
 async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> None:
@@ -1064,6 +1108,8 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
 
     assert VOICE_MARKER not in result
     assert message.replies[0].file is None
+    # An oversized clip is dropped for a non-timeout reason, so it hints with the warning emoji.
+    assert message.added_reactions == ["⚠️"]
 
 
 @pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
@@ -1346,13 +1392,14 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         is None
     )
 
-    # Never leaves PROCESSING within the bound: the timeout drops the file. Scripted
-    # times drive deadline -> under-deadline -> past-deadline; a fallback covers any
-    # extra monotonic reads (e.g. logging) so the clock never runs dry mid-call.
-    scripted_times = [0.0, 0.0, 100.0]
+    # Never leaves PROCESSING within the bound: the timeout drops the file. An auto-advancing
+    # clock jumps past the 15s bound on each read, so the deadline trips regardless of how many
+    # monotonic() calls the upload path makes (e.g. for latency logging).
+    clock = {"now": 0.0}
 
     def _fake_monotonic() -> float:
-        return scripted_times.pop(0) if scripted_times else 100.0
+        clock["now"] += 50.0
+        return clock["now"]
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
@@ -1385,10 +1432,14 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         "discordbot.cogs._gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
     )
 
-    scripted_times = [0.0, 0.0, 100.0]
+    # Auto-advancing clock: each call jumps well past the 15s activation bound, so the first
+    # reference times out to PENDING regardless of how many monotonic() calls the upload path
+    # makes (e.g. for latency logging). Robust to instrumentation, unlike a hand-counted list.
+    clock = {"now": 0.0}
 
     def _fake_monotonic() -> float:
-        return scripted_times.pop(0) if scripted_times else 100.0
+        clock["now"] += 50.0
+        return clock["now"]
 
     monkeypatch.setattr(
         "discordbot.cogs._gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
@@ -3434,7 +3485,12 @@ async def test_resolve_effort_returns_graded_effort_on_success() -> None:
         return EffortGrade(effort="low")
 
     effort_task = asyncio.create_task(coro=graded())
-    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "low"
+    assert (
+        await cog._resolve_effort(
+            message=FakeMessage(), effort_task=effort_task, route_done=route_done
+        )
+        == "low"
+    )
 
 
 async def test_resolve_effort_defaults_high_on_error() -> None:
@@ -3448,7 +3504,12 @@ async def test_resolve_effort_defaults_high_on_error() -> None:
         raise RuntimeError("boom")
 
     effort_task = asyncio.create_task(coro=boom())
-    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "high"
+    assert (
+        await cog._resolve_effort(
+            message=FakeMessage(), effort_task=effort_task, route_done=route_done
+        )
+        == "high"
+    )
 
 
 async def test_resolve_effort_defaults_high_on_grace_timeout(
@@ -3466,7 +3527,12 @@ async def test_resolve_effort_defaults_high_on_grace_timeout(
         return EffortGrade(effort="low")
 
     effort_task = asyncio.create_task(coro=slow())
-    assert await cog._resolve_effort(effort_task=effort_task, route_done=route_done) == "high"
+    assert (
+        await cog._resolve_effort(
+            message=FakeMessage(), effort_task=effort_task, route_done=route_done
+        )
+        == "high"
+    )
 
 
 async def test_on_message_cancels_effort_task_on_image_route(

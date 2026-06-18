@@ -19,9 +19,11 @@ from openai.types.responses import (
     ResponseCompletedEvent,
 )
 
+from discordbot.utils.reactions import update_reaction
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
+    VoiceOutcome,
     VoiceSynthesizer,
     strip_voice_marker,
     speechify_discord_markup,
@@ -243,6 +245,7 @@ class ResponseStreamer(BaseModel):
                 "gen_reply first reasoning delta",
                 elapsed_seconds=time.monotonic() - self.created_at,
                 model=self.model_name,
+                message_id=self.message.id,
             )
         self.reasoning_content += delta
         self._ensure_editor_started()
@@ -258,6 +261,7 @@ class ResponseStreamer(BaseModel):
                 "gen_reply first content delta",
                 elapsed_seconds=time.monotonic() - self.created_at,
                 model=self.model_name,
+                message_id=self.message.id,
             )
         self.stored_content += delta
         self._ensure_editor_started()
@@ -324,9 +328,24 @@ class ResponseStreamer(BaseModel):
         await self._write_final_message(
             reply=self.reply, content=self.stored_content, footer=usage_footer
         )
+        reply_chars = len(self.stored_content)
+        chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
         self.stored_content += usage_footer
 
         await self._maybe_attach_voice()
+        logfire.info(
+            "gen_reply reply finalized",
+            message_id=self.message.id,
+            model=self.model_name,
+            effort=self.model_effort,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cost=cost,
+            reply_chars=reply_chars,
+            voice_requested=self.voice_requested,
+            memory_lookups=len(self.memory_lookups),
+            chunked=chunked,
+        )
         return self.stored_content
 
     def _resolve_mention_name(self, *, target_id: int) -> str | None:
@@ -343,19 +362,33 @@ class ResponseStreamer(BaseModel):
         channel = guild.get_channel(target_id)
         return getattr(channel, "name", None) if channel is not None else None
 
-    async def _maybe_attach_voice(self) -> None:
+    async def _hint_voice_unavailable(self, *, emoji: str) -> None:
+        """Marks the source message so a dropped voice clip is not fully silent to the user.
+
+        The reply stays text-only and the user gets no message; this best-effort reaction is
+        the only signal. It rides on the source message as an independent reaction (no
+        `previous`), so the pipeline's status chain never removes it. Failures are suppressed
+        inside `update_reaction`.
+        """
+        await update_reaction(message=self.message, bot_user=None, emoji=emoji)
+
+    async def _maybe_attach_voice(self) -> None:  # noqa: PLR0911 -- one best-effort voice attach with several distinct degrade paths (skip / timeout / refused / oversized / attach-fail / success)
         """Renders the reply to audio and edits it onto the sent message when requested.
 
         Runs only when the answer model asked for a spoken reply and voice is enabled for
         this turn. The text reply is already on screen, so synthesis adds no latency to it;
         the clip is best-effort and any failure (or a too-long reply) leaves a text reply.
-        Every skip reason is logged so a missing voice clip is never silent.
+        Every skip reason is logged. When a clip was requested but could not be delivered the
+        source message gets a small emoji hint (⏱️ for a timeout, ⚠️ for any other failure) so
+        the user has a quiet cue; the model choosing no voice, voice being disabled, or an
+        empty reply add no hint.
         """
         if not self.voice_requested:
             # The expected common path: the answer model chose a text-only reply.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return
         if self.voice_synthesizer is None:
+            # Voice is intentionally off this turn (kill-switch), not a failure: no hint.
             logfire.info(
                 "Voice requested but disabled for this turn; replying without audio",
                 message_id=self.message.id,
@@ -366,16 +399,26 @@ class ResponseStreamer(BaseModel):
                 "Voice requested but the reply was never sent; dropping audio",
                 message_id=self.message.id,
             )
+            await self._hint_voice_unavailable(emoji="⚠️")
             return
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
-        audio = await self.voice_synthesizer.synthesize(
+        clip = await self.voice_synthesizer.synthesize(
             text=self.voice_text, end_user_id=self.message.author.name
         )
-        if audio is None:
-            # synthesize() already logged the specific reason (empty input or provider error).
+        if clip.outcome is VoiceOutcome.EMPTY:
+            # Nothing to say (the reply was empty after stripping): no hint.
             return
+        if clip.outcome is VoiceOutcome.TIMEOUT:
+            # synthesize() logged the timeout; cue the user that the clip ran out of time.
+            await self._hint_voice_unavailable(emoji="⏱️")
+            return
+        if clip.audio is None:
+            # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
+            await self._hint_voice_unavailable(emoji="⚠️")
+            return
+        audio = clip.audio
         # Drop a clip past the guild's upload limit so the answer model is free to choose the
         # spoken length; a DM has no guild to query, so fall back to Discord's non-Nitro base of
         # 10MB (the guild path trusts nextcord's filesize_limit, correct for boosted 50/100MB).
@@ -389,6 +432,7 @@ class ResponseStreamer(BaseModel):
                 audio_bytes=len(audio),
                 upload_limit=upload_limit,
             )
+            await self._hint_voice_unavailable(emoji="⚠️")
             return
         try:
             await self.reply.edit(file=File(fp=BytesIO(audio), filename=VOICE_REPLY_FILENAME))
@@ -399,6 +443,7 @@ class ResponseStreamer(BaseModel):
                 audio_bytes=len(audio),
                 _exc_info=True,
             )
+            await self._hint_voice_unavailable(emoji="⚠️")
             return
         logfire.info("Voice reply attached", message_id=self.message.id, audio_bytes=len(audio))
 

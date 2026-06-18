@@ -6,6 +6,7 @@ ready to rely on uploaded files instead of inline parts.
 """
 
 import io
+import time
 from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -93,7 +94,9 @@ class OpenAIFileUploader(AttachmentRenderer):
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
-                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
+                "skipping attachment with unknown MIME type",
+                filename=attachment.filename,
+                url=attachment.url,
             )
             return None
         uploaded = await self._resolve_file_upload(
@@ -144,7 +147,12 @@ class OpenAIFileUploader(AttachmentRenderer):
             try:
                 data, content_type = await load_data()
             except Exception:
-                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+                logfire.warn(
+                    "failed to load attachment bytes for upload",
+                    filename=filename,
+                    cache_key=cache_key,
+                    allow_dead_cache=allow_dead_cache,
+                )
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
                 return None
@@ -156,6 +164,10 @@ class OpenAIFileUploader(AttachmentRenderer):
         self, filename: str, data: bytes, content_type: str, purpose: OpenAIFilePurpose
     ) -> tuple[str, datetime] | None:
         """Uploads bytes to OpenAI Files API and returns `(file_id, expires_at)`."""
+        started = time.monotonic()
+        logfire.debug(
+            "openai upload start", filename=filename, content_type=content_type, bytes=len(data)
+        )
         try:
             uploaded = await self.client.files.create(
                 file=(filename, io.BytesIO(data), content_type),
@@ -164,16 +176,22 @@ class OpenAIFileUploader(AttachmentRenderer):
                 extra_body={"model": self.model_name},
             )
         except Exception:
-            logfire.warn(f"Failed to upload attachment to OpenAI Files API: {filename}")
+            logfire.warn("failed to upload attachment to OpenAI Files API", filename=filename)
             return None
         if uploaded.status == "error":
-            logfire.warn(f"OpenAI file upload failed processing: {filename}")
+            logfire.warn("OpenAI file upload failed processing", filename=filename)
             return None
         if not uploaded.id:
-            logfire.warn(f"OpenAI file upload returned no file id; dropping: {filename}")
+            logfire.warn("upload returned no file id; dropping", filename=filename)
             return None
         if uploaded.expires_at is None:
             expires_at = datetime.now(tz=UTC) + timedelta(seconds=OPENAI_FILE_EXPIRY_SECONDS)
         else:
             expires_at = datetime.fromtimestamp(uploaded.expires_at, tz=UTC)
+        logfire.debug(
+            "openai upload done",
+            filename=filename,
+            file_id=uploaded.id,
+            elapsed_seconds=time.monotonic() - started,
+        )
         return uploaded.id, expires_at

@@ -148,7 +148,9 @@ class GeminiFileUploader(AttachmentRenderer):
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
-                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
+                "skipping attachment with unknown MIME type",
+                filename=attachment.filename,
+                url=attachment.url,
             )
             return None
         uploaded = await self._resolve_file_upload(
@@ -207,6 +209,12 @@ class GeminiFileUploader(AttachmentRenderer):
         except Exception:
             self._pending_uploads.pop(cache_key, None)
             return False, None
+        logfire.debug(
+            "gemini pending upload repoll",
+            cache_key=cache_key,
+            state=str(uploaded.state),
+            adopted=uploaded.state == FileState.ACTIVE,
+        )
         if uploaded.state == FileState.ACTIVE:
             self._pending_uploads.pop(cache_key, None)
             return True, (pending.uri, pending.expires_at)
@@ -251,11 +259,22 @@ class GeminiFileUploader(AttachmentRenderer):
         # One media slot spans the whole download + upload (+ activation poll) for every
         # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
         # uploads at once and buffer all their bytes while waiting for an upload slot.
+        wait_started = time.monotonic()
         async with self._media_semaphore:
+            logfire.debug(
+                "gemini media slot acquired",
+                cache_key=cache_key,
+                wait_seconds=time.monotonic() - wait_started,
+            )
             try:
                 data, content_type = await load_data()
             except Exception:
-                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+                logfire.warn(
+                    "failed to load attachment bytes for upload",
+                    filename=filename,
+                    cache_key=cache_key,
+                    allow_dead_cache=allow_dead_cache,
+                )
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
                 return None
@@ -297,6 +316,10 @@ class GeminiFileUploader(AttachmentRenderer):
         """
         activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5
+        started = time.monotonic()
+        logfire.debug(
+            "gemini upload start", filename=filename, content_type=content_type, bytes=len(data)
+        )
         # The caller (`_resolve_file_upload`) holds the media semaphore across this whole
         # call, so the activation poll counts against the concurrency cap on purpose.
         try:
@@ -308,16 +331,17 @@ class GeminiFileUploader(AttachmentRenderer):
             # PendingUpload reuse it, and degrade explicitly if the provider ever omits it.
             file_name = uploaded.name
             if file_name is None:
-                logfire.warn(f"Gemini upload returned no resource name; dropping: {filename}")
+                logfire.warn("upload returned no resource name; dropping", filename=filename)
                 return None
             deadline = time.monotonic() + activation_timeout_seconds
             while uploaded.state == FileState.PROCESSING:
                 if time.monotonic() >= deadline:
                     logfire.warn(
-                        f"Attachment still processing; will retry on next reference: {filename}"
+                        "attachment still processing; will retry on next reference",
+                        filename=filename,
                     )
                     if uploaded.uri is None:
-                        logfire.warn(f"Pending upload has no uri; dropping: {filename}")
+                        logfire.warn("pending upload has no uri; dropping", filename=filename)
                         return None
                     # Hand back the in-flight upload so the caller can re-poll it later
                     # instead of re-uploading the same bytes from scratch.
@@ -328,16 +352,25 @@ class GeminiFileUploader(AttachmentRenderer):
                 await asyncio.sleep(poll_interval_seconds)
                 uploaded = await self.gemini_client.aio.files.get(name=file_name)
             if uploaded.state != FileState.ACTIVE:
-                logfire.warn(f"Attachment failed processing ({uploaded.state}): {filename}")
+                logfire.warn(
+                    "attachment failed processing", filename=filename, state=str(uploaded.state)
+                )
                 return None
         except Exception:
-            logfire.warn(f"Failed to upload attachment to Files API: {filename}")
+            logfire.warn("failed to upload attachment to Files API", filename=filename)
             return None
         file_uri = uploaded.uri
         if file_uri is None:
-            logfire.warn(f"Active upload has no uri; dropping: {filename}")
+            logfire.warn("active upload has no uri; dropping", filename=filename)
             return None
         # Fall back to a conservative 47h (under the ~48h lifetime) if the provider omits
         # the expiry, so a missing field never pins an unbounded cache entry.
         expires_at = uploaded.expiration_time or (datetime.now(tz=UTC) + timedelta(hours=47))
+        logfire.debug(
+            "gemini upload done",
+            filename=filename,
+            file_uri=file_uri,
+            elapsed_seconds=time.monotonic() - started,
+            state="active",
+        )
         return file_uri, expires_at

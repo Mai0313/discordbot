@@ -16,9 +16,10 @@ intentionally not sent (the proxy 500s on it); the model returns WAV, hence `rep
 """
 
 import re
+from enum import StrEnum
 from typing import Protocol
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
@@ -128,12 +129,37 @@ def speechify_discord_markup(*, text: str, resolve_name: MentionNameResolver) ->
     return cleaned.strip()
 
 
+class VoiceOutcome(StrEnum):
+    """Why a spoken-clip synthesis attempt ended, so the caller can hint appropriately."""
+
+    OK = "ok"
+    EMPTY = "empty"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
+class VoiceClip(BaseModel):
+    """Result of one synthesis attempt: the audio (when produced) plus why it ended.
+
+    A failed attempt carries `audio=None` and a non-OK `outcome`; the caller always degrades
+    to a plain text reply and uses `outcome` to decide its best-effort failure hint.
+    """
+
+    audio: bytes | None = Field(
+        default=None, description="Rendered WAV bytes, or None when no clip was produced."
+    )
+    outcome: VoiceOutcome = Field(
+        ..., description="Why synthesis ended; drives the caller's best-effort failure hint."
+    )
+
+
 class VoiceSynthesizer(BaseModel):
     """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
 
     Holds the shared async client plus the fixed voice / style / speed config; `synthesize`
-    renders one reply to WAV bytes or returns None on over-length input, an oversized clip,
-    a timeout, or any provider error, so the caller always degrades to a plain text reply.
+    renders one reply to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
+    (OK / EMPTY / TIMEOUT / ERROR), so the caller both degrades to a text reply and can hint
+    why the clip is missing (a timeout vs. any other provider error, e.g. a policy refusal).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -153,12 +179,15 @@ class VoiceSynthesizer(BaseModel):
     )
     speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
 
-    async def synthesize(self, *, text: str, end_user_id: str) -> bytes | None:
-        """Renders reply text to WAV bytes, or None when it should be skipped or failed."""
+    async def synthesize(self, *, text: str, end_user_id: str) -> VoiceClip:
+        """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
         spoken = text.strip()
         if not spoken:
-            logfire.info("Voice synthesis skipped: reply text was empty after stripping")
-            return None
+            logfire.info(
+                "Voice synthesis skipped: reply text was empty after stripping",
+                end_user_id=end_user_id,
+            )
+            return VoiceClip(outcome=VoiceOutcome.EMPTY)
         try:
             responses = await self.client.audio.speech.create(
                 input=f"{self.style_directive}\n\n{spoken}",
@@ -170,15 +199,33 @@ class VoiceSynthesizer(BaseModel):
             )
             audio = await responses.aread()
             logfire.debug(
-                "Voice synthesis succeeded", text_chars=len(spoken), audio_bytes=len(audio)
-            )
-            return audio
-        except Exception:
-            # Best-effort: a timeout or any provider error degrades to a plain text reply.
-            logfire.warn(
-                "Voice synthesis failed; replying without audio",
+                "Voice synthesis succeeded",
                 model=self.model_name,
+                speed=self.speed,
+                end_user_id=end_user_id,
+                text_chars=len(spoken),
+                audio_bytes=len(audio),
+            )
+            return VoiceClip(audio=audio, outcome=VoiceOutcome.OK)
+        except APITimeoutError:
+            # The clip took longer than VOICE_TIMEOUT_SECONDS to render. The caller marks the
+            # message with a timeout hint and still leaves a plain text reply.
+            logfire.warn(
+                "Voice synthesis timed out; replying without audio",
+                model=self.model_name,
+                end_user_id=end_user_id,
                 text_chars=len(spoken),
                 _exc_info=True,
             )
-            return None
+            return VoiceClip(outcome=VoiceOutcome.TIMEOUT)
+        except Exception:
+            # Any other provider error (most often the clip was refused, e.g. policy). The
+            # caller marks the message with a warning hint and degrades to a text reply.
+            logfire.warn(
+                "Voice synthesis failed; replying without audio",
+                model=self.model_name,
+                end_user_id=end_user_id,
+                text_chars=len(spoken),
+                _exc_info=True,
+            )
+            return VoiceClip(outcome=VoiceOutcome.ERROR)

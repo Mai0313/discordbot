@@ -26,6 +26,7 @@ as `input_text`, the rest dropped) instead of uploading every MIME and referenci
 """
 
 import io
+import time
 from typing import TYPE_CHECKING
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -119,7 +120,9 @@ class AnthropicFileUploader(AttachmentRenderer):
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
-                f"Skipping attachment with unknown MIME type: {attachment.filename} ({attachment.url})"
+                "skipping attachment with unknown MIME type",
+                filename=attachment.filename,
+                url=attachment.url,
             )
             return None
         uploaded = await self._resolve_file_upload(
@@ -168,7 +171,12 @@ class AnthropicFileUploader(AttachmentRenderer):
             try:
                 data, content_type = await load_data()
             except Exception:
-                logfire.warn(f"Failed to load attachment bytes for upload: {filename}")
+                logfire.warn(
+                    "failed to load attachment bytes for upload",
+                    filename=filename,
+                    cache_key=cache_key,
+                    allow_dead_cache=allow_dead_cache,
+                )
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
                 return None
@@ -184,14 +192,24 @@ class AnthropicFileUploader(AttachmentRenderer):
         the module docstring). Anthropic files have no provider expiry, so the cache window is
         a fixed synthetic TTL.
         """
+        started = time.monotonic()
+        logfire.debug(
+            "anthropic upload start", filename=filename, content_type=content_type, bytes=len(data)
+        )
         try:
             uploaded = await self.anthropic_client.beta.files.upload(
                 file=(filename, io.BytesIO(data), content_type)
             )
         except Exception:
-            logfire.warn(f"Failed to upload attachment to Anthropic Files API: {filename}")
+            logfire.warn("failed to upload attachment to Anthropic Files API", filename=filename)
             return None
         if not uploaded.id:
-            logfire.warn(f"Anthropic file upload returned no file id; dropping: {filename}")
+            logfire.warn("upload returned no file id; dropping", filename=filename)
             return None
+        logfire.debug(
+            "anthropic upload done",
+            filename=filename,
+            file_id=uploaded.id,
+            elapsed_seconds=time.monotonic() - started,
+        )
         return uploaded.id, datetime.now(tz=UTC) + ANTHROPIC_FILE_CACHE_TTL
