@@ -13,6 +13,8 @@ class LLMConfig(BaseSettings):
         api_key: The API key for authentication.
         gemini_api_key: The Google AI Studio key used to upload attachments to
             the Gemini Files API directly, so uploads can be polled to ACTIVE.
+        anthropic_api_key: The Anthropic key used to upload attachments to the
+            Anthropic Files API directly (the side-channel for Claude answer models).
         voice_reply_enabled: Kill-switch for spoken QA replies; when false the answer
             model's voice marker is still stripped but no audio clip is synthesized.
     """
@@ -37,6 +39,12 @@ class LLMConfig(BaseSettings):
         description="The Google AI Studio key for direct Gemini Files API uploads.",
         examples=["AIza..."],
         validation_alias=AliasChoices("GEMINI_API_KEY"),
+    )
+    anthropic_api_key: str = Field(
+        default="",
+        description="The Anthropic API key for direct Anthropic Files API uploads.",
+        examples=["sk-ant-..."],
+        validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
     )
     voice_reply_enabled: bool = Field(
         default=True,
