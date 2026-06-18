@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from discordbot.cogs._gen_reply.markup import (
-    extract_reply_segments,
-    strip_tags_for_preview,
-)
+from discordbot.cogs._gen_reply.markup import extract_reply_segments, strip_tags_for_preview
 
 
 def test_extract_plain_text_has_no_spans() -> None:
@@ -91,7 +88,9 @@ def test_extract_unclosed_voice_keeps_content() -> None:
 
 def test_extract_tolerates_backticks_and_whitespace() -> None:
     """Backtick-wrapped or loosely-spaced tags are still recognised (the model may add them)."""
-    segments = extract_reply_segments(text="x `<voice>` say it `</voice>` y < image >draw< / image >")
+    segments = extract_reply_segments(
+        text="x `<voice>` say it `</voice>` y < image >draw< / image >"
+    )
 
     assert segments.voice_text == "say it"
     assert segments.image_prompt == "draw"

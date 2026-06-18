@@ -9,22 +9,24 @@ draw an image the answer model asked for inline via `<image>...</image>` and att
 reply afterward; any failure or timeout leaves a text-only reply.
 """
 
+from enum import StrEnum
 import time
 import base64
+from typing import TYPE_CHECKING, cast
 import asyncio
-from enum import StrEnum
-from typing import cast
 
 from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Hard ceiling on the inline-image refine + draw so a hung provider job cannot keep the
 # message's own pipeline (its 🆗 reaction + memory scheduling) waiting. The text reply is
@@ -56,7 +58,9 @@ async def refine_generation_prompt(  # noqa: PLR0913 -- director needs the reque
     """
     director_content: list[
         ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-    ] = [ResponseInputTextParam(text=f"User generation request:\n{user_prompt}", type="input_text")]
+    ] = [
+        ResponseInputTextParam(text=f"User generation request:\n{user_prompt}", type="input_text")
+    ]
     for image_bytes in image_bytes_list or []:
         director_content.append(
             ResponseInputImageParam(
@@ -148,9 +152,7 @@ class ImageGenerator(BaseModel):
         """Refines the rough request then draws it, reporting why it ended for hinting."""
         draft = rough_prompt.strip()
         if not draft:
-            logfire.info(
-                "Inline image skipped: the image span was empty", end_user_id=end_user_id
-            )
+            logfire.info("Inline image skipped: the image span was empty", end_user_id=end_user_id)
             return GeneratedImage(outcome=ImageGenerationOutcome.EMPTY)
         started = time.monotonic()
         try:

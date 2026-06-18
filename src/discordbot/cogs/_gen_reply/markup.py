@@ -41,8 +41,12 @@ _VOICE_CLOSE_RE = re.compile(rf"`?{_VOICE_CLOSE}`?", re.IGNORECASE)
 _IMAGE_OPEN_RE = re.compile(rf"`?{_IMAGE_OPEN}`?", re.IGNORECASE)
 
 # Whole-block matchers; group 1 is the inner content (DOTALL so it spans newlines).
-_VOICE_BLOCK_RE = re.compile(rf"`?{_VOICE_OPEN}`?(.*?)`?{_VOICE_CLOSE}`?", re.IGNORECASE | re.DOTALL)
-_IMAGE_BLOCK_RE = re.compile(rf"`?{_IMAGE_OPEN}`?(.*?)`?{_IMAGE_CLOSE}`?", re.IGNORECASE | re.DOTALL)
+_VOICE_BLOCK_RE = re.compile(
+    rf"`?{_VOICE_OPEN}`?(.*?)`?{_VOICE_CLOSE}`?", re.IGNORECASE | re.DOTALL
+)
+_IMAGE_BLOCK_RE = re.compile(
+    rf"`?{_IMAGE_OPEN}`?(.*?)`?{_IMAGE_CLOSE}`?", re.IGNORECASE | re.DOTALL
+)
 
 # A dangling (unclosed) open tag to the end of the text; group 1 is the trailing content.
 _VOICE_OPEN_TAIL_RE = re.compile(rf"`?{_VOICE_OPEN}`?(.*)\Z", re.IGNORECASE | re.DOTALL)
