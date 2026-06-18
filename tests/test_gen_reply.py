@@ -699,6 +699,11 @@ def _default_turn_events() -> list[SimpleNamespace]:
     return [_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=1)]
 
 
+async def _ready_reply_context() -> ReplyContext:
+    """An empty reply context for directly exercising `_handle_image_reply`."""
+    return ReplyContext()
+
+
 async def test_handle_streaming_allows_missing_output_token_details(
     economy_isolated_db: None,
 ) -> None:
@@ -1660,11 +1665,19 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     # The prompt director runs first, so video generation receives its refined output.
     assert cog.client.videos.create_prompts == ["caption"]
 
-    await cog._handle_image_reply(message=message, user_prompt="image")
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="image",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
     assert cog.client.images.generate_calls
     assert cog.client.images.generate_prompts == ["caption"]
-    assert isinstance(message.replies[-1].content, str)
-    assert message.replies[-1].content.startswith("<@1> caption")
+    # The image is delivered first, then a conversational reply streams onto that same
+    # message via the flash image_reply_model with no tools.
+    assert message.replies[-1].file is not None
+    assert cog.client.responses.create_models[-1] == cog.runtime_models.image_reply_model.name
+    assert cog.client.responses.create_streams[-1] is True
+    assert cog.client.responses.create_tools[-1] is None
 
     streamed: list[FakeMessage] = []
 
@@ -1792,7 +1805,11 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
         )
     ]
 
-    await cog._handle_image_reply(message=message, user_prompt="make it blue")
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="make it blue",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
     assert cog.client.images.edit_calls == 1
     assert cog.client.images.generate_calls == 0
@@ -1803,7 +1820,11 @@ async def test_handle_image_reply_refines_prompt_for_generate() -> None:
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
-    await cog._handle_image_reply(message=message, user_prompt="draw a cat")
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
     # The director's refined output (the fake's "caption") is what reaches images.generate.
     assert cog.client.images.generate_prompts == ["caption"]
@@ -1829,7 +1850,11 @@ async def test_handle_image_reply_director_receives_attached_bytes(
         )
     ]
 
-    await cog._handle_image_reply(message=message, user_prompt="make it blue")
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="make it blue",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
     assert cog.client.images.edit_calls == 1
     director_input = cog.client.responses.create_inputs[0]
@@ -1844,12 +1869,70 @@ async def test_handle_image_reply_falls_back_when_director_fails() -> None:
     cog.client.responses.create_error = RuntimeError("director boom")
     message = FakeMessage(content="image", author=FakeAuthor(user_id=1))
 
-    await cog._handle_image_reply(message=message, user_prompt="image")
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="image",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
     # Generation fell back to the raw prompt; the image is still delivered (no error surfaced).
     assert cog.client.images.generate_prompts == ["image"]
-    assert isinstance(message.replies[-1].content, str)
-    assert message.replies[-1].content.startswith("<@1>")
+    assert message.replies[-1].file is not None
+
+
+async def test_handle_image_reply_injects_only_user_memory() -> None:
+    """The conversational reply carries the requester's memory, never the server memory."""
+    cog = _cog()
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    context = ReplyContext(
+        memory_block=EasyInputMessageParam(role="assistant", content="USER_MEM_MARKER"),
+        server_memory_block=EasyInputMessageParam(role="assistant", content="SERVER_MEM_MARKER"),
+    )
+
+    async def _ready() -> ReplyContext:
+        """Hands the prepared context to the handler."""
+        return context
+
+    await cog._handle_image_reply(
+        message=message, user_prompt="draw a cat", context_task=asyncio.create_task(_ready())
+    )
+
+    # The streamed reply is the last create; only the user memory block rides in it.
+    reply_input = cog.client.responses.create_inputs[-1]
+    contents = [block.get("content") for block in reply_input]
+    assert "USER_MEM_MARKER" in contents
+    assert "SERVER_MEM_MARKER" not in contents
+
+
+async def test_handle_image_reply_best_effort_when_reply_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure producing the conversational reply still leaves the image delivered."""
+    cog = _cog()
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+
+    class BoomResponder:
+        """Stands in for ResponseStreamer and fails while streaming the reply."""
+
+        def __init__(self, **kwargs: object) -> None:
+            """Ignores the streamer kwargs."""
+            del kwargs
+
+        async def stream(self, *, responses: object) -> str:
+            """Simulates a streaming failure after the image is already delivered."""
+            del responses
+            raise RuntimeError("stream boom")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", BoomResponder)
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The image is delivered even though the reply stream raised; the error never surfaced.
+    assert message.replies[-1].file is not None
 
 
 async def test_handle_video_reply_refines_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1946,8 +2029,12 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         calls.append(f"reaction:{emoji}")
         return emoji
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
-        """Records image handler dispatch."""
+    async def fake_image_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
+        """Records image handler dispatch and drains the handed-over context task."""
+        del message
+        await context_task
         prompts.append(user_prompt)
         calls.append("_handle_image_reply")
 
@@ -2125,20 +2212,20 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     assert events == [("🔀", None), ("❓", "🔀"), ("🆗", "❓")]
 
 
-async def test_on_message_discards_speculative_context_on_image_route(
+async def test_on_message_consumes_speculative_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-QA route cancels the speculative QA context build."""
+    """The IMAGE route hands its speculative context to the image handler, not discards it."""
     cog = _cog()
-    cancelled: list[bool] = []
+    prepared = ReplyContext()
+    received: list[ReplyContext] = []
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
         """Routes every message to IMAGE."""
         del reference_messages, current_message
-        # Yield like a real route I/O call so the speculative prep task starts and can
-        # then be cancelled by the IMAGE dispatch.
+        # Yield like a real route I/O call so the speculative prep task starts.
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE")
 
@@ -2150,18 +2237,16 @@ async def test_on_message_discards_speculative_context_on_image_route(
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Blocks until cancelled, recording the cancellation."""
+        """Returns the prepared context the image handler should consume."""
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-        return ReplyContext()
+        return prepared
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
-        """Accepts the dispatched image request."""
+    async def fake_image_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
+        """Records the context the dispatch handed over."""
         del message, user_prompt
+        received.append(await context_task)
 
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
@@ -2177,7 +2262,7 @@ async def test_on_message_discards_speculative_context_on_image_route(
 
     message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
-    assert cancelled == [True]
+    assert received == [prepared]
 
 
 class _ThreadsStreamer:

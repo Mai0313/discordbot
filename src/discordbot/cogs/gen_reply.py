@@ -44,7 +44,7 @@ from discordbot.cogs._gen_reply.prompts import (
     VIDEO_PROMPT,
     EFFORT_PROMPT,
     SUMMARY_PROMPT,
-    DESCRIPTION_PROMPT,
+    IMAGE_REPLY_PROMPT,
     MEMORY_SELECT_PROMPT,
     REQUEST_TIME_CONTEXT_PROMPT,
 )
@@ -537,91 +537,136 @@ class ReplyGeneratorCogs(commands.Cog):
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
         await message.reply(content=f"{message.author.mention}", file=video_file)
 
-    async def _handle_image_reply(self, message: Message, user_prompt: str) -> None:
-        """Handles image generation or editing requests."""
+    async def _handle_image_reply(
+        self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
+    ) -> None:
+        """Generates or edits an image, then replies about it in persona.
+
+        The image is delivered first so the user sees it without waiting; the conversational
+        reply then streams onto that same message, so the bot answers while holding the image
+        it just made rather than coldly describing it. The reply brings in conversation
+        history and the selected user memory (never server memory), using the speculative
+        `context_task` that built in parallel with the route, awaited only after
+        the image is on screen so the context build overlaps generation. Once the image is
+        delivered the reply is best-effort: any failure leaves the delivered image untouched.
+        """
         image_model = self.runtime_models.image_model
-        if message.reference and isinstance(message.reference.resolved, Message):
-            own_bytes, ref_bytes = await asyncio.gather(
-                self.input_builder.get_image_source_bytes(message=message),
-                self.input_builder.get_image_source_bytes(message=message.reference.resolved),
-            )
-            image_bytes_list = own_bytes + ref_bytes
-        else:
-            image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
-
-        refined_prompt = await self._refine_generation_prompt(
-            user_prompt=user_prompt,
-            instructions=IMAGE_PROMPT,
-            end_user_id=message.author.name,
-            image_bytes_list=image_bytes_list or None,
-        )
-
-        if image_bytes_list:
-            result = await self.client.images.edit(
-                image=image_bytes_list,
-                prompt=refined_prompt or "請依照附件內容進行編輯或優化。",
-                model=image_model.name,
-                n=1,
-                response_format="b64_json",
-                quality="auto",
-                size="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-            )
-        else:
-            result = await self.client.images.generate(
-                prompt=refined_prompt or "請生成一張圖片。",
-                model=image_model.name,
-                n=1,
-                response_format="b64_json",
-                quality="auto",
-                size="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-            )
-
-        if not result.data:
-            raise ValueError("Image operation returned no results")
-        image_b64 = result.data[0].b64_json
-        if image_b64 is None:
-            raise ValueError("Image operation returned no b64_json")
-        # Send the generated image immediately so the user sees it without waiting on the
-        # caption round-trip; the caption is edited into the same message once it returns.
-        image_file = File(fp=BytesIO(base64.b64decode(image_b64)), filename="generated.png")
-        reply = await message.reply(content=message.author.mention, file=image_file)
-
-        image_description_input: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(
-                role="user",
-                content=[
-                    ResponseInputTextParam(
-                        text="Describe this generated image briefly for the Discord reply.",
-                        type="input_text",
-                    ),
-                    ResponseInputImageParam(
-                        image_url=convert_base64_to_data_uri(image_b64),
-                        detail="auto",
-                        type="input_image",
-                    ),
-                ],
-            )
-        ]
-        fast_model = self.runtime_models.fast_model
         try:
-            image_responses = await self.client.responses.create(
-                model=fast_model.name,
-                instructions=DESCRIPTION_PROMPT,
-                input=cast("ResponseInputParam", image_description_input),
-                reasoning=fast_model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
+            if message.reference and isinstance(message.reference.resolved, Message):
+                own_bytes, ref_bytes = await asyncio.gather(
+                    self.input_builder.get_image_source_bytes(message=message),
+                    self.input_builder.get_image_source_bytes(message=message.reference.resolved),
+                )
+                image_bytes_list = own_bytes + ref_bytes
+            else:
+                image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
+
+            refined_prompt = await self._refine_generation_prompt(
+                user_prompt=user_prompt,
+                instructions=IMAGE_PROMPT,
+                end_user_id=message.author.name,
+                image_bytes_list=image_bytes_list or None,
             )
-            image_description = (image_responses.output_text or "").strip()
+
+            if image_bytes_list:
+                result = await self.client.images.edit(
+                    image=image_bytes_list,
+                    prompt=refined_prompt or "請依照附件內容進行編輯或優化。",
+                    model=image_model.name,
+                    n=1,
+                    response_format="b64_json",
+                    quality="auto",
+                    size="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                )
+            else:
+                result = await self.client.images.generate(
+                    prompt=refined_prompt or "請生成一張圖片。",
+                    model=image_model.name,
+                    n=1,
+                    response_format="b64_json",
+                    quality="auto",
+                    size="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                )
+
+            if not result.data:
+                raise ValueError("Image operation returned no results")
+            image_b64 = result.data[0].b64_json
+            if image_b64 is None:
+                raise ValueError("Image operation returned no b64_json")
+            # Send the generated image immediately so the user sees it without waiting on the
+            # conversational reply; the reply text streams onto this same message right after.
+            image_file = File(fp=BytesIO(base64.b64decode(image_b64)), filename="generated.png")
+            reply = await message.reply(content=message.author.mention, file=image_file)
         except Exception:
-            # The image is already delivered; a caption failure must not surface as an error.
-            logfire.warn("Image caption failed; leaving image uncaptioned", _exc_info=True)
-            image_description = ""
-        if image_description:
-            await reply.edit(content=f"{message.author.mention} {image_description}")
+            # Generation failing IS a real error and stays on the outer error path, but the
+            # speculative context must not leak when we bail before consuming it.
+            await _discard_task(task=context_task)
+            raise
+
+        # The image is already delivered, so from here a failure must never surface as an
+        # error: the conversational reply is best-effort and leaves the image untouched.
+        try:
+            image_reply_model = self.runtime_models.image_reply_model
+            context = await context_task
+            # Mirror the answer path's order (history, memory, reference, current), but inject
+            # only the selected user memory, never the server memory block.
+            response_input: ResponseInputParam = [*context.hist_messages]
+            if context.memory_block is not None:
+                response_input.append(context.memory_block)
+            response_input.extend(context.reference_messages)
+            response_input.extend(context.current_message)
+            # The generated image is the focus, appended last as inline base64
+            # (provider-agnostic) right after the request it answers.
+            response_input.append(
+                EasyInputMessageParam(
+                    role="user",
+                    content=[
+                        ResponseInputTextParam(
+                            text=(
+                                "This is the image you just made for them in response to the "
+                                "request above. Reply to them about it."
+                            ),
+                            type="input_text",
+                        ),
+                        ResponseInputImageParam(
+                            image_url=convert_base64_to_data_uri(image_b64),
+                            detail="auto",
+                            type="input_image",
+                        ),
+                    ],
+                )
+            )
+            # Stream onto the already-sent image reply: pre-seeding `reply` makes the streamer
+            # edit that message (its content edits keep the attached image). The selection-call
+            # usage and memory labels are seeded so the footer matches the QA path.
+            streamer = ResponseStreamer(
+                message=message,
+                reply=reply,
+                memory_lookups=context.memory_labels,
+                input_tokens=context.selection_input_tokens,
+                output_tokens=context.selection_output_tokens,
+                model_effort=image_reply_model.effort,
+            )
+            with logfire.span("gen_reply image reply", model=image_reply_model.name):
+                responses = await self.client.responses.create(
+                    model=image_reply_model.name,
+                    instructions=_build_runtime_instructions(
+                        system_prompt=IMAGE_REPLY_PROMPT, message=message
+                    ),
+                    input=response_input,
+                    reasoning=image_reply_model.reasoning,
+                    stream=True,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
+                await streamer.stream(responses=responses)
+        except Exception:
+            logfire.warn(
+                "Image reply generation failed; leaving the image without a reply", _exc_info=True
+            )
 
     async def _get_reference_and_current(
         self, message: Message
@@ -1304,18 +1349,23 @@ class ReplyGeneratorCogs(commands.Cog):
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "IMAGE":
-                    await _discard_task(task=prep_task)
-                    prep_task = None
                     await _discard_task(task=effort_task)
                     effort_task = None
-                    # IMAGE loads raw bytes itself, so the background uploads are wasted.
-                    await _discard_task(task=parts_task)
-                    parts_task = None
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
                     reactions.advance(emoji="🎨")
-                    await self._handle_image_reply(message=message, user_prompt=user_prompt)
+                    # The image reply now answers with conversation history + the requester's
+                    # memory, so the speculative context is consumed, not discarded; the handler
+                    # awaits it only after the image is on screen so the build overlaps
+                    # generation. `parts_task` is left for the finally backstop: prep awaits it
+                    # via asyncio.shield, but if the handler discards prep on a generation
+                    # failure the shielded upload keeps running, so the finally must drain it.
+                    image_context_task = prep_task
+                    prep_task = None
+                    await self._handle_image_reply(
+                        message=message, user_prompt=user_prompt, context_task=image_context_task
+                    )
                 elif route.decision == "VIDEO":
                     await _discard_task(task=prep_task)
                     prep_task = None

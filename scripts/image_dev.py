@@ -10,15 +10,15 @@ from rich.console import Console
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, DESCRIPTION_PROMPT
+from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, IMAGE_REPLY_PROMPT
 
 console = Console()
 config = LLMConfig()
 
 # Mirror the @property values in cogs/gen_reply.py. Update here when the bot's
-# image_model / fast_model swap, otherwise this script tests stale models.
+# image_model / image_reply_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3-pro-image")
-FAST_MODEL = ModelSettings(name="gemini-flash-latest", effort="none")
+IMAGE_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 
 # The director that refines the user's request into a rich image prompt before the image
 # model draws it. Runs with grounding tools so a thin request can be looked up first.
@@ -58,8 +58,8 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     """Runs the dev image generation or edit flow and writes the PNG result.
 
     A director round (`_build_image_prompt`) first refines the user's request into a detailed
-    prompt, then the image model generates or edits from it. The caption stage describes the
-    result for the Discord reply.
+    prompt, then the image model generates or edits from it. The reply stage then answers
+    about the image as the bot would (production also feeds it history and the user's memory).
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
@@ -106,27 +106,30 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
         raise ValueError("Image operation returned no b64_json")
 
     image_url = convert_base64_to_data_uri(base64_image=image_b64)
-    image_responses = client.responses.create(
-        model=FAST_MODEL.name,
-        instructions=DESCRIPTION_PROMPT,
+    reply_responses = client.responses.create(
+        model=IMAGE_REPLY_MODEL.name,
+        instructions=IMAGE_REPLY_PROMPT,
         input=[
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": "Describe this generated image briefly for the Discord reply.",
+                        "text": (
+                            f"They asked: {user_prompt}\nThis is the image you just made for "
+                            "them in response. Reply to them about it."
+                        ),
                     },
                     {"type": "input_image", "image_url": image_url, "detail": "auto"},
                 ],
             }
         ],
-        reasoning=FAST_MODEL.reasoning,
+        reasoning=IMAGE_REPLY_MODEL.reasoning,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "image_dev"},
         extra_body={"mock_testing_fallbacks": False},
     )
-    image_description = (image_responses.output_text or "").strip()
+    image_reply = (reply_responses.output_text or "").strip()
 
     model_name = IMAGE_MODEL.name
     if "/" in model_name:
@@ -138,7 +141,7 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
 
     end = time.time()
     console.print(f"[green]Saved to {output_path}[/green]")
-    console.print(f"Caption: {image_description}")
+    console.print(f"Reply: {image_reply}")
     console.print(f"\n{IMAGE_MODEL.name} on Litellm takes {end - start:.2f} seconds")
 
 
