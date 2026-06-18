@@ -426,15 +426,6 @@ class BlackjackHistoryRecord(BaseModel):
     created_at: datetime = Field(..., description="Asia/Taipei timestamp the round settled at.")
 
 
-class BlackjackDealerDecision(BaseModel):
-    """Structured hit / stand decision returned by the AI Blackjack dealer."""
-
-    model_config = ConfigDict(frozen=True)
-
-    action: BlackjackDealerAction = Field(..., description="Dealer hit or stand decision.")
-    reason: str = Field(..., description="Rationale for the dealer's decision.")
-
-
 class DealerOutcome(BaseModel):
     """Dealer final-total distribution under H17 over a no-replacement shoe.
 
@@ -581,7 +572,6 @@ __all__ = [
     "ActionEv",
     "ActionEvAnalysis",
     "BlackjackDealerAction",
-    "BlackjackDealerDecision",
     "BlackjackDealerStep",
     "BlackjackHandSettlement",
     "BlackjackInsuranceSettlement",
