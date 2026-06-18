@@ -14,6 +14,15 @@ renderer needs a deletion / periodic-sweep strategy or active channels accumulat
 toward the org storage quota. Evicting-then-deleting is not enough on its own: a file can
 still be referenced in scrollback after its cache entry is gone, so the cleanup policy is an
 enable-time design decision, not something this disabled scaffold settles.
+
+Reference-path prerequisites before uncommenting the `select.py` branch (the answer request,
+not this renderer, builds the message that cites the file): the answer request must send
+`anthropic-beta: files-api-2025-04-14` when it references an uploaded file, since LiteLLM does
+not auto-add that header for file references; LiteLLM's Anthropic mapper needs the file format,
+not a bare `file_id`, to emit a `document` block rather than a code-execution `container_upload`,
+so PDF / text references must preserve their MIME; and Anthropic document blocks only cover
+PDF / plain text / images, so keep the type narrowing `InlineRenderer` does today (UTF-8 files
+as `input_text`, the rest dropped) instead of uploading every MIME and referencing it blindly.
 """
 
 import io
@@ -170,9 +179,10 @@ class AnthropicFileUploader(AttachmentRenderer):
     ) -> tuple[str, datetime] | None:
         """Uploads bytes to the Anthropic Files API and returns `(file_id, expires_at)`.
 
-        The SDK sets the required `files-api-2025-04-14` beta header for `beta.files`
-        automatically. Anthropic files have no provider expiry, so the cache window is a
-        fixed synthetic TTL.
+        The SDK sets `files-api-2025-04-14` for this upload call automatically; the separate
+        answer request that later references the file must send that beta header itself (see
+        the module docstring). Anthropic files have no provider expiry, so the cache window is
+        a fixed synthetic TTL.
         """
         try:
             uploaded = await self.anthropic_client.beta.files.upload(
