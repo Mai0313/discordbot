@@ -4,7 +4,7 @@ from io import BytesIO
 import re
 import time
 import base64
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 import asyncio
 from functools import cached_property
 import contextlib
@@ -257,6 +257,41 @@ def _log_pre_answer_latency(started: float, decision: str) -> None:
         elapsed_seconds=time.monotonic() - started,
         decision=decision,
     )
+
+
+class _MessageLogFields(TypedDict):
+    """Exact key set for `_message_log_fields`, so `**`-spreading it into a logfire call
+    keeps statically known keys (none underscore-prefixed) and never collides with logfire's
+    `_tags` / `_exc_info` keyword-only parameters.
+    """
+
+    user_id: int
+    user_name: str
+    display_name: str
+    message_id: int
+    channel_id: int
+    guild_id: int | None
+    guild_name: str | None
+
+
+def _message_log_fields(message: Message) -> _MessageLogFields:
+    """Standard Discord identifying fields for correlating one reply's logs.
+
+    The pipeline-entry log carries the full set; every downstream log carries only
+    `message_id` as the correlation key, so a whole turn reconstructs by grepping it.
+    `user_name` is the stable handle, `display_name` the per-guild nickname;
+    `guild_id` / `guild_name` are None in a DM.
+    """
+    guild = message.guild
+    return {
+        "user_id": message.author.id,
+        "user_name": message.author.name,
+        "display_name": message.author.display_name,
+        "message_id": message.id,
+        "channel_id": message.channel.id,
+        "guild_id": guild.id if guild else None,
+        "guild_name": guild.name if guild else None,
+    }
 
 
 class ReplyGeneratorCogs(commands.Cog):
@@ -515,6 +550,8 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
+        started = time.monotonic()
+        logfire.info("gen_reply video generation start", message_id=message.id)
         refined_prompt = await self._refine_generation_prompt(
             user_prompt=user_prompt, instructions=VIDEO_PROMPT, end_user_id=message.author.name
         )
@@ -523,19 +560,46 @@ class ReplyGeneratorCogs(commands.Cog):
             prompt=refined_prompt or "請依照訊息內容生成一段影片。",
             extra_headers={"x-litellm-end-user-id": message.author.name},
         )
+        logfire.debug(
+            "gen_reply video job created",
+            message_id=message.id,
+            video_id=video.id,
+            status=video.status,
+        )
         async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
             while video.status not in ("completed", "failed"):
                 await asyncio.sleep(5)
                 video = await self.client.videos.retrieve(
                     video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
                 )
+                logfire.debug(
+                    "gen_reply video poll",
+                    message_id=message.id,
+                    video_id=video.id,
+                    status=video.status,
+                    poll_seconds=time.monotonic() - started,
+                )
         if video.status != "completed":
+            logfire.warn(
+                "gen_reply video generation failed",
+                message_id=message.id,
+                video_id=video.id,
+                status=video.status,
+                error=str(video.error),
+            )
             raise RuntimeError(f"Video generation failed: {video.error}")
         video_content = await self.client.videos.download_content(
             video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
         )
         video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
         await message.reply(content=f"{message.author.mention}", file=video_file)
+        logfire.info(
+            "gen_reply video delivered",
+            message_id=message.id,
+            video_id=video.id,
+            total_elapsed_seconds=time.monotonic() - started,
+            bytes=len(video_content.content),
+        )
 
     async def _handle_image_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
@@ -551,6 +615,14 @@ class ReplyGeneratorCogs(commands.Cog):
         delivered the reply is best-effort: any failure leaves the delivered image untouched.
         """
         image_model = self.runtime_models.image_model
+        started = time.monotonic()
+        logfire.info(
+            "gen_reply image generation start",
+            message_id=message.id,
+            has_source_images=bool(
+                message.reference and isinstance(message.reference.resolved, Message)
+            ),
+        )
         try:
             if message.reference and isinstance(message.reference.resolved, Message):
                 own_bytes, ref_bytes = await asyncio.gather(
@@ -599,6 +671,11 @@ class ReplyGeneratorCogs(commands.Cog):
             # conversational reply; the reply text streams onto this same message right after.
             image_file = File(fp=BytesIO(base64.b64decode(image_b64)), filename="generated.png")
             reply = await message.reply(content=message.author.mention, file=image_file)
+            logfire.info(
+                "gen_reply image delivered",
+                message_id=message.id,
+                elapsed_seconds=time.monotonic() - started,
+            )
         except Exception:
             # Generation failing IS a real error and stays on the outer error path, but the
             # speculative context must not leak when we bail before consuming it.
@@ -665,7 +742,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 await streamer.stream(responses=responses)
         except Exception:
             logfire.warn(
-                "Image reply generation failed; leaving the image without a reply", _exc_info=True
+                "Image reply generation failed; leaving the image without a reply",
+                message_id=message.id,
+                _exc_info=True,
             )
 
     async def _get_reference_and_current(
@@ -742,7 +821,8 @@ class ReplyGeneratorCogs(commands.Cog):
             # The model returned no text output (e.g. safety filter, empty response);
             # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
             logfire.warn(
-                "RouteClassification parse failed, model returned no text; defaulting to QA"
+                "RouteClassification parse failed, model returned no text; defaulting to QA",
+                message_id=message.id,
             )
             route = RouteClassification(decision="QA")
         # Route-call latency is logged on every path: this is the prime suspect for slow
@@ -751,6 +831,7 @@ class ReplyGeneratorCogs(commands.Cog):
             "gen_reply route done",
             elapsed_seconds=time.monotonic() - started,
             decision=route.decision,
+            message_id=message.id,
         )
         return route
 
@@ -788,11 +869,16 @@ class ReplyGeneratorCogs(commands.Cog):
             "gen_reply effort done",
             elapsed_seconds=time.monotonic() - started,
             effort=grade.effort,
+            message_id=message.id,
         )
         return grade
 
     async def _resolve_effort(
-        self, *, effort_task: "asyncio.Task[EffortGrade]", route_done: asyncio.Event
+        self,
+        *,
+        message: Message,
+        effort_task: "asyncio.Task[EffortGrade]",
+        route_done: asyncio.Event,
     ) -> Literal["low", "medium", "high"]:
         """Resolves the parallel effort grade, bounded by the route like memory selection.
 
@@ -807,16 +893,22 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Effort grading exceeded the post-route grace; defaulting to high effort",
                 grace_seconds=EFFORT_GRACE_SECONDS,
+                message_id=message.id,
             )
             return "high"
         except Exception:
-            logfire.warn("Effort grading failed; defaulting to high effort", _exc_info=True)
+            logfire.warn(
+                "Effort grading failed; defaulting to high effort",
+                message_id=message.id,
+                _exc_info=True,
+            )
             return "high"
         return grade.effort
 
     async def _resolve_threads_block(
         self,
         *,
+        message: Message,
         threads_task: "asyncio.Task[list[EasyInputMessageParam]]",
         route_done: asyncio.Event,
     ) -> list[EasyInputMessageParam]:
@@ -836,15 +928,21 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Threads context parse exceeded the post-route grace; injecting timeout notice",
                 grace_seconds=THREADS_GRACE_SECONDS,
+                message_id=message.id,
             )
             return threads_timeout_context_messages()
         except Exception:
-            logfire.warn("Threads context parse failed; answering without it", _exc_info=True)
+            logfire.warn(
+                "Threads context parse failed; answering without it",
+                message_id=message.id,
+                _exc_info=True,
+            )
             return []
         logfire.info(
             "gen_reply threads context done",
             elapsed_seconds=time.monotonic() - started,
             blocks=len(blocks),
+            message_id=message.id,
         )
         return blocks
 
@@ -908,6 +1006,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Capping selected memories to the per-reply limit",
                 requested=len(memories),
                 kept=max_memories,
+                message_id=message.id,
             )
             memories = memories[:max_memories]
         input_tokens = responses.usage.input_tokens if responses.usage else 0
@@ -1027,7 +1126,9 @@ class ReplyGeneratorCogs(commands.Cog):
         # Covers the history fetch/render plus waiting on the shared attachment upload, so
         # the log separates pre-answer attachment cost from the route-call cost.
         logfire.info(
-            "gen_reply context build done", elapsed_seconds=time.monotonic() - build_started
+            "gen_reply context build done",
+            elapsed_seconds=time.monotonic() - build_started,
+            message_id=message.id,
         )
         hist_messages = history.rendered
 
@@ -1072,6 +1173,12 @@ class ReplyGeneratorCogs(commands.Cog):
                     memory=server_memory,
                     include_absent=_source_channel_is_public(message=message),
                 )
+            logfire.debug(
+                "gen_reply memory allowlist built",
+                allowlist_size=len(allowed),
+                widened=bool(server_memory and message.guild is not None),
+                message_id=message.id,
+            )
             if allowed:
                 # Selection runs on the text-only transcript (markers, no file ids) so it
                 # neither re-reads the uploaded files nor blocks on their upload.
@@ -1102,6 +1209,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     logfire.warn(
                         "Memory selection exceeded the post-route grace; falling back to participant memory",
                         grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                        message_id=message.id,
                     )
                     memory_block, memory_labels = self._participant_memory_fallback(
                         message=message, allowed=allowed
@@ -1109,6 +1217,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 except Exception:
                     logfire.warn(
                         "Memory selection failed; falling back to participant memory",
+                        message_id=message.id,
                         _exc_info=True,
                     )
                     memory_block, memory_labels = self._participant_memory_fallback(
@@ -1124,6 +1233,10 @@ class ReplyGeneratorCogs(commands.Cog):
                         "gen_reply memory selection done",
                         elapsed_seconds=time.monotonic() - selection_started,
                         selected=len(selection.memories),
+                        selected_ids=[memory.user_id for memory in selection.memories],
+                        labels=memory_lookup_labels(memories=selection.memories),
+                        allowlist_size=len(allowed),
+                        message_id=message.id,
                     )
 
         return ReplyContext(
@@ -1247,9 +1360,22 @@ class ReplyGeneratorCogs(commands.Cog):
         has_attachment = bool(message.attachments or message.stickers)
 
         if not user_prompt and not has_attachment:
+            logfire.debug(
+                "gen_reply empty prompt; replied with ?", **_message_log_fields(message=message)
+            )
             await update_reaction(message=message, bot_user=self.bot.user, emoji="❓")
             await message.reply(content="?")
             return
+
+        logfire.info(
+            "gen_reply received",
+            **_message_log_fields(message=message),
+            prompt_chars=len(user_prompt),
+            has_attachment=has_attachment,
+            attachment_count=len(message.attachments),
+            sticker_count=len(message.stickers),
+            is_dm=is_dm,
+        )
 
         reactions = ReactionStatusChain(message=message, bot_user=self.bot.user)
         try:
@@ -1257,7 +1383,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 message=message, user_prompt=user_prompt, reactions=reactions
             )
         except Exception as e:
-            logfire.error("Failed to generate reply", user_id=message.author.name, _exc_info=True)
+            logfire.error(
+                "gen_reply failed",
+                **_message_log_fields(message=message),
+                error_type=type(e).__name__,
+                _exc_info=True,
+            )
             with contextlib.suppress(Exception):
                 reactions.advance(emoji="❌")
                 error_embed = Embed(
@@ -1403,7 +1534,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                     parts_task = None
                     effort = await self._resolve_effort(
-                        effort_task=effort_task, route_done=route_done
+                        message=message, effort_task=effort_task, route_done=route_done
                     )
                     effort_task = None
                     pipeline_span.set_attribute(key="effort", value=effort)
@@ -1425,14 +1556,14 @@ class ReplyGeneratorCogs(commands.Cog):
                     prep_task = None
                     parts_task = None
                     effort = await self._resolve_effort(
-                        effort_task=effort_task, route_done=route_done
+                        message=message, effort_task=effort_task, route_done=route_done
                     )
                     effort_task = None
                     # The parse ran in parallel since before the route; resolve it under the
                     # same route_done gate and fold the post's blocks into the answer context.
                     if threads_task is not None:
                         threads_block = await self._resolve_threads_block(
-                            threads_task=threads_task, route_done=route_done
+                            message=message, threads_task=threads_task, route_done=route_done
                         )
                         threads_task = None
                         context = context.model_copy(update={"threads_block": threads_block})

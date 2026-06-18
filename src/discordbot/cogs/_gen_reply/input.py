@@ -17,7 +17,11 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.cogs._gen_reply.voice import VOICE_REPLY_FILENAME
-from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
+from discordbot.cogs._gen_reply.attachment.base import (
+    RenderedPart,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
@@ -247,7 +251,11 @@ class MessageInputBuilder(BaseModel):
             required = self.required_modality(content_type=source.content_type)
             if required not in modalities:
                 logfire.warn(
-                    f"Skipping {required} attachment for {model_name}: {source.cache_key}"
+                    "gen_reply skipping unsupported attachment",
+                    modality=required,
+                    model=model_name,
+                    cache_key=loggable_cache_key(cache_key=source.cache_key),
+                    content_type=source.content_type,
                 )
                 continue
             supported.append(source)
@@ -368,14 +376,26 @@ class MessageInputBuilder(BaseModel):
         cached = self._attachment_cache.get(cache_key)
         if cached is not None and datetime.now(tz=UTC) < cached[0] - cache_safety_margin:
             self._attachment_cache.move_to_end(cache_key)
+            logfire.debug(
+                "gen_reply attachment cache hit", message_id=message.id, source_count=len(sources)
+            )
             # Hand out per-part copies so no caller ever holds the cached dicts; the
             # values are immutable strings, so the copies stay cheap.
             return [part.copy() for part in cached[1]]
 
+        logfire.debug(
+            "gen_reply attachment render", message_id=message.id, source_count=len(sources)
+        )
         rendered = await self._render_attachment_parts(
             sources=sources, allow_dead_cache=allow_dead_cache
         )
         resolved = [item[0] for item in rendered if item is not None]
+        logfire.debug(
+            "gen_reply attachment render done",
+            message_id=message.id,
+            resolved=len(resolved),
+            dropped=len(sources) - len(resolved),
+        )
         # A None entry means a download/convert or upload failed; skip caching so the
         # next reply retries instead of pinning a degraded render. The entry's expiry is
         # the earliest across its files, so the whole entry re-renders before any handle
@@ -457,7 +477,11 @@ class MessageInputBuilder(BaseModel):
             # The route awaits this before dispatching, so a cold-start modality lookup
             # (or render) failure must degrade to empty text like process_single_message
             # does, not abort the whole reply through the generic error path.
-            logfire.warn(f"Failed to render message {message.id} for routing", _exc_info=True)
+            logfire.warn(
+                "gen_reply failed to render message for routing",
+                message_id=message.id,
+                _exc_info=True,
+            )
             return EasyInputMessageParam(role="user", content="")
 
     async def process_single_message(
@@ -484,5 +508,7 @@ class MessageInputBuilder(BaseModel):
                 has_attachments=bool(sources),
             )
         except Exception:
-            logfire.warn(f"Failed to process message {message.id}", _exc_info=True)
+            logfire.warn(
+                "gen_reply failed to process message", message_id=message.id, _exc_info=True
+            )
             return EasyInputMessageParam(role="user", content="")
