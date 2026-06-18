@@ -7,7 +7,13 @@ non-Gemini answer models inline instead (`InlineRenderer`).
 
 Simpler than the Gemini uploader: Anthropic files are usable the moment `beta.files.upload`
 returns (no PROCESSING/ACTIVE poll) and persist until deleted (no provider expiry), so there
-is no pending-upload re-poll machinery and the render cache uses a fixed synthetic TTL.
+is no pending-upload re-poll machinery and the render cache uses a fixed synthetic TTL. That
+persistence cuts both ways: the synthetic TTL only evicts the local render cache, never the
+remote file, and Anthropic files never auto-expire (unlike Gemini's ~48h), so enabling this
+renderer needs a deletion / periodic-sweep strategy or active channels accumulate uploads
+toward the org storage quota. Evicting-then-deleting is not enough on its own: a file can
+still be referenced in scrollback after its cache entry is gone, so the cleanup policy is an
+enable-time design decision, not something this disabled scaffold settles.
 """
 
 import io
