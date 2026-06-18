@@ -54,7 +54,7 @@ VOICE_REPLY_FILENAME = "reply.wav"
 # longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
 # model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
 # where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
-VOICE_TIMEOUT_SECONDS = 180.0
+VOICE_TIMEOUT_SECONDS = 300.0
 
 
 def strip_voice_marker(*, text: str) -> tuple[str, bool]:
