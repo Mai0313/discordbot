@@ -7,14 +7,9 @@ from google import genai
 from openai import OpenAI
 from anthropic import Anthropic
 from rich.console import Console
-from google.genai.types import (
-    Tool,
-    UrlContext,
-    HttpOptions,
-    GoogleSearch,
-    ThinkingConfig,
-    GenerateContentConfig,
-)
+from google.genai.types import HttpOptions
+from google.genai._interactions.types import TextContentParam, GenerationConfigParam
+from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
@@ -30,7 +25,7 @@ config = LLMConfig()
 # Mirror the @property value in cogs/gen_reply.py. slow_model has a time-of-day
 # dispatch in production (peak hours swap to gemini-flash-latest); for
 # dev we pin to the off-peak default. Swap manually when testing peak behaviour.
-SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
+SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:
@@ -125,52 +120,46 @@ def gen_reply_chat(user_prompt: str) -> None:
 def gen_reply_gemini(user_prompt: str) -> None:
     """Streams a dev reply through the native Gemini SDK.
 
-    Sends `REPLY_PROMPT` and the user prompt through
-    `client.models.generate_content_stream` using the configured slow model,
-    thinking config, Google Search, and URL context tools. Prints thought parts
-    dimmed, answer text as it streams, and elapsed time to the console.
-
     Args:
         user_prompt: User message to send as the comparison prompt.
     """
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
-            base_url=config.base_url,
-            extra_body={
-                "mock_testing_fallbacks": False,
-                "cache": {
-                    "no-cache": True  # Skip cache check, get fresh response
-                },
-            },
+            base_url=config.base_url
+            # NOTICE: extra_body properties are not supported in `.interactions` yet
+            # extra_body={
+            #     "mock_testing_fallbacks": False,
+            #     "cache": {
+            #         "no-cache": True  # Skip cache check, get fresh response
+            #     },
+            # },
         ),
     )
     start = time.time()
-    responses = client.models.generate_content_stream(
+    responses = client.interactions.create(
         model=SLOW_MODEL.name,
-        contents=[
-            {"role": "user", "parts": [{"text": REPLY_PROMPT}]},
-            {"role": "user", "parts": [{"text": user_prompt}]},
-        ],
-        config=GenerateContentConfig(
-            thinking_config=ThinkingConfig(
-                include_thoughts=True, thinking_level=SLOW_MODEL.effort.upper()
-            ),
-            tools=[Tool(googleSearch=GoogleSearch(), url_context=UrlContext())],
+        system_instruction=REPLY_PROMPT,
+        input=[TextContentParam(text=user_prompt, type="text")],
+        environment="remote",
+        generation_config=GenerationConfigParam(
+            thinking_level=SLOW_MODEL.effort, thinking_summaries="auto"
         ),
+        tools=[
+            URLContext(type="url_context"),
+            GoogleSearch(type="google_search", search_types=["web_search"]),
+        ],
+        stream=True,
     )
     model_name = ""
     for response in responses:
-        model_name = response.model_version or model_name
-        if not response.candidates or not response.candidates[0].content.parts:
-            continue
-        for part in response.candidates[0].content.parts:
-            if not part.text:
-                continue
-            if part.thought:
-                console.print(f"[dim]{part.text}[/dim]", end="")
-            else:
-                console.print(part.text, end="")
+        if response.event_type == "interaction.created":
+            model_name = response.interaction.model
+        if response.event_type == "step.delta":
+            if response.delta.type == "thought_summary":
+                console.print(f"[dim]{response.delta.content.text}[/dim]", end="")
+            elif response.delta.type == "text":
+                console.print(response.delta.text, end="")
     end = time.time()
     console.print(f"\n{model_name} on Gemini SDK takes {end - start:.2f} seconds")
 
@@ -212,7 +201,7 @@ def gen_reply_anthropic(user_prompt: str) -> None:
 
 
 if __name__ == "__main__":
-    gen_reply(user_prompt="為何 37 是質數?")
+    # gen_reply(user_prompt="為何 37 是質數?")
     # gen_reply_chat(user_prompt="為何 37 是質數?")
-    # gen_reply_gemini(user_prompt="為何 37 是質數?")
+    gen_reply_gemini(user_prompt="為何 37 是質數?")
     # gen_reply_anthropic(user_prompt="為何 37 是質數?")
