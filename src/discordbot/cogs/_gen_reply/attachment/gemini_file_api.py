@@ -23,7 +23,11 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 
 from discordbot.utils.llm import create_gemini_client
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
+from discordbot.cogs._gen_reply.attachment.base import (
+    RenderedPart,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs._gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -211,7 +215,7 @@ class GeminiFileUploader(AttachmentRenderer):
             return False, None
         logfire.debug(
             "gemini pending upload repoll",
-            cache_key=cache_key,
+            cache_key=loggable_cache_key(cache_key=cache_key),
             state=str(uploaded.state),
             adopted=uploaded.state == FileState.ACTIVE,
         )
@@ -263,7 +267,7 @@ class GeminiFileUploader(AttachmentRenderer):
         async with self._media_semaphore:
             logfire.debug(
                 "gemini media slot acquired",
-                cache_key=cache_key,
+                cache_key=loggable_cache_key(cache_key=cache_key),
                 wait_seconds=time.monotonic() - wait_started,
             )
             try:
@@ -272,7 +276,7 @@ class GeminiFileUploader(AttachmentRenderer):
                 logfire.warn(
                     "failed to load attachment bytes for upload",
                     filename=filename,
-                    cache_key=cache_key,
+                    cache_key=loggable_cache_key(cache_key=cache_key),
                     allow_dead_cache=allow_dead_cache,
                 )
                 if allow_dead_cache:

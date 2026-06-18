@@ -22,7 +22,11 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
+from discordbot.cogs._gen_reply.attachment.base import (
+    RenderedPart,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs._gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -150,7 +154,7 @@ class OpenAIFileUploader(AttachmentRenderer):
                 logfire.warn(
                     "failed to load attachment bytes for upload",
                     filename=filename,
-                    cache_key=cache_key,
+                    cache_key=loggable_cache_key(cache_key=cache_key),
                     allow_dead_cache=allow_dead_cache,
                 )
                 if allow_dead_cache:

@@ -57,6 +57,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 from discordbot.cogs._parse_threads.builder import THREADS_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.attachment.base import loggable_cache_key
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import (
@@ -1481,6 +1482,16 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
+
+
+def test_loggable_cache_key_strips_url_query_token() -> None:
+    """An int key logs unchanged; a URL key drops its (possibly signed) query string."""
+    assert loggable_cache_key(cache_key=12345) == 12345
+    assert (
+        loggable_cache_key(cache_key="https://media.discordapp.net/x/y.png?ex=1&hm=secrettoken")
+        == "https://media.discordapp.net/x/y.png"
+    )
+    assert loggable_cache_key(cache_key="https://cdn.example/a.png") == "https://cdn.example/a.png"
 
 
 async def test_openai_file_uploader_renders_image_and_file_parts(

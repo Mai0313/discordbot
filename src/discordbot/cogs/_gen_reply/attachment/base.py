@@ -15,6 +15,18 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
 
 
+def loggable_cache_key(cache_key: int | str) -> int | str:
+    """A log-safe form of an attachment cache key.
+
+    Attachment / sticker keys are ids (safe to log). An embed-image key is its source URL,
+    which can carry a signed CDN token in the query string; drop the query so a log keeps a
+    stable, correlatable identifier without leaking the token.
+    """
+    if isinstance(cache_key, str):
+        return cache_key.split("?", 1)[0]
+    return cache_key
+
+
 class AttachmentRenderer(BaseModel):
     """Strategy that turns one Discord attachment source into a Responses API content part.
 

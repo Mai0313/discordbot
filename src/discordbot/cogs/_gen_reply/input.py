@@ -17,7 +17,11 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.cogs._gen_reply.voice import VOICE_REPLY_FILENAME
-from discordbot.cogs._gen_reply.attachment.base import RenderedPart, AttachmentRenderer
+from discordbot.cogs._gen_reply.attachment.base import (
+    RenderedPart,
+    AttachmentRenderer,
+    loggable_cache_key,
+)
 from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
@@ -250,7 +254,7 @@ class MessageInputBuilder(BaseModel):
                     "gen_reply skipping unsupported attachment",
                     modality=required,
                     model=model_name,
-                    cache_key=source.cache_key,
+                    cache_key=loggable_cache_key(cache_key=source.cache_key),
                     content_type=source.content_type,
                 )
                 continue
