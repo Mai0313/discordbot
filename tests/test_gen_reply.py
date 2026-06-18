@@ -34,19 +34,22 @@ from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.voice import (
-    VOICE_MARKER,
     VOICE_TIMEOUT_SECONDS,
     VoiceClip,
     VoiceOutcome,
     VoiceSynthesizer,
-    strip_voice_marker,
     speechify_discord_markup,
-    strip_partial_voice_marker,
 )
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+from discordbot.cogs._gen_reply.generation import (
+    GENERATED_IMAGE_FILENAME,
+    GeneratedImage,
+    ImageGenerator,
+    ImageGenerationOutcome,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     parse_user_id_list,
@@ -172,13 +175,17 @@ class FakeReply:
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
 
-    async def edit(self, content: str | None = None, file: File | None = None) -> None:
-        """Records edited content and/or a newly attached file (voice clip)."""
+    async def edit(
+        self, content: str | None = None, file: File | None = None, files: list[File] | None = None
+    ) -> None:
+        """Records edited content and/or newly attached file(s) (voice clip / image)."""
         if content is not None:
             self.content = content
             self.edits.append(content)
         if file is not None:
             self.file = file
+        if files is not None:
+            self.files = files
 
     async def reply(self, content: str) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
@@ -853,28 +860,33 @@ class _FakeVoiceSynthesizer:
         return VoiceClip(audio=self.audio, outcome=self.outcome)
 
 
-def _voice_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply ends with the voice marker."""
+def _voice_tag_events() -> list[SimpleNamespace]:
+    """A single-turn stream that wraps just one spoken span in <voice> tags."""
     return [
-        _text_event(delta="閉嘴啦白痴"),
-        _text_event(delta=f"\n{VOICE_MARKER}"),
+        _text_event(delta="先講重點 "),
+        _text_event(delta="<voice>閉嘴啦白痴</voice>"),
+        _text_event(delta=" 講完了"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
 
-async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_db: None) -> None:
-    """A marker-tagged reply strips the tag, synthesizes audio, and attaches it to the reply."""
+async def test_voice_tag_synthesizes_only_the_span_and_keeps_it(economy_isolated_db: None) -> None:
+    """A <voice> span synthesizes only that span, keeps it in the text, and attaches the clip."""
     del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceSynthesizer()
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(_voice_tag_events())
     )
 
-    assert VOICE_MARKER not in result
+    # The tags are gone but the wrapped span and the surrounding text all stay visible.
+    assert "<voice>" not in result
+    assert "</voice>" not in result
     assert "閉嘴啦白痴" in result
-    # The spoken text is the cleaned reply without the marker or the usage footer.
+    assert "先講重點" in result
+    assert "講完了" in result
+    # Only the wrapped span is spoken, not the whole reply.
     assert synthesizer.calls == [{"text": "閉嘴啦白痴", "end_user_id": message.author.name}]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "reply.wav"
@@ -882,8 +894,8 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     assert message.added_reactions == []
 
 
-async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
-    """A normal reply (no marker) never calls the synthesizer and attaches no file."""
+async def test_voice_tag_absent_no_synthesis(economy_isolated_db: None) -> None:
+    """A normal reply (no voice tag) never calls the synthesizer and attaches no file."""
     del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceSynthesizer()
@@ -898,16 +910,17 @@ async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> No
     assert message.added_reactions == []
 
 
-async def test_voice_disabled_still_strips_marker(economy_isolated_db: None) -> None:
-    """With no synthesizer (voice off) the marker is still stripped and no file attaches."""
+async def test_voice_disabled_still_strips_tags(economy_isolated_db: None) -> None:
+    """With no synthesizer (voice off) the tags are still stripped and no file attaches."""
     del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(_voice_tag_events())
     )
 
-    assert VOICE_MARKER not in result
+    assert "<voice>" not in result
+    assert "閉嘴啦白痴" in result
     assert message.replies[0].file is None
 
 
@@ -918,10 +931,10 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
     synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.ERROR)
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(_voice_tag_events())
     )
 
-    assert VOICE_MARKER not in result
+    assert "<voice>" not in result
     assert message.replies[0].file is None
     # A non-timeout failure (most often a policy refusal) hints with the warning emoji.
     assert message.added_reactions == ["⚠️"]
@@ -934,33 +947,12 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
     synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.TIMEOUT)
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(_voice_tag_events())
     )
 
-    assert VOICE_MARKER not in result
+    assert "<voice>" not in result
     assert message.replies[0].file is None
     assert message.added_reactions == ["⏱️"]
-
-
-def test_strip_voice_marker_variants() -> None:
-    """The marker strips with surrounding whitespace/backticks; absence keeps text intact."""
-    assert strip_voice_marker(text="罵爆你\n</need-voice>") == ("罵爆你", True)
-    assert strip_voice_marker(text="罵爆你 `</need-voice>`") == ("罵爆你", True)
-    assert strip_voice_marker(text="</NEED-VOICE>後綴") == ("後綴", True)
-    # A space-split hyphen still matches (the model may render `</need -voice>`).
-    assert strip_voice_marker(text="嗆你 </need -voice>") == ("嗆你", True)
-    assert strip_voice_marker(text="normal reply") == ("normal reply", False)
-    # An absent marker keeps the text byte-for-byte (including trailing whitespace).
-    assert strip_voice_marker(text="trailing \n") == ("trailing \n", False)
-
-
-def test_strip_voice_marker_mid_content_does_not_join_words() -> None:
-    """A misplaced (non-trailing) marker is scrubbed in place without fusing its neighbors."""
-    cleaned, requested = strip_voice_marker(text="開頭\n</need-voice>\n結尾")
-    assert requested is True
-    assert cleaned == "開頭\n\n結尾"
-    # No fusion: the words on either side stay separated.
-    assert "開頭結尾" not in cleaned
 
 
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
@@ -990,11 +982,10 @@ def test_speechify_discord_markup_rewrites_and_drops() -> None:
     )
 
 
-def _voice_marker_mention_events() -> list[SimpleNamespace]:
-    """A marker-tagged stream whose reply text contains a raw user mention."""
+def _voice_tag_mention_events() -> list[SimpleNamespace]:
+    """A <voice> span whose spoken text contains a raw user mention."""
     return [
-        _text_event(delta="嗆爆 <@239270225441193986>"),
-        _text_event(delta=f"\n{VOICE_MARKER}"),
+        _text_event(delta="<voice>嗆爆 <@239270225441193986></voice>"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
@@ -1007,7 +998,7 @@ async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> No
     synthesizer = _FakeVoiceSynthesizer()
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
-        responses=_stream_events_from(_voice_marker_mention_events())
+        responses=_stream_events_from(_voice_tag_mention_events())
     )
 
     # The visible reply keeps the clickable mention; only the spoken text is normalised.
@@ -1015,12 +1006,161 @@ async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> No
     assert synthesizer.calls == [{"text": "嗆爆 小明", "end_user_id": message.author.name}]
 
 
-def test_strip_partial_voice_marker_hides_streaming_fragment() -> None:
-    """A marker arriving mid-stream is hidden from the live preview before the final strip."""
-    assert strip_partial_voice_marker(text="嗆你\n</need-v") == "嗆你"
-    assert strip_partial_voice_marker(text="嗆你 </need-voice>") == "嗆你"
-    assert strip_partial_voice_marker(text="嗆你 </need -voice>") == "嗆你"
-    assert strip_partial_voice_marker(text="正常文字") == "正常文字"
+# ---- inline image (generated reply) ----
+
+
+class _FakeImageGenerator:
+    """Records generate calls and returns a configurable GeneratedImage for streamer tests."""
+
+    def __init__(
+        self,
+        image_b64: str | None = None,
+        outcome: ImageGenerationOutcome = ImageGenerationOutcome.OK,
+    ) -> None:
+        """Stores the base64 image (None falls back to a tiny PNG) and the reported outcome."""
+        self.image_b64 = image_b64 if image_b64 is not None else _png_b64()
+        self.outcome = outcome
+        self.calls: list[dict[str, str]] = []
+
+    async def generate(self, *, rough_prompt: str, end_user_id: str) -> GeneratedImage:
+        """Records the rough draw request and returns the preset GeneratedImage."""
+        self.calls.append({"rough_prompt": rough_prompt, "end_user_id": end_user_id})
+        return GeneratedImage(
+            image_b64=self.image_b64 if self.outcome is ImageGenerationOutcome.OK else None,
+            outcome=self.outcome,
+        )
+
+
+def _image_tag_events() -> list[SimpleNamespace]:
+    """A single-turn stream that wraps one draw request in <image> tags."""
+    return [
+        _text_event(delta="這是你要的圖 "),
+        _text_event(delta="<image>a red cat sitting on a sofa</image>"),
+        _text_event(delta=" 希望喜歡"),
+        _completed_event(input_tokens=5, output_tokens=6),
+    ]
+
+
+async def test_image_tag_generates_attaches_and_removes_block(economy_isolated_db: None) -> None:
+    """An <image> span generates a picture, removes the whole block, and attaches the PNG."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator()
+
+    result = await ResponseStreamer(message=message, image_generator=generator).stream(
+        responses=_stream_events_from(_image_tag_events())
+    )
+
+    # The whole block (tags + description) is gone; the surrounding prose stays.
+    assert "<image>" not in result
+    assert "a red cat" not in result
+    assert "這是你要的圖" in result
+    assert "希望喜歡" in result
+    # The generator received the rough span verbatim as its draw request.
+    assert generator.calls == [
+        {"rough_prompt": "a red cat sitting on a sofa", "end_user_id": message.author.name}
+    ]
+    assert message.replies[0].file is not None
+    assert message.replies[0].file.filename == GENERATED_IMAGE_FILENAME
+    assert message.added_reactions == []
+
+
+async def test_image_disabled_still_removes_block(economy_isolated_db: None) -> None:
+    """With no generator (image off) the block is still removed and no file attaches."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message).stream(
+        responses=_stream_events_from(_image_tag_events())
+    )
+
+    assert "<image>" not in result
+    assert "a red cat" not in result
+    assert message.replies[0].file is None
+
+
+async def test_image_generation_failure_leaves_text_reply(economy_isolated_db: None) -> None:
+    """A generation failure leaves a clean text reply, no file, and hints with a warning emoji."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator(outcome=ImageGenerationOutcome.ERROR)
+
+    result = await ResponseStreamer(message=message, image_generator=generator).stream(
+        responses=_stream_events_from(_image_tag_events())
+    )
+
+    assert "<image>" not in result
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["⚠️"]
+
+
+async def test_image_and_voice_attach_together(economy_isolated_db: None) -> None:
+    """A reply marking both spans attaches the image and the voice clip in one combined edit."""
+    del economy_isolated_db
+    message = FakeMessage()
+    synthesizer = _FakeVoiceSynthesizer()
+    generator = _FakeImageGenerator()
+    events = [
+        _text_event(delta="看圖 <image>a cat</image> 然後 <voice>喵喵叫</voice>"),
+        _completed_event(input_tokens=3, output_tokens=4),
+    ]
+
+    result = await ResponseStreamer(
+        message=message, voice_synthesizer=synthesizer, image_generator=generator
+    ).stream(responses=_stream_events_from(events))
+
+    assert "<image>" not in result
+    assert "<voice>" not in result
+    assert "喵喵叫" in result
+    assert "a cat" not in result
+    # Both ride one combined `files=` edit (image first, then the voice clip).
+    reply = message.replies[0]
+    assert reply.files is not None
+    assert [media.filename for media in reply.files] == [GENERATED_IMAGE_FILENAME, "reply.wav"]
+    assert synthesizer.calls == [{"text": "喵喵叫", "end_user_id": message.author.name}]
+    assert generator.calls == [{"rough_prompt": "a cat", "end_user_id": message.author.name}]
+
+
+def test_cog_image_generator_is_configured() -> None:
+    """The cog wires the inline image generator with the image/director models and IMAGE_PROMPT."""
+    cog = _cog()
+
+    generator = cog.image_generator
+
+    assert generator.image_model_name == cog.runtime_models.image_model.name
+    assert generator.prompt_model.name == cog.runtime_models.prompt_model.name
+    assert generator.instructions == IMAGE_PROMPT
+
+
+async def test_image_generator_refines_then_generates() -> None:
+    """ImageGenerator runs the prompt director first, then draws with the refined prompt."""
+    cog = _cog()
+    generator = ImageGenerator(
+        client=cog.client,
+        image_model_name="img-model",
+        prompt_model=cog.runtime_models.prompt_model,
+        instructions=IMAGE_PROMPT,
+    )
+
+    image = await generator.generate(rough_prompt="a cat", end_user_id="tester")
+
+    assert image.outcome is ImageGenerationOutcome.OK
+    assert image.image_b64 == _png_b64()
+    # The director (the fake's "caption") ran first on prompt_model, then drove images.generate.
+    assert cog.client.responses.create_models[0] == cog.runtime_models.prompt_model.name
+    assert cog.client.images.generate_prompts == ["caption"]
+
+
+async def test_image_generator_empty_prompt_is_skipped() -> None:
+    """A blank image span produces no draw call and reports EMPTY."""
+    cog = _cog()
+    generator = cog.image_generator
+
+    image = await generator.generate(rough_prompt="   ", end_user_id="tester")
+
+    assert image.outcome is ImageGenerationOutcome.EMPTY
+    assert image.image_b64 is None
+    assert cog.client.images.generate_calls == 0
 
 
 class _FakeSpeechResponse:
@@ -1104,10 +1244,10 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
     synthesizer = _FakeVoiceSynthesizer(audio=b"x" * 16)
 
     result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
-        responses=_stream_events_from(_voice_marker_events())
+        responses=_stream_events_from(_voice_tag_events())
     )
 
-    assert VOICE_MARKER not in result
+    assert "<voice>" not in result
     assert message.replies[0].file is None
     # An oversized clip is dropped for a non-timeout reason, so it hints with the warning emoji.
     assert message.added_reactions == ["⚠️"]
@@ -1133,9 +1273,11 @@ async def test_voice_config_gate_controls_synthesizer(
             output_tokens: int = 0,
             model_effort: str = "",
             voice_synthesizer: object | None = None,
+            image_generator: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
+            del image_generator
             captured.append(voice_synthesizer)
 
         async def stream(self, *, responses: object) -> str:
@@ -1754,9 +1896,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             output_tokens: int = 0,
             model_effort: str = "",
             voice_synthesizer: object | None = None,
+            image_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+            del memory_lookups, input_tokens, output_tokens, model_effort
+            del voice_synthesizer, image_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2036,12 +2180,19 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
 
 @pytest.mark.parametrize(
-    argnames=("route", "expected_call", "expected_prep", "expected_flags", "expected_voice"),
+    argnames=(
+        "route",
+        "expected_call",
+        "expected_prep",
+        "expected_flags",
+        "expected_voice",
+        "expected_image",
+    ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], []),
-        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False], [True]),
-        ("QA", "_handle_message_reply", [(30, True)], [True], [True]),
+        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], []),
+        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False], [True], [False]),
+        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
@@ -2051,6 +2202,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     expected_prep: list[tuple[int, bool]],
     expected_flags: list[bool],
     expected_voice: list[bool],
+    expected_image: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -2107,6 +2259,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
 
     memory_flags: list[bool] = []
     voice_flags: list[bool] = []
+    image_flags: list[bool] = []
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
@@ -2117,11 +2270,13 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         memory_enabled: bool = True,
         effort: str = "high",
         allow_voice: bool = False,
+        allow_image: bool = False,
     ) -> None:
         """Records slow message handler dispatch."""
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
+        image_flags.append(allow_image)
         effort_flags.append(effort)
         contexts.append(context)
 
@@ -2142,6 +2297,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert memory_flags == expected_flags
     # Voice is enabled on QA and SUMMARY (both stream a reply); IMAGE/VIDEO never reach here.
     assert voice_flags == expected_voice
+    # Inline image generation is enabled on QA only; SUMMARY stays image-free.
+    assert image_flags == expected_image
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -2338,9 +2495,11 @@ class _ThreadsStreamer:
         output_tokens: int = 0,
         model_effort: str = "",
         voice_synthesizer: object | None = None,
+        image_generator: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
-        del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+        del memory_lookups, input_tokens, output_tokens, model_effort
+        del voice_synthesizer, image_generator
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -2371,7 +2530,7 @@ async def test_on_message_injects_threads_context_before_current(
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    cog.config = SimpleNamespace(voice_reply_enabled=False, image_reply_enabled=False)
     seen_urls: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -2454,7 +2613,7 @@ async def test_on_message_skips_threads_context_without_url(
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    cog.config = SimpleNamespace(voice_reply_enabled=False, image_reply_enabled=False)
     called: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -2483,7 +2642,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False)
+    cog.config = SimpleNamespace(voice_reply_enabled=False, image_reply_enabled=False)
     monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
 
     async def slow_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -2651,9 +2810,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             output_tokens: int = 0,
             model_effort: str = "",
             voice_synthesizer: object | None = None,
+            image_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+            del memory_lookups, input_tokens, output_tokens, model_effort
+            del voice_synthesizer, image_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2739,9 +2900,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             output_tokens: int = 0,
             model_effort: str = "",
             voice_synthesizer: object | None = None,
+            image_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+            del memory_lookups, input_tokens, output_tokens, model_effort
+            del voice_synthesizer, image_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2799,9 +2962,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             output_tokens: int = 0,
             model_effort: str = "",
             voice_synthesizer: object | None = None,
+            image_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, voice_synthesizer
+            del memory_lookups, input_tokens, output_tokens, model_effort
+            del voice_synthesizer, image_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:

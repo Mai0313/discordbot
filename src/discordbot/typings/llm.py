@@ -16,7 +16,9 @@ class LLMConfig(BaseSettings):
         anthropic_api_key: The Anthropic key used to upload attachments to the
             Anthropic Files API directly (the side-channel for Claude answer models).
         voice_reply_enabled: Kill-switch for spoken QA replies; when false the answer
-            model's voice marker is still stripped but no audio clip is synthesized.
+            model's voice tags are still stripped but no audio clip is synthesized.
+        image_reply_enabled: Kill-switch for inline `<image>` generation in QA replies;
+            when false the image tags are still stripped but no image is generated.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -50,6 +52,11 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the bot may synthesize a spoken clip for fierce QA replies.",
         validation_alias=AliasChoices("VOICE_REPLY_ENABLED"),
+    )
+    image_reply_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may generate an inline image for an <image> span in a reply.",
+        validation_alias=AliasChoices("IMAGE_REPLY_ENABLED"),
     )
 
 

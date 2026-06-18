@@ -58,7 +58,9 @@ nav:
                       - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
                   - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
+                  - generation: Reference/discordbot/cogs/_gen_reply/generation.md
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
+                  - markup: Reference/discordbot/cogs/_gen_reply/markup.md
                   - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
