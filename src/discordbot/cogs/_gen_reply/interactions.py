@@ -22,6 +22,7 @@ from openai.types.responses import ResponseStreamEvent
 from google.genai._interactions.types import (
     StepParam,
     ContentParam,
+    ThinkingLevel,
     TextContentParam,
     ImageContentParam,
     VideoContentParam,
@@ -31,6 +32,7 @@ from google.genai._interactions.types import (
     ModelOutputStepParam,
     GenerationConfigParam,
 )
+from openai.types.shared.reasoning_effort import ReasoningEffort
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
@@ -205,7 +207,7 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
     model: str,
     system_instruction: str,
     steps: list[StepParam],
-    effort: Literal["low", "medium", "high"],
+    effort: ReasoningEffort,
     end_user_id: str,
 ) -> AsyncIterator[ResponseStreamEvent]:
     """Streams a YouTube-aware QA answer through the Gemini Interactions API.
@@ -220,7 +222,12 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
         system_instruction=system_instruction,
         input=steps,
         environment="remote",
-        generation_config=GenerationConfigParam(thinking_level=effort, thinking_summaries="auto"),
+        generation_config=GenerationConfigParam(
+            # effort is the route grade copied onto slow_model (always low / medium / high here,
+            # all valid for gemini-3.1-pro), so narrowing ReasoningEffort to the enum is safe.
+            thinking_level=cast("ThinkingLevel", effort),
+            thinking_summaries="auto",
+        ),
         tools=[
             URLContext(type="url_context"),
             GoogleSearch(type="google_search", search_types=["web_search"]),

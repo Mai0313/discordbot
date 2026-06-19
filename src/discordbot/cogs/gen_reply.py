@@ -1329,7 +1329,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         system_prompt=system_prompt, message=message
                     ),
                     steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
-                    effort=effort,
+                    effort=slow_model.effort,
                     end_user_id=message.author.name,
                 )
             else:
