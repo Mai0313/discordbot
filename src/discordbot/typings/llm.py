@@ -17,6 +17,8 @@ class LLMConfig(BaseSettings):
             Anthropic Files API directly (the side-channel for Claude answer models).
         voice_reply_enabled: Kill-switch for spoken QA replies; when false the answer
             model's voice marker is still stripped but no audio clip is synthesized.
+        inline_image_enabled: Kill-switch for inline generated images on QA replies; when
+            false the answer model's `<image>` marker is still stripped but no image is rendered.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -50,6 +52,11 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the bot may synthesize a spoken clip for fierce QA replies.",
         validation_alias=AliasChoices("VOICE_REPLY_ENABLED"),
+    )
+    inline_image_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may render an inline generated image for QA replies.",
+        validation_alias=AliasChoices("INLINE_IMAGE_ENABLED"),
     )
 
 

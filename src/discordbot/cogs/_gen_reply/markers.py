@@ -1,0 +1,113 @@
+"""Inline reply markers: the answer model self-selects a spoken segment and an optional image.
+
+The answer model wraps the part of its reply it wants read aloud in `<voice>...</voice>`: only
+that segment is synthesized to a voice clip, but it STAYS in the visible reply (only the tags
+are stripped). It may also wrap a short description in `<image>...</image>` to have one image
+generated and attached; that whole block (tags AND content) is REMOVED from the visible reply
+so the generation prompt never leaks into chat. `ResponseStreamer` extracts both at finalize
+time via `extract_inline_markers` and scrubs partial/complete tags from the live preview via
+`scrub_markers_for_preview`, so neither flickers mid-stream. The asymmetry is deliberate: voice
+content is meant to stay visible, image content is meant to be pulled.
+"""
+
+import re
+
+from pydantic import Field, BaseModel
+
+# Tag literals are the single source of truth shared by the prompt instructions and this parser.
+VOICE_OPEN = "<voice>"
+VOICE_CLOSE = "</voice>"
+IMAGE_OPEN = "<image>"
+IMAGE_CLOSE = "</image>"
+
+# Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a
+# stray-cased tag still matches.
+_VOICE_BLOCK_RE = re.compile(r"<voice>(.*?)</voice>", re.IGNORECASE | re.DOTALL)
+_IMAGE_BLOCK_RE = re.compile(r"<image>(.*?)</image>", re.IGNORECASE | re.DOTALL)
+# Bare tags, scrubbed so a stray/unpaired tag never leaks into the visible reply.
+_VOICE_TAG_RE = re.compile(r"</?voice>", re.IGNORECASE)
+_IMAGE_TAG_RE = re.compile(r"</?image>", re.IGNORECASE)
+# An unclosed `<image>` open tag and everything after it: the whole block is going to be pulled,
+# so hide it the moment it starts streaming in (and tolerate the model forgetting to close it).
+_TRAILING_IMAGE_OPEN_RE = re.compile(r"<image>.*\Z", re.IGNORECASE | re.DOTALL)
+_COLLAPSE_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+# Every tag whose half-streamed tail must be trimmed from a live preview so it never flickers in.
+_ALL_TAGS = (IMAGE_OPEN, IMAGE_CLOSE, VOICE_OPEN, VOICE_CLOSE)
+
+
+class InlineMarkers(BaseModel):
+    """Markers extracted from a finished reply: the visible text plus its media requests."""
+
+    cleaned_text: str = Field(
+        ...,
+        description="Reply text with image blocks removed and voice tags stripped (voice content kept).",
+    )
+    voice_text: str = Field(
+        default="",
+        description="Concatenated <voice> segments to synthesize aloud; empty when none.",
+    )
+    voice_requested: bool = Field(
+        default=False, description="Whether the reply wrapped any segment in <voice>."
+    )
+    image_prompt: str | None = Field(
+        default=None, description="First <image> description to generate, or None when absent."
+    )
+
+
+def extract_inline_markers(*, text: str) -> InlineMarkers:
+    """Splits a finished reply into visible text plus its voice / image media requests.
+
+    Image blocks (tags AND content) are removed entirely so the generation prompt never shows
+    in chat; the first non-empty one is the image request. Voice tags are stripped but their
+    inner content STAYS in the visible reply, and every wrapped segment is concatenated as the
+    spoken-clip input. An unclosed trailing `<image>` (the model forgot to close it) is still
+    pulled so its raw description never leaks, and any stray unpaired tag is scrubbed.
+    """
+    image_prompt = next(
+        (group for m in _IMAGE_BLOCK_RE.finditer(text) if (group := m.group(1).strip())), None
+    )
+    cleaned = _IMAGE_BLOCK_RE.sub("", text)
+    trailing_image = _TRAILING_IMAGE_OPEN_RE.search(cleaned)
+    if trailing_image is not None:
+        if image_prompt is None:
+            image_prompt = trailing_image.group(0)[len(IMAGE_OPEN) :].strip() or None
+        cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
+
+    voice_segments = [
+        segment for m in _VOICE_BLOCK_RE.finditer(cleaned) if (segment := m.group(1).strip())
+    ]
+    # Strip the voice tags but keep their inner content in the visible reply.
+    cleaned = _VOICE_BLOCK_RE.sub(r"\1", cleaned)
+    # Scrub any stray unpaired tags the model may have left behind.
+    cleaned = _IMAGE_TAG_RE.sub("", cleaned)
+    cleaned = _VOICE_TAG_RE.sub("", cleaned)
+    cleaned = _COLLAPSE_BLANK_LINES_RE.sub("\n\n", cleaned).strip()
+
+    return InlineMarkers(
+        cleaned_text=cleaned,
+        voice_text="\n".join(voice_segments),
+        voice_requested=bool(voice_segments),
+        image_prompt=image_prompt,
+    )
+
+
+def scrub_markers_for_preview(*, text: str) -> str:
+    """Hides complete or still-streaming markers from a live preview snapshot.
+
+    Complete image blocks and an unclosed trailing `<image>` open are removed whole (the block
+    is going to be pulled from the reply, so it must never flash in). Complete voice tags are
+    stripped but their content stays visible. A trailing fragment that is a prefix of any marker
+    tag (`<imag`, `</voic`, ...) is trimmed so a half-streamed tag never flickers.
+    """
+    cleaned = _IMAGE_BLOCK_RE.sub("", text)
+    cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
+    cleaned = _VOICE_BLOCK_RE.sub(r"\1", cleaned)
+    cleaned = _VOICE_TAG_RE.sub("", cleaned)
+    stripped = cleaned.rstrip()
+    lowered = stripped.lower()
+    for tag in _ALL_TAGS:
+        for cut in range(len(tag) - 1, 1, -1):
+            if lowered.endswith(tag[:cut].lower()):
+                return stripped[:-cut].rstrip()
+    return stripped

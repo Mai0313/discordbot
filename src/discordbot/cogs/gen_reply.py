@@ -51,6 +51,11 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
+from discordbot.cogs._gen_reply.generation import (
+    ImageReplyGenerator,
+    generate_image_bytes,
+    refine_generation_prompt,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -77,8 +82,6 @@ from discordbot.cogs._gen_reply.attachment.select import build_attachment_handle
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
-
-    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -332,6 +335,16 @@ class ReplyGeneratorCogs(commands.Cog):
         return VoiceSynthesizer(client=self.client, model_name=self.runtime_models.tts_model.name)
 
     @cached_property
+    def image_reply_generator(self) -> ImageReplyGenerator:
+        """The cached inline-image renderer for the QA-route `<image>` marker.
+
+        Returns:
+            A generator bound to this cog's client and model catalog; the caller still gates
+            it on `allow_image` and `config.inline_image_enabled`.
+        """
+        return ImageReplyGenerator(client=self.client, runtime_models=self.runtime_models)
+
+    @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
         """The cached per-user memory extraction service.
 
@@ -485,75 +498,17 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _refine_generation_prompt(
-        self,
-        *,
-        user_prompt: str,
-        instructions: str,
-        end_user_id: str,
-        image_bytes_list: list[bytes] | None = None,
-    ) -> str:
-        """Expands a thin IMAGE/VIDEO request into a rich, self-contained generation prompt.
-
-        Runs `prompt_model` with grounding tools so a vague request ("draw the heroine of some
-        anime") is looked up and resolved before the image/video model renders it. Any
-        already-loaded source bytes ride along as input images so the draft is grounded in them
-        without a re-download. Best-effort: an empty draft or ANY error falls back to the raw
-        `user_prompt`, so a director failure never aborts generation — the pipeline wraps the
-        caller in an error path and must not see an exception escape here.
-        """
-        prompt_model = self.runtime_models.prompt_model
-        director_content: list[
-            ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-        ] = [
-            ResponseInputTextParam(
-                text=f"User generation request:\n{user_prompt}", type="input_text"
-            )
-        ]
-        for image_bytes in image_bytes_list or []:
-            director_content.append(
-                ResponseInputImageParam(
-                    image_url=convert_base64_to_data_uri(
-                        base64_image=base64.b64encode(image_bytes).decode()
-                    ),
-                    detail="auto",
-                    type="input_image",
-                )
-            )
-        director_input: list[EasyInputMessageParam] = [
-            EasyInputMessageParam(role="user", content=director_content)
-        ]
-        started = time.monotonic()
-        try:
-            with logfire.span("gen_reply prompt refine", model=prompt_model.name):
-                responses = await self.client.responses.create(
-                    model=prompt_model.name,
-                    instructions=instructions,
-                    input=cast("ResponseInputParam", director_input),
-                    reasoning=prompt_model.reasoning,
-                    tools=list(prompt_model.tools),
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
-                    extra_body={"mock_testing_fallbacks": False},
-                )
-            refined = (responses.output_text or "").strip()
-        except Exception:
-            logfire.warn("Prompt refinement failed; using raw user prompt", _exc_info=True)
-            return user_prompt
-        logfire.info(
-            "gen_reply prompt refine done",
-            elapsed_seconds=time.monotonic() - started,
-            refined=bool(refined),
-        )
-        return refined or user_prompt
-
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
         """Handles video generation requests."""
         video_model = self.runtime_models.video_model
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
-        refined_prompt = await self._refine_generation_prompt(
-            user_prompt=user_prompt, instructions=VIDEO_PROMPT, end_user_id=message.author.name
+        refined_prompt = await refine_generation_prompt(
+            client=self.client,
+            prompt_model=self.runtime_models.prompt_model,
+            user_prompt=user_prompt,
+            instructions=VIDEO_PROMPT,
+            end_user_id=message.author.name,
         )
         video = await self.client.videos.create(
             model=video_model.name,
@@ -614,7 +569,6 @@ class ReplyGeneratorCogs(commands.Cog):
         the image is on screen so the context build overlaps generation. Once the image is
         delivered the reply is best-effort: any failure leaves the delivered image untouched.
         """
-        image_model = self.runtime_models.image_model
         started = time.monotonic()
         logfire.info(
             "gen_reply image generation start",
@@ -633,43 +587,24 @@ class ReplyGeneratorCogs(commands.Cog):
             else:
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
-            refined_prompt = await self._refine_generation_prompt(
+            refined_prompt = await refine_generation_prompt(
+                client=self.client,
+                prompt_model=self.runtime_models.prompt_model,
                 user_prompt=user_prompt,
                 instructions=IMAGE_PROMPT,
                 end_user_id=message.author.name,
                 image_bytes_list=image_bytes_list or None,
             )
-
-            if image_bytes_list:
-                result = await self.client.images.edit(
-                    image=image_bytes_list,
-                    prompt=refined_prompt or "請依照附件內容進行編輯或優化。",
-                    model=image_model.name,
-                    n=1,
-                    response_format="b64_json",
-                    quality="auto",
-                    size="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
-                )
-            else:
-                result = await self.client.images.generate(
-                    prompt=refined_prompt or "請生成一張圖片。",
-                    model=image_model.name,
-                    n=1,
-                    response_format="b64_json",
-                    quality="auto",
-                    size="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
-                )
-
-            if not result.data:
-                raise ValueError("Image operation returned no results")
-            image_b64 = result.data[0].b64_json
-            if image_b64 is None:
-                raise ValueError("Image operation returned no b64_json")
+            image_bytes = await generate_image_bytes(
+                client=self.client,
+                image_model=self.runtime_models.image_model,
+                prompt=refined_prompt,
+                end_user_id=message.author.name,
+                image_bytes_list=image_bytes_list or None,
+            )
             # Send the generated image immediately so the user sees it without waiting on the
             # conversational reply; the reply text streams onto this same message right after.
-            image_file = File(fp=BytesIO(base64.b64decode(image_b64)), filename="generated.png")
+            image_file = File(fp=BytesIO(image_bytes), filename="generated.png")
             reply = await message.reply(content=message.author.mention, file=image_file)
             logfire.info(
                 "gen_reply image delivered",
@@ -708,7 +643,9 @@ class ReplyGeneratorCogs(commands.Cog):
                             type="input_text",
                         ),
                         ResponseInputImageParam(
-                            image_url=convert_base64_to_data_uri(image_b64),
+                            image_url=convert_base64_to_data_uri(
+                                base64_image=base64.b64encode(image_bytes).decode()
+                            ),
                             detail="auto",
                             type="input_image",
                         ),
@@ -1258,16 +1195,23 @@ class ReplyGeneratorCogs(commands.Cog):
         memory_enabled: bool = True,
         effort: Literal["low", "medium", "high"] = "high",
         allow_voice: bool = False,
+        allow_image: bool = False,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
         The per-user update is gated by `memory_enabled`; the per-server update always runs
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
         community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
-        spoken clip when the answer model marks the reply for it (QA only; SUMMARY stays text).
+        spoken clip and `allow_image` an inline generated image when the answer model marks the
+        reply for it (both QA only; SUMMARY stays text).
         """
         voice_synthesizer = (
             self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
+        )
+        image_generator = (
+            self.image_reply_generator
+            if allow_image and self.config.inline_image_enabled
+            else None
         )
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
@@ -1295,6 +1239,7 @@ class ReplyGeneratorCogs(commands.Cog):
             output_tokens=context.selection_output_tokens,
             model_effort=effort,
             voice_synthesizer=voice_synthesizer,
+            image_generator=image_generator,
         )
         with logfire.span("gen_reply answer", model=slow_model.name):
             responses = await self.client.responses.create(
@@ -1575,6 +1520,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         context=context,
                         effort=effort,
                         allow_voice=True,
+                        allow_image=True,
                     )
                 reactions.advance(emoji="🆗")
         finally:

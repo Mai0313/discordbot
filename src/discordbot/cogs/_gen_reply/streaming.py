@@ -25,10 +25,14 @@ from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
     VoiceOutcome,
     VoiceSynthesizer,
-    strip_voice_marker,
     speechify_discord_markup,
-    strip_partial_voice_marker,
 )
+from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
+from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
+
+# Filename of the inline-generated image attached onto a QA reply; mirrors the router IMAGE
+# route's `generated.png` so the bot's own generated images render the same in history.
+INLINE_IMAGE_FILENAME = "generated.png"
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers
@@ -88,11 +92,19 @@ class ResponseStreamer(BaseModel):
     )
     voice_requested: bool = Field(
         default=False,
-        description="Whether the answer model appended the voice marker to this reply.",
+        description="Whether the answer model wrapped a segment in <voice> for this reply.",
     )
     voice_text: str = Field(
         default="",
-        description="Marker-stripped, footer-less reply text used as the spoken-clip input.",
+        description="Speechified text of the <voice> segment used as the spoken-clip input.",
+    )
+    image_generator: SkipValidation[ImageReplyGenerator | None] = Field(
+        default=None,
+        description="Inline-image renderer; None disables inline <image> for this reply.",
+    )
+    image_prompt: str | None = Field(
+        default=None,
+        description="The <image> description the answer model asked to illustrate, if any.",
     )
     created_at: float = Field(
         default_factory=time.monotonic,
@@ -138,7 +150,7 @@ class ResponseStreamer(BaseModel):
         fit one Discord message, so a long think never hits the 2000-char limit.
         """
         if self.content_started:
-            return strip_partial_voice_marker(text=self.stored_content)[:DISCORD_MESSAGE_LIMIT]
+            return scrub_markers_for_preview(text=self.stored_content)[:DISCORD_MESSAGE_LIMIT]
         if not self.reasoning_content:
             return ""
         # Mentions are escaped because this transient text is never meant to ping;
@@ -295,18 +307,22 @@ class ResponseStreamer(BaseModel):
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
-        # The answer model may append the voice marker to ask for a spoken clip. Strip it
-        # before the footer is built or anything is written, and keep the cleaned text as the
-        # spoken-clip input so the audio matches the visible reply (without the usage footer).
-        self.stored_content, self.voice_requested = strip_voice_marker(text=self.stored_content)
+        # The answer model may wrap a <voice> segment (spoken aloud, kept in the reply) and an
+        # <image> block (a generation request, removed from the reply). Extract both before the
+        # footer is built or anything is written. The <voice> segment stays in the visible text;
+        # only it (not the whole reply) feeds the spoken clip so the audio matches what is read.
+        markers = extract_inline_markers(text=self.stored_content)
+        self.stored_content = markers.cleaned_text
+        self.voice_requested = markers.voice_requested
+        self.image_prompt = markers.image_prompt
         # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
         # snowflake), so the voice input is normalised while the visible reply keeps its markup.
         self.voice_text = (
             speechify_discord_markup(
-                text=self.stored_content, resolve_name=self._resolve_mention_name
+                text=markers.voice_text, resolve_name=self._resolve_mention_name
             )
             if self.voice_requested
-            else self.stored_content
+            else ""
         )
         # Credit looked-up memory owners on a second -# subtext line. Dedupe while
         # preserving lookup order; past two names collapse to "等 N 人" so a busy
@@ -332,7 +348,7 @@ class ResponseStreamer(BaseModel):
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
         self.stored_content += usage_footer
 
-        await self._maybe_attach_voice()
+        await self._attach_generated_media()
         logfire.info(
             "gen_reply reply finalized",
             message_id=self.message.id,
@@ -343,6 +359,7 @@ class ResponseStreamer(BaseModel):
             cost=cost,
             reply_chars=reply_chars,
             voice_requested=self.voice_requested,
+            image_requested=self.image_prompt is not None,
             memory_lookups=len(self.memory_lookups),
             chunked=chunked,
         )
@@ -362,45 +379,42 @@ class ResponseStreamer(BaseModel):
         channel = guild.get_channel(target_id)
         return getattr(channel, "name", None) if channel is not None else None
 
-    async def _hint_voice_unavailable(self, *, emoji: str) -> None:
-        """Marks the source message so a dropped voice clip is not fully silent to the user.
+    async def _hint_media_unavailable(self, *, emoji: str) -> None:
+        """Marks the source message so dropped media (voice clip or inline image) is not silent.
 
-        The reply stays text-only and the user gets no message; this best-effort reaction is
-        the only signal. It rides on the source message as an independent reaction (no
-        `previous`), so the pipeline's status chain never removes it. Failures are suppressed
+        The reply stays without the attachment and the user gets no message; this best-effort
+        reaction is the only signal. It rides on the source message as an independent reaction
+        (no `previous`), so the pipeline's status chain never removes it. Failures are suppressed
         inside `update_reaction`.
         """
         await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
-    async def _maybe_attach_voice(self) -> None:  # noqa: PLR0911 -- one best-effort voice attach with several distinct degrade paths (skip / timeout / refused / oversized / attach-fail / success)
-        """Renders the reply to audio and edits it onto the sent message when requested.
+    def _upload_limit(self) -> int:
+        """The destination's real upload ceiling, falling back to Discord's 10MB base in a DM.
 
-        Runs only when the answer model asked for a spoken reply and voice is enabled for
-        this turn. The text reply is already on screen, so synthesis adds no latency to it;
-        the clip is best-effort and any failure (or a too-long reply) leaves a text reply.
-        Every skip reason is logged. When a clip was requested but could not be delivered the
-        source message gets a small emoji hint (⏱️ for a timeout, ⚠️ for any other failure) so
-        the user has a quiet cue; the model choosing no voice, voice being disabled, or an
-        empty reply add no hint.
+        A boosted guild's 50/100MB is honored via nextcord's `filesize_limit`; a DM has no guild
+        to query, so it falls back to Discord's non-Nitro base of 10MB.
+        """
+        return self.message.guild.filesize_limit if self.message.guild else 10 * 1024 * 1024
+
+    async def _build_voice_file(self) -> File | None:  # noqa: PLR0911 -- best-effort synth with distinct degrade paths (skip / disabled / empty / timeout / refused / oversized / success)
+        """Synthesizes the <voice> segment to an upload-ready WAV File, or None when not delivered.
+
+        Best-effort: a skip (not requested / disabled / empty) is silent, while a
+        requested-but-failed clip (timeout / refusal / oversized) hints the source message and
+        returns None. The File is returned for the shared single attach edit.
         """
         if not self.voice_requested:
-            # The expected common path: the answer model chose a text-only reply.
+            # The expected common path: the answer model wrapped no <voice> segment.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
-            return
+            return None
         if self.voice_synthesizer is None:
             # Voice is intentionally off this turn (kill-switch), not a failure: no hint.
             logfire.info(
                 "Voice requested but disabled for this turn; replying without audio",
                 message_id=self.message.id,
             )
-            return
-        if self.reply is None:
-            logfire.warn(
-                "Voice requested but the reply was never sent; dropping audio",
-                message_id=self.message.id,
-            )
-            await self._hint_voice_unavailable(emoji="⚠️")
-            return
+            return None
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -408,44 +422,100 @@ class ResponseStreamer(BaseModel):
             text=self.voice_text, end_user_id=self.message.author.name
         )
         if clip.outcome is VoiceOutcome.EMPTY:
-            # Nothing to say (the reply was empty after stripping): no hint.
-            return
+            # Nothing to say (the segment was empty after stripping): no hint.
+            return None
         if clip.outcome is VoiceOutcome.TIMEOUT:
             # synthesize() logged the timeout; cue the user that the clip ran out of time.
-            await self._hint_voice_unavailable(emoji="⏱️")
-            return
+            await self._hint_media_unavailable(emoji="⏱️")
+            return None
         if clip.audio is None:
             # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
-            await self._hint_voice_unavailable(emoji="⚠️")
-            return
-        audio = clip.audio
-        # Drop a clip past the guild's upload limit so the answer model is free to choose the
-        # spoken length; a DM has no guild to query, so fall back to Discord's non-Nitro base of
-        # 10MB (the guild path trusts nextcord's filesize_limit, correct for boosted 50/100MB).
-        upload_limit = (
-            self.message.guild.filesize_limit if self.message.guild else 10 * 1024 * 1024
-        )
-        if len(audio) > upload_limit:
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        upload_limit = self._upload_limit()
+        if len(clip.audio) > upload_limit:
+            # Drop a clip past the upload limit so the answer model is free to choose the spoken
+            # length (there is deliberately no spoken-length cap).
             logfire.warn(
                 "Synthesized voice exceeds the guild upload limit; dropping audio",
                 message_id=self.message.id,
-                audio_bytes=len(audio),
+                audio_bytes=len(clip.audio),
                 upload_limit=upload_limit,
             )
-            await self._hint_voice_unavailable(emoji="⚠️")
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        return File(fp=BytesIO(clip.audio), filename=VOICE_REPLY_FILENAME)
+
+    async def _build_image_file(self) -> File | None:
+        """Renders the <image> request to an upload-ready PNG File, or None when not delivered.
+
+        Best-effort like voice: no request or a disabled generator is silent; a
+        requested-but-failed or oversized render hints the source message and returns None.
+        """
+        if self.image_prompt is None:
+            return None
+        if self.image_generator is None:
+            # Inline image is intentionally off this turn (kill-switch / non-QA route): no hint.
+            logfire.info(
+                "Inline image requested but disabled for this turn; replying without an image",
+                message_id=self.message.id,
+            )
+            return None
+        logfire.info("Generating inline image reply", message_id=self.message.id)
+        image = await self.image_generator.generate(
+            user_prompt=self.image_prompt, end_user_id=self.message.author.name
+        )
+        if image is None:
+            # generate() logged the failure/timeout; cue the user the image could not be made.
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        upload_limit = self._upload_limit()
+        if len(image) > upload_limit:
+            logfire.warn(
+                "Inline image exceeds the guild upload limit; dropping image",
+                message_id=self.message.id,
+                image_bytes=len(image),
+                upload_limit=upload_limit,
+            )
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        return File(fp=BytesIO(image), filename=INLINE_IMAGE_FILENAME)
+
+    async def _attach_generated_media(self) -> None:
+        """Attaches any requested spoken clip and inline image onto the sent reply in one edit.
+
+        The text reply is already on screen, so this adds no latency to it; both media are
+        best-effort and any failure leaves the text reply (with a small emoji hint on the source
+        message). They ride a single `reply.edit(files=...)` because `edit` replaces the
+        attachment list, so two separate edits would drop the first file.
+        """
+        if self.reply is None:
+            if self.voice_requested or self.image_prompt is not None:
+                logfire.warn(
+                    "Media requested but the reply was never sent; dropping it",
+                    message_id=self.message.id,
+                )
+                await self._hint_media_unavailable(emoji="⚠️")
+            return
+        files = [
+            media
+            for media in (await self._build_voice_file(), await self._build_image_file())
+            if media is not None
+        ]
+        if not files:
             return
         try:
-            await self.reply.edit(file=File(fp=BytesIO(audio), filename=VOICE_REPLY_FILENAME))
+            await self.reply.edit(files=files)
         except Exception:
             logfire.warn(
-                "Failed to attach the voice clip onto the reply",
+                "Failed to attach generated media onto the reply",
                 message_id=self.message.id,
-                audio_bytes=len(audio),
+                file_count=len(files),
                 _exc_info=True,
             )
-            await self._hint_voice_unavailable(emoji="⚠️")
+            await self._hint_media_unavailable(emoji="⚠️")
             return
-        logfire.info("Voice reply attached", message_id=self.message.id, audio_bytes=len(audio))
+        logfire.info("Generated media attached", message_id=self.message.id, file_count=len(files))
 
     async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""

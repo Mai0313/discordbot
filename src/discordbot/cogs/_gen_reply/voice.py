@@ -1,13 +1,12 @@
-"""Optional spoken-reply synthesis: turn a fierce QA reply into an attached voice clip.
+"""Optional spoken-reply synthesis: turn a chosen reply segment into an attached voice clip.
 
-The answer model decides per reply whether the message lands better said out loud
-(a roast, a scolding, an excited outburst) by appending the `VOICE_MARKER` tag as the
-final line of its reply. `ResponseStreamer` strips the tag from the visible text and,
-when present, asks `VoiceSynthesizer` to render the same reply text to audio and edits it
-onto the already-sent message. The decision lives inside the answer model on purpose so
-the written reply and the spoken clip stay coherent (the model knows it is speaking); a
-separate post-hoc classifier would not. Synthesis is best-effort: any failure leaves a
-normal text reply.
+The answer model decides per reply which part lands better said out loud (a roast, a punch
+line, an excited outburst) by wrapping that segment in `<voice>...</voice>` (see `markers.py`).
+`ResponseStreamer` extracts the wrapped segment, keeps it in the visible text, and asks
+`VoiceSynthesizer` to render just that segment to audio, editing it onto the already-sent
+message. The decision lives inside the answer model on purpose so the written reply and the
+spoken clip stay coherent (the model knows it is speaking); a separate post-hoc classifier
+would not. Synthesis is best-effort: any failure leaves a normal text reply.
 
 The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
 the tone follow the reply's own wording), prepended to the input text because the proxy's
@@ -22,19 +21,6 @@ from typing import Protocol
 from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-
-# Control token the answer model appends to request a spoken reply. Distinctive and
-# tag-shaped so it never collides with natural reply text; stripped before display.
-VOICE_MARKER = "</need-voice>"
-# The bare tag body, tolerant of stray whitespace, an optional leading/trailing slash, and a
-# hyphen the model may split with spaces, so a near-miss tag never leaks into the reply.
-_MARKER_BODY = r"<\s*/?\s*need\s*-?\s*voice\s*/?\s*>"
-# Strip the marker only at the very end of the reply (its intended position), absorbing the
-# whitespace/backticks it sits on so a clean reply remains.
-_TRAILING_VOICE_MARKER_RE = re.compile(rf"[\s`]*{_MARKER_BODY}[\s`]*\Z", re.IGNORECASE)
-# Detect / scrub a marker anywhere, optionally backtick-wrapped. Used to flag voice and to
-# remove a stray mid-reply marker WITHOUT eating the surrounding text (so words never join).
-_ANY_VOICE_MARKER_RE = re.compile(rf"`?{_MARKER_BODY}`?", re.IGNORECASE)
 
 # Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
@@ -56,38 +42,6 @@ VOICE_REPLY_FILENAME = "reply.wav"
 # model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
 # where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
 VOICE_TIMEOUT_SECONDS = 300.0
-
-
-def strip_voice_marker(*, text: str) -> tuple[str, bool]:
-    """Removes the voice marker from a finished reply, reporting whether it was present.
-
-    Returns the text untouched when no marker is found so non-voice replies keep their exact
-    content. The intended trailing marker is stripped with the whitespace it sat on; a stray
-    marker elsewhere (the model misplaced it) is scrubbed in place so it never leaks, without
-    collapsing the surrounding words into each other.
-    """
-    if not _ANY_VOICE_MARKER_RE.search(text):
-        return text, False
-    cleaned = _TRAILING_VOICE_MARKER_RE.sub("", text)
-    cleaned = _ANY_VOICE_MARKER_RE.sub("", cleaned)
-    return cleaned.rstrip(), True
-
-
-def strip_partial_voice_marker(*, text: str) -> str:
-    """Hides the marker (complete or still streaming in) from a live preview snapshot.
-
-    A complete marker anywhere is removed; a tail that is a prefix of the marker (e.g.
-    `</need-voi` mid-stream) is trimmed so the control token never flickers into the
-    preview before the final strip.
-    """
-    cleaned = _ANY_VOICE_MARKER_RE.sub("", text)
-    stripped = cleaned.rstrip()
-    lowered = stripped.lower()
-    for cut in range(len(VOICE_MARKER) - 1, 1, -1):
-        fragment = VOICE_MARKER[:cut].lower()
-        if lowered.endswith(fragment):
-            return stripped[: -len(fragment)].rstrip()
-    return stripped
 
 
 # Discord-specific markup the answer model may embed in a reply: user/role/channel mentions
