@@ -9,9 +9,9 @@ image (no editing; editing stays the router IMAGE route's job), best-effort with
 timeout so a slow render never blocks anything but its own reply.
 """
 
-import base64
 import time
-from typing import cast
+import base64
+from typing import TYPE_CHECKING, cast
 import asyncio
 
 from openai import AsyncOpenAI
@@ -19,12 +19,14 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Bound for the inline-image best-effort path: refine + render run serially after the text reply
 # is already on screen, so the wait only delays this message's own image, never others. Generous
@@ -32,7 +34,7 @@ from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT
 INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
 
 
-async def refine_generation_prompt(
+async def refine_generation_prompt(  # noqa: PLR0913 -- shared director inputs: client + prompt model + user prompt + instructions + end-user id + optional source images
     *,
     client: AsyncOpenAI,
     prompt_model: ModelSettings,
@@ -52,7 +54,9 @@ async def refine_generation_prompt(
     """
     director_content: list[
         ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
-    ] = [ResponseInputTextParam(text=f"User generation request:\n{user_prompt}", type="input_text")]
+    ] = [
+        ResponseInputTextParam(text=f"User generation request:\n{user_prompt}", type="input_text")
+    ]
     for image_bytes in image_bytes_list or []:
         director_content.append(
             ResponseInputImageParam(
@@ -170,7 +174,9 @@ class ImageReplyGenerator(BaseModel):
                     end_user_id=end_user_id,
                 )
         except Exception:
-            logfire.warn("Inline image generation failed; replying without an image", _exc_info=True)
+            logfire.warn(
+                "Inline image generation failed; replying without an image", _exc_info=True
+            )
             return None
         logfire.info(
             "gen_reply inline image generated",
