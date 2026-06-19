@@ -454,7 +454,19 @@ class ResponseStreamer(BaseModel):
         if image.image_b64 is None:
             await self._hint_media_unavailable(emoji="⚠️")
             return None
-        image_bytes = base64.b64decode(image.image_b64)
+        try:
+            image_bytes = base64.b64decode(image.image_b64)
+        except (ValueError, TypeError):
+            # A malformed/incorrectly-padded payload reported as OK must stay best-effort: the
+            # text reply is already on screen, so degrade with a hint instead of letting the
+            # decode raise out of _finalize_reply into the pipeline's generic error path.
+            logfire.warn(
+                "Inline image returned malformed base64; replying without it",
+                message_id=self.message.id,
+                _exc_info=True,
+            )
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
         if len(image_bytes) > self._upload_limit():
             logfire.warn(
                 "Generated image exceeds the guild upload limit; dropping image",

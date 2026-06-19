@@ -1094,6 +1094,22 @@ async def test_image_generation_failure_leaves_text_reply(economy_isolated_db: N
     assert message.added_reactions == ["⚠️"]
 
 
+async def test_image_malformed_base64_leaves_text_reply(economy_isolated_db: None) -> None:
+    """A malformed base64 payload reported OK degrades to a text reply with a warning hint."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator(image_b64="abc", outcome=ImageGenerationOutcome.OK)
+
+    result = await ResponseStreamer(message=message, image_generator=generator).stream(
+        responses=_stream_events_from(_image_tag_events())
+    )
+
+    # The decode error stays best-effort: text reply intact, no file, warning hint, no raise.
+    assert "<image>" not in result
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["⚠️"]
+
+
 async def test_image_and_voice_attach_together(economy_isolated_db: None) -> None:
     """A reply marking both spans attaches the image and the voice clip in one combined edit."""
     del economy_isolated_db
