@@ -64,9 +64,11 @@ REPLY_PROMPT = f"""
 # (kill-switch on, QA route). Kept out of REPLY_PROMPT so a deployment with
 # INLINE_IMAGE_ENABLED=false never advertises a marker the streamer would strip without
 # producing anything, which would silently drop the visual request from the reply.
-INLINE_IMAGE_INSTRUCTION = f"""* Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
-    * A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
-    * Use this sparingly and only when it fits the moment (the user would enjoy seeing it), at most one image per reply. Never wrap the tags in backticks and never mention them."""
+INLINE_IMAGE_INSTRUCTION = f"""
+* Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
+* A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
+* Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. Still at most one image per reply, and skip it when an image would not add anything. Never wrap the tags in backticks and never mention them.
+"""
 
 MEMORY_SELECT_PROMPT = """
 Your only task: decide whether any conversation participant's stored long-term memory would help answer their latest message, and fetch it if so.
@@ -96,13 +98,15 @@ When you attribute a topic, point, or conclusion to a specific participant, refe
 ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
 
+The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
+
 Classification rules:
-- IMAGE: the user explicitly wants the bot to create, draw, render, generate, or make a brand-new image, OR the user has attached or referenced an image and explicitly wants to modify, edit, alter, transform, or retouch it.
+- IMAGE: pick this only when the image itself is the deliverable. Two cases: (1) the user explicitly asks the bot to create, draw, render, generate, or make a brand-new image and that picture is what they want back, with little or no written answer expected alongside it; (2) the user attached or referenced an image and explicitly wants it modified, edited, altered, transformed, or retouched — editing an existing image is only possible on this route.
 - VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
 - SUMMARY: the user explicitly asks the bot to summarize, recap, or give a summary of recent Discord chat history, conversation history, channel messages, or what people just discussed in the channel.
-- QA: everything else — normal questions; image analysis; captioning; requests to summarize, explain, or make a 懶人包 for a URL, webpage, article, referenced message, attachment, or pasted content; and discussions about art that do NOT ask the bot to actually generate or edit an image. QA is also the default whenever no other category clearly applies.
+- QA: everything else — normal questions; image analysis; captioning; requests to summarize, explain, or make a 懶人包 for a URL, webpage, article, referenced message, attachment, or pasted content; discussions about art that do NOT ask the bot to actually generate or edit an image; and any message that is primarily a question, explanation, or conversation even when showing a picture alongside the answer would be nice (QA draws that picture inline itself). QA is also the default whenever no other category clearly applies.
 
-Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
+Only one category applies per request. When the message is ambiguous — including when you are unsure whether a produced image is the whole point or just a helpful add-on to an answer — prefer QA.
 """
 
 EFFORT_PROMPT = """
