@@ -23,6 +23,8 @@ from google.genai._interactions.types import (
     StepParam,
     ContentParam,
     ThinkingLevel,
+    EnvironmentParam,
+    NetworkAllowlist,
     TextContentParam,
     ImageContentParam,
     VideoContentParam,
@@ -31,6 +33,7 @@ from google.genai._interactions.types import (
     DocumentContentParam,
     ModelOutputStepParam,
     GenerationConfigParam,
+    NetworkAllowlistAllowlist,
 )
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
@@ -221,7 +224,13 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
         model=model,
         system_instruction=system_instruction,
         input=steps,
-        environment="remote",
+        # Ad-hoc remote sandbox, not an environment ID: a bare "remote" string is read as an
+        # existing environment's id. The `*` allowlist leaves outbound networking unrestricted so
+        # the server-side tools and the YouTube fetch can reach any domain.
+        environment=EnvironmentParam(
+            type="remote",
+            network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")]),
+        ),
         generation_config=GenerationConfigParam(
             # effort is the route grade copied onto slow_model (always low / medium / high here,
             # all valid for gemini-3.1-pro), so narrowing ReasoningEffort to the enum is safe.
