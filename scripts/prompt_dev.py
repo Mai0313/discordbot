@@ -11,9 +11,11 @@ from google.genai.types import HttpOptions
 from google.genai._interactions.types import (
     TextContentParam,
     EnvironmentParam,
-    NetworkAllowlist,
     VideoContentParam,
     GenerationConfigParam,
+)
+from google.genai._interactions.types.environment_param import (
+    NetworkAllowlist,
     NetworkAllowlistAllowlist,
 )
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch

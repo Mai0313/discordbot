@@ -6,8 +6,8 @@ import orjson
 from rich.console import Console
 from agents.result import RunResult
 from agents.extensions.models.litellm_model import LitellmModel
-from google.genai._interactions.types import (
-    EnvironmentParam,
+from google.genai._interactions.types import EnvironmentParam
+from google.genai._interactions.types.environment_param import (
     NetworkAllowlist,
     NetworkAllowlistAllowlist,
 )
