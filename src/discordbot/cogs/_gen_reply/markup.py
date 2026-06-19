@@ -12,10 +12,11 @@ The answer model marks parts of its reply for special handling with tag pairs:
 
 `extract_reply_segments` runs once on the finished reply to split it into the display text,
 the spoken span, and the image prompt. `strip_tags_for_preview` does the same hiding live on
-each streaming snapshot so a half-typed tag never flickers into the preview. Parsing is
-deliberately lenient (tolerant of stray whitespace inside a tag and optional surrounding
-backticks the model may add) so a near-miss tag is still caught rather than leaking as text.
-The whole module is pure string work; it never touches Discord or the network.
+each streaming snapshot so a half-typed tag never flickers into the preview. Parsing tolerates
+stray whitespace inside a tag, but a tag shown inside an inline-code span or a fenced code
+block is treated as literal content, not a control tag, so a reply that demonstrates `<image>`
+or `<voice>` as a code example is never corrupted or sent to generation. The whole module is
+pure string work; it never touches Discord or the network.
 """
 
 import re
@@ -23,7 +24,8 @@ import re
 from pydantic import Field, BaseModel
 
 # Canonical tag literals shown to the model in the prompt; the regexes below accept lenient
-# variants of these (inner whitespace, optional wrapping backticks, any case).
+# variants (inner whitespace, any case). A backticked or fenced tag is NOT a control tag: code
+# regions are masked before parsing (see `_mask_code`), matching the prompt's "never backticked".
 VOICE_OPEN_TAG = "<voice>"
 VOICE_CLOSE_TAG = "</voice>"
 IMAGE_OPEN_TAG = "<image>"
@@ -35,22 +37,24 @@ _VOICE_CLOSE = r"<\s*/\s*voice\s*>"
 _IMAGE_OPEN = r"<\s*image\s*>"
 _IMAGE_CLOSE = r"<\s*/\s*image\s*>"
 
-# Single-tag matchers (optional surrounding backticks absorbed), for removal.
-_VOICE_OPEN_RE = re.compile(rf"`?{_VOICE_OPEN}`?", re.IGNORECASE)
-_VOICE_CLOSE_RE = re.compile(rf"`?{_VOICE_CLOSE}`?", re.IGNORECASE)
-_IMAGE_OPEN_RE = re.compile(rf"`?{_IMAGE_OPEN}`?", re.IGNORECASE)
+# Single-tag matchers, for removal. No backtick handling here: a backticked tag is masked as
+# code before these run (see `_mask_code`), so a real control tag is always the bare form.
+_VOICE_OPEN_RE = re.compile(_VOICE_OPEN, re.IGNORECASE)
+_VOICE_CLOSE_RE = re.compile(_VOICE_CLOSE, re.IGNORECASE)
+_IMAGE_OPEN_RE = re.compile(_IMAGE_OPEN, re.IGNORECASE)
 
 # Whole-block matchers; group 1 is the inner content (DOTALL so it spans newlines).
-_VOICE_BLOCK_RE = re.compile(
-    rf"`?{_VOICE_OPEN}`?(.*?)`?{_VOICE_CLOSE}`?", re.IGNORECASE | re.DOTALL
-)
-_IMAGE_BLOCK_RE = re.compile(
-    rf"`?{_IMAGE_OPEN}`?(.*?)`?{_IMAGE_CLOSE}`?", re.IGNORECASE | re.DOTALL
-)
+_VOICE_BLOCK_RE = re.compile(rf"{_VOICE_OPEN}(.*?){_VOICE_CLOSE}", re.IGNORECASE | re.DOTALL)
+_IMAGE_BLOCK_RE = re.compile(rf"{_IMAGE_OPEN}(.*?){_IMAGE_CLOSE}", re.IGNORECASE | re.DOTALL)
 
 # A dangling (unclosed) open tag to the end of the text; group 1 is the trailing content.
-_VOICE_OPEN_TAIL_RE = re.compile(rf"`?{_VOICE_OPEN}`?(.*)\Z", re.IGNORECASE | re.DOTALL)
-_IMAGE_OPEN_TAIL_RE = re.compile(rf"`?{_IMAGE_OPEN}`?(.*)\Z", re.IGNORECASE | re.DOTALL)
+_VOICE_OPEN_TAIL_RE = re.compile(rf"{_VOICE_OPEN}(.*)\Z", re.IGNORECASE | re.DOTALL)
+_IMAGE_OPEN_TAIL_RE = re.compile(rf"{_IMAGE_OPEN}(.*)\Z", re.IGNORECASE | re.DOTALL)
+
+# Code regions (fenced ``` / ~~~ blocks and inline `...` spans) are masked with opaque
+# placeholders before tag parsing, so a tag written as a code example is left untouched.
+_CODE_SPAN_RE = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]+`", re.DOTALL)
+_CODE_PLACEHOLDER_RE = re.compile(r"\x01(\d+)\x01")
 
 # Sentinel marking where an image block was removed, so whitespace healing touches only that
 # seam and leaves the rest of the reply (code blocks, aligned tables, ASCII art) byte-for-byte.
@@ -91,6 +95,22 @@ class ReplySegments(BaseModel):
     )
 
 
+def _mask_code(text: str) -> tuple[str, list[str]]:
+    """Replaces code spans/fences with opaque placeholders so tag parsing skips them."""
+    spans: list[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        spans.append(match.group(0))
+        return f"\x01{len(spans) - 1}\x01"
+
+    return _CODE_SPAN_RE.sub(_stash, text), spans
+
+
+def _restore_code(text: str, spans: list[str]) -> str:
+    """Puts the masked code spans back exactly as they were."""
+    return _CODE_PLACEHOLDER_RE.sub(lambda match: spans[int(match.group(1))], text)
+
+
 def _heal_image_seams(text: str) -> str:
     """Closes the gap a removed image block left, touching only that seam.
 
@@ -127,9 +147,12 @@ def extract_reply_segments(text: str) -> ReplySegments:
     tag (the model forgot the closer) is still handled: an unclosed image drops to the end,
     an unclosed voice keeps its content visible and spoken.
     """
-    image_match = _IMAGE_BLOCK_RE.search(text)
+    # Mask code first so a tag shown as a code example is never parsed as a control tag.
+    masked, code_spans = _mask_code(text)
+
+    image_match = _IMAGE_BLOCK_RE.search(masked)
     image_prompt = image_match.group(1).strip() if image_match is not None else ""
-    display = _IMAGE_BLOCK_RE.sub(_IMAGE_SEAM, text)
+    display = _IMAGE_BLOCK_RE.sub(_IMAGE_SEAM, masked)
     dangling_image = _IMAGE_OPEN_TAIL_RE.search(display)
     if dangling_image is not None:
         if not image_prompt:
@@ -154,9 +177,10 @@ def extract_reply_segments(text: str) -> ReplySegments:
     elif voice_removed:
         display = display.rstrip()
 
-    voice_text = "\n".join(part for part in voice_parts if part).strip()
+    voice_text = _restore_code("\n".join(part for part in voice_parts if part).strip(), code_spans)
+    image_prompt = _restore_code(image_prompt, code_spans)
     return ReplySegments(
-        display_text=display,
+        display_text=_restore_code(display, code_spans),
         voice_text=voice_text,
         image_prompt=image_prompt,
         voice_requested=bool(voice_text),
@@ -171,22 +195,23 @@ def strip_tags_for_preview(text: str) -> str:
     shows; voice tags are dropped but their content stays; a trailing half-typed tag of any
     kind is trimmed so the control token never flickers into the preview before the final pass.
     """
-    text = _IMAGE_BLOCK_RE.sub("", text)
-    open_image = _IMAGE_OPEN_RE.search(text)
+    masked, code_spans = _mask_code(text)
+    masked = _IMAGE_BLOCK_RE.sub("", masked)
+    open_image = _IMAGE_OPEN_RE.search(masked)
     if open_image is not None:
-        text = text[: open_image.start()]
+        masked = masked[: open_image.start()]
     else:
-        trimmed_image = _trim_trailing_partial(text, IMAGE_OPEN_TAG)
+        trimmed_image = _trim_trailing_partial(masked, IMAGE_OPEN_TAG)
         if trimmed_image is not None:
-            text = trimmed_image
+            masked = trimmed_image
 
-    text = _VOICE_BLOCK_RE.sub(r"\1", text)
-    text = _VOICE_OPEN_RE.sub("", text)
-    text = _VOICE_CLOSE_RE.sub("", text)
+    masked = _VOICE_BLOCK_RE.sub(r"\1", masked)
+    masked = _VOICE_OPEN_RE.sub("", masked)
+    masked = _VOICE_CLOSE_RE.sub("", masked)
 
     for tag in _PARTIAL_TAGS:
-        trimmed = _trim_trailing_partial(text, tag)
+        trimmed = _trim_trailing_partial(masked, tag)
         if trimmed is not None:
-            text = trimmed
+            masked = trimmed
             break
-    return text.strip()
+    return _restore_code(masked, code_spans).strip()

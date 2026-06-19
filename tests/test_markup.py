@@ -86,16 +86,31 @@ def test_extract_unclosed_voice_keeps_content() -> None:
     assert segments.voice_requested is True
 
 
-def test_extract_tolerates_backticks_and_whitespace() -> None:
-    """Backtick-wrapped or loosely-spaced tags are still recognised (the model may add them)."""
-    segments = extract_reply_segments(
-        text="x `<voice>` say it `</voice>` y < image >draw< / image >"
-    )
+def test_extract_tolerates_whitespace_in_bare_tags() -> None:
+    """A bare tag with stray inner whitespace is still recognised as a control block."""
+    segments = extract_reply_segments(text="y < image >draw< / image >")
 
-    assert segments.voice_text == "say it"
     assert segments.image_prompt == "draw"
-    assert "<image>" not in segments.display_text
     assert "draw" not in segments.display_text
+    assert segments.display_text == "y"
+
+
+def test_extract_skips_inline_code_tags() -> None:
+    """A backticked tag is inline code, not a control tag, so it stays in the reply verbatim."""
+    segments = extract_reply_segments(text="use `<voice>say it</voice>` to speak a span")
+
+    assert segments.voice_requested is False
+    assert "`<voice>say it</voice>`" in segments.display_text
+
+
+def test_extract_skips_fenced_code_tags() -> None:
+    """An <image> block inside a fenced code example is left intact, not sent to generation."""
+    reply = "Here is the markup:\n```\n<image>not a real request</image>\n```\ndone"
+
+    segments = extract_reply_segments(text=reply)
+
+    assert segments.image_requested is False
+    assert segments.display_text == reply
 
 
 def test_extract_empty_span_is_not_requested() -> None:
@@ -158,3 +173,8 @@ def test_preview_hides_partial_voice_tag() -> None:
 def test_preview_leaves_plain_text() -> None:
     """Plain text with no tag fragment is returned unchanged."""
     assert strip_tags_for_preview(text="正常文字") == "正常文字"
+
+
+def test_preview_keeps_tags_inside_inline_code() -> None:
+    """A backticked tag in a streaming snapshot stays visible (it is code, not a control tag)."""
+    assert strip_tags_for_preview(text="see `<image>` in code") == "see `<image>` in code"
