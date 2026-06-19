@@ -497,11 +497,12 @@ class ResponseStreamer(BaseModel):
                 )
                 await self._hint_media_unavailable(emoji="⚠️")
             return
-        files = [
-            media
-            for media in (await self._build_voice_file(), await self._build_image_file())
-            if media is not None
-        ]
+        # Build both concurrently so a slow media path never blocks the other: a TTS clip that
+        # hangs to VOICE_TIMEOUT_SECONDS must not delay a ready inline image (and vice versa).
+        voice_file, image_file = await asyncio.gather(
+            self._build_voice_file(), self._build_image_file()
+        )
+        files = [media for media in (voice_file, image_file) if media is not None]
         if not files:
             return
         try:
