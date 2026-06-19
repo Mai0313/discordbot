@@ -199,16 +199,6 @@ async def adapt_interactions_stream(
             raise RuntimeError(f"Gemini interactions stream error: {event!r}")
 
 
-def _thinking_level(*, effort: Literal["low", "medium", "high"]) -> Literal["low", "high"]:
-    """Maps the QA effort grade to a thinking level the Interactions models accept.
-
-    The Interactions API's `thinking_level` for gemini-pro-latest only allows `low` / `high`
-    (no `medium`, unlike the Responses bridge which maps it to a budget), so medium rounds up
-    to high; the video watch dominates latency, so the extra thinking is free in practice.
-    """
-    return "low" if effort == "low" else "high"
-
-
 async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer inputs mirroring the Responses call site
     *,
     client: genai.Client,
@@ -230,9 +220,7 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
         system_instruction=system_instruction,
         input=steps,
         environment="remote",
-        generation_config=GenerationConfigParam(
-            thinking_level=_thinking_level(effort=effort), thinking_summaries="auto"
-        ),
+        generation_config=GenerationConfigParam(thinking_level=effort, thinking_summaries="auto"),
         tools=[
             URLContext(type="url_context"),
             GoogleSearch(type="google_search", search_types=["web_search"]),

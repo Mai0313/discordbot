@@ -7,7 +7,6 @@ import pytest
 
 from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.cogs._gen_reply.interactions import (
-    _thinking_level,
     to_interactions_input,
     adapt_interactions_stream,
 )
@@ -170,14 +169,6 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     # Usage is emitted once, on completion, with the Responses field names.
     assert out[-1].response.usage.input_tokens == 12
     assert out[-1].response.usage.output_tokens == 34
-
-
-@pytest.mark.parametrize(
-    ("effort", "expected"), [("low", "low"), ("medium", "high"), ("high", "high")]
-)
-def test_thinking_level_rounds_medium_up(effort: str, expected: str) -> None:
-    """Interactions models reject `medium`, so it rounds up to `high`; low/high pass through."""
-    assert _thinking_level(effort=effort) == expected
 
 
 async def test_adapt_interactions_stream_raises_on_error_event() -> None:

@@ -1443,10 +1443,10 @@ async def test_youtube_qa_uses_interactions_backend(
     assert "📺" in message.added_reactions
 
 
-async def test_youtube_interactions_rounds_medium_effort_to_high(
+async def test_youtube_interactions_passes_effort_as_thinking_level(
     economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Medium effort is sent as a thinking_level the Interactions models accept (high)."""
+    """The graded effort is sent straight through as the Interactions thinking_level."""
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
@@ -1467,7 +1467,7 @@ async def test_youtube_interactions_rounds_medium_effort_to_high(
         yt_url=url,
     )
 
-    assert fake.recorder.calls[0].generation_config["thinking_level"] == "high"
+    assert fake.recorder.calls[0].generation_config["thinking_level"] == "medium"
 
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
@@ -3012,7 +3012,7 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    assert peak_start[0] == ModelSettings(name="gemini-pro-latest", effort="high")
+    assert peak_start[0] == ModelSettings(name="gemini-3.1-pro-preview", effort="high")
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
