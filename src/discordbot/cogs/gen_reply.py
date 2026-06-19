@@ -1310,8 +1310,11 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the
-            # chain's final 🆗 to show the reply was grounded in the watched video.
-            await update_reaction(message=message, bot_user=self.bot.user, emoji="📺")
+            # chain's final 🆗 to show the reply was grounded in the watched video. The bot's own
+            # application emoji `youtube`, usable as a reaction in any guild the bot is in.
+            await update_reaction(
+                message=message, bot_user=self.bot.user, emoji="<:youtube:1517546722535018596>"
+            )
         with logfire.span(
             "gen_reply answer",
             model=slow_model.name,

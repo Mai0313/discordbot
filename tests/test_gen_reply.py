@@ -1440,7 +1440,7 @@ async def test_youtube_qa_uses_interactions_backend(
     assert "watched it" in message.replies[0].content
     assert "⬆ 12 ⬇ 34" in message.replies[0].content
     # A persistent watch reaction marks that the reply was grounded in the video.
-    assert "📺" in message.added_reactions
+    assert "<:youtube:1517546722535018596>" in message.added_reactions
 
 
 async def test_youtube_interactions_passes_effort_as_thinking_level(
