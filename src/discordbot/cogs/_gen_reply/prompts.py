@@ -109,7 +109,7 @@ Classification rules:
 Only one category applies per request. When the message is ambiguous — including when you are unsure whether a produced image is the whole point or just a helpful add-on to an answer — prefer QA.
 
 Also fill in the `watch_video` field:
-- Set it true only when the latest message contains a YouTube link AND the user wants the bot to actually look at that video — for example summarizing it, reacting to it, answering a question about its content, or commenting on what happens in it.
+- Set it true only when a YouTube link is present AND the user wants the bot to actually look at that video — for example summarizing it, reacting to it, answering a question about its content, or commenting on what happens in it. The link may be in the latest message OR in the message it is replying to (e.g. replying "summarize this" to a message that contains a YouTube link).
 - Set it false when there is no YouTube link, or when the link is incidental: the user is just sharing it, the message is about something else, or the question can be answered from the link's title or surrounding text without watching the footage.
 - This field is independent of `decision`; it is only acted on when `decision` is QA. When in doubt, leave it false.
 """
