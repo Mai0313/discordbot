@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
     console = Console()
 
-    model_name = "gemini-pro-latest"
+    model_name = "gemini-3.1-pro-preview"
     model_info = load_model_info()
     console.print(model_info)
     supported_modalities = get_supported_modalities(model_name=model_name)

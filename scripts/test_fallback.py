@@ -14,7 +14,7 @@ def use_non_streaming() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     responses = client.chat.completions.create(
-        model="gemini-pro-latest",
+        model="gemini-3.1-pro-preview",
         messages=[{"role": "user", "content": "ping"}],
         extra_body={"mock_testing_fallbacks": True},
         stream=False,
@@ -28,7 +28,7 @@ def use_streaming() -> None:
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 
     responses = client.chat.completions.create(
-        model="gemini-pro-latest",
+        model="gemini-3.1-pro-preview",
         messages=[{"role": "user", "content": "ping"}],
         extra_body={"mock_testing_fallbacks": True},
         stream=True,

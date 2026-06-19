@@ -123,7 +123,7 @@ def _interaction_events() -> list[SimpleNamespace]:
     return [
         SimpleNamespace(
             event_type="interaction.created",
-            interaction=SimpleNamespace(model="gemini-pro-latest"),
+            interaction=SimpleNamespace(model="gemini-3.1-pro-preview"),
         ),
         SimpleNamespace(
             event_type="step.delta",
@@ -135,7 +135,7 @@ def _interaction_events() -> list[SimpleNamespace]:
         ),
         SimpleNamespace(
             event_type="interaction.completed",
-            interaction=SimpleNamespace(model="gemini-pro-latest"),
+            interaction=SimpleNamespace(model="gemini-3.1-pro-preview"),
             metadata=SimpleNamespace(
                 usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34)
             ),
@@ -163,7 +163,7 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
         "response.output_text.delta",
         "response.completed",
     ]
-    assert out[0].response.model == "gemini-pro-latest"
+    assert out[0].response.model == "gemini-3.1-pro-preview"
     assert out[1].delta == "hmm"
     assert out[2].delta == "Hello"
     # Usage is emitted once, on completion, with the Responses field names.
