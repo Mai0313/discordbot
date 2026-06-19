@@ -1521,7 +1521,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="🎨")
+                    reactions.advance(emoji="<:image:1517559727880667226>")
                     # The image reply now answers with conversation history + the requester's
                     # memory, so the speculative context is consumed, not discarded; the handler
                     # awaits it only after the image is on screen so the build overlaps

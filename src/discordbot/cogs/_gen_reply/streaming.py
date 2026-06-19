@@ -415,6 +415,10 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
+        # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
+        await update_reaction(
+            message=self.message, bot_user=None, emoji="<:voice:1517558121092878376>"
+        )
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -461,6 +465,10 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
+        # Mark the source message with the bot's `image` app emoji while the image renders.
+        await update_reaction(
+            message=self.message, bot_user=None, emoji="<:image:1517559727880667226>"
+        )
         logfire.info("Generating inline image reply", message_id=self.message.id)
         image = await self.image_generator.generate(
             user_prompt=self.image_prompt, end_user_id=self.message.author.name

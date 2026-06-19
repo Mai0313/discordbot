@@ -894,8 +894,8 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     assert synthesizer.calls == [{"text": "嗆爆你", "end_user_id": message.author.name}]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "reply.wav"
-    # A delivered clip is silent: no failure-hint reaction on the source message.
-    assert message.added_reactions == []
+    # The source message is marked with the voice app emoji while the clip is produced.
+    assert message.added_reactions == ["<:voice:1517558121092878376>"]
 
 
 async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
@@ -940,8 +940,8 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
-    # A non-timeout failure (most often a policy refusal) hints with the warning emoji.
-    assert message.added_reactions == ["⚠️"]
+    # The voice marker is added before synth; a non-timeout failure then hints with the warning.
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
 async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: None) -> None:
@@ -956,7 +956,7 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
-    assert message.added_reactions == ["⏱️"]
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -1104,7 +1104,8 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
     ]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "generated.png"
-    assert message.added_reactions == []
+    # The source message is marked with the image app emoji while the image is rendered.
+    assert message.added_reactions == ["<:image:1517559727880667226>"]
 
 
 async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> None:
@@ -1133,7 +1134,7 @@ async def test_image_generation_failure_hints(economy_isolated_db: None) -> None
 
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
-    assert message.added_reactions == ["⚠️"]
+    assert message.added_reactions == ["<:image:1517559727880667226>", "⚠️"]
 
 
 async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> None:
@@ -1248,7 +1249,7 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     # An oversized clip is dropped for a non-timeout reason, so it hints with the warning emoji.
-    assert message.added_reactions == ["⚠️"]
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
 @pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
