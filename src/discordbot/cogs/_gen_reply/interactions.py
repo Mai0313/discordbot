@@ -23,9 +23,9 @@ from google.genai._interactions.types import (
     StepParam,
     ContentParam,
     ThinkingLevel,
-    AudioContentParam,
     EnvironmentParam,
     TextContentParam,
+    AudioContentParam,
     ImageContentParam,
     VideoContentParam,
     UserInputStepParam,
@@ -34,13 +34,13 @@ from google.genai._interactions.types import (
     ModelOutputStepParam,
     GenerationConfigParam,
 )
+from openai.types.shared.reasoning_effort import ReasoningEffort
+from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
+from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from google.genai._interactions.types.environment_param import (
     NetworkAllowlist,
     NetworkAllowlistAllowlist,
 )
-from openai.types.shared.reasoning_effort import ReasoningEffort
-from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
 
 if TYPE_CHECKING:

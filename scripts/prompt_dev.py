@@ -9,16 +9,16 @@ from anthropic import Anthropic
 from rich.console import Console
 from google.genai.types import HttpOptions
 from google.genai._interactions.types import (
-    TextContentParam,
     EnvironmentParam,
+    TextContentParam,
     VideoContentParam,
     GenerationConfigParam,
 )
+from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 from google.genai._interactions.types.environment_param import (
     NetworkAllowlist,
     NetworkAllowlistAllowlist,
 )
-from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
