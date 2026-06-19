@@ -82,7 +82,11 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     # Scrub any stray unpaired tags the model may have left behind.
     cleaned = _IMAGE_TAG_RE.sub("", cleaned)
     cleaned = _VOICE_TAG_RE.sub("", cleaned)
-    cleaned = _COLLAPSE_BLANK_LINES_RE.sub("\n\n", cleaned).strip()
+    # Only tidy the gap a removed block leaves behind when marker processing actually changed
+    # the text, so a marker-free reply (poetry, preformatted text, an exact code/output sample)
+    # keeps its intentional blank lines and surrounding whitespace byte-for-byte.
+    if cleaned != text:
+        cleaned = _COLLAPSE_BLANK_LINES_RE.sub("\n\n", cleaned).strip()
 
     return InlineMarkers(
         cleaned_text=cleaned,
