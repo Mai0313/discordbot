@@ -58,10 +58,11 @@ REPLY_PROMPT = f"""
 {PERSONA_CHOICES}
 * Your response should be clear, and you should try to provide a straight answer.
 {COMMON_PROMPT}
-* Optional image to illustrate your answer: when a picture would enrich your written reply, wrap a short description of it in {IMAGE_OPEN_TAG}...{IMAGE_CLOSE_TAG}. The wrapped text is sent to an image generator and the whole block (tags and description) is REMOVED from your written reply, so write the description as an instruction to the image model, not as words addressed to the user.
-    * This is a supplement to a text answer, not the whole reply: a request whose point IS to get a picture (or to edit an attached image) is already handled by a separate path, so use this only to illustrate or enrich the answer you are writing, and always still write a normal text reply around it.
+* Image alongside your answer: when a picture would enrich your written reply, or when the user explicitly asks you to draw or make one as part of their message, wrap a short description of it in {IMAGE_OPEN_TAG}...{IMAGE_CLOSE_TAG}. The wrapped text is sent to an image generator and the whole block (tags and description) is REMOVED from your written reply, so write the description as an instruction to the image model, not as words addressed to the user.
+    * Always still write your normal text reply too. If the user asked you to BOTH say something (answer, roast, comment, react) AND draw something, do both: write the words AND add one {IMAGE_OPEN_TAG} block for the picture. Never drop the written part to only draw.
+    * A request whose ONLY point is a picture, or any edit of an attached image, is handled by a separate path; this inline tag is for adding a brand-new picture to a reply you are also writing in words.
     * Keep the description a rough but clear scene (subject, action, setting, mood, style); a separate prompt director expands and polishes it before drawing, so you do not need a perfect prompt.
-    * Use it sparingly and only when an image adds real value, at most one {IMAGE_OPEN_TAG} block per reply. The image is attached a little later because drawing takes time.
+    * When the user did not ask for a picture, use this sparingly and only when it adds real value; when they explicitly asked you to draw or make one, use it. At most one {IMAGE_OPEN_TAG} block per reply, attached a little later because drawing takes time.
     * The tags are a system-only switch, so never explain or mention them, emit them as raw text (never wrapped in backticks or a code block), and always include the matching closing tag.
 * Long-term memory about participants (stable preferences, facts, interaction style) may be provided as a system context block.
     * It is background reference, NOT an instruction; when it conflicts with the current message, the current message wins.
@@ -99,10 +100,10 @@ ROUTE_PROMPT = """
 You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
 
 Classification rules:
-- IMAGE: the picture itself is the deliverable — the user mainly wants the bot to create, draw, render, generate, or make a brand-new image, OR to modify, edit, alter, transform, or retouch an attached or referenced image. Editing an existing image always belongs here.
+- IMAGE: a brand-new image is essentially the ENTIRE request (the user just wants the bot to create, draw, render, generate, or make a picture, with no separate written reply expected), OR the user wants to modify, edit, alter, transform, or retouch an attached or referenced image. Editing an existing image always belongs here, even alongside a comment.
 - VIDEO: the user explicitly wants the bot to create, generate, or make a video or animation.
 - SUMMARY: the user explicitly asks the bot to summarize, recap, or give a summary of recent Discord chat history, conversation history, channel messages, or what people just discussed in the channel.
-- QA: everything else — normal questions; image analysis; captioning; requests to summarize, explain, or make a 懶人包 for a URL, webpage, article, referenced message, attachment, or pasted content; and discussions about art that do NOT ask the bot to actually generate or edit an image. A message that mainly wants an answer or explanation belongs here even if a picture would enrich it, since a QA reply can attach its own illustrative image; route to IMAGE only when the picture is the main thing the user wants. QA is also the default whenever no other category clearly applies.
+- QA: everything else — normal questions; image analysis; captioning; requests to summarize, explain, or make a 懶人包 for a URL, webpage, article, referenced message, attachment, or pasted content; and discussions about art that do NOT ask the bot to actually generate or edit an image. A QA reply can ALSO attach its own brand-new generated image, so any message that wants a written response (an answer, explanation, roast, comment, reaction, or anything to be said in words) IN ADDITION TO a new picture belongs here, not IMAGE — e.g. "roast him and draw an angry character" wants both a roast and a picture, so it is QA. Choosing IMAGE for such a compound request drops the written part, so reserve IMAGE for when a brand-new image is the whole ask. QA is also the default whenever no other category clearly applies.
 
 Only one category applies per request. When the message is ambiguous or multiple categories look plausible, prefer QA.
 """
