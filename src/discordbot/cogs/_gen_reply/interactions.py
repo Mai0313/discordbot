@@ -24,7 +24,6 @@ from google.genai._interactions.types import (
     ContentParam,
     ThinkingLevel,
     EnvironmentParam,
-    NetworkAllowlist,
     TextContentParam,
     ImageContentParam,
     VideoContentParam,
@@ -33,6 +32,9 @@ from google.genai._interactions.types import (
     DocumentContentParam,
     ModelOutputStepParam,
     GenerationConfigParam,
+)
+from google.genai._interactions.types.environment_param import (
+    NetworkAllowlist,
     NetworkAllowlistAllowlist,
 )
 from openai.types.shared.reasoning_effort import ReasoningEffort
@@ -182,7 +184,11 @@ async def adapt_interactions_stream(
                         SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
         elif event.event_type == "interaction.completed":
-            usage = event.metadata.usage if event.metadata is not None else None
+            # Usage rides the completed interaction; `metadata.usage` is optional and often
+            # absent, so read the interaction first and only fall back to metadata.
+            usage = event.interaction.usage
+            if usage is None and event.metadata is not None:
+                usage = event.metadata.usage
             usage_ns = (
                 SimpleNamespace(
                     input_tokens=usage.total_input_tokens or 0,

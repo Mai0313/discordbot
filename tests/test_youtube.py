@@ -135,10 +135,11 @@ def _interaction_events() -> list[SimpleNamespace]:
         ),
         SimpleNamespace(
             event_type="interaction.completed",
-            interaction=SimpleNamespace(model="gemini-3.1-pro-preview"),
-            metadata=SimpleNamespace(
-                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34)
+            interaction=SimpleNamespace(
+                model="gemini-3.1-pro-preview",
+                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
             ),
+            metadata=None,
         ),
     ]
 

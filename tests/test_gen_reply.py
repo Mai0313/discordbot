@@ -1401,10 +1401,11 @@ def _interactions_turn_events() -> list[SimpleNamespace]:
         ),
         SimpleNamespace(
             event_type="interaction.completed",
-            interaction=SimpleNamespace(model=TEST_LLM_MODEL),
-            metadata=SimpleNamespace(
-                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34)
+            interaction=SimpleNamespace(
+                model=TEST_LLM_MODEL,
+                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
             ),
+            metadata=None,
         ),
     ]
 
