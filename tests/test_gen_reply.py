@@ -3756,7 +3756,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
     assert len(message.replies) == 1
     preview = message.replies[0].content
     assert isinstance(preview, str)
-    assert preview.splitlines()[0] == "-# <:message:1517560873000898860>"
+    assert preview.splitlines()[0] == "-# <:message:1517560873000898860> Thinking..."
     assert "-# first thought" in preview
     assert "-# second thought" in preview
 
@@ -3776,7 +3776,7 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
 
     assert len(preview) <= DISCORD_MESSAGE_LIMIT
     lines = preview.splitlines()
-    assert lines[0] == "-# <:message:1517560873000898860>"
+    assert lines[0] == "-# <:message:1517560873000898860> Thinking..."
     assert all(line.startswith("-# ") for line in lines)
     assert "thought line 59" in preview
     assert "thought line 9 " not in preview

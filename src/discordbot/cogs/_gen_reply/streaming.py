@@ -157,7 +157,7 @@ class ResponseStreamer(BaseModel):
         # the real reply may mention people, the thought process must not.
         tail = escape_mentions(self.reasoning_content[-1500:])
         lines = [f"-# {line}" for line in tail.splitlines() if line.strip()]
-        header = "-# <:message:1517560873000898860>"
+        header = "-# <:message:1517560873000898860> Thinking..."
         budget = DISCORD_MESSAGE_LIMIT - len(header)
         kept: list[str] = []
         for line in reversed(lines):
