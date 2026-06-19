@@ -87,7 +87,8 @@ class RuntimeModelCatalog(BaseModel):
     def image_model(self) -> ModelSettings:
         """The model settings for image generation and editing.
 
-        Callers: `_handle_image_reply`.
+        Callers: `generate_image_bytes` (via `_handle_image_reply` and the QA-route inline
+        `<image>` `ImageReplyGenerator`).
 
         Returns:
             Model settings used with `images.generate` and `images.edit`.
@@ -111,7 +112,8 @@ class RuntimeModelCatalog(BaseModel):
     def prompt_model(self) -> ModelSettings:
         """The model settings for the image/video generation prompt director.
 
-        Callers: `_refine_generation_prompt` (via `_handle_image_reply`, `_handle_video_reply`).
+        Callers: `refine_generation_prompt` (via `_handle_image_reply`, `_handle_video_reply`,
+        and the QA-route inline `<image>` `ImageReplyGenerator`).
 
         Returns:
             Flash-with-high-effort settings for the director call that expands a thin user
