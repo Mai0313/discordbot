@@ -1368,9 +1368,14 @@ class _FakeInteractionsResource:
         extra_headers: dict[str, str],
     ) -> AsyncIterator[SimpleNamespace]:
         """Records the call and returns the fake Interactions event stream."""
-        del environment, generation_config, tools, stream, extra_headers
+        del environment, tools, stream, extra_headers
         self.calls.append(
-            SimpleNamespace(model=model, system_instruction=system_instruction, input=input)
+            SimpleNamespace(
+                model=model,
+                system_instruction=system_instruction,
+                input=input,
+                generation_config=generation_config,
+            )
         )
         return _stream_events_from(events=self._events)
 
@@ -1436,6 +1441,33 @@ async def test_youtube_qa_uses_interactions_backend(
     assert "⬆ 12 ⬇ 34" in message.replies[0].content
     # A persistent watch reaction marks that the reply was grounded in the video.
     assert "📺" in message.added_reactions
+
+
+async def test_youtube_interactions_rounds_medium_effort_to_high(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Medium effort is sent as a thinking_level the Interactions models accept (high)."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+    )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        effort="medium",
+        yt_url=url,
+    )
+
+    assert fake.recorder.calls[0].generation_config["thinking_level"] == "high"
 
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
