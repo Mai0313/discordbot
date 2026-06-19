@@ -1310,8 +1310,8 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the
-            # chain's final 🆗 to show the reply was grounded in the watched video. The bot's own
-            # application emoji `youtube`, usable as a reaction in any guild the bot is in.
+            # chain's final reaction to show the reply was grounded in the watched video. The bot's
+            # own application emoji `youtube`, usable as a reaction in any guild the bot is in.
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="<:youtube:1517546722535018596>"
             )
@@ -1461,7 +1461,7 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
-                reactions.advance(emoji="🔀")
+                reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route and the
                 # memory selection use the text-only renders, so neither waits on the Files
@@ -1543,7 +1543,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="🎬")
+                    reactions.advance(emoji="<:video:1517560671913377842>")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
@@ -1554,7 +1554,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="📖")
+                    reactions.advance(emoji="<:stacks:1517562531365912607>")
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
                     # community signal. Cancelling the speculative prep leaves `parts_task`
@@ -1584,7 +1584,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         allow_voice=True,
                     )
                 else:
-                    reactions.advance(emoji="💭")
+                    reactions.advance(emoji="<:message:1517560873000898860>")
                     # Selection still gates the answer here; if this wait ever needs to go,
                     # the answer could speculatively start without memory and refire when
                     # selection picks some.
@@ -1618,7 +1618,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         allow_image=True,
                         yt_url=yt_url,
                     )
-                reactions.advance(emoji="🆗")
+                reactions.advance(emoji="<:gemini:1517561048503419170>")
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task)

@@ -2519,7 +2519,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     message = FakeMessage(content="<@!999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
     assert expected_call in calls
-    assert calls[-1] == "reaction:🆗"
+    assert calls[-1] == "reaction:<:gemini:1517561048503419170>"
     # The speculative QA context always builds first; SUMMARY rebuilds at its own
     # history depth without memory, and QA consumes the speculative context as-is.
     assert prep_requests == expected_prep

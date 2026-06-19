@@ -35,8 +35,8 @@ TTS_SPEED = 1.5
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
 VOICE_REPLY_FILENAME = "reply.wav"
 
-# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its 🆗
-# reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
+# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its final
+# status reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
 # already on screen, so the wait only delays its own message, never others; it is generous so a
 # longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
 # model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
