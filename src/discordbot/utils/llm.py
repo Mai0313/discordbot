@@ -3,6 +3,7 @@
 from typing import cast
 import asyncio
 
+import httpx
 from google import genai
 from openai import AsyncOpenAI
 import logfire
@@ -154,7 +155,9 @@ def create_gemini_interactions_client(config: LLMConfig) -> genai.Client:
     Responses bridge HTTP-fetches a YouTube URL as HTML and cannot make Gemini watch a video,
     whereas the interactions transformation forwards a video URI untranslated for Gemini to
     fetch server-side. `extra_body` is omitted because the interactions client does not
-    support it (it only warns and drops it).
+    support it (it only warns and drops it). An explicit httpx `AsyncHTTPTransport` is passed so
+    the async interactions client (which cannot use aiohttp) does not warn about falling back to
+    httpx on its first request; it would use httpx regardless, so this only names the choice.
 
     The base URL is normalized to the proxy root: google-genai appends its own
     `/v1beta/interactions` path, but `OPENAI_BASE_URL` is the OpenAI-compatible `/v1` endpoint,
@@ -170,4 +173,9 @@ def create_gemini_interactions_client(config: LLMConfig) -> genai.Client:
     base_url = config.base_url.rstrip("/")
     if base_url.endswith("/v1"):
         base_url = base_url[: -len("/v1")]
-    return genai.Client(api_key=config.api_key, http_options=HttpOptions(base_url=base_url))
+    return genai.Client(
+        api_key=config.api_key,
+        http_options=HttpOptions(
+            base_url=base_url, async_client_args={"transport": httpx.AsyncHTTPTransport()}
+        ),
+    )
