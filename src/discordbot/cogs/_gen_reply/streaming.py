@@ -145,7 +145,7 @@ class ResponseStreamer(BaseModel):
         """Builds the current streaming preview: real content once started, else reasoning.
 
         The reasoning preview shows the tail of the model's thought summary as `-#`
-        subtext lines under a 💭 header, so the user watches the thinking process until
+        subtext lines under a `message` app-emoji header, so the user watches the thinking until
         the first real content delta replaces it. The window keeps the newest lines that
         fit one Discord message, so a long think never hits the 2000-char limit.
         """
@@ -157,7 +157,7 @@ class ResponseStreamer(BaseModel):
         # the real reply may mention people, the thought process must not.
         tail = escape_mentions(self.reasoning_content[-1500:])
         lines = [f"-# {line}" for line in tail.splitlines() if line.strip()]
-        header = "-# 💭 思考中..."
+        header = "-# <:message:1517560873000898860>"
         budget = DISCORD_MESSAGE_LIMIT - len(header)
         kept: list[str] = []
         for line in reversed(lines):
@@ -331,9 +331,9 @@ class ResponseStreamer(BaseModel):
         if self.memory_lookups:
             names = list(dict.fromkeys(self.memory_lookups))
             if len(names) > 2:
-                memory_line = f"\n-# 🧠 已讀取 {', '.join(names[:2])} 等 {len(names)} 人的記憶"
+                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names[:2])} 等 {len(names)} 人的記憶"
             else:
-                memory_line = f"\n-# 🧠 已讀取 {', '.join(names)} 的記憶"
+                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
         model_label = (
             f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name

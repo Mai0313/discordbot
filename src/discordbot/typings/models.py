@@ -136,7 +136,7 @@ class RuntimeModelCatalog(BaseModel):
             gemini-pro answer model: it reads conversation history and the selected user
             memory and answers in persona while holding the image it just made,
             rather than coldly describing it. `effort="low"` keeps it snappy yet still
-            emits a reasoning summary, so the streaming `💭` preview shows; the image is
+            emits a reasoning summary, so the streaming reasoning preview shows; the image is
             already on screen, so this text streams in after with no added image latency.
         """
         return ModelSettings(name="gemini-flash-latest", effort="low")

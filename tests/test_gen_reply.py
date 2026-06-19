@@ -2519,7 +2519,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     message = FakeMessage(content="<@!999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
     assert expected_call in calls
-    assert calls[-1] == "reaction:<:gemini:1517561048503419170>"
+    assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
     # The speculative QA context always builds first; SUMMARY rebuilds at its own
     # history depth without memory, and QA consumes the speculative context as-is.
     assert prep_requests == expected_prep
@@ -3461,7 +3461,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1"]],
             None,
             (5, 6),
-            ["⬆ 5 ⬇ 6", "\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            ["⬆ 5 ⬇ 6", "\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
             [],
             None,
         ),
@@ -3472,7 +3472,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1", "2", "3"]],
             None,
             (1, 1),
-            ["\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester), Alice (alice) 等 3 人的記憶"],
             [],
             None,
         ),
@@ -3482,11 +3482,11 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1"], ["1"]],
             None,
             (1, 1),
-            ["\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
             [],
             "Tester (tester)",
         ),
-        ([], [], [["1"]], None, (5, 6), [], ["🧠"], None),
+        ([], [], [["1"]], None, (5, 6), [], ["<:tag:1517563887573143595>"], None),
     ],
     ids=[
         "single-owner-credit",
@@ -3599,7 +3599,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     """The optional second -# memory line is stripped together with the usage footer."""
     body = "答案內容"
-    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# 🧠 已讀取 Tester (tester) 的記憶"
+    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"
     assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
     # Backward compatible: a single-line footer still strips cleanly.
     single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
@@ -3756,7 +3756,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
     assert len(message.replies) == 1
     preview = message.replies[0].content
     assert isinstance(preview, str)
-    assert preview.splitlines()[0] == "-# 💭 思考中..."
+    assert preview.splitlines()[0] == "-# <:message:1517560873000898860>"
     assert "-# first thought" in preview
     assert "-# second thought" in preview
 
@@ -3776,7 +3776,7 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
 
     assert len(preview) <= DISCORD_MESSAGE_LIMIT
     lines = preview.splitlines()
-    assert lines[0] == "-# 💭 思考中..."
+    assert lines[0] == "-# <:message:1517560873000898860>"
     assert all(line.startswith("-# ") for line in lines)
     assert "thought line 59" in preview
     assert "thought line 9 " not in preview

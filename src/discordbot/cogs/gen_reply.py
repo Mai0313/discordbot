@@ -1426,7 +1426,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 _exc_info=True,
             )
             with contextlib.suppress(Exception):
-                reactions.advance(emoji="❌")
+                reactions.advance(emoji="<:redcross:1517565100838355016>")
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
@@ -1618,7 +1618,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         allow_image=True,
                         yt_url=yt_url,
                     )
-                reactions.advance(emoji="<:gemini:1517561048503419170>")
+                reactions.advance(emoji="<:greencheck:1517565102424068226>")
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task)
