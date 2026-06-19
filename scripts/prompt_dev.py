@@ -8,7 +8,11 @@ from openai import OpenAI
 from anthropic import Anthropic
 from rich.console import Console
 from google.genai.types import HttpOptions
-from google.genai._interactions.types import TextContentParam, GenerationConfigParam
+from google.genai._interactions.types import (
+    TextContentParam,
+    VideoContentParam,
+    GenerationConfigParam,
+)
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 
 from discordbot.typings.llm import LLMConfig
@@ -117,30 +121,35 @@ def gen_reply_chat(user_prompt: str) -> None:
     console.print(f"\n{model_name} on Litellm (Chat Completions) takes {end - start:.2f} seconds")
 
 
-def gen_reply_gemini(user_prompt: str) -> None:
+def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
     """Streams a dev reply through the native Gemini SDK.
 
     Args:
         user_prompt: User message to send as the comparison prompt.
+        video_uri: Optional URI of a video to include as input content, for testing Gemini's video understanding capabilities.
     """
     client = genai.Client(
         api_key=config.api_key,
         http_options=HttpOptions(
-            base_url=config.base_url
+            base_url=config.base_url,
             # NOTICE: extra_body properties are not supported in `.interactions` yet
-            # extra_body={
-            #     "mock_testing_fallbacks": False,
-            #     "cache": {
-            #         "no-cache": True  # Skip cache check, get fresh response
-            #     },
-            # },
+            # But this is fine for leaving it here.
+            extra_body={
+                "mock_testing_fallbacks": False,
+                "cache": {
+                    "no-cache": True  # Skip cache check, get fresh response
+                },
+            },
         ),
     )
     start = time.time()
     responses = client.interactions.create(
         model=SLOW_MODEL.name,
         system_instruction=REPLY_PROMPT,
-        input=[TextContentParam(text=user_prompt, type="text")],
+        input=[
+            TextContentParam(text=user_prompt, type="text"),
+            VideoContentParam(uri=video_uri, type="video"),
+        ],
         environment="remote",
         generation_config=GenerationConfigParam(
             thinking_level=SLOW_MODEL.effort, thinking_summaries="auto"
@@ -203,5 +212,7 @@ def gen_reply_anthropic(user_prompt: str) -> None:
 if __name__ == "__main__":
     # gen_reply(user_prompt="為何 37 是質數?")
     # gen_reply_chat(user_prompt="為何 37 是質數?")
-    gen_reply_gemini(user_prompt="為何 37 是質數?")
+    gen_reply_gemini(
+        user_prompt="用三句話總結這個影片", video_uri="https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    )
     # gen_reply_anthropic(user_prompt="為何 37 是質數?")
