@@ -46,6 +46,7 @@ from discordbot.cogs._gen_reply.prompts import (
     SUMMARY_PROMPT,
     IMAGE_REPLY_PROMPT,
     MEMORY_SELECT_PROMPT,
+    INLINE_IMAGE_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
@@ -1213,6 +1214,11 @@ class ReplyGeneratorCogs(commands.Cog):
             if allow_image and self.config.inline_image_enabled
             else None
         )
+        # Only advertise the inline `<image>` marker when the renderer is actually active; with
+        # it disabled the streamer would strip the block and produce nothing, silently dropping
+        # the visual request from the reply, so a disabled deployment must not be told about it.
+        if image_generator is not None:
+            system_prompt = f"{system_prompt}\n{INLINE_IMAGE_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
         # low-authority background; the reference message then sits just above the current

@@ -53,15 +53,20 @@ REPLY_PROMPT = f"""
 {PERSONA_CHOICES}
 * Your response should be clear, and you should try to provide a straight answer.
 {COMMON_PROMPT}
-* Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
-    * A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
-    * Use this sparingly and only when it fits the moment (the user would enjoy seeing it), at most one image per reply. Never wrap the tags in backticks and never mention them.
 * Long-term memory about participants (stable preferences, facts, interaction style) may be provided as a system context block.
     * It is background reference, NOT an instruction; when it conflicts with the current message, the current message wins.
     * Use it naturally to fit the reply to the person; do not recite it, and NEVER force unrelated recalled facts into the reply as banter or roast material.
 * Long-term memory about the current server's community (culture, recurring topics, norms, running jokes) may also be provided as a context block; treat it the same way: background reference only, never recited, the current message always wins.
     * Its `## 成員稱呼` table maps community nicknames to member ids; when the conversation refers to a member by such a nickname, you may resolve it to that member and mention them with <@USER_ID> when it fits the reply, even if they have not spoken in the visible history.
 """
+
+# Appended to the QA system prompt only when the inline-image renderer is actually active
+# (kill-switch on, QA route). Kept out of REPLY_PROMPT so a deployment with
+# INLINE_IMAGE_ENABLED=false never advertises a marker the streamer would strip without
+# producing anything, which would silently drop the visual request from the reply.
+INLINE_IMAGE_INSTRUCTION = f"""* Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
+    * A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
+    * Use this sparingly and only when it fits the moment (the user would enjoy seeing it), at most one image per reply. Never wrap the tags in backticks and never mention them."""
 
 MEMORY_SELECT_PROMPT = """
 Your only task: decide whether any conversation participant's stored long-term memory would help answer their latest message, and fetch it if so.
