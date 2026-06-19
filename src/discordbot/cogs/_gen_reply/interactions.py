@@ -14,12 +14,11 @@ types here is the documented carve-out for video ingestion.
 """
 
 from types import SimpleNamespace
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from collections.abc import AsyncIterator
 
 from google import genai
 from openai.types.responses import ResponseStreamEvent
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from google.genai._interactions.types import (
     StepParam,
     ContentParam,
@@ -27,16 +26,19 @@ from google.genai._interactions.types import (
     ImageContentParam,
     VideoContentParam,
     UserInputStepParam,
-    DocumentContentParam,
     InteractionSSEEvent,
+    DocumentContentParam,
     ModelOutputStepParam,
     GenerationConfigParam,
 )
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
-from openai.types.responses.response_input_content_param import ResponseInputContentParam
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
+from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_content_param import ResponseInputContentParam
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
+    from openai.types.responses.response_input_text_param import ResponseInputTextParam
+    from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 
 def _kind_from_filename(filename: str) -> Literal["image", "video", "document"]:
@@ -54,7 +56,9 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "document"]:
     return "document"
 
 
-def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
+def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content type mapped
+    *, part: ResponseInputContentParam
+) -> ContentParam | None:
     """Translates one OpenAI input content part into an Interactions content param.
 
     Media is referenced by its existing URI (Files API `file_id` or a raw `file_url`); the
@@ -83,9 +87,7 @@ def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
     return None
 
 
-def _translate_content(
-    *, content: "str | object"
-) -> list[ContentParam]:
+def _translate_content(*, content: "str | object") -> list[ContentParam]:
     """Translates an OpenAI message's content (string shorthand or part list) into params."""
     if isinstance(content, str):
         return [TextContentParam(type="text", text=content)] if content else []
@@ -149,18 +151,18 @@ async def adapt_interactions_stream(
     the earlier selection call; a per-step emit would double-count.
     """
     model_name = ""
+    # Branch on `event.event_type` directly (not a copied local) so the discriminated
+    # InteractionSSEEvent union narrows to the member that carries the field being read.
     async for event in stream:
-        event_type = event.event_type
-        if event_type == "interaction.created":
+        if event.event_type == "interaction.created":
             model_name = event.interaction.model or ""
             yield cast(
                 "ResponseStreamEvent",
                 SimpleNamespace(
-                    type="response.created",
-                    response=SimpleNamespace(model=model_name, usage=None),
+                    type="response.created", response=SimpleNamespace(model=model_name, usage=None)
                 ),
             )
-        elif event_type == "step.delta":
+        elif event.event_type == "step.delta":
             delta = event.delta
             if delta.type == "text":
                 yield cast(
@@ -172,11 +174,9 @@ async def adapt_interactions_stream(
                 if text:
                     yield cast(
                         "ResponseStreamEvent",
-                        SimpleNamespace(
-                            type="response.reasoning_summary_text.delta", delta=text
-                        ),
+                        SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
-        elif event_type == "interaction.completed":
+        elif event.event_type == "interaction.completed":
             usage = event.metadata.usage if event.metadata is not None else None
             usage_ns = (
                 SimpleNamespace(
@@ -195,7 +195,7 @@ async def adapt_interactions_stream(
                     ),
                 ),
             )
-        elif event_type == "error":
+        elif event.event_type == "error":
             raise RuntimeError(f"Gemini interactions stream error: {event!r}")
 
 
@@ -220,9 +220,7 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
         system_instruction=system_instruction,
         input=steps,
         environment="remote",
-        generation_config=GenerationConfigParam(
-            thinking_level=effort, thinking_summaries="auto"
-        ),
+        generation_config=GenerationConfigParam(thinking_level=effort, thinking_summaries="auto"),
         tools=[
             URLContext(type="url_context"),
             GoogleSearch(type="google_search", search_types=["web_search"]),

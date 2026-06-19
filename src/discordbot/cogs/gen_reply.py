@@ -161,6 +161,36 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     return f"{request_time_context}\n\n{system_prompt}"
 
 
+def _youtube_url_in_message(message: Message) -> str | None:
+    """Returns the first YouTube URL in a message's text or its embeds, if any."""
+    texts = [message.content or ""]
+    for embed in message.embeds:
+        texts.extend(text for text in (embed.url, embed.description) if text)
+    for text in texts:
+        match = YOUTUBE_URL_RE.search(string=text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _find_youtube_url(message: Message) -> str | None:
+    """Finds a YouTube URL in the current message or the reply-reference chain.
+
+    Unlike Threads (whose `parse_threads` cog re-injects a replied-to post as an embed),
+    a YouTube link has no such cog, so a reply to a message that merely links a video would
+    otherwise be missed; the reference chain is searched so "summarize this" on a replied-to
+    video still watches it. The current message wins, then the nearest reference outward.
+    """
+    found = _youtube_url_in_message(message=message)
+    if found is not None:
+        return found
+    for ref in _walk_reference_chain(message=message):
+        found = _youtube_url_in_message(message=ref)
+        if found is not None:
+            return found
+    return None
+
+
 def _walk_reference_chain(message: Message) -> list[Message]:
     """Walks the reply-reference chain up to depth 3, oldest link last."""
     chain: list[Message] = []
@@ -1278,6 +1308,10 @@ class ReplyGeneratorCogs(commands.Cog):
             and "gemini" in slow_model.name
             and self.config.youtube_video_enabled
         )
+        if use_interactions:
+            # Persistent marker (added directly, not via the status chain) so it stays after the
+            # chain's final 🆗 to show the reply was grounded in the watched video.
+            await update_reaction(message=message, bot_user=self.bot.user, emoji="📺")
         with logfire.span(
             "gen_reply answer",
             model=slow_model.name,
@@ -1568,12 +1602,9 @@ class ReplyGeneratorCogs(commands.Cog):
                         context = context.model_copy(update={"threads_block": threads_block})
                     pipeline_span.set_attribute(key="effort", value=effort)
                     # Watch a linked YouTube video only when the router judged the user is asking
-                    # about it; the URL itself is taken from the message text (never the model)
-                    # so the answer turn ingests the exact link the user posted.
-                    youtube_match = YOUTUBE_URL_RE.search(string=message.content)
-                    yt_url = (
-                        youtube_match.group(0) if youtube_match and route.watch_video else None
-                    )
+                    # about it; the URL itself is taken from the message text or the replied-to
+                    # message (never the model) so the answer turn ingests the exact link posted.
+                    yt_url = _find_youtube_url(message=message) if route.watch_video else None
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,

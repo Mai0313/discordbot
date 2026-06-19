@@ -22,6 +22,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
+    _find_youtube_url,
     _build_runtime_instructions,
 )
 from discordbot.typings.models import (
@@ -1433,6 +1434,8 @@ async def test_youtube_qa_uses_interactions_backend(
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     assert "watched it" in message.replies[0].content
     assert "⬆ 12 ⬇ 34" in message.replies[0].content
+    # A persistent watch reaction marks that the reply was grounded in the video.
+    assert "📺" in message.added_reactions
 
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
@@ -1470,6 +1473,27 @@ async def test_youtube_qa_falls_back_to_responses(
 
     assert fake.recorder.calls == []
     assert cog.client.responses.create_streams == [True]
+
+
+def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A YouTube link in the replied-to message is found even when the reply omits it."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    referenced = FakeMessage(content=f"look at this {url}")
+    referenced.id = 555
+    message = FakeMessage(content="<@999> 總結這影片")
+    message.reference = FakeReference(resolved=referenced)
+
+    assert _find_youtube_url(message=message) == url
+
+
+def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No YouTube link in the message or its reference chain returns None."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    message = FakeMessage(content="<@999> hi")
+    message.reference = FakeReference(resolved=FakeMessage(content="just chatting"))
+
+    assert _find_youtube_url(message=message) is None
 
 
 def _media_builder() -> MessageInputBuilder:

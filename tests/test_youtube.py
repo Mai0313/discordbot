@@ -15,10 +15,16 @@ from discordbot.cogs._gen_reply.interactions import (
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://www.youtube.com/watch?v=jNQXAC9IVRw"),
+        (
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        ),
         ("https://youtube.com/watch?v=jNQXAC9IVRw", "https://youtube.com/watch?v=jNQXAC9IVRw"),
         ("https://youtu.be/jNQXAC9IVRw", "https://youtu.be/jNQXAC9IVRw"),
-        ("https://www.youtube.com/shorts/abcdefghijk", "https://www.youtube.com/shorts/abcdefghijk"),
+        (
+            "https://www.youtube.com/shorts/abcdefghijk",
+            "https://www.youtube.com/shorts/abcdefghijk",
+        ),
         ("https://www.youtube.com/live/abcdefghijk", "https://www.youtube.com/live/abcdefghijk"),
         (
             "https://m.youtube.com/watch?v=jNQXAC9IVRw&t=30s",
@@ -63,7 +69,9 @@ def test_to_interactions_input_maps_roles_and_appends_video() -> None:
         {"role": "user", "content": [{"type": "input_text", "text": "what happens here"}]},
     ]
 
-    steps = to_interactions_input(answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk")
+    steps = to_interactions_input(
+        answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk"
+    )
 
     # system + user coalesce into one user_input step; assistant is its own model_output step.
     assert [s["type"] for s in steps] == ["user_input", "model_output", "user_input"]
@@ -87,10 +95,12 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
                 {"type": "input_file", "file_id": "https://x/files/i1", "filename": "shot.png"},
                 {"type": "input_image", "image_url": "https://x/pic.jpg"},
             ],
-        },
+        }
     ]
 
-    steps = to_interactions_input(answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk")
+    steps = to_interactions_input(
+        answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk"
+    )
 
     parts = steps[-1]["content"]
     kinds = [p["type"] for p in parts]
@@ -112,14 +122,17 @@ def _interaction_events() -> list[SimpleNamespace]:
     """A minimal Interactions stream: created, a thought, two text deltas, completed+usage."""
     return [
         SimpleNamespace(
-            event_type="interaction.created", interaction=SimpleNamespace(model="gemini-pro-latest")
+            event_type="interaction.created",
+            interaction=SimpleNamespace(model="gemini-pro-latest"),
         ),
         SimpleNamespace(
             event_type="step.delta",
             delta=SimpleNamespace(type="thought_summary", content=SimpleNamespace(text="hmm")),
         ),
         SimpleNamespace(event_type="step.delta", delta=SimpleNamespace(type="text", text="Hello")),
-        SimpleNamespace(event_type="step.delta", delta=SimpleNamespace(type="text", text=" world")),
+        SimpleNamespace(
+            event_type="step.delta", delta=SimpleNamespace(type="text", text=" world")
+        ),
         SimpleNamespace(
             event_type="interaction.completed",
             interaction=SimpleNamespace(model="gemini-pro-latest"),
@@ -138,7 +151,9 @@ async def _aiter(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace
 
 async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     """Interactions events become Responses-shaped events the streamer consumes."""
-    out = [event async for event in adapt_interactions_stream(stream=_aiter(_interaction_events()))]
+    out = [
+        event async for event in adapt_interactions_stream(stream=_aiter(_interaction_events()))
+    ]
 
     types = [event.type for event in out]
     assert types == [
