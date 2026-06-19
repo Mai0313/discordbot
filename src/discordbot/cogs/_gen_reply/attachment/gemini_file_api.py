@@ -127,7 +127,10 @@ class GeminiFileUploader(AttachmentRenderer):
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
         if isinstance(source, str):
-            source_name = "image"
+            # A URL/embed image has no filename; give it an image extension so a downstream
+            # filename-only classifier (the Interactions content kind) reads it as an image,
+            # not a document.
+            source_name = "image.png"
         else:
             source_name = (
                 getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
