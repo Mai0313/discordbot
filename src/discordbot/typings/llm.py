@@ -19,6 +19,9 @@ class LLMConfig(BaseSettings):
             model's voice marker is still stripped but no audio clip is synthesized.
         inline_image_enabled: Kill-switch for inline generated images on QA replies; when
             false the answer model's `<image>` marker is still stripped but no image is rendered.
+        youtube_video_enabled: Kill-switch for answering about a linked YouTube video via the
+            Gemini Interactions API; when false the QA turn falls back to the Responses path
+            (which cannot watch the video).
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -57,6 +60,11 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the bot may render an inline generated image for QA replies.",
         validation_alias=AliasChoices("INLINE_IMAGE_ENABLED"),
+    )
+    youtube_video_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may watch a linked YouTube video via the Interactions API.",
+        validation_alias=AliasChoices("YOUTUBE_VIDEO_ENABLED"),
     )
 
 

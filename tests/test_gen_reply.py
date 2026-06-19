@@ -1347,6 +1347,131 @@ async def test_image_config_gate_controls_generator(
         assert isinstance(captured[0], ImageReplyGenerator)
 
 
+class _FakeInteractionsResource:
+    """Records Interactions answer calls and returns a fake event stream."""
+
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        """Stores the events each create() will stream and a call recorder."""
+        self._events = events
+        self.calls: list[SimpleNamespace] = []
+
+    async def create(  # noqa: PLR0913 -- mirrors the Interactions create signature
+        self,
+        model: str,
+        system_instruction: str,
+        input: list[object],  # noqa: A002 -- SDK parameter
+        environment: str,
+        generation_config: object,
+        tools: list[object],
+        stream: bool,
+        extra_headers: dict[str, str],
+    ) -> AsyncIterator[SimpleNamespace]:
+        """Records the call and returns the fake Interactions event stream."""
+        del environment, generation_config, tools, stream, extra_headers
+        self.calls.append(
+            SimpleNamespace(model=model, system_instruction=system_instruction, input=input)
+        )
+        return _stream_events_from(events=self._events)
+
+
+class _FakeInteractionsClient:
+    """Fake Gemini client exposing the async Interactions resource."""
+
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        """Wires the recorder under `aio.interactions` like the real client."""
+        self.recorder = _FakeInteractionsResource(events=events)
+        self.aio = SimpleNamespace(interactions=self.recorder)
+
+
+def _interactions_turn_events() -> list[SimpleNamespace]:
+    """A minimal Interactions turn: created, one text delta, completed with usage."""
+    return [
+        SimpleNamespace(
+            event_type="interaction.created", interaction=SimpleNamespace(model=TEST_LLM_MODEL)
+        ),
+        SimpleNamespace(
+            event_type="step.delta", delta=SimpleNamespace(type="text", text="watched it")
+        ),
+        SimpleNamespace(
+            event_type="interaction.completed",
+            interaction=SimpleNamespace(model=TEST_LLM_MODEL),
+            metadata=SimpleNamespace(
+                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34)
+            ),
+        ),
+    ]
+
+
+async def test_youtube_qa_uses_interactions_backend(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A watched YouTube URL streams the answer through Interactions, not Responses."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+    )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        yt_url=url,
+    )
+
+    # The Responses answer stream was never used; the Interactions one was, with the video part.
+    assert cog.client.responses.create_streams == []
+    assert len(fake.recorder.calls) == 1
+    last_step_parts = fake.recorder.calls[0].input[-1]["content"]
+    assert {"type": "video", "uri": url} in last_step_parts
+    # The shared streamer rendered the reply and a footer from the Interactions usage.
+    assert "watched it" in message.replies[0].content
+    assert "⬆ 12 ⬇ 34" in message.replies[0].content
+
+
+@pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
+async def test_youtube_qa_falls_back_to_responses(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """Without a watchable Gemini video turn, the answer stays on the Responses path."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False,
+        inline_image_enabled=False,
+        youtube_video_enabled=scenario != "kill_switch_off",
+    )
+    if scenario == "non_gemini_model":
+        monkeypatch.setattr(
+            RuntimeModelCatalog,
+            "slow_model",
+            property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
+        )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    yt_url = None if scenario == "no_url" else url
+    message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        yt_url=yt_url,
+    )
+
+    assert fake.recorder.calls == []
+    assert cog.client.responses.create_streams == [True]
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
@@ -2316,8 +2441,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         effort: str = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        yt_url: str | None = None,
     ) -> None:
         """Records slow message handler dispatch."""
+        del yt_url
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)

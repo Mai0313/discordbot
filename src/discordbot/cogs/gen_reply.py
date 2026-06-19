@@ -9,6 +9,7 @@ import asyncio
 from functools import cached_property
 import contextlib
 
+from google import genai
 from openai import AsyncOpenAI
 import logfire
 import nextcord
@@ -19,10 +20,11 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_litellm_client
+from discordbot.utils.llm import create_litellm_client, create_gemini_interactions_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
+from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
@@ -79,10 +81,16 @@ from discordbot.cogs._parse_threads.builder import (
     build_threads_context_messages,
     threads_timeout_context_messages,
 )
+from discordbot.cogs._gen_reply.interactions import (
+    to_interactions_input,
+    create_interactions_answer_stream,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, AsyncIterator
+
+    from openai.types.responses import ResponseStreamEvent
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -324,6 +332,16 @@ class ReplyGeneratorCogs(commands.Cog):
             A configured AsyncOpenAI client reused across reply requests.
         """
         return create_litellm_client(config=self.config)
+
+    @cached_property
+    def interactions_client(self) -> genai.Client:
+        """The cached Gemini client whose Interactions API targets the LiteLLM proxy.
+
+        Returns:
+            A Gemini client used only for the YouTube-aware QA answer turn, which streams
+            through the native Interactions API (the proxy-backed path that can watch a video).
+        """
+        return create_gemini_interactions_client(config=self.config)
 
     @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
@@ -1197,6 +1215,7 @@ class ReplyGeneratorCogs(commands.Cog):
         effort: Literal["low", "medium", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        yt_url: str | None = None,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
@@ -1204,7 +1223,9 @@ class ReplyGeneratorCogs(commands.Cog):
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
         community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
         spoken clip and `allow_image` an inline generated image when the answer model marks the
-        reply for it (both QA only; SUMMARY stays text).
+        reply for it (both QA only; SUMMARY stays text). `yt_url`, set only when the router asked
+        to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
+        (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
         voice_synthesizer = (
             self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
@@ -1247,20 +1268,47 @@ class ReplyGeneratorCogs(commands.Cog):
             voice_synthesizer=voice_synthesizer,
             image_generator=image_generator,
         )
-        with logfire.span("gen_reply answer", model=slow_model.name):
-            responses = await self.client.responses.create(
-                model=slow_model.name,
-                instructions=_build_runtime_instructions(
-                    system_prompt=system_prompt, message=message
-                ),
-                input=answer_input,
-                reasoning=slow_model.reasoning,
-                tools=list(slow_model.tools),
-                stream=True,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
-            )
+        # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
+        # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
+        # the one backend swap. It is Gemini-only and kill-switchable; otherwise (no video, a
+        # non-Gemini answer model, or the switch off) the turn falls back to the Responses path,
+        # which never errors. Both feed the same streamer so footer / memory / preview are shared.
+        use_interactions = (
+            yt_url is not None
+            and "gemini" in slow_model.name
+            and self.config.youtube_video_enabled
+        )
+        with logfire.span(
+            "gen_reply answer",
+            model=slow_model.name,
+            backend="interactions" if use_interactions else "responses",
+        ):
+            responses: AsyncIterator[ResponseStreamEvent]
+            if use_interactions and yt_url is not None:
+                responses = create_interactions_answer_stream(
+                    client=self.interactions_client,
+                    model=slow_model.name,
+                    system_instruction=_build_runtime_instructions(
+                        system_prompt=system_prompt, message=message
+                    ),
+                    steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
+                    effort=effort,
+                    end_user_id=message.author.name,
+                )
+            else:
+                responses = await self.client.responses.create(
+                    model=slow_model.name,
+                    instructions=_build_runtime_instructions(
+                        system_prompt=system_prompt, message=message
+                    ),
+                    input=answer_input,
+                    reasoning=slow_model.reasoning,
+                    tools=list(slow_model.tools),
+                    stream=True,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
             full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
@@ -1519,6 +1567,13 @@ class ReplyGeneratorCogs(commands.Cog):
                         threads_task = None
                         context = context.model_copy(update={"threads_block": threads_block})
                     pipeline_span.set_attribute(key="effort", value=effort)
+                    # Watch a linked YouTube video only when the router judged the user is asking
+                    # about it; the URL itself is taken from the message text (never the model)
+                    # so the answer turn ingests the exact link the user posted.
+                    youtube_match = YOUTUBE_URL_RE.search(string=message.content)
+                    yt_url = (
+                        youtube_match.group(0) if youtube_match and route.watch_video else None
+                    )
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
@@ -1527,6 +1582,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort=effort,
                         allow_voice=True,
                         allow_image=True,
+                        yt_url=yt_url,
                     )
                 reactions.advance(emoji="🆗")
         finally:

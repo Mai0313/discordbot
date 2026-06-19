@@ -6,8 +6,8 @@ import time
 from typing import cast
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 
-from openai import AsyncStream
 import logfire
 import nextcord
 from nextcord import File, Message
@@ -278,7 +278,7 @@ class ResponseStreamer(BaseModel):
         self.stored_content += delta
         self._ensure_editor_started()
 
-    async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
+    async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
 
         Only accumulates state; the snapshot editor task renders it to Discord, so this
@@ -518,7 +518,7 @@ class ResponseStreamer(BaseModel):
             return
         logfire.info("Generated media attached", message_id=self.message.id, file_count=len(files))
 
-    async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
+    async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
         try:
             await self._consume(responses=responses)

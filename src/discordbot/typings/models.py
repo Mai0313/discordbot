@@ -266,10 +266,19 @@ class RouteClassification(BaseModel):
 
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
+        watch_video: Whether the QA answer should ingest a linked YouTube video.
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
         ..., description="Reply mode selected for the incoming Discord message."
+    )
+    watch_video: bool = Field(
+        default=False,
+        description=(
+            "Set true only when the message links a YouTube video AND the user wants its "
+            "content analyzed, summarized, or asked about; false when the link is incidental. "
+            "Consumed only on the QA route to decide whether to watch the video."
+        ),
     )
 
 
