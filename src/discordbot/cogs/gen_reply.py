@@ -799,8 +799,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 route = RouteClassification(decision="QA")
             elif parsed.decision == "SUMMARY" and _message_has_url(content=message.content):
                 # A summary request carrying a URL is really a QA recap of that link, not a
-                # recap of channel history, so steer it back to QA.
-                route = RouteClassification(decision="QA")
+                # recap of channel history, so steer it back to QA. Preserve watch_video so a
+                # "summarize this YouTube link" still reaches the video-watching path.
+                route = RouteClassification(decision="QA", watch_video=parsed.watch_video)
             else:
                 route = parsed
         except ValidationError:
