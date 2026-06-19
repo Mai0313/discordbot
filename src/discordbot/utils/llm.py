@@ -156,10 +156,18 @@ def create_gemini_interactions_client(config: LLMConfig) -> genai.Client:
     fetch server-side. `extra_body` is omitted because the interactions client does not
     support it (it only warns and drops it).
 
+    The base URL is normalized to the proxy root: google-genai appends its own
+    `/v1beta/interactions` path, but `OPENAI_BASE_URL` is the OpenAI-compatible `/v1` endpoint,
+    which would otherwise yield `/v1/v1beta/interactions` and miss the proxy's Gemini
+    Interactions route, so a trailing `/v1` is stripped first.
+
     Args:
         config: Runtime LLM configuration holding the proxy base URL and API key.
 
     Returns:
         A Gemini client whose `aio.interactions` calls target the LiteLLM proxy.
     """
-    return genai.Client(api_key=config.api_key, http_options=HttpOptions(base_url=config.base_url))
+    base_url = config.base_url.rstrip("/")
+    if base_url.endswith("/v1"):
+        base_url = base_url[: -len("/v1")]
+    return genai.Client(api_key=config.api_key, http_options=HttpOptions(base_url=base_url))
