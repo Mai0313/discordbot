@@ -52,10 +52,13 @@ _IMAGE_BLOCK_RE = re.compile(
 _VOICE_OPEN_TAIL_RE = re.compile(rf"`?{_VOICE_OPEN}`?(.*)\Z", re.IGNORECASE | re.DOTALL)
 _IMAGE_OPEN_TAIL_RE = re.compile(rf"`?{_IMAGE_OPEN}`?(.*)\Z", re.IGNORECASE | re.DOTALL)
 
+# Sentinel marking where an image block was removed, so whitespace healing touches only that
+# seam and leaves the rest of the reply (code blocks, aligned tables, ASCII art) byte-for-byte.
+_IMAGE_SEAM = "\x00"
+# An inline seam with text on both sides collapses to one space; horizontal padding around the
+# seam is absorbed, but newlines are not, so a block alone on its line keeps its blank lines.
+_INLINE_SEAM_RE = re.compile(rf"(?<=\S)[^\S\n]*{_IMAGE_SEAM}[^\S\n]*(?=\S)")
 _MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
-# Collapse an interior run of spaces/tabs (left by removing a mid-line image block) without
-# eating line-leading indentation, so a removed block never leaves a visible double gap.
-_INTERIOR_SPACES_RE = re.compile(r"(?<=\S)[ \t]{2,}")
 
 # All tags whose half-typed prefix should be trimmed off a live preview snapshot.
 _PARTIAL_TAGS = (IMAGE_OPEN_TAG, IMAGE_CLOSE_TAG, VOICE_OPEN_TAG, VOICE_CLOSE_TAG)
@@ -88,10 +91,17 @@ class ReplySegments(BaseModel):
     )
 
 
-def _tidy(text: str) -> str:
-    """Cleans whitespace left behind after removing a block, without harming indentation."""
+def _heal_image_seams(text: str) -> str:
+    """Closes the gap a removed image block left, touching only that seam.
+
+    Each removed block is marked with `_IMAGE_SEAM`. An inline gap (text on both sides)
+    becomes one space, a block alone on its line(s) collapses its surrounding blank lines, and
+    a leading/trailing block leaves nothing. Everything else is left exactly as the model wrote
+    it, so this never collapses spacing in code blocks, aligned tables, or ASCII art elsewhere.
+    """
+    text = _INLINE_SEAM_RE.sub(" ", text)
+    text = text.replace(_IMAGE_SEAM, "")
     text = _MULTI_NEWLINE_RE.sub("\n\n", text)
-    text = _INTERIOR_SPACES_RE.sub(" ", text)
     return text.strip()
 
 
@@ -119,13 +129,15 @@ def extract_reply_segments(text: str) -> ReplySegments:
     """
     image_match = _IMAGE_BLOCK_RE.search(text)
     image_prompt = image_match.group(1).strip() if image_match is not None else ""
-    display = _IMAGE_BLOCK_RE.sub("", text)
+    display = _IMAGE_BLOCK_RE.sub(_IMAGE_SEAM, text)
     dangling_image = _IMAGE_OPEN_TAIL_RE.search(display)
     if dangling_image is not None:
         if not image_prompt:
             image_prompt = dangling_image.group(1).strip()
-        display = _IMAGE_OPEN_TAIL_RE.sub("", display)
+        display = _IMAGE_OPEN_TAIL_RE.sub(_IMAGE_SEAM, display)
+    image_removed = _IMAGE_SEAM in display
 
+    before_voice = display
     voice_parts = [match.group(1).strip() for match in _VOICE_BLOCK_RE.finditer(display)]
     display = _VOICE_BLOCK_RE.sub(r"\1", display)
     dangling_voice = _VOICE_OPEN_TAIL_RE.search(display)
@@ -133,10 +145,18 @@ def extract_reply_segments(text: str) -> ReplySegments:
         voice_parts.append(dangling_voice.group(1).strip())
         display = _VOICE_OPEN_TAIL_RE.sub(r"\1", display)
     display = _VOICE_CLOSE_RE.sub("", display)
+    voice_removed = display != before_voice
+
+    # Only touch whitespace where markup was actually removed; a reply with no control tags is
+    # returned exactly as written so code blocks, aligned tables, and ASCII art survive intact.
+    if image_removed:
+        display = _heal_image_seams(display)
+    elif voice_removed:
+        display = display.rstrip()
 
     voice_text = "\n".join(part for part in voice_parts if part).strip()
     return ReplySegments(
-        display_text=_tidy(display),
+        display_text=display,
         voice_text=voice_text,
         image_prompt=image_prompt,
         voice_requested=bool(voice_text),

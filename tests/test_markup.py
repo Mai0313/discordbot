@@ -106,6 +106,28 @@ def test_extract_empty_span_is_not_requested() -> None:
     assert segments.image_requested is False
 
 
+def test_extract_preserves_whitespace_when_no_tags() -> None:
+    """A reply with no control tags is returned byte-for-byte (code/tables/art survive)."""
+    reply = "Here:\n```\nx   =   1\ncol1    col2\n```\nascii  ->  art"
+
+    segments = extract_reply_segments(text=reply)
+
+    # No collapsing of interior runs of spaces anywhere in an ordinary reply.
+    assert segments.display_text == reply
+
+
+def test_extract_image_seam_is_local_only() -> None:
+    """Removing an image block heals only its own gap, not double spaces elsewhere."""
+    segments = extract_reply_segments(text="a  b <image>cat</image> c  d")
+
+    assert segments.image_prompt == "cat"
+    assert "<image>" not in segments.display_text
+    # The image gap closes to a single space, but the unrelated double spaces are untouched.
+    assert "a  b" in segments.display_text
+    assert "c  d" in segments.display_text
+    assert "b c" in segments.display_text
+
+
 def test_preview_hides_complete_image_block() -> None:
     """A finished image block never shows in the live preview."""
     assert strip_tags_for_preview(text="這是 <image>a cat</image> 圖") == "這是  圖".strip()
