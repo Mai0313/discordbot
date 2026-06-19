@@ -228,5 +228,8 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
         stream=True,
         extra_headers={"x-litellm-end-user-id": end_user_id},
     )
-    async for event in adapt_interactions_stream(stream=responses):
+    # `stream=True` returns an async event stream; the overload still types it as a union with
+    # the non-streaming Interaction, so narrow to the iterator the adapter consumes.
+    stream = cast("AsyncIterator[InteractionSSEEvent]", responses)
+    async for event in adapt_interactions_stream(stream=stream):
         yield event
