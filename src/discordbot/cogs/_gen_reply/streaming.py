@@ -433,7 +433,7 @@ class ResponseStreamer(BaseModel):
             return None
         return File(fp=BytesIO(clip.audio), filename=VOICE_REPLY_FILENAME)
 
-    async def _render_image_file(self) -> File | None:
+    async def _render_image_file(self) -> File | None:  # noqa: PLR0911 -- one best-effort draw with several distinct degrade paths (skip / empty / timeout / no-image / malformed / oversized / ok)
         """Generates the marked inline image to a File, or None (with a hint) on failure."""
         if not self.image_requested or self.image_generator is None:
             return None
