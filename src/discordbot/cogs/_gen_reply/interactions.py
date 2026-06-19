@@ -23,6 +23,7 @@ from google.genai._interactions.types import (
     StepParam,
     ContentParam,
     ThinkingLevel,
+    AudioContentParam,
     EnvironmentParam,
     TextContentParam,
     ImageContentParam,
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 
-def _kind_from_filename(filename: str) -> Literal["image", "video", "document"]:
+def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "document"]:
     """Infers the Interactions content kind from a file's extension.
 
     Gemini-path attachments arrive as `input_file` parts carrying a Files API URI (no MIME),
@@ -60,6 +61,8 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "document"]:
         return "video"
     if suffix in {"png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff", "heic", "heif"}:
         return "image"
+    if suffix in {"mp3", "wav", "ogg", "m4a", "aac", "flac", "opus", "aiff", "weba"}:
+        return "audio"
     return "document"
 
 
@@ -88,6 +91,8 @@ def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content typ
         kind = _kind_from_filename(filename=file_part.get("filename") or "")
         if kind == "video":
             return VideoContentParam(type="video", uri=uri)
+        if kind == "audio":
+            return AudioContentParam(type="audio", uri=uri)
         if kind == "image":
             return ImageContentParam(type="image", uri=uri)
         return DocumentContentParam(type="document", uri=uri)

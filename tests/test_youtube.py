@@ -84,7 +84,7 @@ def test_to_interactions_input_maps_roles_and_appends_video() -> None:
 
 
 def test_to_interactions_input_maps_media_parts_by_kind() -> None:
-    """Files map to video / image / document params by extension; images keep their URL."""
+    """Files map to video / image / audio / document params by extension; images keep their URL."""
     answer_input = [
         {
             "role": "user",
@@ -93,6 +93,7 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
                 {"type": "input_file", "file_id": "https://x/files/v1", "filename": "clip.mp4"},
                 {"type": "input_file", "file_id": "https://x/files/p1", "filename": "doc.pdf"},
                 {"type": "input_file", "file_id": "https://x/files/i1", "filename": "shot.png"},
+                {"type": "input_file", "file_id": "https://x/files/a1", "filename": "song.mp3"},
                 {"type": "input_image", "image_url": "https://x/pic.jpg"},
             ],
         }
@@ -104,10 +105,11 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
 
     parts = steps[-1]["content"]
     kinds = [p["type"] for p in parts]
-    assert kinds == ["text", "video", "document", "image", "image", "video"]
+    assert kinds == ["text", "video", "document", "image", "audio", "image", "video"]
     assert parts[1] == {"type": "video", "uri": "https://x/files/v1"}
     assert parts[2] == {"type": "document", "uri": "https://x/files/p1"}
-    assert parts[4] == {"type": "image", "uri": "https://x/pic.jpg"}
+    assert parts[4] == {"type": "audio", "uri": "https://x/files/a1"}
+    assert parts[5] == {"type": "image", "uri": "https://x/pic.jpg"}
 
 
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
