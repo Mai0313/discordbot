@@ -5,7 +5,12 @@ from google import genai, antigravity
 import orjson
 from rich.console import Console
 from agents.result import RunResult
+from google.genai._interactions.types import EnvironmentParam
 from agents.extensions.models.litellm_model import LitellmModel
+from google.genai._interactions.types.environment_param import (
+    NetworkAllowlist,
+    NetworkAllowlistAllowlist,
+)
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
@@ -52,7 +57,10 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
         agent="antigravity-preview-05-2026",
         system_instruction=REPLY_PROMPT,
         input=user_prompt,
-        environment="remote",
+        environment=EnvironmentParam(
+            type="remote",
+            network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")]),
+        ),
         stream=True,
         tools=[{"type": "google_search"}, {"type": "url_context"}],
         agent_config={"type": "dynamic"},

@@ -80,6 +80,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "yt-dlp>=2026.3.17",
     "logfire>=4.33.0",
+    "httpx>=0.28.1",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"

@@ -6,8 +6,8 @@ import time
 from typing import cast
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 
-from openai import AsyncStream
 import logfire
 import nextcord
 from nextcord import File, Message
@@ -145,7 +145,7 @@ class ResponseStreamer(BaseModel):
         """Builds the current streaming preview: real content once started, else reasoning.
 
         The reasoning preview shows the tail of the model's thought summary as `-#`
-        subtext lines under a 💭 header, so the user watches the thinking process until
+        subtext lines under a `message` app-emoji header, so the user watches the thinking until
         the first real content delta replaces it. The window keeps the newest lines that
         fit one Discord message, so a long think never hits the 2000-char limit.
         """
@@ -157,7 +157,7 @@ class ResponseStreamer(BaseModel):
         # the real reply may mention people, the thought process must not.
         tail = escape_mentions(self.reasoning_content[-1500:])
         lines = [f"-# {line}" for line in tail.splitlines() if line.strip()]
-        header = "-# 💭 思考中..."
+        header = "-# <:message:1517560873000898860> Thinking..."
         budget = DISCORD_MESSAGE_LIMIT - len(header)
         kept: list[str] = []
         for line in reversed(lines):
@@ -278,7 +278,7 @@ class ResponseStreamer(BaseModel):
         self.stored_content += delta
         self._ensure_editor_started()
 
-    async def _consume(self, *, responses: AsyncStream[ResponseStreamEvent]) -> None:
+    async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
 
         Only accumulates state; the snapshot editor task renders it to Discord, so this
@@ -331,9 +331,9 @@ class ResponseStreamer(BaseModel):
         if self.memory_lookups:
             names = list(dict.fromkeys(self.memory_lookups))
             if len(names) > 2:
-                memory_line = f"\n-# 🧠 已讀取 {', '.join(names[:2])} 等 {len(names)} 人的記憶"
+                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names[:2])} 等 {len(names)} 人的記憶"
             else:
-                memory_line = f"\n-# 🧠 已讀取 {', '.join(names)} 的記憶"
+                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
         model_label = (
             f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
@@ -415,6 +415,10 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
+        # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
+        await update_reaction(
+            message=self.message, bot_user=None, emoji="<:voice:1517558121092878376>"
+        )
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -461,6 +465,10 @@ class ResponseStreamer(BaseModel):
                 message_id=self.message.id,
             )
             return None
+        # Mark the source message with the bot's `image` app emoji while the image renders.
+        await update_reaction(
+            message=self.message, bot_user=None, emoji="<:image:1517559727880667226>"
+        )
         logfire.info("Generating inline image reply", message_id=self.message.id)
         image = await self.image_generator.generate(
             user_prompt=self.image_prompt, end_user_id=self.message.author.name
@@ -518,7 +526,7 @@ class ResponseStreamer(BaseModel):
             return
         logfire.info("Generated media attached", message_id=self.message.id, file_count=len(files))
 
-    async def stream(self, *, responses: AsyncStream[ResponseStreamEvent]) -> str:
+    async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
         try:
             await self._consume(responses=responses)

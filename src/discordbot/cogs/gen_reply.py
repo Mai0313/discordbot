@@ -9,6 +9,7 @@ import asyncio
 from functools import cached_property
 import contextlib
 
+from google import genai
 from openai import AsyncOpenAI
 import logfire
 import nextcord
@@ -19,10 +20,11 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_litellm_client
+from discordbot.utils.llm import create_litellm_client, create_gemini_interactions_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
+from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
@@ -79,10 +81,16 @@ from discordbot.cogs._parse_threads.builder import (
     build_threads_context_messages,
     threads_timeout_context_messages,
 )
+from discordbot.cogs._gen_reply.interactions import (
+    to_interactions_input,
+    create_interactions_answer_stream,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, AsyncIterator
+
+    from openai.types.responses import ResponseStreamEvent
 
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
@@ -151,6 +159,36 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
         message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
     ).strip()
     return f"{request_time_context}\n\n{system_prompt}"
+
+
+def _youtube_url_in_message(message: Message) -> str | None:
+    """Returns the first YouTube URL in a message's text or its embeds, if any."""
+    texts = [message.content or ""]
+    for embed in message.embeds:
+        texts.extend(text for text in (embed.url, embed.description) if text)
+    for text in texts:
+        match = YOUTUBE_URL_RE.search(string=text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _find_youtube_url(message: Message) -> str | None:
+    """Finds a YouTube URL in the current message or the reply-reference chain.
+
+    Unlike Threads (whose `parse_threads` cog re-injects a replied-to post as an embed),
+    a YouTube link has no such cog, so a reply to a message that merely links a video would
+    otherwise be missed; the reference chain is searched so "summarize this" on a replied-to
+    video still watches it. The current message wins, then the nearest reference outward.
+    """
+    found = _youtube_url_in_message(message=message)
+    if found is not None:
+        return found
+    for ref in _walk_reference_chain(message=message):
+        found = _youtube_url_in_message(message=ref)
+        if found is not None:
+            return found
+    return None
 
 
 def _walk_reference_chain(message: Message) -> list[Message]:
@@ -324,6 +362,16 @@ class ReplyGeneratorCogs(commands.Cog):
             A configured AsyncOpenAI client reused across reply requests.
         """
         return create_litellm_client(config=self.config)
+
+    @cached_property
+    def interactions_client(self) -> genai.Client:
+        """The cached Gemini client whose Interactions API targets the LiteLLM proxy.
+
+        Returns:
+            A Gemini client used only for the YouTube-aware QA answer turn, which streams
+            through the native Interactions API (the proxy-backed path that can watch a video).
+        """
+        return create_gemini_interactions_client(config=self.config)
 
     @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
@@ -751,8 +799,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 route = RouteClassification(decision="QA")
             elif parsed.decision == "SUMMARY" and _message_has_url(content=message.content):
                 # A summary request carrying a URL is really a QA recap of that link, not a
-                # recap of channel history, so steer it back to QA.
-                route = RouteClassification(decision="QA")
+                # recap of channel history, so steer it back to QA. Preserve watch_video so a
+                # "summarize this YouTube link" still reaches the video-watching path.
+                route = RouteClassification(decision="QA", watch_video=parsed.watch_video)
             else:
                 route = parsed
         except ValidationError:
@@ -1197,6 +1246,7 @@ class ReplyGeneratorCogs(commands.Cog):
         effort: Literal["low", "medium", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        yt_url: str | None = None,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
@@ -1204,7 +1254,9 @@ class ReplyGeneratorCogs(commands.Cog):
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
         community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
         spoken clip and `allow_image` an inline generated image when the answer model marks the
-        reply for it (both QA only; SUMMARY stays text).
+        reply for it (both QA only; SUMMARY stays text). `yt_url`, set only when the router asked
+        to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
+        (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
         voice_synthesizer = (
             self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
@@ -1247,20 +1299,54 @@ class ReplyGeneratorCogs(commands.Cog):
             voice_synthesizer=voice_synthesizer,
             image_generator=image_generator,
         )
-        with logfire.span("gen_reply answer", model=slow_model.name):
-            responses = await self.client.responses.create(
-                model=slow_model.name,
-                instructions=_build_runtime_instructions(
-                    system_prompt=system_prompt, message=message
-                ),
-                input=answer_input,
-                reasoning=slow_model.reasoning,
-                tools=list(slow_model.tools),
-                stream=True,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
+        # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
+        # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
+        # the one backend swap. It is Gemini-only and kill-switchable; otherwise (no video, a
+        # non-Gemini answer model, or the switch off) the turn falls back to the Responses path,
+        # which never errors. Both feed the same streamer so footer / memory / preview are shared.
+        use_interactions = (
+            yt_url is not None
+            and "gemini" in slow_model.name
+            and self.config.youtube_video_enabled
+        )
+        if use_interactions:
+            # Persistent marker (added directly, not via the status chain) so it stays after the
+            # chain's final reaction to show the reply was grounded in the watched video. The bot's
+            # own application emoji `youtube`, usable as a reaction in any guild the bot is in.
+            await update_reaction(
+                message=message, bot_user=self.bot.user, emoji="<:youtube:1517546722535018596>"
             )
+        with logfire.span(
+            "gen_reply answer",
+            model=slow_model.name,
+            backend="interactions" if use_interactions else "responses",
+        ):
+            responses: AsyncIterator[ResponseStreamEvent]
+            if use_interactions and yt_url is not None:
+                responses = create_interactions_answer_stream(
+                    client=self.interactions_client,
+                    model=slow_model.name,
+                    system_instruction=_build_runtime_instructions(
+                        system_prompt=system_prompt, message=message
+                    ),
+                    steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
+                    effort=slow_model.effort,
+                    end_user_id=message.author.name,
+                )
+            else:
+                responses = await self.client.responses.create(
+                    model=slow_model.name,
+                    instructions=_build_runtime_instructions(
+                        system_prompt=system_prompt, message=message
+                    ),
+                    input=answer_input,
+                    reasoning=slow_model.reasoning,
+                    tools=list(slow_model.tools),
+                    stream=True,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
             full_reply = await streamer.stream(responses=responses)
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
@@ -1341,7 +1427,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 _exc_info=True,
             )
             with contextlib.suppress(Exception):
-                reactions.advance(emoji="❌")
+                reactions.advance(emoji="<:redcross:1517565100838355016>")
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
@@ -1376,7 +1462,7 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
-                reactions.advance(emoji="🔀")
+                reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route and the
                 # memory selection use the text-only renders, so neither waits on the Files
@@ -1436,7 +1522,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="🎨")
+                    reactions.advance(emoji="<:image:1517559727880667226>")
                     # The image reply now answers with conversation history + the requester's
                     # memory, so the speculative context is consumed, not discarded; the handler
                     # awaits it only after the image is on screen so the build overlaps
@@ -1458,7 +1544,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="🎬")
+                    reactions.advance(emoji="<:video:1517560671913377842>")
                     await self._handle_video_reply(message=message, user_prompt=user_prompt)
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
@@ -1469,7 +1555,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="📖")
+                    reactions.advance(emoji="<:stacks:1517562531365912607>")
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
                     # community signal. Cancelling the speculative prep leaves `parts_task`
@@ -1499,7 +1585,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         allow_voice=True,
                     )
                 else:
-                    reactions.advance(emoji="💭")
+                    reactions.advance(emoji="<:message:1517560873000898860>")
                     # Selection still gates the answer here; if this wait ever needs to go,
                     # the answer could speculatively start without memory and refire when
                     # selection picks some.
@@ -1519,6 +1605,10 @@ class ReplyGeneratorCogs(commands.Cog):
                         threads_task = None
                         context = context.model_copy(update={"threads_block": threads_block})
                     pipeline_span.set_attribute(key="effort", value=effort)
+                    # Watch a linked YouTube video only when the router judged the user is asking
+                    # about it; the URL itself is taken from the message text or the replied-to
+                    # message (never the model) so the answer turn ingests the exact link posted.
+                    yt_url = _find_youtube_url(message=message) if route.watch_video else None
                     _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
                     await self._handle_message_reply(
                         message=message,
@@ -1527,8 +1617,9 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort=effort,
                         allow_voice=True,
                         allow_image=True,
+                        yt_url=yt_url,
                     )
-                reactions.advance(emoji="🆗")
+                reactions.advance(emoji="<:greencheck:1517565102424068226>")
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task)

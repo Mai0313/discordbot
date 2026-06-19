@@ -81,9 +81,9 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="Mention or DM me to chat, read images and files, and generate",
                 detail=(
                     "Mention me or DM me to get started: chat, answer questions, summarize "
-                    "articles, read your images and files, and generate images or short videos "
-                    "on request. I slowly learn your preferences and may use them in a reply, "
-                    "marked with a 🧠 note.\n\n"
+                    "articles, read your images and files, watch linked YouTube videos, and "
+                    "generate images or short videos on request. I slowly learn your preferences "
+                    "and may use them in a reply, marked with a 🧠 note.\n\n"
                     "Memory\n"
                     "`/memory show` — see what I remember about you\n"
                     "`/memory regenerate` — rebuild my memory of you in the background\n"
@@ -160,8 +160,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="AI 對話",
                 summary="tag 或私訊我就能聊天、看圖看檔、生成圖片",
                 detail=(
-                    "tag 我或私訊我就能開始:聊天、回答問題、摘要文章、分析你附上的圖片和檔案,"
-                    "也能依需求生成圖片或短影片。我會慢慢記住你的偏好,回覆時可能參考並用 🧠 標註。\n\n"
+                    "tag 我或私訊我就能開始:聊天、回答問題、摘要文章、分析你附上的圖片和檔案、"
+                    "看你貼的 YouTube 影片,也能依需求生成圖片或短影片。我會慢慢記住你的偏好,回覆時可能參考並用 🧠 標註。\n\n"
                     "記憶\n"
                     "`/memory show` — 看我記得你什麼\n"
                     "`/memory regenerate` — 在背景重建我對你的記憶\n"
@@ -238,7 +238,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="メンションやDMで会話・画像/ファイル読取・生成",
                 detail=(
                     "メンションまたはDMで始められます:会話、質問への回答、記事の要約、"
-                    "添付画像やファイルの読み取り、リクエストに応じた画像・短い動画の生成。"
+                    "添付画像やファイルの読み取り、貼られた YouTube 動画の視聴、"
+                    "リクエストに応じた画像・短い動画の生成。"
                     "あなたの好みを少しずつ覚え、返信時に参照して 🧠 で示すことがあります。\n\n"
                     "メモリー\n"
                     "`/memory show` — 覚えている内容を表示\n"

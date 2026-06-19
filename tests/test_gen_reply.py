@@ -22,6 +22,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
+    _find_youtube_url,
     _build_runtime_instructions,
 )
 from discordbot.typings.models import (
@@ -893,8 +894,8 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     assert synthesizer.calls == [{"text": "嗆爆你", "end_user_id": message.author.name}]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "reply.wav"
-    # A delivered clip is silent: no failure-hint reaction on the source message.
-    assert message.added_reactions == []
+    # The source message is marked with the voice app emoji while the clip is produced.
+    assert message.added_reactions == ["<:voice:1517558121092878376>"]
 
 
 async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
@@ -939,8 +940,8 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
-    # A non-timeout failure (most often a policy refusal) hints with the warning emoji.
-    assert message.added_reactions == ["⚠️"]
+    # The voice marker is added before synth; a non-timeout failure then hints with the warning.
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
 async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: None) -> None:
@@ -955,7 +956,7 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
 
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
-    assert message.added_reactions == ["⏱️"]
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -1103,7 +1104,8 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
     ]
     assert message.replies[0].file is not None
     assert message.replies[0].file.filename == "generated.png"
-    assert message.added_reactions == []
+    # The source message is marked with the image app emoji while the image is rendered.
+    assert message.added_reactions == ["<:image:1517559727880667226>"]
 
 
 async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> None:
@@ -1132,7 +1134,7 @@ async def test_image_generation_failure_hints(economy_isolated_db: None) -> None
 
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
-    assert message.added_reactions == ["⚠️"]
+    assert message.added_reactions == ["<:image:1517559727880667226>", "⚠️"]
 
 
 async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> None:
@@ -1247,7 +1249,7 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     # An oversized clip is dropped for a non-timeout reason, so it hints with the warning emoji.
-    assert message.added_reactions == ["⚠️"]
+    assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
 @pytest.mark.parametrize(("enabled", "expect_synth"), [(True, True), (False, False)])
@@ -1345,6 +1347,187 @@ async def test_image_config_gate_controls_generator(
     assert (captured[0] is not None) == expect_gen
     if expect_gen:
         assert isinstance(captured[0], ImageReplyGenerator)
+
+
+class _FakeInteractionsResource:
+    """Records Interactions answer calls and returns a fake event stream."""
+
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        """Stores the events each create() will stream and a call recorder."""
+        self._events = events
+        self.calls: list[SimpleNamespace] = []
+
+    async def create(  # noqa: PLR0913 -- mirrors the Interactions create signature
+        self,
+        model: str,
+        system_instruction: str,
+        input: list[object],  # noqa: A002 -- SDK parameter
+        environment: str,
+        generation_config: object,
+        tools: list[object],
+        stream: bool,
+        extra_headers: dict[str, str],
+    ) -> AsyncIterator[SimpleNamespace]:
+        """Records the call and returns the fake Interactions event stream."""
+        del environment, tools, stream, extra_headers
+        self.calls.append(
+            SimpleNamespace(
+                model=model,
+                system_instruction=system_instruction,
+                input=input,
+                generation_config=generation_config,
+            )
+        )
+        return _stream_events_from(events=self._events)
+
+
+class _FakeInteractionsClient:
+    """Fake Gemini client exposing the async Interactions resource."""
+
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        """Wires the recorder under `aio.interactions` like the real client."""
+        self.recorder = _FakeInteractionsResource(events=events)
+        self.aio = SimpleNamespace(interactions=self.recorder)
+
+
+def _interactions_turn_events() -> list[SimpleNamespace]:
+    """A minimal Interactions turn: created, one text delta, completed with usage."""
+    return [
+        SimpleNamespace(
+            event_type="interaction.created", interaction=SimpleNamespace(model=TEST_LLM_MODEL)
+        ),
+        SimpleNamespace(
+            event_type="step.delta", delta=SimpleNamespace(type="text", text="watched it")
+        ),
+        SimpleNamespace(
+            event_type="interaction.completed",
+            interaction=SimpleNamespace(
+                model=TEST_LLM_MODEL,
+                usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
+            ),
+            metadata=None,
+        ),
+    ]
+
+
+async def test_youtube_qa_uses_interactions_backend(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A watched YouTube URL streams the answer through Interactions, not Responses."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+    )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        yt_url=url,
+    )
+
+    # The Responses answer stream was never used; the Interactions one was, with the video part.
+    assert cog.client.responses.create_streams == []
+    assert len(fake.recorder.calls) == 1
+    last_step_parts = fake.recorder.calls[0].input[-1]["content"]
+    assert {"type": "video", "uri": url} in last_step_parts
+    # The shared streamer rendered the reply and a footer from the Interactions usage.
+    assert "watched it" in message.replies[0].content
+    assert "⬆ 12 ⬇ 34" in message.replies[0].content
+    # A persistent watch reaction marks that the reply was grounded in the video.
+    assert "<:youtube:1517546722535018596>" in message.added_reactions
+
+
+async def test_youtube_interactions_passes_effort_as_thinking_level(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The graded effort is sent straight through as the Interactions thinking_level."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+    )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        effort="medium",
+        yt_url=url,
+    )
+
+    assert fake.recorder.calls[0].generation_config["thinking_level"] == "medium"
+
+
+@pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
+async def test_youtube_qa_falls_back_to_responses(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """Without a watchable Gemini video turn, the answer stays on the Responses path."""
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False,
+        inline_image_enabled=False,
+        youtube_video_enabled=scenario != "kill_switch_off",
+    )
+    if scenario == "non_gemini_model":
+        monkeypatch.setattr(
+            RuntimeModelCatalog,
+            "slow_model",
+            property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
+        )
+    fake = _FakeInteractionsClient(events=_interactions_turn_events())
+    cog.__dict__["interactions_client"] = fake
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+
+    url = "https://youtu.be/jNQXAC9IVRw"
+    yt_url = None if scenario == "no_url" else url
+    message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        message=message,
+        system_prompt="SYS",
+        context=ReplyContext(),
+        memory_enabled=False,
+        yt_url=yt_url,
+    )
+
+    assert fake.recorder.calls == []
+    assert cog.client.responses.create_streams == [True]
+
+
+def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A YouTube link in the replied-to message is found even when the reply omits it."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    referenced = FakeMessage(content=f"look at this {url}")
+    referenced.id = 555
+    message = FakeMessage(content="<@999> 總結這影片")
+    message.reference = FakeReference(resolved=referenced)
+
+    assert _find_youtube_url(message=message) == url
+
+
+def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No YouTube link in the message or its reference chain returns None."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    message = FakeMessage(content="<@999> hi")
+    message.reference = FakeReference(resolved=FakeMessage(content="just chatting"))
+
+    assert _find_youtube_url(message=message) is None
 
 
 def _media_builder() -> MessageInputBuilder:
@@ -2316,8 +2499,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         effort: str = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        yt_url: str | None = None,
     ) -> None:
         """Records slow message handler dispatch."""
+        del yt_url
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
@@ -2335,7 +2520,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     message = FakeMessage(content="<@!999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=message)
     assert expected_call in calls
-    assert calls[-1] == "reaction:🆗"
+    assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
     # The speculative QA context always builds first; SUMMARY rebuilds at its own
     # history depth without memory, and QA consumes the speculative context as-is.
     assert prep_requests == expected_prep
@@ -2829,7 +3014,7 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    assert peak_start[0] == ModelSettings(name="gemini-pro-latest", effort="high")
+    assert peak_start[0] == ModelSettings(name="gemini-3.1-pro-preview", effort="high")
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
@@ -3277,7 +3462,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1"]],
             None,
             (5, 6),
-            ["⬆ 5 ⬇ 6", "\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            ["⬆ 5 ⬇ 6", "\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
             [],
             None,
         ),
@@ -3288,7 +3473,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1", "2", "3"]],
             None,
             (1, 1),
-            ["\n-# 🧠 已讀取 Tester (tester), Alice (alice) 等 3 人的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester), Alice (alice) 等 3 人的記憶"],
             [],
             None,
         ),
@@ -3298,11 +3483,11 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             [["1"], ["1"]],
             None,
             (1, 1),
-            ["\n-# 🧠 已讀取 Tester (tester) 的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
             [],
             "Tester (tester)",
         ),
-        ([], [], [["1"]], None, (5, 6), [], ["🧠"], None),
+        ([], [], [["1"]], None, (5, 6), [], ["<:tag:1517563887573143595>"], None),
     ],
     ids=[
         "single-owner-credit",
@@ -3415,7 +3600,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
 def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     """The optional second -# memory line is stripped together with the usage footer."""
     body = "答案內容"
-    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# 🧠 已讀取 Tester (tester) 的記憶"
+    double = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"
     assert USAGE_FOOTER_RE.sub("", f"{body}{double}") == body
     # Backward compatible: a single-line footer still strips cleanly.
     single = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000 · +3"
@@ -3572,7 +3757,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
     assert len(message.replies) == 1
     preview = message.replies[0].content
     assert isinstance(preview, str)
-    assert preview.splitlines()[0] == "-# 💭 思考中..."
+    assert preview.splitlines()[0] == "-# <:message:1517560873000898860> Thinking..."
     assert "-# first thought" in preview
     assert "-# second thought" in preview
 
@@ -3592,7 +3777,7 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
 
     assert len(preview) <= DISCORD_MESSAGE_LIMIT
     lines = preview.splitlines()
-    assert lines[0] == "-# 💭 思考中..."
+    assert lines[0] == "-# <:message:1517560873000898860> Thinking..."
     assert all(line.startswith("-# ") for line in lines)
     assert "thought line 59" in preview
     assert "thought line 9 " not in preview

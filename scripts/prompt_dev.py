@@ -9,11 +9,16 @@ from anthropic import Anthropic
 from rich.console import Console
 from google.genai.types import HttpOptions
 from google.genai._interactions.types import (
+    EnvironmentParam,
     TextContentParam,
     VideoContentParam,
     GenerationConfigParam,
 )
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
+from google.genai._interactions.types.environment_param import (
+    NetworkAllowlist,
+    NetworkAllowlistAllowlist,
+)
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
@@ -150,7 +155,10 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
             TextContentParam(text=user_prompt, type="text"),
             VideoContentParam(uri=video_uri, type="video"),
         ],
-        environment="remote",
+        environment=EnvironmentParam(
+            type="remote",
+            network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")]),
+        ),
         generation_config=GenerationConfigParam(
             thinking_level=SLOW_MODEL.effort, thinking_summaries="auto"
         ),

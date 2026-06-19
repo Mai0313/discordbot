@@ -136,7 +136,7 @@ class RuntimeModelCatalog(BaseModel):
             gemini-pro answer model: it reads conversation history and the selected user
             memory and answers in persona while holding the image it just made,
             rather than coldly describing it. `effort="low"` keeps it snappy yet still
-            emits a reasoning summary, so the streaming `💭` preview shows; the image is
+            emits a reasoning summary, so the streaming reasoning preview shows; the image is
             already on screen, so this text streams in after with no added image latency.
         """
         return ModelSettings(name="gemini-flash-latest", effort="low")
@@ -220,12 +220,15 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
-        # Both branches dispatch the same model today; the peak/off-peak split is
-        # kept on purpose because Gemini Pro has historically slowed down during
-        # peak hours and the split may be needed again.
+        # Pinned to the explicit gemini-3.1-pro-preview snapshot, not the gemini-pro-latest
+        # alias: the alias is silently downgraded to the gemini-3-pro generation on Google's
+        # side (its Interactions `thinking_level` enum rejects `medium`, allowing only
+        # low / high), while the explicit 3.1 snapshot supports `medium`. Both branches
+        # dispatch the same model today; the peak/off-peak split is kept on purpose because
+        # Gemini Pro has historically slowed down during peak hours and may be needed again.
         if self.is_peak:
-            return ModelSettings(name="gemini-pro-latest", effort="high")
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+            return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def extract_model(self) -> ModelSettings:
@@ -236,7 +239,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory extraction call.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memory_evaluator_model(self) -> ModelSettings:
@@ -247,7 +250,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory evaluator call.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memories_model(self) -> ModelSettings:
@@ -258,7 +261,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory consolidation call.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
 
 class RouteClassification(BaseModel):
@@ -266,10 +269,19 @@ class RouteClassification(BaseModel):
 
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
+        watch_video: Whether the QA answer should ingest a linked YouTube video.
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
         ..., description="Reply mode selected for the incoming Discord message."
+    )
+    watch_video: bool = Field(
+        default=False,
+        description=(
+            "Set true only when the message links a YouTube video AND the user wants its "
+            "content analyzed, summarized, or asked about; false when the link is incidental. "
+            "Consumed only on the QA route to decide whether to watch the video."
+        ),
     )
 
 
