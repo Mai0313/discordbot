@@ -26,7 +26,7 @@ from google import genai
 import logfire
 from pydantic import Field, BaseModel
 from google.genai._interactions.types import EnvironmentParam, DeepResearchAgentConfigParam
-from google.genai._interactions.types.tool_param import URLContext, GoogleSearch, CodeExecution
+from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 from google.genai._interactions.types.environment_param import (
     NetworkAllowlist,
     NetworkAllowlistAllowlist,
@@ -35,13 +35,13 @@ from google.genai._interactions.types.environment_param import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
-# Built-in tools enabled for every research run: web grounding, URL reading, and code execution.
-# Passed explicitly (not left to the agent default) so search/url grounding is guaranteed; a spike
-# confirmed the agent then issues many `google_search` grounding calls.
+# Built-in tools enabled for every research run: web grounding + URL reading. Passed explicitly
+# (not left to the agent default) so search/url grounding is guaranteed. Code execution is left
+# OFF on purpose: the agent's bash/python tool calls were leaking into `output_text` as raw
+# `call:default_api:bash{command:...}` text and corrupting the report.
 RESEARCH_TOOLS = [
     URLContext(type="url_context"),
     GoogleSearch(type="google_search", search_types=["web_search"]),
-    CodeExecution(type="code_execution"),
 ]
 
 # Polls the running interaction; research is minutes-long so a coarse interval is plenty.
