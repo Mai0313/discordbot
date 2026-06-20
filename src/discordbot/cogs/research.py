@@ -202,7 +202,14 @@ class ResearchCogs(commands.Cog):
         self,
         interaction: Interaction,
         topic: str = SlashOption(
-            description="What to research (a clear, self-contained topic).", required=True
+            name="topic",
+            description="What to research (a clear, self-contained topic).",
+            name_localizations={Locale.zh_TW: "主題", Locale.ja: "トピック"},
+            description_localizations={
+                Locale.zh_TW: "要研究的主題(清楚、可獨立理解的題目)",
+                Locale.ja: "調査するトピック(明確で自己完結したテーマ)。",
+            },
+            required=True,
         ),
     ) -> None:
         """Opens a research thread for the given topic and starts the default research.
