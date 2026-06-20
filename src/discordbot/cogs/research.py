@@ -849,8 +849,9 @@ class ResearchCogs(commands.Cog):
                 summary = next((ln.strip() for ln in thought.splitlines() if ln.strip()), "")
                 if summary:
                     line = f"{line}\n-# {summary[:180]}"
+            # The thought summary is agent text and may quote a mention; never let it ping.
             with contextlib.suppress(Exception):
-                await status.edit(content=line)
+                await status.edit(content=line, allowed_mentions=AllowedMentions.none())
 
         return _on_progress
 
