@@ -49,6 +49,7 @@ from discordbot.cogs._gen_reply.prompts import (
     IMAGE_REPLY_PROMPT,
     MEMORY_SELECT_PROMPT,
     INLINE_IMAGE_INSTRUCTION,
+    DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
@@ -1246,6 +1247,7 @@ class ReplyGeneratorCogs(commands.Cog):
         effort: Literal["low", "medium", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
@@ -1271,6 +1273,11 @@ class ReplyGeneratorCogs(commands.Cog):
         # the visual request from the reply, so a disabled deployment must not be told about it.
         if image_generator is not None:
             system_prompt = f"{system_prompt}\n{INLINE_IMAGE_INSTRUCTION}"
+        # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
+        # image marker: a disabled deployment must not be told about a marker the streamer would
+        # strip without producing anything.
+        if allow_research and self.config.deep_research_available:
+            system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
         # low-authority background; the reference message then sits just above the current
@@ -1348,6 +1355,13 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_body={"mock_testing_fallbacks": False},
                 )
             full_reply = await streamer.stream(responses=responses)
+        # A <deep-research> brief the answer model emitted launches a research thread. Done after
+        # the stream (and its single media edit) so it never touches the reply's attachment edit;
+        # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
+        if allow_research and self.config.deep_research_available and streamer.research_brief:
+            await _maybe_launch_research(
+                bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
+            )
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
                 hist_messages=context.hist_messages,
@@ -1391,6 +1405,11 @@ class ReplyGeneratorCogs(commands.Cog):
         # posts (e.g. Threads embeds, video downloads).
         is_dm = message.guild is None
         if not is_dm and not self.input_builder.has_bot_mention(content=message.content):
+            return
+
+        # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
+        # actively driving, so QA does not double-handle a plan-refinement turn there.
+        if _in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
             return
 
         user_prompt = await self.input_builder.get_user_prompt(content=message.content)
@@ -1617,6 +1636,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort=effort,
                         allow_voice=True,
                         allow_image=True,
+                        allow_research=_can_launch_research(message=message),
                         yt_url=yt_url,
                     )
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")
@@ -1629,6 +1649,41 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=parts_task)
             if threads_task is not None:
                 await _discard_task(task=threads_task)
+
+
+def _can_launch_research(*, message: Message) -> bool:
+    """Whether a research thread can be opened from this message.
+
+    Only a guild text channel can host a nested thread; in a DM or inside an existing thread the
+    `<deep-research>` marker is suppressed so the answer model never promises a run that cannot
+    actually start (the launch would otherwise return the no-thread path and contradict itself).
+    """
+    return message.guild is not None and isinstance(message.channel, nextcord.TextChannel)
+
+
+def _in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
+    """Whether a channel id is a research thread the ResearchCogs cog is actively driving."""
+    get_cog = getattr(bot, "get_cog", None)
+    cog = get_cog("ResearchCogs") if callable(get_cog) else None
+    checker = getattr(cog, "is_research_thread", None)
+    return bool(checker(channel_id=channel_id)) if checker is not None else False
+
+
+async def _maybe_launch_research(
+    *, bot: commands.Bot, message: Message, anchor: Message | None, brief: str
+) -> None:
+    """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled.
+
+    `anchor` is the bot's own reply message; the research thread hangs off it (more intuitive than
+    the user's message), falling back to the user's message inside the cog when it is None.
+    """
+    get_cog = getattr(bot, "get_cog", None)
+    cog = get_cog("ResearchCogs") if callable(get_cog) else None
+    launcher = getattr(cog, "launch", None)
+    if launcher is None:
+        return
+    with contextlib.suppress(Exception):
+        await launcher(message=message, anchor=anchor, brief=brief)
 
 
 def setup(bot: commands.Bot) -> None:

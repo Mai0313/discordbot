@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy.database import Base
 from discordbot.cogs._fishing.database import Base as FishingBase
+from discordbot.cogs._research.database import Base as ResearchBase
 
 
 @pytest.fixture
@@ -24,6 +25,21 @@ async def economy_isolated_db(
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    yield
+    await engine.dispose()
+
+
+@pytest.fixture
+async def research_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[None]:
+    """Per-test SQLite file with the research schema (reply.db)."""
+    research_db_path = tmp_path / "reply.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{research_db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(ResearchBase.metadata.create_all)
+    monkeypatch.setattr("discordbot.cogs._research.database._engine", engine)
+    monkeypatch.setattr("discordbot.cogs._research.database._schema_ready_for", None)
     yield
     await engine.dispose()
 

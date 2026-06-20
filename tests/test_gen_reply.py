@@ -9,6 +9,7 @@ import base64
 from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 from PIL import Image
 import httpx
@@ -23,6 +24,7 @@ from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _can_launch_research,
     _build_runtime_instructions,
 )
 from discordbot.typings.models import (
@@ -2499,10 +2501,11 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         effort: str = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
         """Records slow message handler dispatch."""
-        del yt_url
+        del yt_url, allow_research
         calls.append("_handle_message_reply")
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
@@ -2760,7 +2763,9 @@ async def test_on_message_injects_threads_context_before_current(
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=False)
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+    )
     seen_urls: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -2843,7 +2848,9 @@ async def test_on_message_skips_threads_context_without_url(
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=False)
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+    )
     called: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -2872,7 +2879,9 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
     cog.client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=False)
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+    )
     monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
 
     async def slow_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -4223,3 +4232,12 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
     assert "甲" in (blocks.get(1) or "")
     assert "乙" in (blocks.get(2) or "")
     assert len(context.memory_labels) == 2
+
+
+def test_can_launch_research_requires_guild_text_channel() -> None:
+    text = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.TextChannel))
+    assert _can_launch_research(message=text) is True  # type: ignore[arg-type]  # SimpleNamespace stub
+    thread = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.Thread))
+    assert _can_launch_research(message=thread) is False  # type: ignore[arg-type]  # SimpleNamespace stub
+    dm = SimpleNamespace(guild=None, channel=MagicMock(spec=nextcord.TextChannel))
+    assert _can_launch_research(message=dm) is False  # type: ignore[arg-type]  # SimpleNamespace stub

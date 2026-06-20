@@ -58,7 +58,10 @@ nav:
                       - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
                   - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
+                  - generation: Reference/discordbot/cogs/_gen_reply/generation.md
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
+                  - interactions: Reference/discordbot/cogs/_gen_reply/interactions.md
+                  - markers: Reference/discordbot/cogs/_gen_reply/markers.md
                   - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
@@ -83,6 +86,12 @@ nav:
                   - views: Reference/discordbot/cogs/_memory/views.md
               - _parse_threads:
                   - builder: Reference/discordbot/cogs/_parse_threads/builder.md
+              - _research:
+                  - agent: Reference/discordbot/cogs/_research/agent.md
+                  - database: Reference/discordbot/cogs/_research/database.md
+                  - delivery: Reference/discordbot/cogs/_research/delivery.md
+                  - prompts: Reference/discordbot/cogs/_research/prompts.md
+                  - views: Reference/discordbot/cogs/_research/views.md
               - _stock:
                   - chart: Reference/discordbot/cogs/_stock/chart.md
                   - database: Reference/discordbot/cogs/_stock/database.md
@@ -100,6 +109,7 @@ nav:
               - maplestory: Reference/discordbot/cogs/maplestory.md
               - memory: Reference/discordbot/cogs/memory.md
               - parse_threads: Reference/discordbot/cogs/parse_threads.md
+              - research: Reference/discordbot/cogs/research.md
               - stock: Reference/discordbot/cogs/stock.md
               - template: Reference/discordbot/cogs/template.md
               - video: Reference/discordbot/cogs/video.md
@@ -131,6 +141,7 @@ nav:
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
               - timezone: Reference/discordbot/utils/timezone.md
+              - youtube: Reference/discordbot/utils/youtube.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - agents_dev: Scripts/agents_dev.md
