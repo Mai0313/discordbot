@@ -1,10 +1,11 @@
-"""Posts a finished research report into its Discord thread.
+"""Posts a finished research report body into its Discord thread.
 
 The report is long cited markdown. It is delivered two ways at once so nothing is
 lost: chunked inline messages (split on paragraph boundaries so citations and
 headings survive) for in-thread readability, plus the full report as a `research.md`
 File attachment (the durable artifact). A generated chart, if any, rides a follow-up
-message, and the owner is pinged on a final completion line. Every send is best-effort.
+message. Every send is best-effort. The completion line (usage footer, escalation
+buttons, owner ping) is owned by the cog, which edits the opening status message.
 """
 
 import io
@@ -52,15 +53,8 @@ def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-async def deliver_report(
-    *,
-    thread: "Thread",
-    owner_mention: str,
-    result: "ResearchResult",
-    tier_label: str,
-    footer: str | None = None,
-) -> None:
-    """Posts the report chunks + `research.md` + optional image, pinging the owner at the end."""
+async def deliver_report(*, thread: "Thread", result: "ResearchResult") -> None:
+    """Posts the report chunks + `research.md` + optional image (the report body)."""
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report(text=report) or ["(empty report)"]
     limit = _upload_limit(thread=thread)
@@ -87,8 +81,3 @@ async def deliver_report(
             )
         except Exception:
             logfire.warn("failed to post research image", thread_id=thread.id)
-    footer_line = f"\n-# {footer}" if footer else ""
-    try:
-        await thread.send(content=f"{owner_mention} Research complete ({tier_label}){footer_line}")
-    except Exception:
-        logfire.warn("failed to post research completion ping", thread_id=thread.id)

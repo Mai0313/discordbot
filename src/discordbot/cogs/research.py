@@ -32,6 +32,7 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.asyncio_locks import KeyedLockManager
+from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._research.agent import (
     ResearchPlan,
     ResearchResult,
@@ -307,11 +308,15 @@ class ResearchCogs(commands.Cog):
                 owner_mention=owner_mention,
                 result=result,
                 agent=agent,
+                status=status,
                 offer_escalation=True,
             )
         except Exception as exc:
             logfire.warn("default research failed", thread_id=thread.id, _exc_info=True)
             await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+            await self._finalize_status(
+                status=status, thread=thread, content="-# Research failed (Antigravity)"
+            )
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
 
@@ -345,53 +350,87 @@ class ResearchCogs(commands.Cog):
                 owner_mention=owner_mention,
                 result=result,
                 agent=agent,
+                status=status,
                 offer_escalation=False,
             )
         except Exception as exc:
             logfire.warn("deep research failed", thread_id=thread.id, _exc_info=True)
             await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+            await self._finalize_status(
+                status=status,
+                thread=thread,
+                content=f"-# Research failed ({_tier_label(agent=agent)})",
+            )
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
 
-    async def _finish(
+    async def _finish(  # noqa: PLR0913 -- terminal-result inputs plus the opening status message
         self,
         *,
         thread: "Thread",
         owner_mention: str,
         result: ResearchResult,
         agent: str,
+        status: "nextcord.Message | None",
         offer_escalation: bool,
     ) -> None:
-        """Delivers a terminal result and records the final phase."""
+        """Delivers a terminal result, finalizes the opening status message, and records the phase."""
+        tier = _tier_label(agent=agent)
         if not result.ok:
             await self._post_failure(
                 thread=thread,
                 owner_mention=owner_mention,
                 reason=_failure_text(status=result.status),
             )
+            await self._finalize_status(
+                status=status, thread=thread, content=f"-# Research failed ({tier})"
+            )
             await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
             self._active_threads.discard(thread.id)
             return
-        footer = f"⬆ {result.input_tokens:,} ⬇ {result.output_tokens:,} tokens"
-        await deliver_report(
-            thread=thread,
-            owner_mention=owner_mention,
-            result=result,
-            tier_label=_tier_label(agent=agent),
-            footer=footer,
-        )
-        if offer_escalation and self.config.deep_research_enabled:
-            await self._safe_send(
-                thread=thread,
-                content="想更深入嗎?可以升級到 Deep Research(會更花時間與成本):",
-                view=ResultEscalationView(
-                    cog=self,
-                    owner_id=_owner_id_from_mention(mention=owner_mention),
-                    max_enabled=self.config.deep_research_max_enabled,
-                ),
+        await deliver_report(thread=thread, result=result)
+        view = (
+            ResultEscalationView(
+                cog=self,
+                owner_id=_owner_id_from_mention(mention=owner_mention),
+                max_enabled=self.config.deep_research_max_enabled,
             )
+            if offer_escalation and self.config.deep_research_enabled
+            else None
+        )
+        footer = _usage_footer(
+            agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
+        )
+        await self._finalize_status(
+            status=status,
+            thread=thread,
+            content=f"{owner_mention} Research complete ({tier})\n{footer}",
+            view=view,
+        )
         await db.set_phase(thread_id=thread.id, phase="done")
         self._active_threads.discard(thread.id)
+
+    async def _finalize_status(
+        self,
+        *,
+        status: "nextcord.Message | None",
+        thread: "Thread",
+        content: str,
+        view: "nextcord.ui.View | None" = None,
+    ) -> None:
+        """Edits the opening status message to its terminal content (with optional buttons).
+
+        Falls back to a fresh send when there is no status message (a restart resume) or the edit
+        fails (e.g. the opening message was deleted).
+        """
+        if status is not None:
+            try:
+                await status.edit(content=content, view=view)
+                return
+            except Exception:
+                logfire.warn("failed to finalize research status message", thread_id=thread.id)
+        with contextlib.suppress(Exception):
+            await thread.send(content=content, view=view)
 
     async def _post_failure(
         self,
@@ -631,6 +670,7 @@ class ResearchCogs(commands.Cog):
             owner_mention=owner_mention,
             result=result,
             agent=session.agent,
+            status=None,
             offer_escalation="deep-research" not in session.agent,
         )
 
@@ -675,6 +715,17 @@ class ResearchCogs(commands.Cog):
         except Exception:
             logfire.warn("failed to send research thread message", thread_id=thread.id)
             return None
+
+
+def _usage_footer(*, agent: str, input_tokens: int, output_tokens: int) -> str:
+    """Builds the gen_reply-style usage footer (full model name, tokens, cost) for a result.
+
+    No memory-lookup line: research never reads memory. The agent string is the full model name;
+    rates come from the shared LiteLLM pricing table, so an unpriced preview agent shows $0.
+    """
+    input_rate, output_rate = get_token_rates(model_name=agent)
+    cost = input_rate * input_tokens + output_rate * output_tokens
+    return f"-# {agent} · ⬆ {input_tokens:,} ⬇ {output_tokens:,} · ${cost:.8f}"
 
 
 def _failure_text(*, status: str) -> str:
