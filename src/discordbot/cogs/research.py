@@ -22,7 +22,7 @@ from google import genai
 from openai import AsyncOpenAI
 import logfire
 import nextcord
-from nextcord import Embed, Locale, Interaction, SlashOption
+from nextcord import Embed, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
@@ -228,8 +228,13 @@ class ResearchCogs(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
+        # The topic is user-supplied: restrict mentions to the requester so an `@everyone` / role
+        # mention embedded in it cannot turn a research request into a mass ping.
         anchor = await interaction.channel.send(
-            content=f"{interaction.user.mention} 要研究:{topic[:200]}"
+            content=f"{interaction.user.mention} 要研究:{topic[:200]}",
+            allowed_mentions=AllowedMentions(
+                everyone=False, roles=False, users=[interaction.user]
+            ),
         )
         outcome, existing = await self._start_for(
             owner_id=interaction.user.id,
