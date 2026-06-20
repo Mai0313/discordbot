@@ -23,7 +23,7 @@
 
 ## 功能
 
-- **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、觀看貼上的 YouTube 影片、生成或編輯圖片、生成短影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（跨伺服器、僅自己可見），可用 `/memory show`、`/memory clear` 與 `/memory regenerate` 管理。
+- **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、觀看貼上的 YouTube 影片、生成或編輯圖片、生成短影片（可用附加圖片或引用的影片當參考）、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（跨伺服器、僅自己可見），可用 `/memory show`、`/memory clear` 與 `/memory regenerate` 管理。
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片，檔案太大時會自動 retry 低畫質。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
@@ -108,9 +108,10 @@ uv run python scripts/artale_data.py
 DISCORD_BOT_TOKEN=your_discord_bot_token
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
+GEMINI_API_KEY=your_google_ai_studio_key
 ```
 
-`OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。
+`OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。`GEMINI_API_KEY` 是 Google AI Studio key，用於直連 Google（不經 gateway）的功能：影片生成、Gemini Files API 附件上傳、YouTube 影片回答與深度研究；未設定即停用這些功能。
 
 本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
 
