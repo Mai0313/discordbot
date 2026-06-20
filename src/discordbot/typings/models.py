@@ -103,7 +103,8 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_handle_video_reply`.
 
         Returns:
-            Model settings used with `videos.create`.
+            Model settings used with the native Gemini `generate_videos` API (a bare Veo model
+            name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
         video_model = ModelSettings(name="veo-3.1-generate-preview")
         return video_model

@@ -16,6 +16,12 @@ import nextcord
 from nextcord import File, Embed, Message
 from pydantic import ValidationError
 from nextcord.ext import commands
+from google.genai.types import (
+    Image,
+    GenerateVideosConfig,
+    VideoGenerationReferenceType,
+    VideoGenerationReferenceImage,
+)
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
@@ -42,7 +48,6 @@ from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
-    VIDEO_PROMPT,
     EFFORT_PROMPT,
     SUMMARY_PROMPT,
     IMAGE_REPLY_PROMPT,
@@ -380,6 +385,24 @@ class ReplyGeneratorCogs(commands.Cog):
         return genai.Client(api_key=self.config.gemini_api_key)
 
     @cached_property
+    def gemini_client(self) -> genai.Client:
+        """The cached native Gemini generation client.
+
+        DIRECT to Google (`gemini_api_key`, no proxy): Veo video generation is inherently
+        Gemini, so the direct credential is the right one and the native `generate_videos`
+        API (operations poll + Files download) is used instead of the LiteLLM proxy. This is
+        a runtime path that does not ride the proxy, so it forgoes proxy-side cost/usage
+        tracking, like the YouTube Interactions and deep-research direct paths. The name is
+        deliberately generic (not `video_client`) so a future move of image generation onto
+        the native SDK can reuse it. A missing key does not fail construction; it surfaces at
+        the first generation call.
+
+        Returns:
+            A Gemini client for native media generation (currently Veo video).
+        """
+        return genai.Client(api_key=self.config.gemini_api_key)
+
+    @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
         """The cached text-to-speech engine for spoken QA replies.
 
@@ -558,62 +581,84 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
-        """Handles video generation requests."""
+        """Generates a video with the native Gemini (Veo) SDK and replies with the file.
+
+        Runs direct to Google via `generate_videos` (no proxy, no prompt director): the raw
+        request is the prompt, and any images on the message (plus the replied-to message,
+        mirroring the IMAGE route) ride as asset reference images (up to three), so a bare
+        request stays a text-to-video generation.
+        """
         video_model = self.runtime_models.video_model
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
-        refined_prompt = await refine_generation_prompt(
-            enabled=self.config.refine_prompt_enabled,
-            client=self.client,
-            prompt_model=self.runtime_models.prompt_model,
-            user_prompt=user_prompt,
-            instructions=VIDEO_PROMPT,
-            end_user_id=message.author.name,
+        if message.reference and isinstance(message.reference.resolved, Message):
+            own, ref = await asyncio.gather(
+                self.input_builder.get_image_sources_with_mime(message=message),
+                self.input_builder.get_image_sources_with_mime(message=message.reference.resolved),
+            )
+            images = own + ref
+        else:
+            images = await self.input_builder.get_image_sources_with_mime(message=message)
+        reference_images = [
+            VideoGenerationReferenceImage(
+                image=Image(image_bytes=raw, mime_type=mime),
+                reference_type=VideoGenerationReferenceType.ASSET,
+            )
+            for raw, mime in images[:3]
+        ]
+        # Veo 3.1 requires duration_seconds=8 at 1080p and with reference images, so it is pinned
+        # (4/6/8 are only selectable at 720p); audio rides on by default. Only fields this model
+        # accepts are set: enhance_prompt 400s on veo-3.1-generate-preview, and fps / seed /
+        # generate_audio / compression_quality are Vertex-only and 400 here too.
+        video_config = GenerateVideosConfig(
+            number_of_videos=1,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            duration_seconds=8,
+            reference_images=reference_images or None,
         )
-        video = await self.client.videos.create(
+        operation = await self.gemini_client.aio.models.generate_videos(
             model=video_model.name,
-            prompt=refined_prompt or "請依照訊息內容生成一段影片。",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
+            prompt=user_prompt or "請依照訊息內容生成一段影片。",
+            config=video_config,
         )
         logfire.debug(
             "gen_reply video job created",
             message_id=message.id,
-            video_id=video.id,
-            status=video.status,
+            operation=operation.name,
+            reference_images=len(images),
         )
         async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
-            while video.status not in ("completed", "failed"):
+            while not operation.done:
                 await asyncio.sleep(5)
-                video = await self.client.videos.retrieve(
-                    video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
-                )
+                operation = await self.gemini_client.aio.operations.get(operation=operation)
                 logfire.debug(
                     "gen_reply video poll",
                     message_id=message.id,
-                    video_id=video.id,
-                    status=video.status,
+                    operation=operation.name,
+                    done=operation.done,
                     poll_seconds=time.monotonic() - started,
                 )
-        if video.status != "completed":
+        if operation.error or not (operation.response and operation.response.generated_videos):
             logfire.warn(
                 "gen_reply video generation failed",
                 message_id=message.id,
-                video_id=video.id,
-                status=video.status,
-                error=str(video.error),
+                operation=operation.name,
+                error=str(operation.error),
             )
-            raise RuntimeError(f"Video generation failed: {video.error}")
-        video_content = await self.client.videos.download_content(
-            video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
-        )
-        video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
+            raise RuntimeError(f"Video generation failed: {operation.error}")
+        generated = operation.response.generated_videos[0]
+        if generated.video is None or generated.video.uri is None:
+            raise RuntimeError(f"Video generation returned no video for {operation.name}")
+        video_bytes = await self.gemini_client.aio.files.download(file=generated.video.uri)
+        video_file = File(fp=BytesIO(video_bytes), filename="generated.mp4")
         await message.reply(content=f"{message.author.mention}", file=video_file)
         logfire.info(
             "gen_reply video delivered",
             message_id=message.id,
-            video_id=video.id,
+            operation=operation.name,
             total_elapsed_seconds=time.monotonic() - started,
-            bytes=len(video_content.content),
+            bytes=len(video_bytes),
         )
 
     async def _handle_image_reply(

@@ -261,21 +261,26 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
-    async def get_image_source_bytes(self, message: Message) -> list[bytes]:
-        """Returns downscaled bytes of a message's image sources for the IMAGE route.
+    async def get_image_sources_with_mime(self, message: Message) -> list[tuple[bytes, str]]:
+        """Returns downscaled (bytes, MIME) pairs of a message's image sources.
 
         Image editing feeds raw pixels to `images.edit`, so it loads bytes directly
         rather than reusing the Files-API handles `get_attachment_parts` produces. Only
         image sources are collected; non-image files are not editable as images. The
-        IMAGE route runs on the image model, so the slow model's modality gate is not
-        applied here.
+        IMAGE/VIDEO routes run on the image/video model, so the slow model's modality gate
+        is not applied here. The MIME is kept because the native Veo `types.Image` requires
+        it; the IMAGE route drops it via `get_image_source_bytes`.
         """
         tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
         for source in self.collect_attachment_sources(message=message):
             if source.kind == "image":
                 tasks.append(load_image_bytes(source=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
-        return [item[0] for item in loaded if isinstance(item, tuple)]
+        return [item for item in loaded if isinstance(item, tuple)]
+
+    async def get_image_source_bytes(self, message: Message) -> list[bytes]:
+        """Returns downscaled bytes of a message's image sources for the IMAGE route."""
+        return [raw for raw, _ in await self.get_image_sources_with_mime(message=message)]
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:

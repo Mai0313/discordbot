@@ -46,7 +46,7 @@ from discordbot.cogs._gen_reply.voice import (
 )
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
-from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
+from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
@@ -424,32 +424,50 @@ class FakeImages:
         return SimpleNamespace(data=[SimpleNamespace(b64_json=_png_b64())])
 
 
-class FakeVideos:
-    """Fake Videos API resource that completes after one poll."""
+class FakeGeminiVideoClient:
+    """Fake native Gemini client exposing the async Veo generation API.
+
+    `generate_videos` returns an in-progress operation that the first `operations.get` flips
+    to done with one generated video; `files.download` returns fake MP4 bytes. Records the
+    prompt and the config so tests can assert reference-image wiring.
+    """
 
     def __init__(self) -> None:
-        """Initializes video retrieve call count."""
-        self.retrieve_calls = 0
-        self.create_prompts: list[str] = []
+        """Initializes call records and the async-namespace resources."""
+        self.generate_prompts: list[str] = []
+        self.generate_configs: list[object] = []
+        self.get_calls = 0
+        self.aio = SimpleNamespace(
+            models=SimpleNamespace(generate_videos=self._generate_videos),
+            operations=SimpleNamespace(get=self._operations_get),
+            files=SimpleNamespace(download=self._files_download),
+        )
 
-    async def create(
-        self, model: str, prompt: str, extra_headers: dict[str, str]
+    async def _generate_videos(
+        self, *, model: str, prompt: str, config: object = None
     ) -> SimpleNamespace:
-        """Returns an in-progress fake video job."""
-        del model, extra_headers
-        self.create_prompts.append(prompt)
-        return SimpleNamespace(id="video-1", status="processing")
+        """Records the request and returns an in-progress operation."""
+        del model
+        self.generate_prompts.append(prompt)
+        self.generate_configs.append(config)
+        return SimpleNamespace(name="op-1", done=False, error=None, response=None)
 
-    async def retrieve(self, video_id: str, extra_headers: dict[str, str]) -> SimpleNamespace:
-        """Records a poll and returns the completed fake video job."""
-        self.retrieve_calls += 1
-        return SimpleNamespace(id="video-1", status="completed")
+    async def _operations_get(self, operation: object) -> SimpleNamespace:
+        """Records a poll and returns the completed operation with one generated video."""
+        del operation
+        self.get_calls += 1
+        video = SimpleNamespace(uri="https://files.test/video", video_bytes=None)
+        return SimpleNamespace(
+            name="op-1",
+            done=True,
+            error=None,
+            response=SimpleNamespace(generated_videos=[SimpleNamespace(video=video)]),
+        )
 
-    async def download_content(
-        self, video_id: str, extra_headers: dict[str, str]
-    ) -> SimpleNamespace:
-        """Returns fake MP4 bytes."""
-        return SimpleNamespace(content=b"mp4")
+    async def _files_download(self, *, file: object) -> bytes:
+        """Returns fake MP4 bytes for the completed video."""
+        del file
+        return b"mp4"
 
 
 class FakeGeminiFiles:
@@ -555,13 +573,12 @@ class FakeOpenAIClient:
 
 
 class FakeClient:
-    """Fake OpenAI client with responses, images, and videos resources."""
+    """Fake OpenAI client with responses and images resources."""
 
     def __init__(self) -> None:
         """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
-        self.videos = FakeVideos()
 
 
 def _png_b64() -> str:
@@ -597,6 +614,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.runtime_models = RuntimeModelCatalog()
     cog.config = LLMConfig()
     cog.__dict__["client"] = FakeClient()
+    cog.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = cog.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
         handler.__dict__["gemini_client"] = FakeGeminiClient()
@@ -2099,8 +2117,8 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     await cog._handle_video_reply(message=message, user_prompt="video")
     assert len(message.replies) == 1
-    # The prompt director runs first, so video generation receives its refined output.
-    assert cog.client.videos.create_prompts == ["caption"]
+    # Video has no director: the raw request reaches native generate_videos directly.
+    assert cog.gemini_client.generate_prompts == ["video"]
 
     await cog._handle_image_reply(
         message=message,
@@ -2392,33 +2410,11 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
     assert message.replies[-1].file is not None
 
 
-async def test_handle_video_reply_refines_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Video generation runs the text-only director on VIDEO_PROMPT first."""
-    cog = _cog()
-
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
-    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
-
-    await cog._handle_video_reply(message=message, user_prompt="video")
-
-    assert cog.client.videos.create_prompts == ["caption"]
-    assert cog.client.responses.create_models[0] == cog.runtime_models.prompt_model.name
-    assert cog.client.responses.create_instructions[0] == VIDEO_PROMPT
-    # Video has no attachments, so the director request is text-only.
-    director_input = cog.client.responses.create_inputs[0]
-    parts = director_input[0]["content"]
-    assert all(part.get("type") != "input_image" for part in parts)
-
-
-async def test_handle_video_reply_skips_director_when_refine_disabled(
+async def test_handle_video_reply_uses_raw_prompt_without_director(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With REFINE_PROMPT_ENABLED off video generation uses the raw prompt and runs no director."""
+    """Video generation sends the raw request to native generate_videos, with no director call."""
     cog = _cog()
-    cog.config.refine_prompt_enabled = False
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -2428,9 +2424,40 @@ async def test_handle_video_reply_skips_director_when_refine_disabled(
 
     await cog._handle_video_reply(message=message, user_prompt="video")
 
-    # The raw prompt reaches videos.create; no director responses.create happened at all.
-    assert cog.client.videos.create_prompts == ["video"]
+    # The raw prompt reaches generate_videos; no director responses.create happened at all.
+    assert cog.gemini_client.generate_prompts == ["video"]
     assert cog.client.responses.create_models == []
+    # No attachments: a plain text-to-video generation at the configured 1080p, MP4 delivered.
+    config = cog.gemini_client.generate_configs[0]
+    assert config.resolution == "1080p"
+    assert config.reference_images is None
+    assert message.replies[-1].file is not None
+
+
+async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attached images ride as asset reference images (capped at three)."""
+    cog = _cog()
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    message = FakeMessage(content="把這些做成影片", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename=f"pic{index}.png",
+            content_type="image/png",
+            payload=base64.b64decode(_png_b64()),
+        )
+        for index in range(4)
+    ]
+
+    await cog._handle_video_reply(message=message, user_prompt="video")
+
+    # All attached images ride as asset reference images, capped at three.
+    config = cog.gemini_client.generate_configs[0]
+    assert len(config.reference_images) == 3
+    assert all(ref.image.image_bytes for ref in config.reference_images)
 
 
 @pytest.mark.parametrize(
