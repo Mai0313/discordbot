@@ -263,7 +263,9 @@ def test_cast_phase_defaults_unknown_to_failed() -> None:
     assert rdb.cast_phase(value="bogus") == "failed"
 
 
-async def test_claim_research_is_idempotent_and_clears_stale_id(research_isolated_db: None) -> None:
+async def test_claim_research_is_idempotent_and_clears_stale_id(
+    research_isolated_db: None,
+) -> None:
     await rdb.upsert_session(
         thread_id=30,
         owner_id=1,
@@ -300,9 +302,11 @@ async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: 
     cleared = await rdb.clear_stale_planning()
     assert {session.thread_id for session in cleared} == {40, 42}
     cancelled = await rdb.get_session(thread_id=40)
-    assert cancelled is not None and cancelled.phase == "cancelled"
+    assert cancelled is not None
+    assert cancelled.phase == "cancelled"
     researching = await rdb.get_session(thread_id=41)
-    assert researching is not None and researching.phase == "researching"
+    assert researching is not None
+    assert researching.phase == "researching"
     # The owner whose plan was cleared is no longer blocked from launching new research.
     assert await rdb.active_thread_for_owner(owner_id=40) is None
 
@@ -334,7 +338,9 @@ class _FakeThread:
 
 
 def _completed_result(*, report_text: str) -> agent.ResearchResult:
-    return agent.ResearchResult(interaction_id="int_1", status="completed", report_text=report_text)
+    return agent.ResearchResult(
+        interaction_id="int_1", status="completed", report_text=report_text
+    )
 
 
 async def test_delivery_keeps_footer_message_under_the_limit() -> None:
