@@ -159,15 +159,22 @@ class ResearchCogs(commands.Cog):
 
     # ----- entry points -------------------------------------------------------------------
 
-    async def launch(self, *, message: "Message", brief: str) -> None:
-        """QA-marker entry: opens a thread off the user's message and starts the default research."""
+    async def launch(
+        self, *, message: "Message", brief: str, anchor: "Message | None" = None
+    ) -> None:
+        """QA-marker entry: opens a thread and starts the default research.
+
+        `message` identifies the owner; `anchor` is the message the thread hangs off. The bot's
+        own reply reads more intuitively than the user's message, so the caller passes it; it
+        falls back to the user's message when the reply is unavailable.
+        """
         if not self.config.deep_research_enabled:
             return
         outcome, existing = await self._start_for(
             owner_id=message.author.id,
             owner_mention=message.author.mention,
             brief=brief,
-            anchor=message,
+            anchor=anchor or message,
         )
         if outcome == "exists" and existing is not None:
             with contextlib.suppress(Exception):

@@ -1360,7 +1360,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
         if allow_research and self.config.deep_research_enabled and streamer.research_brief:
             await _maybe_launch_research(
-                bot=self.bot, message=message, brief=streamer.research_brief
+                bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
         if memory_enabled:
             memory_message_list = target_centered_memory_messages(
@@ -1659,15 +1659,21 @@ def _in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
     return bool(checker(channel_id=channel_id)) if checker is not None else False
 
 
-async def _maybe_launch_research(*, bot: commands.Bot, message: Message, brief: str) -> None:
-    """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled."""
+async def _maybe_launch_research(
+    *, bot: commands.Bot, message: Message, anchor: Message | None, brief: str
+) -> None:
+    """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled.
+
+    `anchor` is the bot's own reply message; the research thread hangs off it (more intuitive than
+    the user's message), falling back to the user's message inside the cog when it is None.
+    """
     get_cog = getattr(bot, "get_cog", None)
     cog = get_cog("ResearchCogs") if callable(get_cog) else None
     launcher = getattr(cog, "launch", None)
     if launcher is None:
         return
     with contextlib.suppress(Exception):
-        await launcher(message=message, brief=brief)
+        await launcher(message=message, anchor=anchor, brief=brief)
 
 
 def setup(bot: commands.Bot) -> None:
