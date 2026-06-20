@@ -426,6 +426,9 @@ class ResearchCogs(commands.Cog):
             result=result,
             footer=footer,
             view=view,
+            allowed_mentions=_owner_allowed_mentions(
+                owner_id=_owner_id_from_mention(mention=owner_mention)
+            ),
         )
         await db.set_phase(thread_id=thread.id, phase="done")
         self._active_threads.discard(thread.id)
@@ -445,12 +448,14 @@ class ResearchCogs(commands.Cog):
         """
         if status is not None:
             try:
-                await status.edit(content=content, view=view)
+                await status.edit(
+                    content=content, view=view, allowed_mentions=AllowedMentions.none()
+                )
                 return
             except Exception:
                 logfire.warn("failed to finalize research status message", thread_id=thread.id)
         with contextlib.suppress(Exception):
-            await thread.send(content=content, view=view)
+            await thread.send(content=content, view=view, allowed_mentions=AllowedMentions.none())
 
     async def _post_failure(
         self,
@@ -473,7 +478,13 @@ class ResearchCogs(commands.Cog):
         if exc is not None:
             embed.set_footer(text=type(exc).__name__)
         with contextlib.suppress(Exception):
-            await thread.send(content=f"{owner_mention} ⚠️", embed=embed)
+            await thread.send(
+                content=f"{owner_mention} ⚠️",
+                embed=embed,
+                allowed_mentions=_owner_allowed_mentions(
+                    owner_id=_owner_id_from_mention(mention=owner_mention)
+                ),
+            )
 
     # ----- escalation (Deep Research) -----------------------------------------------------
 
@@ -586,6 +597,7 @@ class ResearchCogs(commands.Cog):
             view=PlanApprovalView(
                 cog=self, owner_id=owner_id, plan_interaction_id=plan.interaction_id, agent=agent
             ),
+            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
         )
 
     async def on_accept_plan(self, *, interaction: Interaction, view: PlanApprovalView) -> None:
@@ -728,7 +740,8 @@ class ResearchCogs(commands.Cog):
             return
         with contextlib.suppress(Exception):
             await thread.send(
-                content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究"
+                content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究",
+                allowed_mentions=_owner_allowed_mentions(owner_id=session.owner_id),
             )
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
@@ -798,13 +811,23 @@ class ResearchCogs(commands.Cog):
         return _on_progress
 
     async def _safe_send(
-        self, *, thread: "Thread", content: str, view: "nextcord.ui.View | None" = None
+        self,
+        *,
+        thread: "Thread",
+        content: str,
+        view: "nextcord.ui.View | None" = None,
+        allowed_mentions: "AllowedMentions | None" = None,
     ) -> "nextcord.Message | None":
-        """Best-effort `thread.send`, returning the message or None on failure."""
+        """Best-effort `thread.send`, returning the message or None on failure.
+
+        Mentions default to fully suppressed (`AllowedMentions.none()`); a caller that wants the
+        owner pinged passes an owner-only policy, so agent-generated content can never mass-ping.
+        """
+        mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
             if view is not None:
-                return await thread.send(content=content, view=view)
-            return await thread.send(content=content)
+                return await thread.send(content=content, view=view, allowed_mentions=mentions)
+            return await thread.send(content=content, allowed_mentions=mentions)
         except Exception:
             logfire.warn("failed to send research thread message", thread_id=thread.id)
             return None
@@ -834,6 +857,15 @@ def _owner_id_from_mention(*, mention: str) -> int:
     """Parses a `<@id>` mention back into the user id (0 when it has no digits)."""
     digits = "".join(ch for ch in mention if ch.isdigit())
     return int(digits) if digits else 0
+
+
+def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
+    """Restricts a research-thread message to pinging only its owner.
+
+    Report and plan text is agent-generated, so any `@everyone` / role / other-user mention it
+    contains must not resolve; only the deliberate owner ping is allowed through.
+    """
+    return AllowedMentions(everyone=False, roles=False, users=[nextcord.Object(id=owner_id)])
 
 
 def setup(bot: commands.Bot) -> None:

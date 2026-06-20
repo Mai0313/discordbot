@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import base64
 
+from nextcord import AllowedMentions
+
 from discordbot.cogs import research as research_cog
 from discordbot.cogs._research import agent
 from discordbot.cogs._research import database as rdb
@@ -162,6 +164,13 @@ def test_owner_id_from_mention_parses_digits() -> None:
     assert research_cog._owner_id_from_mention(mention="<@123456789>") == 123456789
     assert research_cog._owner_id_from_mention(mention="<@!42>") == 42
     assert research_cog._owner_id_from_mention(mention="nobody") == 0
+
+
+def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
+    mentions = research_cog._owner_allowed_mentions(owner_id=42)
+    assert mentions.everyone is False
+    assert mentions.roles is False
+    assert [obj.id for obj in mentions.users] == [42]
 
 
 def test_failure_text_distinguishes_budget() -> None:
@@ -347,6 +356,7 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     status = _FakeStatusMessage()
     thread = _FakeThread()
     footer = "-# antigravity-preview-05-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
+    mentions = AllowedMentions(everyone=False, roles=False, users=[])
     # A report chunk that sits just under the 2000-char message cap; appending the footer inline
     # would overflow, so it must ride its own trailing message.
     await deliver_report(
@@ -356,6 +366,7 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
         view=None,
+        allowed_mentions=mentions,
     )
     contents = [str(edit["content"]) for edit in status.edits]
     contents += [str(send["content"]) for send in thread.sends]
@@ -365,6 +376,9 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     assert "<@1>" in str(footer_send["content"])
     assert footer in str(footer_send["content"])
     assert footer_send["files"]
+    # Every report message carries the owner-only mention policy so agent text can't mass-ping.
+    assert footer_send["allowed_mentions"] is mentions
+    assert status.edits[0]["allowed_mentions"] is mentions
 
 
 async def test_delivery_inlines_footer_for_short_reports() -> None:
@@ -377,6 +391,7 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
         view=None,
+        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
     )
     # One message: the opening status edited into report + footer + the research.md attachment.
     assert not thread.sends

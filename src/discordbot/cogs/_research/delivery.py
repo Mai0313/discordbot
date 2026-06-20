@@ -61,6 +61,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     result: "ResearchResult",
     footer: str,
     view: nextcord.ui.View | None,
+    allowed_mentions: nextcord.AllowedMentions,
 ) -> None:
     """Delivers the report into the thread.
 
@@ -68,6 +69,9 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     wasted; the remaining chunks follow as new messages; the LAST chunk carries the usage footer,
     the escalation view, the owner ping, and the full report as a `research.md` attachment (plus
     any generated image). Every write is best-effort.
+
+    `allowed_mentions` restricts the report body (agent-generated, so it may quote `@everyone` /
+    roles / other users) to ping only the owner; the caller passes an owner-only policy.
     """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report(text=report) or ["(empty report)"]
@@ -90,6 +94,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
             content=chunk,
             files=files if is_last else [],
             view=view if is_last else None,
+            allowed_mentions=allowed_mentions,
         )
 
 
@@ -104,36 +109,41 @@ def _final_files(*, report: str, image_bytes: bytes | None, limit: int) -> list[
     return files
 
 
-async def _place(
+async def _place(  # noqa: PLR0913 -- target message plus its optional files / view / mention policy
     *,
     status: nextcord.Message | None,
     thread: "Thread",
     content: str,
     files: list[nextcord.File],
     view: nextcord.ui.View | None,
+    allowed_mentions: nextcord.AllowedMentions,
 ) -> None:
     """Edits the opening status message (when given) or sends a new message, with optional files/view."""
     if status is not None:
         try:
             if files and view is not None:
-                await status.edit(content=content, files=files, view=view)
+                await status.edit(
+                    content=content, files=files, view=view, allowed_mentions=allowed_mentions
+                )
             elif files:
-                await status.edit(content=content, files=files)
+                await status.edit(content=content, files=files, allowed_mentions=allowed_mentions)
             elif view is not None:
-                await status.edit(content=content, view=view)
+                await status.edit(content=content, view=view, allowed_mentions=allowed_mentions)
             else:
-                await status.edit(content=content)
+                await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
         except Exception:
             logfire.warn("failed to edit research status into report", thread_id=thread.id)
     try:
         if files and view is not None:
-            await thread.send(content=content, files=files, view=view)
+            await thread.send(
+                content=content, files=files, view=view, allowed_mentions=allowed_mentions
+            )
         elif files:
-            await thread.send(content=content, files=files)
+            await thread.send(content=content, files=files, allowed_mentions=allowed_mentions)
         elif view is not None:
-            await thread.send(content=content, view=view)
+            await thread.send(content=content, view=view, allowed_mentions=allowed_mentions)
         else:
-            await thread.send(content=content)
+            await thread.send(content=content, allowed_mentions=allowed_mentions)
     except Exception:
         logfire.warn("failed to post research report message", thread_id=thread.id)
