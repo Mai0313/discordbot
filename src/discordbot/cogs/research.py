@@ -632,7 +632,18 @@ class ResearchCogs(commands.Cog):
                 "message", check=_is_owner_reply, timeout=MODIFY_WAIT_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            await self._safe_send(thread=thread, content="等太久了,要改再點一次「修改計畫」就好")
+            # The modify click removed the approval buttons; the plan is still valid (the row stays
+            # `planning`), so repost a fresh view rather than leaving the owner with no way forward.
+            await self._safe_send(
+                thread=thread,
+                content="等太久了,要的話用下面的按鈕再試一次",
+                view=PlanApprovalView(
+                    cog=self,
+                    owner_id=view.owner_id,
+                    plan_interaction_id=view.plan_interaction_id,
+                    agent=view.agent,
+                ),
+            )
             return
         self._spawn(
             self._run_refine(
