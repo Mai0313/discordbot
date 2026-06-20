@@ -205,7 +205,10 @@ class ThreadsCogs(commands.Cog):
                     ),
                 )
                 await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="<:greencheck:1517565102424068226>", previous=current_emoji
+                    message=message,
+                    bot_user=self.bot.user,
+                    emoji="<:greencheck:1517565102424068226>",
+                    previous=current_emoji,
                 )
             finally:
                 await asyncio.to_thread(parse_cm.__exit__, None, None, None)
