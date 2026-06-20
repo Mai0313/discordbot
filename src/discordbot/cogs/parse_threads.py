@@ -216,7 +216,10 @@ class ThreadsCogs(commands.Cog):
             logfire.error("Failed to send Threads message", _exc_info=True)
             with contextlib.suppress(Exception):
                 await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="❌", previous=current_emoji
+                    message=message,
+                    bot_user=self.bot.user,
+                    emoji="<:redcross:1517565100838355016>",
+                    previous=current_emoji,
                 )
 
 

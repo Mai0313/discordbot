@@ -337,7 +337,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     error_message.guild = None
     cog.downloader = ThreadsDownloaderStub(results=RuntimeError("parse failed"))
     await cog.on_message(message=error_message)
-    assert error_message.reactions[-1] == "❌"
+    assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
 async def test_auto_unmute_tracks_audit_and_generates_reply(
