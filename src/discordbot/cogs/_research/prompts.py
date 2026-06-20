@@ -20,3 +20,10 @@ Report quality:
 - Be comprehensive but readable: lead with the key findings.
 
 The report is a clean analyst report, not casual chatter."""
+
+
+# A short side call (fast_model) turns the research brief into a Discord thread title. Brevity is
+# steered by the prompt (not a token cap); the cog still trims to Discord's hard name limit.
+THREAD_TITLE_PROMPT = """Write a very short Discord thread title for the user's research request.
+Output ONLY the title text: a handful of words (aim for well under ~10), in the SAME language as
+the request, with no surrounding quotes, no trailing punctuation, and no labels or explanation."""

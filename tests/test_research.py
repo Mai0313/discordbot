@@ -125,11 +125,11 @@ def test_latest_thought_returns_last_summary() -> None:
 # ----- research module helpers --------------------------------------------------------------
 
 
-def test_thread_name_uses_first_line() -> None:
-    name = research_cog._thread_name(brief="研究 TPU 的歷史與競爭格局\n更多細節")
+def test_fallback_thread_name_uses_first_line() -> None:
+    name = research_cog._fallback_thread_name(brief="研究 TPU 的歷史與競爭格局\n更多細節")
     assert name.startswith("研究 TPU")
     assert "\n" not in name
-    assert research_cog._thread_name(brief="   ") == "深度研究"
+    assert research_cog._fallback_thread_name(brief="   ") == "深度研究"
 
 
 def test_tier_label_maps_agent_strings() -> None:

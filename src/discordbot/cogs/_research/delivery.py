@@ -22,9 +22,12 @@ DISCORD_MESSAGE_LIMIT = 2000
 
 
 def _upload_limit(*, thread: "Thread") -> int:
-    """The thread's real upload ceiling, falling back to Discord's 10MB base without a guild."""
-    guild = getattr(thread, "guild", None)
-    return guild.filesize_limit if guild is not None else 10 * 1024 * 1024
+    """The thread's real upload ceiling (its guild's boost-tier `filesize_limit`).
+
+    A Discord Thread always lives in a guild, so `thread.guild` is never None and is read
+    directly (no DM fallback: research never runs in a DM).
+    """
+    return thread.guild.filesize_limit
 
 
 def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
@@ -86,6 +89,6 @@ async def deliver_report(
             logfire.warn("failed to post research image", thread_id=thread.id)
     footer_line = f"\n-# {footer}" if footer else ""
     try:
-        await thread.send(content=f"{owner_mention} ✅ 研究完成({tier_label}){footer_line}")
+        await thread.send(content=f"{owner_mention} Research complete ({tier_label}){footer_line}")
     except Exception:
         logfire.warn("failed to post research completion ping", thread_id=thread.id)

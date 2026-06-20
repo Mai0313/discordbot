@@ -19,11 +19,13 @@ from functools import cached_property
 import contextlib
 
 from google import genai
+from openai import AsyncOpenAI
 import logfire
 import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
+from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import database as db
 from discordbot.typings.models import RuntimeModelCatalog
@@ -40,7 +42,7 @@ from discordbot.cogs._research.agent import (
     start_deep_research,
 )
 from discordbot.cogs._research.views import PlanApprovalView, ResultEscalationView
-from discordbot.cogs._research.prompts import RESEARCH_SYSTEM_INSTRUCTION
+from discordbot.cogs._research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
@@ -52,15 +54,17 @@ if TYPE_CHECKING:
 
 # How long the modify flow waits for the owner to type their changes in the thread.
 MODIFY_WAIT_TIMEOUT_SECONDS = 600.0
-# Discord thread names cap at 100 chars; keep margin.
+# Discord thread names cap at 100 chars; keep margin (a hard-limit safety trim, not length control).
 THREAD_NAME_MAX = 90
+# Bound the small title-generation side call; on timeout/failure the brief's first line is used.
+THREAD_TITLE_TIMEOUT_SECONDS = 15.0
 # The bot's `dino` app emoji, reacted onto the source message when deep research is launched so
 # the activation reads as distinct from the normal QA pipeline reactions.
 DINO_EMOJI = "<:dino:1517560319281594570>"
 
 
-def _thread_name(*, brief: str) -> str:
-    """Derives a short thread title from the research brief."""
+def _fallback_thread_name(*, brief: str) -> str:
+    """Thread-title fallback (the brief's first line) when LLM title generation is unavailable."""
     first_line = next((line.strip() for line in brief.splitlines() if line.strip()), "")
     title = first_line or "深度研究"
     return title[:THREAD_NAME_MAX]
@@ -110,6 +114,15 @@ class ResearchCogs(commands.Cog):
         """
         return genai.Client(api_key=self.config.gemini_api_key)
 
+    @cached_property
+    def responses_client(self) -> AsyncOpenAI:
+        """The LiteLLM-proxy Responses client for small side calls (the thread-title generator).
+
+        Built inline (no `utils/llm.py` factory) per the no-new-factory convention; distinct from
+        the direct `interactions_client` since a plain Responses call rides the proxy fine.
+        """
+        return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
+
     def is_research_thread(self, *, channel_id: int) -> bool:
         """Whether a channel id is a research thread the cog is actively driving."""
         return channel_id in self._active_threads
@@ -123,6 +136,25 @@ class ResearchCogs(commands.Cog):
     def _system_instruction(self) -> str:
         """The research agent system instruction with today's date appended for recency."""
         return f"{RESEARCH_SYSTEM_INSTRUCTION}\n\nToday's date: {database_now():%Y-%m-%d}."
+
+    async def _generate_thread_name(self, *, brief: str) -> str:
+        """Generates a short thread title from the brief via `fast_model`, best-effort.
+
+        Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
+        first line is used, and the result is trimmed to Discord's hard name limit as a safety net.
+        """
+        raw = await create_text_or_none(
+            client=self.responses_client,
+            model=self.runtime_models.fast_model,
+            instructions=THREAD_TITLE_PROMPT,
+            user_text=brief,
+            end_user_id="deep-research",
+            timeout_seconds=THREAD_TITLE_TIMEOUT_SECONDS,
+        )
+        title = next(
+            (line.strip().strip('"') for line in (raw or "").splitlines() if line.strip()), ""
+        )
+        return (title or _fallback_thread_name(brief=brief))[:THREAD_NAME_MAX]
 
     # ----- entry points -------------------------------------------------------------------
 
@@ -215,10 +247,9 @@ class ResearchCogs(commands.Cog):
             existing = await db.active_thread_for_owner(owner_id=owner_id)
             if existing is not None:
                 return "exists", existing
+            name = await self._generate_thread_name(brief=brief)
             try:
-                thread = await anchor.create_thread(
-                    name=_thread_name(brief=brief), auto_archive_duration=1440
-                )
+                thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
             except Exception:
                 logfire.warn("failed to create research thread", message_id=anchor.id)
                 return "error", None
