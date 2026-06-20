@@ -294,6 +294,31 @@ async def list_resumable() -> list[PersistentResearchSession]:
         return [_row_to_model(row=row) for row in result.scalars().all()]
 
 
+async def clear_stale_planning() -> list[PersistentResearchSession]:
+    """Cancels sessions stuck in `planning` after a restart and returns the cleared rows.
+
+    A `planning` row is mid plan-discussion whose approval view and `wait_for` did not survive the
+    restart, yet `active_thread_for_owner` still counts it as active, so left as-is it blocks the
+    owner from launching new research forever. Cancelling it frees the slot (the owner can
+    re-trigger); the returned rows let the caller post a notice in each thread.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(ResearchSessionRow).where(ResearchSessionRow.phase == "planning")
+        )
+        rows = [_row_to_model(row=row) for row in result.scalars().all()]
+        if rows:
+            await session.execute(
+                statement=update(ResearchSessionRow)
+                .where(ResearchSessionRow.phase == "planning")
+                .values(phase="cancelled", updated_at=now)
+            )
+            await session.commit()
+        return rows
+
+
 async def active_thread_for_owner(*, owner_id: int) -> int | None:
     """Returns an owner's in-flight research thread id, or `None` when they have none.
 

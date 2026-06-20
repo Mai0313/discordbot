@@ -708,13 +708,28 @@ class ResearchCogs(commands.Cog):
         self._spawn(self._resume_all())
 
     async def _resume_all(self) -> None:
-        """Re-enters the poll loop for every session left `researching`."""
+        """Resumes `researching` sessions and clears plans interrupted mid-discussion by a restart."""
+        stale = await db.clear_stale_planning()
+        for session in stale:
+            self._spawn(self._notify_stale_planning(session=session))
         sessions = await db.list_resumable()
         for session in sessions:
             self._active_threads.add(session.thread_id)
             self._spawn(self._resume_one(session=session))
         if sessions:
             logfire.info("resumed in-flight research sessions", count=len(sessions))
+        if stale:
+            logfire.info("cleared interrupted planning sessions", count=len(stale))
+
+    async def _notify_stale_planning(self, *, session: db.PersistentResearchSession) -> None:
+        """Tells a thread whose plan discussion was lost to a restart to re-trigger, best-effort."""
+        thread = await self._fetch_thread(thread_id=session.thread_id)
+        if thread is None:
+            return
+        with contextlib.suppress(Exception):
+            await thread.send(
+                content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究"
+            )
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
