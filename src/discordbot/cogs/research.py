@@ -179,10 +179,10 @@ class ResearchCogs(commands.Cog):
         if outcome == "exists" and existing is not None:
             with contextlib.suppress(Exception):
                 await message.reply(content=f"你已經有一個深度研究在進行了:<#{existing}>")
-        elif outcome == "dm":
+        elif outcome == "unsupported":
             with contextlib.suppress(Exception):
                 await message.reply(
-                    content="深度研究目前只在伺服器頻道支援(私訊沒有 thread 可以開)"
+                    content="深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
                 )
         elif outcome == "error":
             with contextlib.suppress(Exception):
@@ -221,9 +221,10 @@ class ResearchCogs(commands.Cog):
         if not self.config.deep_research_enabled:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
-        if interaction.guild is None or interaction.user is None:
+        if interaction.user is None or not isinstance(interaction.channel, nextcord.TextChannel):
             await interaction.response.send_message(
-                content="深度研究只在伺服器頻道支援喔", ephemeral=True
+                content="深度研究只能在伺服器的一般文字頻道開喔(私訊或討論串裡開不了 thread)",
+                ephemeral=True,
             )
             return
         await interaction.response.defer(ephemeral=True)
@@ -259,10 +260,12 @@ class ResearchCogs(commands.Cog):
         """Claims the owner's slot, opens the thread, and spawns the default research.
 
         Returns `(outcome, thread_or_existing_id)` where outcome is one of
-        `started` / `exists` / `dm` / `error`.
+        `started` / `exists` / `unsupported` / `error`.
         """
-        if anchor.guild is None:
-            return "dm", None
+        # A research thread can only hang off a message in a guild text channel; a DM, an existing
+        # thread, or a forum post cannot host a nested thread, so refuse before promising research.
+        if anchor.guild is None or not isinstance(anchor.channel, nextcord.TextChannel):
+            return "unsupported", None
         async with self._owner_locks.hold(key=owner_id):
             existing = await db.active_thread_for_owner(owner_id=owner_id)
             if existing is not None:
