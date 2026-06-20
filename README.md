@@ -23,7 +23,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Features
 
-- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, manageable with `/memory show`, `/memory clear`, and `/memory regenerate`.
+- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos (optionally guided by attached images or a referenced video), continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, manageable with `/memory show`, `/memory clear`, and `/memory regenerate`.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
@@ -108,9 +108,10 @@ Create `.env` from `.env.example` and set the required values:
 DISCORD_BOT_TOKEN=your_discord_bot_token
 OPENAI_API_KEY=your_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
+GEMINI_API_KEY=your_google_ai_studio_key
 ```
 
-`OPENAI_BASE_URL` may point at OpenAI directly or at an OpenAI-compatible gateway such as LiteLLM.
+`OPENAI_BASE_URL` may point at OpenAI directly or at an OpenAI-compatible gateway such as LiteLLM. `GEMINI_API_KEY` is a Google AI Studio key used directly (not through the gateway) for video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research; leave it unset to disable those features.
 
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 

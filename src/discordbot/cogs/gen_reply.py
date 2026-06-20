@@ -16,7 +16,15 @@ import nextcord
 from nextcord import File, Embed, Message
 from pydantic import ValidationError
 from nextcord.ext import commands
+from google.genai.types import (
+    Image,
+    FileState,
+    GenerateVideosConfig,
+    VideoGenerationReferenceType,
+    VideoGenerationReferenceImage,
+)
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
@@ -42,10 +50,10 @@ from discordbot.cogs._gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
-    VIDEO_PROMPT,
     EFFORT_PROMPT,
     SUMMARY_PROMPT,
     IMAGE_REPLY_PROMPT,
+    VIDEO_REPLY_PROMPT,
     MEMORY_SELECT_PROMPT,
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
@@ -380,6 +388,24 @@ class ReplyGeneratorCogs(commands.Cog):
         return genai.Client(api_key=self.config.gemini_api_key)
 
     @cached_property
+    def gemini_client(self) -> genai.Client:
+        """The cached native Gemini generation client.
+
+        DIRECT to Google (`gemini_api_key`, no proxy): Veo video generation is inherently
+        Gemini, so the direct credential is the right one and the native `generate_videos`
+        API (operations poll + Files download) is used instead of the LiteLLM proxy. This is
+        a runtime path that does not ride the proxy, so it forgoes proxy-side cost/usage
+        tracking, like the YouTube Interactions and deep-research direct paths. The name is
+        deliberately generic (not `video_client`) so a future move of image generation onto
+        the native SDK can reuse it. A missing key does not fail construction; it surfaces at
+        the first generation call.
+
+        Returns:
+            A Gemini client for native media generation (currently Veo video).
+        """
+        return genai.Client(api_key=self.config.gemini_api_key)
+
+    @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
         """The cached text-to-speech engine for spoken QA replies.
 
@@ -557,64 +583,218 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
-    async def _handle_video_reply(self, message: Message, user_prompt: str) -> None:
-        """Handles video generation requests."""
+    async def _handle_video_reply(
+        self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
+    ) -> None:
+        """Generates a video with the native Gemini (Veo) SDK, delivers it, then replies about it.
+
+        Runs direct to Google via `generate_videos` (no proxy, no prompt director): the raw
+        request is the prompt, and any images on the message (plus the replied-to message,
+        mirroring the IMAGE route) ride as asset reference images (up to three). A referenced
+        video cannot be ingested by Veo, so it contributes its poster frame instead. The clip is
+        delivered first; then, best-effort, the bot watches the video it just made (uploaded to
+        the Gemini Files API) and streams a persona reply onto the same message, mirroring
+        `_handle_image_reply` and consuming the speculative `ReplyContext` (history + the
+        requester's memory) only after the video is on screen so its build overlaps generation.
+        """
         video_model = self.runtime_models.video_model
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
-        refined_prompt = await refine_generation_prompt(
-            enabled=self.config.refine_prompt_enabled,
-            client=self.client,
-            prompt_model=self.runtime_models.prompt_model,
-            user_prompt=user_prompt,
-            instructions=VIDEO_PROMPT,
-            end_user_id=message.author.name,
-        )
-        video = await self.client.videos.create(
-            model=video_model.name,
-            prompt=refined_prompt or "請依照訊息內容生成一段影片。",
-            extra_headers={"x-litellm-end-user-id": message.author.name},
-        )
-        logfire.debug(
-            "gen_reply video job created",
-            message_id=message.id,
-            video_id=video.id,
-            status=video.status,
-        )
-        async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
-            while video.status not in ("completed", "failed"):
-                await asyncio.sleep(5)
-                video = await self.client.videos.retrieve(
-                    video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
-                )
-                logfire.debug(
-                    "gen_reply video poll",
-                    message_id=message.id,
-                    video_id=video.id,
-                    status=video.status,
-                    poll_seconds=time.monotonic() - started,
-                )
-        if video.status != "completed":
-            logfire.warn(
-                "gen_reply video generation failed",
-                message_id=message.id,
-                video_id=video.id,
-                status=video.status,
-                error=str(video.error),
+        try:
+            source_messages = [message]
+            if message.reference and isinstance(message.reference.resolved, Message):
+                source_messages.append(message.reference.resolved)
+            gathered = await asyncio.gather(
+                *(
+                    self.input_builder.get_image_sources_with_mime(message=m)
+                    for m in source_messages
+                ),
+                *(
+                    self.input_builder.get_video_thumbnail_sources(message=m)
+                    for m in source_messages
+                ),
             )
-            raise RuntimeError(f"Video generation failed: {video.error}")
-        video_content = await self.client.videos.download_content(
-            video_id=video.id, extra_headers={"x-litellm-end-user-id": message.author.name}
+            images = [pair for group in gathered for pair in group]
+            reference_images = [
+                VideoGenerationReferenceImage(
+                    image=Image(image_bytes=raw, mime_type=mime),
+                    reference_type=VideoGenerationReferenceType.ASSET,
+                )
+                for raw, mime in images[:3]
+            ]
+            # Veo 3.1 requires duration_seconds=8 at 1080p and with reference images, so it is
+            # pinned (4/6/8 are only selectable at 720p); audio rides on by default. Only fields
+            # this model accepts are set: enhance_prompt 400s on veo-3.1-generate-preview, and
+            # fps / seed / generate_audio / compression_quality are Vertex-only and 400 here too.
+            video_config = GenerateVideosConfig(
+                number_of_videos=1,
+                aspect_ratio="16:9",
+                resolution="1080p",
+                duration_seconds=8,
+                reference_images=reference_images or None,
+            )
+            operation = await self.gemini_client.aio.models.generate_videos(
+                model=video_model.name,
+                prompt=user_prompt or "請依照訊息內容生成一段影片。",
+                config=video_config,
+            )
+            logfire.debug(
+                "gen_reply video job created",
+                message_id=message.id,
+                operation=operation.name,
+                reference_images=len(images),
+            )
+            async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
+                while not operation.done:
+                    await asyncio.sleep(5)
+                    operation = await self.gemini_client.aio.operations.get(operation=operation)
+                    logfire.debug(
+                        "gen_reply video poll",
+                        message_id=message.id,
+                        operation=operation.name,
+                        done=operation.done,
+                        poll_seconds=time.monotonic() - started,
+                    )
+            if operation.error or not (operation.response and operation.response.generated_videos):
+                logfire.warn(
+                    "gen_reply video generation failed",
+                    message_id=message.id,
+                    operation=operation.name,
+                    error=str(operation.error),
+                )
+                raise RuntimeError(f"Video generation failed: {operation.error}")
+            generated = operation.response.generated_videos[0]
+            if generated.video is None or generated.video.uri is None:
+                raise RuntimeError(f"Video generation returned no video for {operation.name}")
+            video_bytes = await self.gemini_client.aio.files.download(file=generated.video.uri)
+            video_file = File(fp=BytesIO(video_bytes), filename="generated.mp4")
+            reply = await message.reply(content=f"{message.author.mention}", file=video_file)
+            logfire.info(
+                "gen_reply video delivered",
+                message_id=message.id,
+                operation=operation.name,
+                total_elapsed_seconds=time.monotonic() - started,
+                bytes=len(video_bytes),
+            )
+        except Exception:
+            # Generation failing IS a real error and stays on the outer error path, but the
+            # speculative context must not leak when we bail before consuming it.
+            await _discard_task(task=context_task)
+            raise
+
+        # The video is already delivered, so from here a failure must never surface as an error:
+        # the conversational reply is best-effort and leaves the delivered video untouched.
+        await self._reply_about_video(
+            message=message, reply=reply, video_bytes=video_bytes, context_task=context_task
         )
-        video_file = File(fp=BytesIO(video_content.content), filename="generated.mp4")
-        await message.reply(content=f"{message.author.mention}", file=video_file)
-        logfire.info(
-            "gen_reply video delivered",
-            message_id=message.id,
-            video_id=video.id,
-            total_elapsed_seconds=time.monotonic() - started,
-            bytes=len(video_content.content),
-        )
+
+    async def _upload_video_for_reply(self, data: bytes) -> str | None:
+        """Uploads a generated video to the Gemini Files API, polling to ACTIVE; None on failure.
+
+        Mirrors the attachment uploader's ACTIVE poll: a fresh Files API upload reports a
+        deprecated `uploaded` status through the proxy, so it is polled to ACTIVE here on the
+        direct client before the reply references it. The bound is generous because video
+        processing is slower than an image's; the reply references the full `uri` through the
+        proxy, exactly like the attachment path.
+        """
+        activation_timeout_seconds = 60.0
+        poll_interval_seconds = 1.0
+        try:
+            uploaded = await self.gemini_client.aio.files.upload(
+                file=BytesIO(data),
+                config={"mime_type": "video/mp4", "display_name": "generated.mp4"},
+            )
+            file_name = uploaded.name
+            if file_name is None:
+                return None
+            deadline = time.monotonic() + activation_timeout_seconds
+            while uploaded.state == FileState.PROCESSING:
+                if time.monotonic() >= deadline:
+                    return None
+                await asyncio.sleep(poll_interval_seconds)
+                uploaded = await self.gemini_client.aio.files.get(name=file_name)
+            if uploaded.state != FileState.ACTIVE:
+                return None
+        except Exception:
+            logfire.warn("failed to upload generated video for reply", _exc_info=True)
+            return None
+        return uploaded.uri
+
+    async def _reply_about_video(
+        self,
+        message: Message,
+        reply: Message,
+        video_bytes: bytes,
+        context_task: "asyncio.Task[ReplyContext]",
+    ) -> None:
+        """Best-effort: watches the just-made video and streams a persona reply onto its message.
+
+        Mirrors `_handle_image_reply`'s post-delivery reply but feeds the generated video as an
+        uploaded Files API `input_file` (video cannot be inlined). Injects only the selected user
+        memory, never the server memory block. Any failure leaves the delivered video untouched.
+        """
+        try:
+            file_uri = await self._upload_video_for_reply(data=video_bytes)
+            if file_uri is None:
+                await _discard_task(task=context_task)
+                return
+            video_reply_model = self.runtime_models.video_reply_model
+            context = await context_task
+            # Mirror the answer path's order (history, memory, reference, current), but inject
+            # only the selected user memory, never the server memory block.
+            response_input: ResponseInputParam = [*context.hist_messages]
+            if context.memory_block is not None:
+                response_input.append(context.memory_block)
+            response_input.extend(context.reference_messages)
+            response_input.extend(context.current_message)
+            # The generated video is the focus, appended last as an uploaded Files API file
+            # right after the request it answers.
+            response_input.append(
+                EasyInputMessageParam(
+                    role="user",
+                    content=[
+                        ResponseInputTextParam(
+                            text=(
+                                "This is the video you just made for them in response to the "
+                                "request above. Reply to them about it."
+                            ),
+                            type="input_text",
+                        ),
+                        ResponseInputFileParam(type="input_file", file_id=file_uri),
+                    ],
+                )
+            )
+            # Stream onto the already-sent video reply: pre-seeding `reply` makes the streamer
+            # edit that message (its content edits keep the attached video). The selection-call
+            # usage and memory labels are seeded so the footer matches the QA path.
+            streamer = ResponseStreamer(
+                message=message,
+                reply=reply,
+                memory_lookups=context.memory_labels,
+                input_tokens=context.selection_input_tokens,
+                output_tokens=context.selection_output_tokens,
+                model_effort=video_reply_model.effort,
+            )
+            with logfire.span("gen_reply video reply", model=video_reply_model.name):
+                responses = await self.client.responses.create(
+                    model=video_reply_model.name,
+                    instructions=_build_runtime_instructions(
+                        system_prompt=VIDEO_REPLY_PROMPT, message=message
+                    ),
+                    input=response_input,
+                    reasoning=video_reply_model.reasoning,
+                    stream=True,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
+                await streamer.stream(responses=responses)
+        except Exception:
+            logfire.warn(
+                "Video reply generation failed; leaving the video without a reply",
+                message_id=message.id,
+                _exc_info=True,
+            )
 
     async def _handle_image_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
@@ -1564,17 +1744,22 @@ class ReplyGeneratorCogs(commands.Cog):
                         message=message, user_prompt=user_prompt, context_task=image_context_task
                     )
                 elif route.decision == "VIDEO":
-                    await _discard_task(task=prep_task)
-                    prep_task = None
                     await _discard_task(task=effort_task)
                     effort_task = None
-                    await _discard_task(task=parts_task)
-                    parts_task = None
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
                     reactions.advance(emoji="<:video:1517560671913377842>")
-                    await self._handle_video_reply(message=message, user_prompt=user_prompt)
+                    # The video reply now watches the generated clip and answers with
+                    # conversation history + the requester's memory, so the speculative context
+                    # is consumed, not discarded; the handler awaits it only after the video is
+                    # on screen so the build overlaps generation. `parts_task` is left for the
+                    # finally backstop, exactly as the IMAGE route does (prep shields it).
+                    video_context_task = prep_task
+                    prep_task = None
+                    await self._handle_video_reply(
+                        message=message, user_prompt=user_prompt, context_task=video_context_task
+                    )
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None

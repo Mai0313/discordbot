@@ -19,7 +19,7 @@ uv sync --all-groups
 cp .env.example .env
 ```
 
-Fill in the Discord and OpenAI-compatible endpoint values in `.env`.
+Fill in the Discord and OpenAI-compatible endpoint values in `.env`. Set `GEMINI_API_KEY` (a Google AI Studio key) to enable the direct-to-Google features: video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research.
 
 Run the bot:
 

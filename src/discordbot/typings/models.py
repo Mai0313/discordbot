@@ -103,7 +103,8 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_handle_video_reply`.
 
         Returns:
-            Model settings used with `videos.create`.
+            Model settings used with the native Gemini `generate_videos` API (a bare Veo model
+            name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
         video_model = ModelSettings(name="veo-3.1-generate-preview")
         return video_model
@@ -176,6 +177,22 @@ class RuntimeModelCatalog(BaseModel):
             rather than coldly describing it. `effort="low"` keeps it snappy yet still
             emits a reasoning summary, so the streaming reasoning preview shows; the image is
             already on screen, so this text streams in after with no added image latency.
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="low")
+
+    @property
+    def video_reply_model(self) -> ModelSettings:
+        """The model settings for the conversational reply that rides a generated video.
+
+        Callers: `_handle_video_reply`.
+
+        Returns:
+            Flash (which ingests video), mirroring `image_reply_model`: it watches the
+            generated video the bot just made, reads conversation history and the selected
+            user memory, and answers in persona holding the clip rather than coldly
+            describing it. `effort="low"` keeps it snappy yet still emits a reasoning summary;
+            the video is already on screen, so this text streams in after with no added video
+            latency.
         """
         return ModelSettings(name="gemini-flash-latest", effort="low")
 
