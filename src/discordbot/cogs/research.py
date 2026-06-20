@@ -511,8 +511,11 @@ class ResearchCogs(commands.Cog):
             if max_tier
             else self.runtime_models.deep_research_model.name
         )
+        # Atomic claim: a double-clicked escalation (or both tiers at once) fires two callbacks
+        # before the view-removal edit lands; only the one that wins done->planning starts a plan.
+        if not await db.claim_planning(thread_id=thread.id):
+            return
         self._active_threads.add(thread.id)
-        await db.set_phase(thread_id=thread.id, phase="planning")
         owner_mention = f"<@{view.owner_id}>"
         self._spawn(self._run_planning(thread=thread, owner_mention=owner_mention, agent=agent))
 

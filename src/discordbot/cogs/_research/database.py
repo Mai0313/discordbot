@@ -268,6 +268,24 @@ async def claim_research(*, thread_id: int) -> bool:
         return bool(result.rowcount and result.rowcount > 0)
 
 
+async def claim_planning(*, thread_id: int) -> bool:
+    """Atomically claims a finished report for escalation (done -> planning).
+
+    Returns True only for the call that made the transition, so a double-clicked escalation
+    button spawns at most one planning interaction instead of competing paid plans.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(ResearchSessionRow)
+            .where(ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "done")
+            .values(phase="planning", updated_at=now)
+        )
+        await session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
+
+
 async def get_session(*, thread_id: int) -> PersistentResearchSession | None:
     """Reads one session row, or `None` when the thread is not tracked."""
     await _ensure_schema()
