@@ -6,6 +6,7 @@ import base64
 from nextcord import AllowedMentions
 
 from discordbot.cogs import research as research_cog
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import agent
 from discordbot.cogs._research import database as rdb
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
@@ -164,6 +165,18 @@ def test_owner_id_from_mention_parses_digits() -> None:
     assert research_cog._owner_id_from_mention(mention="<@123456789>") == 123456789
     assert research_cog._owner_id_from_mention(mention="<@!42>") == 42
     assert research_cog._owner_id_from_mention(mention="nobody") == 0
+
+
+def test_deep_research_available_requires_enabled_and_key() -> None:
+    config = LLMConfig()
+    config.deep_research_enabled = True
+    config.gemini_api_key = "AIza-key"
+    assert config.deep_research_available is True
+    config.gemini_api_key = "   "
+    assert config.deep_research_available is False
+    config.gemini_api_key = "AIza-key"
+    config.deep_research_enabled = False
+    assert config.deep_research_available is False
 
 
 def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
