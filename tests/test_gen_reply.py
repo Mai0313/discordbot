@@ -9,6 +9,7 @@ import base64
 from typing import TYPE_CHECKING, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 
 from PIL import Image
 import httpx
@@ -23,6 +24,7 @@ from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _can_launch_research,
     _build_runtime_instructions,
 )
 from discordbot.typings.models import (
@@ -4230,3 +4232,12 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
     assert "甲" in (blocks.get(1) or "")
     assert "乙" in (blocks.get(2) or "")
     assert len(context.memory_labels) == 2
+
+
+def test_can_launch_research_requires_guild_text_channel() -> None:
+    text = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.TextChannel))
+    assert _can_launch_research(message=text) is True  # type: ignore[arg-type]  # SimpleNamespace stub
+    thread = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.Thread))
+    assert _can_launch_research(message=thread) is False  # type: ignore[arg-type]  # SimpleNamespace stub
+    dm = SimpleNamespace(guild=None, channel=MagicMock(spec=nextcord.TextChannel))
+    assert _can_launch_research(message=dm) is False  # type: ignore[arg-type]  # SimpleNamespace stub

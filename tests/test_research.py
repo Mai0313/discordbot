@@ -295,6 +295,50 @@ async def test_claim_research_is_idempotent_and_clears_stale_id(
     assert await rdb.claim_research(thread_id=30) is False
 
 
+async def test_claim_planning_is_idempotent(research_isolated_db: None) -> None:
+    await rdb.upsert_session(
+        thread_id=50,
+        owner_id=1,
+        channel_id=1,
+        guild_id=1,
+        source_message_id=1,
+        agent="antigravity-preview-05-2026",
+        interaction_id="int_done",
+        brief="b",
+        phase="done",
+    )
+    assert await rdb.claim_planning(thread_id=50) is True
+    claimed = await rdb.get_session(thread_id=50)
+    assert claimed is not None
+    assert claimed.phase == "planning"
+    # A second escalation click finds the row already planning and loses.
+    assert await rdb.claim_planning(thread_id=50) is False
+
+
+async def test_cancel_stale_plan_matches_current_interaction(research_isolated_db: None) -> None:
+    await rdb.upsert_session(
+        thread_id=51,
+        owner_id=1,
+        channel_id=1,
+        guild_id=1,
+        source_message_id=1,
+        agent="deep-research-preview-04-2026",
+        interaction_id="plan_v2",
+        brief="b",
+        phase="planning",
+    )
+    # A superseded view (an older plan interaction id) is a no-op, leaving the fresh plan intact.
+    assert await rdb.cancel_stale_plan(thread_id=51, plan_interaction_id="plan_v1") is False
+    still_planning = await rdb.get_session(thread_id=51)
+    assert still_planning is not None
+    assert still_planning.phase == "planning"
+    # The current plan's expired view cancels it and frees the owner's slot.
+    assert await rdb.cancel_stale_plan(thread_id=51, plan_interaction_id="plan_v2") is True
+    cancelled = await rdb.get_session(thread_id=51)
+    assert cancelled is not None
+    assert cancelled.phase == "cancelled"
+
+
 async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: None) -> None:
     for thread_id, phase in ((40, "planning"), (41, "researching"), (42, "planning")):
         await rdb.upsert_session(
