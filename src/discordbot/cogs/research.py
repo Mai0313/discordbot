@@ -102,6 +102,9 @@ class ResearchCogs(commands.Cog):
         # Thread ids the cog is actively driving; `gen_reply` checks this so QA does not
         # double-handle a message typed inside a research thread.
         self._active_threads: set[int] = set()
+        # Thread ids whose modify flow is awaiting owner feedback; guards `on_modify_plan` against a
+        # double-click installing two `wait_for` listeners (competing refine plans).
+        self._pending_modify: set[int] = set()
         self._resume_started = False
 
     @cached_property
@@ -597,7 +600,7 @@ class ResearchCogs(commands.Cog):
         for chunk in split_report(text=plan.plan_text.strip() or "(沒有收到計畫內容)"):
             await self._safe_send(thread=thread, content=chunk)
         owner_id = _owner_id_from_mention(mention=owner_mention)
-        await self._safe_send(
+        posted = await self._safe_send(
             thread=thread,
             content=f"{owner_mention} 📋 接受就開始研究(會花時間與成本),或點「修改計畫」直接打字告訴我要調整什麼",
             view=PlanApprovalView(
@@ -608,6 +611,32 @@ class ResearchCogs(commands.Cog):
                 thread_id=thread.id,
             ),
             allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+        )
+        if posted is None:
+            # The approval view never reached Discord, so no buttons exist and no view timeout is
+            # registered to free the slot. Cancel this plan and release the owner instead of
+            # blocking them behind an un-actable `planning` row until a restart sweep.
+            await self._cancel_unposted_plan(
+                thread=thread, owner_mention=owner_mention, plan_interaction_id=plan.interaction_id
+            )
+
+    async def _cancel_unposted_plan(
+        self, *, thread: "Thread", owner_mention: str, plan_interaction_id: str
+    ) -> None:
+        """Frees the owner when a plan's approval view could not be posted (best-effort).
+
+        Guarded on the plan's `interaction_id` (via `cancel_stale_plan`) so it only cancels the
+        plan that failed to post, never a fresher one.
+        """
+        if not await db.cancel_stale_plan(
+            thread_id=thread.id, plan_interaction_id=plan_interaction_id
+        ):
+            return
+        self._active_threads.discard(thread.id)
+        await self._post_failure(
+            thread=thread,
+            owner_mention=owner_mention,
+            reason="計畫送不出去,先收起來了,要的話重新發起一次",
         )
 
     async def on_plan_timeout(
@@ -641,8 +670,12 @@ class ResearchCogs(commands.Cog):
         if thread is None:
             return
         # Atomic claim: a double-click can fire two callbacks before the view-removal edit lands, so
-        # only the call that wins the planning->researching transition spawns the paid run.
-        if not await db.claim_research(thread_id=thread.id):
+        # only the call that wins the planning->researching transition spawns the paid run. Guarded
+        # on the view's plan interaction id so a stale approval view (left after a refine) cannot
+        # claim the row and launch research from its superseded plan.
+        if not await db.claim_research(
+            thread_id=thread.id, plan_interaction_id=view.plan_interaction_id
+        ):
             return
         self._active_threads.add(thread.id)
         self._spawn(
@@ -656,50 +689,70 @@ class ResearchCogs(commands.Cog):
 
     async def on_modify_plan(self, *, interaction: Interaction, view: PlanApprovalView) -> None:
         """Modify button: waits for the owner to type changes, then re-plans."""
-        await interaction.response.send_message(
-            content="好,直接在這個 thread 打你想調整的地方,我會重新規劃(10 分鐘內回覆有效)"
-        )
-        with contextlib.suppress(Exception):
-            await interaction.message.edit(view=None)
         thread = interaction.channel
         if thread is None:
             return
-
-        def _is_owner_reply(candidate: "Message") -> bool:
-            return (
-                candidate.channel.id == thread.id
-                and candidate.author.id == view.owner_id
-                and not candidate.author.bot
-            )
-
-        try:
-            reply = await self.bot.wait_for(
-                "message", check=_is_owner_reply, timeout=MODIFY_WAIT_TIMEOUT_SECONDS
-            )
-        except TimeoutError:
-            # The modify click removed the approval buttons; the plan is still valid (the row stays
-            # `planning`), so repost a fresh view rather than leaving the owner with no way forward.
-            await self._safe_send(
-                thread=thread,
-                content="等太久了,要的話用下面的按鈕再試一次",
-                view=PlanApprovalView(
-                    cog=self,
-                    owner_id=view.owner_id,
-                    plan_interaction_id=view.plan_interaction_id,
-                    agent=view.agent,
-                    thread_id=thread.id,
-                ),
-            )
+        # Idempotency: a double-click would install two `wait_for` listeners, so one feedback
+        # message would spawn competing `_run_refine` plans against the same interaction. Ignore a
+        # second click while one modify is already awaiting this thread's feedback. The membership
+        # check and the add share no `await`, so two clicks cannot both pass on the single loop.
+        if thread.id in self._pending_modify:
+            with contextlib.suppress(Exception):
+                await interaction.response.defer()
             return
-        self._spawn(
-            self._run_refine(
-                thread=thread,
-                owner_mention=f"<@{view.owner_id}>",
-                agent=view.agent,
-                previous_interaction_id=view.plan_interaction_id,
-                feedback=reply.content,
+        self._pending_modify.add(thread.id)
+        try:
+            await interaction.response.send_message(
+                content="好,直接在這個 thread 打你想調整的地方,我會重新規劃(10 分鐘內回覆有效)"
             )
-        )
+            with contextlib.suppress(Exception):
+                await interaction.message.edit(view=None)
+
+            def _is_owner_reply(candidate: "Message") -> bool:
+                return (
+                    candidate.channel.id == thread.id
+                    and candidate.author.id == view.owner_id
+                    and not candidate.author.bot
+                )
+
+            try:
+                reply = await self.bot.wait_for(
+                    "message", check=_is_owner_reply, timeout=MODIFY_WAIT_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                # The modify click removed the approval buttons; the plan is still valid (the row
+                # stays `planning`), so repost a fresh view rather than leaving the owner stuck.
+                reposted = await self._safe_send(
+                    thread=thread,
+                    content="等太久了,要的話用下面的按鈕再試一次",
+                    view=PlanApprovalView(
+                        cog=self,
+                        owner_id=view.owner_id,
+                        plan_interaction_id=view.plan_interaction_id,
+                        agent=view.agent,
+                        thread_id=thread.id,
+                    ),
+                )
+                if reposted is None:
+                    # The fresh view could not be posted either, so no buttons or timeout exist to
+                    # free the slot; cancel the plan and release the owner.
+                    await self._cancel_unposted_plan(
+                        thread=thread,
+                        owner_mention=f"<@{view.owner_id}>",
+                        plan_interaction_id=view.plan_interaction_id,
+                    )
+                return
+            self._spawn(
+                self._run_refine(
+                    thread=thread,
+                    owner_mention=f"<@{view.owner_id}>",
+                    agent=view.agent,
+                    previous_interaction_id=view.plan_interaction_id,
+                    feedback=reply.content,
+                )
+            )
+        finally:
+            self._pending_modify.discard(thread.id)
 
     async def _run_refine(
         self,
@@ -790,12 +843,16 @@ class ResearchCogs(commands.Cog):
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
+        thread = await self._fetch_thread(thread_id=session.thread_id)
+        owner_mention = f"<@{session.owner_id}>"
+        # No interaction id means the row was claimed for research but the bot restarted before the
+        # real run id was stored; there is nothing to resume. Tell the thread so the owner is not
+        # left staring at the old `Researching...` message forever.
         if session.interaction_id is None:
             await db.set_phase(thread_id=session.thread_id, phase="failed")
             self._active_threads.discard(session.thread_id)
+            await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
-        thread = await self._fetch_thread(thread_id=session.thread_id)
-        owner_mention = f"<@{session.owner_id}>"
         try:
             result = await resume_research(
                 client=self.interactions_client,
@@ -806,6 +863,7 @@ class ResearchCogs(commands.Cog):
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
             await db.set_phase(thread_id=session.thread_id, phase="failed")
             self._active_threads.discard(session.thread_id)
+            await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
         if thread is None:
             await db.set_phase(
@@ -821,6 +879,16 @@ class ResearchCogs(commands.Cog):
             status=None,
             offer_escalation="deep-research" not in session.agent,
         )
+
+    async def _notify_resume_failed(self, *, thread: "Thread | None", owner_id: int) -> None:
+        """Tells a thread its interrupted research could not be resumed after a restart (best-effort)."""
+        if thread is None:
+            return
+        with contextlib.suppress(Exception):
+            await thread.send(
+                content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+            )
 
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
         """Returns the thread by id from cache or a REST fetch, or None when gone."""

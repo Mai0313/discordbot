@@ -83,6 +83,50 @@ def test_deep_research_agent_config_shape() -> None:
     assert run_config["collaborative_planning"] is False
 
 
+class _RecordingInteractions:
+    """Records the kwargs of the last `create` and settles `get` immediately as completed."""
+
+    def __init__(self) -> None:
+        self.create_kwargs: dict[str, object] = {}
+
+    async def create(self, **kwargs: object) -> SimpleNamespace:
+        self.create_kwargs = kwargs
+        return SimpleNamespace(id="plan_x")
+
+    async def get(self, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=kwargs.get("id"), status="completed", output_text="a plan", steps=[]
+        )
+
+
+def _recording_client() -> SimpleNamespace:
+    return SimpleNamespace(aio=SimpleNamespace(interactions=_RecordingInteractions()))
+
+
+async def test_start_plan_passes_research_tools() -> None:
+    client = _recording_client()
+    plan = await agent.start_plan(
+        client=client, agent="deep-research-preview-04-2026", brief="b", system_instruction="sys"
+    )
+    # Planning must pass the restricted search/url tool set so the agent default (which can include
+    # code execution) cannot leak raw tool-call text into the plan.
+    assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
+    assert plan.status == "completed"
+
+
+async def test_refine_plan_passes_research_tools() -> None:
+    client = _recording_client()
+    plan = await agent.refine_plan(
+        client=client,
+        agent="deep-research-preview-04-2026",
+        previous_interaction_id="plan_v1",
+        feedback="tighten the scope",
+        system_instruction="sys",
+    )
+    assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
+    assert plan.status == "completed"
+
+
 def test_to_result_extracts_text_image_and_usage() -> None:
     image_b64 = base64.b64encode(b"PNGBYTES").decode()
     interaction = SimpleNamespace(
@@ -299,13 +343,36 @@ async def test_claim_research_is_idempotent_and_clears_stale_id(
         brief="b",
         phase="planning",
     )
-    assert await rdb.claim_research(thread_id=30) is True
+    assert await rdb.claim_research(thread_id=30, plan_interaction_id="plan_1") is True
     session = await rdb.get_session(thread_id=30)
     assert session is not None
     assert session.phase == "researching"
     assert session.interaction_id is None
     # A second (double-click) claim loses: the row is no longer in `planning`.
-    assert await rdb.claim_research(thread_id=30) is False
+    assert await rdb.claim_research(thread_id=30, plan_interaction_id="plan_1") is False
+
+
+async def test_claim_research_rejects_stale_plan_interaction(research_isolated_db: None) -> None:
+    await rdb.upsert_session(
+        thread_id=31,
+        owner_id=1,
+        channel_id=1,
+        guild_id=1,
+        source_message_id=1,
+        agent="deep-research-preview-04-2026",
+        interaction_id="plan_v2",
+        brief="b",
+        phase="planning",
+    )
+    # A stale approval view (its plan interaction was superseded by a refine) loses the claim, so
+    # research never launches from the old plan; the row stays `planning` for the fresh view.
+    assert await rdb.claim_research(thread_id=31, plan_interaction_id="plan_v1") is False
+    session = await rdb.get_session(thread_id=31)
+    assert session is not None
+    assert session.phase == "planning"
+    assert session.interaction_id == "plan_v2"
+    # The current plan's view wins the claim.
+    assert await rdb.claim_research(thread_id=31, plan_interaction_id="plan_v2") is True
 
 
 async def test_claim_planning_is_idempotent(research_isolated_db: None) -> None:

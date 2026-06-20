@@ -245,7 +245,7 @@ async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
         await session.commit()
 
 
-async def claim_research(*, thread_id: int) -> bool:
+async def claim_research(*, thread_id: int, plan_interaction_id: str) -> bool:
     """Atomically claims a planning row for the full research run.
 
     Transitions `planning` -> `researching` and clears the stale plan `interaction_id` in one
@@ -253,6 +253,10 @@ async def claim_research(*, thread_id: int) -> bool:
     「接受並開始」 clicks launch at most one paid run. Clearing the id means a restart in the
     window before the real run id is stored cannot resume the completed plan and deliver its
     text as a report (`list_resumable` keeps it, but `_resume_one` sees no id and fails it).
+
+    Guarded on `interaction_id` so only the plan the clicked button belongs to can be claimed: a
+    stale approval view left over from a refine flow (its `plan_interaction_id` no longer matches
+    the row) loses the claim instead of launching research from the superseded plan.
     """
     await _ensure_schema()
     now = _database_now()
@@ -260,7 +264,9 @@ async def claim_research(*, thread_id: int) -> bool:
         result = await session.execute(
             statement=update(ResearchSessionRow)
             .where(
-                ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "planning"
+                ResearchSessionRow.thread_id == thread_id,
+                ResearchSessionRow.phase == "planning",
+                ResearchSessionRow.interaction_id == plan_interaction_id,
             )
             .values(phase="researching", interaction_id=None, updated_at=now)
         )

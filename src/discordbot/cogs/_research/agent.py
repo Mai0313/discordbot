@@ -237,6 +237,7 @@ async def start_plan(
         input=brief,
         system_instruction=system_instruction,
         agent_config=_deep_research_agent_config(collaborative_planning=True),
+        tools=RESEARCH_TOOLS,
         background=True,
         store=True,
     )
@@ -269,6 +270,7 @@ async def refine_plan(
         previous_interaction_id=previous_interaction_id,
         system_instruction=system_instruction,
         agent_config=_deep_research_agent_config(collaborative_planning=True),
+        tools=RESEARCH_TOOLS,
         background=True,
         store=True,
     )
