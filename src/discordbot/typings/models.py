@@ -105,7 +105,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `videos.create`.
         """
-        video_model = ModelSettings(name="veo-3.1-fast-generate-preview")
+        video_model = ModelSettings(name="veo-3.1-generate-preview")
         return video_model
 
     @property
