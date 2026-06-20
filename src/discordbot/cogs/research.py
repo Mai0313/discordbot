@@ -595,8 +595,11 @@ class ResearchCogs(commands.Cog):
         thread = interaction.channel
         if thread is None:
             return
+        # Atomic claim: a double-click can fire two callbacks before the view-removal edit lands, so
+        # only the call that wins the planning->researching transition spawns the paid run.
+        if not await db.claim_research(thread_id=thread.id):
+            return
         self._active_threads.add(thread.id)
-        await db.set_phase(thread_id=thread.id, phase="researching")
         self._spawn(
             self._run_deep_research(
                 thread=thread,

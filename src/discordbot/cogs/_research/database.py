@@ -245,6 +245,30 @@ async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
         await session.commit()
 
 
+async def claim_research(*, thread_id: int) -> bool:
+    """Atomically claims a planning row for the full research run.
+
+    Transitions `planning` -> `researching` and clears the stale plan `interaction_id` in one
+    UPDATE. Returns True only for the call that actually made the transition, so two fast
+    「接受並開始」 clicks launch at most one paid run. Clearing the id means a restart in the
+    window before the real run id is stored cannot resume the completed plan and deliver its
+    text as a report (`list_resumable` keeps it, but `_resume_one` sees no id and fails it).
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(ResearchSessionRow)
+            .where(
+                ResearchSessionRow.thread_id == thread_id,
+                ResearchSessionRow.phase == "planning",
+            )
+            .values(phase="researching", interaction_id=None, updated_at=now)
+        )
+        await session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
+
+
 async def get_session(*, thread_id: int) -> PersistentResearchSession | None:
     """Reads one session row, or `None` when the thread is not tracked."""
     await _ensure_schema()
