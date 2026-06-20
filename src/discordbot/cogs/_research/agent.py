@@ -38,6 +38,10 @@ if TYPE_CHECKING:
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 # The collaborative-planning call returns a short plan fast (~16s observed), so poll tighter.
 PLAN_POLL_INTERVAL_SECONDS = 5.0
+# A transient get() error mid-research (e.g. a server 504 gateway timeout) is retried, not fatal;
+# only this many CONSECUTIVE failures give up. There is no wall-clock timeout: the Gemini SDK
+# bounds each request and the agent settles server-side (Deep Research caps at 60 min).
+MAX_CONSECUTIVE_POLL_ERRORS = 30
 
 # Reports progress to the thread: (latest thought summary or None, elapsed seconds).
 type ProgressCallback = Callable[[str | None, float], Awaitable[None]]
@@ -148,24 +152,36 @@ async def _poll_until_terminal(
     client: genai.Client,
     interaction_id: str,
     on_progress: "ProgressCallback | None",
-    timeout_seconds: float,
     poll_interval_seconds: float,
 ) -> object:
-    """Polls `interactions.get` until the status leaves `in_progress`, within the bound.
+    """Polls `interactions.get` until the status leaves `in_progress`.
 
-    Raises `TimeoutError` if the interaction does not settle inside `timeout_seconds`.
+    No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
+    transient get() error mid-research is retried so one 504 does not kill a long run; it gives
+    up only after `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures (re-raising the last error).
     """
     started = time.monotonic()
-    async with asyncio.timeout(delay=timeout_seconds):
-        interaction = await client.aio.interactions.get(id=interaction_id)
-        while getattr(interaction, "status", None) == "in_progress":
-            await asyncio.sleep(poll_interval_seconds)
+    consecutive_errors = 0
+    while True:
+        try:
             interaction = await client.aio.interactions.get(id=interaction_id)
-            if on_progress is not None:
-                await on_progress(
-                    _latest_thought(interaction=interaction), time.monotonic() - started
-                )
-    return interaction
+        except Exception:
+            consecutive_errors += 1
+            logfire.warn(
+                "research poll error; retrying",
+                interaction_id=interaction_id,
+                consecutive_errors=consecutive_errors,
+            )
+            if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
+                raise
+            await asyncio.sleep(poll_interval_seconds)
+            continue
+        consecutive_errors = 0
+        if getattr(interaction, "status", None) != "in_progress":
+            return interaction
+        if on_progress is not None:
+            await on_progress(_latest_thought(interaction=interaction), time.monotonic() - started)
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def start_antigravity(
@@ -193,12 +209,7 @@ async def start_antigravity(
 
 
 async def start_plan(
-    *,
-    client: genai.Client,
-    agent: str,
-    brief: str,
-    system_instruction: str,
-    timeout_seconds: float,
+    *, client: genai.Client, agent: str, brief: str, system_instruction: str
 ) -> ResearchPlan:
     """Asks Deep Research for a proposed research plan (collaborative planning)."""
     interaction = await client.aio.interactions.create(
@@ -214,7 +225,6 @@ async def start_plan(
         client=client,
         interaction_id=interaction_id,
         on_progress=None,
-        timeout_seconds=timeout_seconds,
         poll_interval_seconds=PLAN_POLL_INTERVAL_SECONDS,
     )
     return ResearchPlan(
@@ -224,14 +234,13 @@ async def start_plan(
     )
 
 
-async def refine_plan(  # noqa: PLR0913 -- plan-refine inputs are all per-call
+async def refine_plan(
     *,
     client: genai.Client,
     agent: str,
     previous_interaction_id: str,
     feedback: str,
     system_instruction: str,
-    timeout_seconds: float,
 ) -> ResearchPlan:
     """Refines a prior plan with the owner's feedback, staying in planning mode."""
     interaction = await client.aio.interactions.create(
@@ -248,7 +257,6 @@ async def refine_plan(  # noqa: PLR0913 -- plan-refine inputs are all per-call
         client=client,
         interaction_id=interaction_id,
         on_progress=None,
-        timeout_seconds=timeout_seconds,
         poll_interval_seconds=PLAN_POLL_INTERVAL_SECONDS,
     )
     return ResearchPlan(
@@ -277,18 +285,13 @@ async def start_deep_research(
 
 
 async def resume_research(
-    *,
-    client: genai.Client,
-    interaction_id: str,
-    on_progress: "ProgressCallback | None",
-    timeout_seconds: float,
+    *, client: genai.Client, interaction_id: str, on_progress: "ProgressCallback | None"
 ) -> ResearchResult:
     """Re-enters the poll loop for an already-running interaction (restart resume)."""
     final = await _poll_until_terminal(
         client=client,
         interaction_id=interaction_id,
         on_progress=on_progress,
-        timeout_seconds=timeout_seconds,
         poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
     )
     return _to_result(interaction=final)

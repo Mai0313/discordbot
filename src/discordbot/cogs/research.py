@@ -21,13 +21,14 @@ import contextlib
 from google import genai
 import logfire
 import nextcord
-from nextcord import Locale, Interaction, SlashOption
+from nextcord import Embed, Locale, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import database as db
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
+from discordbot.utils.reactions import update_reaction
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.cogs._research.agent import (
     ResearchPlan,
@@ -41,6 +42,7 @@ from discordbot.cogs._research.agent import (
 from discordbot.cogs._research.views import PlanApprovalView, ResultEscalationView
 from discordbot.cogs._research.prompts import RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
+from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
     from typing import Any
@@ -48,22 +50,20 @@ if TYPE_CHECKING:
 
     from nextcord import Thread, Message
 
-# Antigravity is a one-shot agent loop (minutes); Deep Research can run up to Google's 60-min max.
-ANTIGRAVITY_TIMEOUT_SECONDS = 1200.0
-DEEP_RESEARCH_TIMEOUT_SECONDS = 3600.0
-# Collaborative planning returns a short plan fast (~16s observed); keep a tolerant bound.
-PLAN_TIMEOUT_SECONDS = 300.0
 # How long the modify flow waits for the owner to type their changes in the thread.
 MODIFY_WAIT_TIMEOUT_SECONDS = 600.0
 # Discord thread names cap at 100 chars; keep margin.
 THREAD_NAME_MAX = 90
+# The bot's `dino` app emoji, reacted onto the source message when deep research is launched so
+# the activation reads as distinct from the normal QA pipeline reactions.
+DINO_EMOJI = "<:dino:1517560319281594570>"
 
 
 def _thread_name(*, brief: str) -> str:
     """Derives a short thread title from the research brief."""
     first_line = next((line.strip() for line in brief.splitlines() if line.strip()), "")
     title = first_line or "深度研究"
-    return f"🔬 {title[:THREAD_NAME_MAX]}"
+    return title[:THREAD_NAME_MAX]
 
 
 def _tier_label(*, agent: str) -> str:
@@ -182,7 +182,7 @@ class ResearchCogs(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
         anchor = await interaction.channel.send(
-            content=f"🔬 {interaction.user.mention} 要研究:{topic[:200]}"
+            content=f"{interaction.user.mention} 要研究:{topic[:200]}"
         )
         outcome, existing = await self._start_for(
             owner_id=interaction.user.id,
@@ -235,6 +235,10 @@ class ResearchCogs(commands.Cog):
                 phase="researching",
             )
             self._active_threads.add(thread.id)
+        # Mark the source message so the deep-research activation is visually distinct from the
+        # normal QA pipeline reactions (best-effort).
+        with contextlib.suppress(Exception):
+            await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
         self._spawn(
             self._run_default_research(
                 thread=thread, owner_mention=owner_mention, brief=brief, agent=agent
@@ -248,10 +252,7 @@ class ResearchCogs(commands.Cog):
         self, *, thread: "Thread", owner_mention: str, brief: str, agent: str
     ) -> None:
         """Runs the default Antigravity research and delivers it, offering escalation after."""
-        status = await self._safe_send(
-            thread=thread,
-            content=f"{owner_mention} 🔬 開始研究了,這會花幾分鐘,完成後我會 tag 你\n-# Researching... (Antigravity)",
-        )
+        status = await self._safe_send(thread=thread, content="-# Researching... (Antigravity)")
         try:
             interaction_id = await start_antigravity(
                 client=self.interactions_client,
@@ -269,7 +270,6 @@ class ResearchCogs(commands.Cog):
                 client=self.interactions_client,
                 interaction_id=interaction_id,
                 on_progress=self._progress_editor(status=status, label="Antigravity"),
-                timeout_seconds=ANTIGRAVITY_TIMEOUT_SECONDS,
             )
             await self._finish(
                 thread=thread,
@@ -278,9 +278,11 @@ class ResearchCogs(commands.Cog):
                 agent=agent,
                 offer_escalation=True,
             )
-        except Exception:
+        except Exception as exc:
             logfire.warn("default research failed", thread_id=thread.id, _exc_info=True)
-            await self._fail(thread=thread, owner_mention=owner_mention)
+            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+            await db.set_phase(thread_id=thread.id, phase="failed")
+            self._active_threads.discard(thread.id)
 
     async def _run_deep_research(
         self, *, thread: "Thread", owner_mention: str, agent: str, previous_interaction_id: str
@@ -306,7 +308,6 @@ class ResearchCogs(commands.Cog):
                 client=self.interactions_client,
                 interaction_id=interaction_id,
                 on_progress=self._progress_editor(status=status, label=_tier_label(agent=agent)),
-                timeout_seconds=DEEP_RESEARCH_TIMEOUT_SECONDS,
             )
             await self._finish(
                 thread=thread,
@@ -315,9 +316,11 @@ class ResearchCogs(commands.Cog):
                 agent=agent,
                 offer_escalation=False,
             )
-        except Exception:
+        except Exception as exc:
             logfire.warn("deep research failed", thread_id=thread.id, _exc_info=True)
-            await self._fail(thread=thread, owner_mention=owner_mention)
+            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+            await db.set_phase(thread_id=thread.id, phase="failed")
+            self._active_threads.discard(thread.id)
 
     async def _finish(
         self,
@@ -330,10 +333,10 @@ class ResearchCogs(commands.Cog):
     ) -> None:
         """Delivers a terminal result and records the final phase."""
         if not result.ok:
-            await self._fail(
+            await self._post_failure(
                 thread=thread,
                 owner_mention=owner_mention,
-                status_text=_failure_text(status=result.status),
+                reason=_failure_text(status=result.status),
             )
             await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
             self._active_threads.discard(thread.id)
@@ -359,11 +362,28 @@ class ResearchCogs(commands.Cog):
         await db.set_phase(thread_id=thread.id, phase="done")
         self._active_threads.discard(thread.id)
 
-    async def _fail(
-        self, *, thread: "Thread", owner_mention: str, status_text: str = "研究失敗了,等等再試試"
+    async def _post_failure(
+        self,
+        *,
+        thread: "Thread",
+        owner_mention: str,
+        exc: Exception | None = None,
+        reason: str | None = None,
     ) -> None:
-        """Posts a friendly failure note pinging the owner."""
-        await self._safe_send(thread=thread, content=f"{owner_mention} ⚠️ {status_text}")
+        """Posts the real failure reason as an error embed pinging the owner (mirrors gen_reply).
+
+        Pass `exc` for an exception path (the friendly error + its type are shown so the cause is
+        fixable) or `reason` for a non-completed terminal status.
+        """
+        if reason is None and exc is not None:
+            reason = extract_friendly_error(exc=exc)
+        embed = Embed(
+            title="深度研究失敗", description=f"```\n{reason or '未知錯誤'}\n```", color=0xED4245
+        )
+        if exc is not None:
+            embed.set_footer(text=type(exc).__name__)
+        with contextlib.suppress(Exception):
+            await thread.send(content=f"{owner_mention} ⚠️", embed=embed)
 
     # ----- escalation (Deep Research) -----------------------------------------------------
 
@@ -404,7 +424,6 @@ class ResearchCogs(commands.Cog):
                 agent=agent,
                 brief=session.brief,
                 system_instruction=self._system_instruction(),
-                timeout_seconds=PLAN_TIMEOUT_SECONDS,
             )
             await db.set_interaction(
                 thread_id=thread.id,
@@ -415,9 +434,9 @@ class ResearchCogs(commands.Cog):
             await self._post_plan(
                 thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
             )
-        except Exception:
+        except Exception as exc:
             logfire.warn("research planning failed", thread_id=thread.id, _exc_info=True)
-            await self._fail(thread=thread, owner_mention=owner_mention)
+            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
 
@@ -516,7 +535,6 @@ class ResearchCogs(commands.Cog):
                 previous_interaction_id=previous_interaction_id,
                 feedback=feedback,
                 system_instruction=self._system_instruction(),
-                timeout_seconds=PLAN_TIMEOUT_SECONDS,
             )
             await db.set_interaction(
                 thread_id=thread.id,
@@ -527,9 +545,9 @@ class ResearchCogs(commands.Cog):
             await self._post_plan(
                 thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
             )
-        except Exception:
+        except Exception as exc:
             logfire.warn("research re-planning failed", thread_id=thread.id, _exc_info=True)
-            await self._fail(thread=thread, owner_mention=owner_mention)
+            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
 
@@ -565,7 +583,6 @@ class ResearchCogs(commands.Cog):
                 client=self.interactions_client,
                 interaction_id=session.interaction_id,
                 on_progress=None,
-                timeout_seconds=DEEP_RESEARCH_TIMEOUT_SECONDS,
             )
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
@@ -612,7 +629,7 @@ class ResearchCogs(commands.Cog):
             if thought:
                 line = f"{line}\n-# {thought[:200]}"
             with contextlib.suppress(Exception):
-                await status.edit(content=f"🔬 研究進行中\n{line}")
+                await status.edit(content=line)
 
         return _on_progress
 
