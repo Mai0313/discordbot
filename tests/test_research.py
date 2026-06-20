@@ -122,6 +122,18 @@ def test_latest_thought_returns_last_summary() -> None:
     assert agent._latest_thought(interaction=SimpleNamespace()) is None
 
 
+def test_latest_thought_reads_thought_step_summary() -> None:
+    interaction = SimpleNamespace(
+        steps=[
+            SimpleNamespace(type="thought", summary=[SimpleNamespace(text="planning the search")]),
+            SimpleNamespace(
+                type="model_output", content=[SimpleNamespace(type="text", text="report")]
+            ),
+        ]
+    )
+    assert agent._latest_thought(interaction=interaction) == "planning the search"
+
+
 # ----- research module helpers --------------------------------------------------------------
 
 

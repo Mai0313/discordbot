@@ -26,6 +26,7 @@ from google import genai
 import logfire
 from pydantic import Field, BaseModel
 from google.genai._interactions.types import EnvironmentParam, DeepResearchAgentConfigParam
+from google.genai._interactions.types.tool_param import URLContext, GoogleSearch, CodeExecution
 from google.genai._interactions.types.environment_param import (
     NetworkAllowlist,
     NetworkAllowlistAllowlist,
@@ -33,6 +34,15 @@ from google.genai._interactions.types.environment_param import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
+
+# Built-in tools enabled for every research run: web grounding, URL reading, and code execution.
+# Passed explicitly (not left to the agent default) so search/url grounding is guaranteed; a spike
+# confirmed the agent then issues many `google_search` grounding calls.
+RESEARCH_TOOLS = [
+    URLContext(type="url_context"),
+    GoogleSearch(type="google_search", search_types=["web_search"]),
+    CodeExecution(type="code_execution"),
+]
 
 # Polls the running interaction; research is minutes-long so a coarse interval is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
@@ -99,9 +109,18 @@ def _created_id(created: object) -> str:
 
 
 def _latest_thought(*, interaction: object) -> str | None:
-    """Returns the most recent thought-summary text from an interaction's steps, if any."""
+    """Returns the most recent thought-summary text from an interaction's steps, if any.
+
+    A materialized `thought` step carries its text in `step.summary[].text` (verified by spike
+    dump), not in `step.content`; the older content-based shape is kept as a fallback.
+    """
     latest: str | None = None
     for step in getattr(interaction, "steps", None) or []:
+        if getattr(step, "type", None) == "thought":
+            for item in getattr(step, "summary", None) or []:
+                text = getattr(item, "text", None)
+                if text:
+                    latest = text
         for item in getattr(step, "content", None) or []:
             if getattr(item, "type", None) in ("thought_summary", "thought"):
                 text = getattr(item, "text", None)
@@ -200,6 +219,7 @@ async def start_antigravity(
         input=brief,
         system_instruction=system_instruction,
         environment=environment,
+        tools=RESEARCH_TOOLS,
         background=True,
         store=True,
     )
@@ -276,6 +296,7 @@ async def start_deep_research(
         previous_interaction_id=previous_interaction_id,
         system_instruction=system_instruction,
         agent_config=_deep_research_agent_config(collaborative_planning=False),
+        tools=RESEARCH_TOOLS,
         background=True,
         store=True,
     )

@@ -53,31 +53,81 @@ def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-async def deliver_report(*, thread: "Thread", result: "ResearchResult") -> None:
-    """Posts the report chunks + `research.md` + optional image (the report body)."""
+async def deliver_report(  # noqa: PLR0913 -- the report body plus its completion-message inputs
+    *,
+    thread: "Thread",
+    status: nextcord.Message | None,
+    owner_mention: str,
+    result: "ResearchResult",
+    footer: str,
+    view: nextcord.ui.View | None,
+) -> None:
+    """Delivers the report into the thread.
+
+    The opening status message ("Researching...") is edited into the first chunk so no message is
+    wasted; the remaining chunks follow as new messages; the LAST chunk carries the usage footer,
+    the escalation view, the owner ping, and the full report as a `research.md` attachment (plus
+    any generated image). Every write is best-effort.
+    """
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report(text=report) or ["(empty report)"]
     limit = _upload_limit(thread=thread)
-    encoded = report.encode("utf-8")
-    md_file = (
-        nextcord.File(fp=io.BytesIO(encoded), filename="research.md")
-        if len(encoded) <= limit
-        else None
-    )
+    last = len(chunks) - 1
     for index, chunk in enumerate(chunks):
+        target = status if index == 0 else None
+        if index == last:
+            await _place(
+                status=target,
+                thread=thread,
+                content=f"{chunk}\n\n{owner_mention}\n{footer}",
+                files=_final_files(report=report, image_bytes=result.image_bytes, limit=limit),
+                view=view,
+            )
+        else:
+            await _place(status=target, thread=thread, content=chunk, files=[], view=None)
+
+
+def _final_files(*, report: str, image_bytes: bytes | None, limit: int) -> list[nextcord.File]:
+    """The `research.md` (+ optional image) attachments for the last message, honoring the limit."""
+    files: list[nextcord.File] = []
+    encoded = report.encode("utf-8")
+    if len(encoded) <= limit:
+        files.append(nextcord.File(fp=io.BytesIO(encoded), filename="research.md"))
+    if image_bytes is not None and len(image_bytes) <= limit:
+        files.append(nextcord.File(fp=io.BytesIO(image_bytes), filename="research.png"))
+    return files
+
+
+async def _place(
+    *,
+    status: nextcord.Message | None,
+    thread: "Thread",
+    content: str,
+    files: list[nextcord.File],
+    view: nextcord.ui.View | None,
+) -> None:
+    """Edits the opening status message (when given) or sends a new message, with optional files/view."""
+    if status is not None:
         try:
-            if index == 0 and md_file is not None:
-                await thread.send(content=chunk, file=md_file)
+            if files and view is not None:
+                await status.edit(content=content, files=files, view=view)
+            elif files:
+                await status.edit(content=content, files=files)
+            elif view is not None:
+                await status.edit(content=content, view=view)
             else:
-                await thread.send(content=chunk)
+                await status.edit(content=content)
+            return
         except Exception:
-            logfire.warn(
-                "failed to post research report chunk", thread_id=thread.id, chunk_index=index
-            )
-    if result.image_bytes is not None and len(result.image_bytes) <= limit:
-        try:
-            await thread.send(
-                file=nextcord.File(fp=io.BytesIO(result.image_bytes), filename="research.png")
-            )
-        except Exception:
-            logfire.warn("failed to post research image", thread_id=thread.id)
+            logfire.warn("failed to edit research status into report", thread_id=thread.id)
+    try:
+        if files and view is not None:
+            await thread.send(content=content, files=files, view=view)
+        elif files:
+            await thread.send(content=content, files=files)
+        elif view is not None:
+            await thread.send(content=content, view=view)
+        else:
+            await thread.send(content=content)
+    except Exception:
+        logfire.warn("failed to post research report message", thread_id=thread.id)

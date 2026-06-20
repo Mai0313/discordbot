@@ -395,7 +395,6 @@ class ResearchCogs(commands.Cog):
             await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
             self._active_threads.discard(thread.id)
             return
-        await deliver_report(thread=thread, result=result)
         view = (
             ResultEscalationView(
                 cog=self,
@@ -408,10 +407,12 @@ class ResearchCogs(commands.Cog):
         footer = _usage_footer(
             agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
         )
-        await self._finalize_status(
-            status=status,
+        await deliver_report(
             thread=thread,
-            content=f"{owner_mention} Research complete ({tier})\n{footer}",
+            status=status,
+            owner_mention=owner_mention,
+            result=result,
+            footer=footer,
             view=view,
         )
         await db.set_phase(thread_id=thread.id, phase="done")
@@ -705,7 +706,9 @@ class ResearchCogs(commands.Cog):
             mins, secs = divmod(int(elapsed), 60)
             line = f"-# Researching... ({label}, {mins}m{secs:02d}s)"
             if thought:
-                line = f"{line}\n-# {thought[:200]}"
+                summary = next((ln.strip() for ln in thought.splitlines() if ln.strip()), "")
+                if summary:
+                    line = f"{line}\n-# {summary[:180]}"
             with contextlib.suppress(Exception):
                 await status.edit(content=line)
 
