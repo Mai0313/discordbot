@@ -21,7 +21,6 @@ from pydantic import Field, BaseModel, PrivateAttr, SkipValidation
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.utils.llm import create_gemini_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._gen_reply.attachment.base import (
     RenderedPart,
@@ -118,7 +117,7 @@ class GeminiFileUploader(AttachmentRenderer):
         Returns:
             A Gemini client reused across uploads.
         """
-        return create_gemini_client(config=self.config)
+        return genai.Client(api_key=self.config.gemini_api_key)
 
     async def render_image(
         self,

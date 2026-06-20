@@ -1368,10 +1368,9 @@ class _FakeInteractionsResource:
         generation_config: object,
         tools: list[object],
         stream: bool,
-        extra_headers: dict[str, str],
     ) -> AsyncIterator[SimpleNamespace]:
         """Records the call and returns the fake Interactions event stream."""
-        del environment, tools, stream, extra_headers
+        del environment, tools, stream
         self.calls.append(
             SimpleNamespace(
                 model=model,
