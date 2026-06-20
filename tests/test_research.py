@@ -7,7 +7,7 @@ from discordbot.cogs import research as research_cog
 from discordbot.cogs._research import agent
 from discordbot.cogs._research import database as rdb
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
-from discordbot.cogs._research.delivery import split_report
+from discordbot.cogs._research.delivery import split_report, deliver_report
 
 # ----- marker extraction --------------------------------------------------------------------
 
@@ -261,3 +261,119 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
 def test_cast_phase_defaults_unknown_to_failed() -> None:
     assert rdb.cast_phase(value="researching") == "researching"
     assert rdb.cast_phase(value="bogus") == "failed"
+
+
+async def test_claim_research_is_idempotent_and_clears_stale_id(research_isolated_db: None) -> None:
+    await rdb.upsert_session(
+        thread_id=30,
+        owner_id=1,
+        channel_id=1,
+        guild_id=1,
+        source_message_id=1,
+        agent="deep-research-preview-04-2026",
+        interaction_id="plan_1",
+        brief="b",
+        phase="planning",
+    )
+    assert await rdb.claim_research(thread_id=30) is True
+    session = await rdb.get_session(thread_id=30)
+    assert session is not None
+    assert session.phase == "researching"
+    assert session.interaction_id is None
+    # A second (double-click) claim loses: the row is no longer in `planning`.
+    assert await rdb.claim_research(thread_id=30) is False
+
+
+async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: None) -> None:
+    for thread_id, phase in ((40, "planning"), (41, "researching"), (42, "planning")):
+        await rdb.upsert_session(
+            thread_id=thread_id,
+            owner_id=thread_id,
+            channel_id=1,
+            guild_id=1,
+            source_message_id=1,
+            agent="deep-research-preview-04-2026",
+            interaction_id="int_x",
+            brief="b",
+            phase=phase,  # type: ignore[arg-type]  # the test deliberately exercises each phase
+        )
+    cleared = await rdb.clear_stale_planning()
+    assert {session.thread_id for session in cleared} == {40, 42}
+    cancelled = await rdb.get_session(thread_id=40)
+    assert cancelled is not None and cancelled.phase == "cancelled"
+    researching = await rdb.get_session(thread_id=41)
+    assert researching is not None and researching.phase == "researching"
+    # The owner whose plan was cleared is no longer blocked from launching new research.
+    assert await rdb.active_thread_for_owner(owner_id=40) is None
+
+
+# ----- delivery completion footer -----------------------------------------------------------
+
+
+class _FakeStatusMessage:
+    """Records `edit` calls on the opening status message."""
+
+    def __init__(self) -> None:
+        self.edits: list[dict[str, object]] = []
+
+    async def edit(self, **kwargs: object) -> None:
+        self.edits.append(kwargs)
+
+
+class _FakeThread:
+    """Records `send` calls and exposes a guild upload limit, like a real Thread."""
+
+    id = 1
+
+    def __init__(self) -> None:
+        self.sends: list[dict[str, object]] = []
+        self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
+
+    async def send(self, **kwargs: object) -> None:
+        self.sends.append(kwargs)
+
+
+def _completed_result(*, report_text: str) -> agent.ResearchResult:
+    return agent.ResearchResult(interaction_id="int_1", status="completed", report_text=report_text)
+
+
+async def test_delivery_keeps_footer_message_under_the_limit() -> None:
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    footer = "-# antigravity-preview-05-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
+    # A report chunk that sits just under the 2000-char message cap; appending the footer inline
+    # would overflow, so it must ride its own trailing message.
+    await deliver_report(
+        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
+        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        owner_mention="<@1>",
+        result=_completed_result(report_text="X" * 1990),
+        footer=footer,
+        view=None,
+    )
+    contents = [str(edit["content"]) for edit in status.edits]
+    contents += [str(send["content"]) for send in thread.sends]
+    assert all(len(content) <= 2000 for content in contents)
+    # The footer + owner ping + research.md ride the trailing send, not the near-limit chunk.
+    footer_send = thread.sends[-1]
+    assert "<@1>" in str(footer_send["content"])
+    assert footer in str(footer_send["content"])
+    assert footer_send["files"]
+
+
+async def test_delivery_inlines_footer_for_short_reports() -> None:
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    await deliver_report(
+        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
+        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        owner_mention="<@1>",
+        result=_completed_result(report_text="# Report\nbody"),
+        footer="-# footer",
+        view=None,
+    )
+    # One message: the opening status edited into report + footer + the research.md attachment.
+    assert not thread.sends
+    assert len(status.edits) == 1
+    assert "<@1>" in str(status.edits[0]["content"])
+    assert status.edits[0]["files"]
