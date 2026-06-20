@@ -34,8 +34,9 @@ if TYPE_CHECKING:
 INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
 
 
-async def refine_generation_prompt(  # noqa: PLR0913 -- shared director inputs: client + prompt model + user prompt + instructions + end-user id + optional source images
+async def refine_generation_prompt(  # noqa: PLR0913 -- shared director inputs: enabled kill-switch + client + prompt model + user prompt + instructions + end-user id + optional source images
     *,
+    enabled: bool = True,
     client: AsyncOpenAI,
     prompt_model: ModelSettings,
     user_prompt: str,
@@ -50,8 +51,11 @@ async def refine_generation_prompt(  # noqa: PLR0913 -- shared director inputs: 
     source bytes ride along as input images so the draft is grounded in them without a re-download.
     Best-effort: an empty draft or ANY error falls back to the raw `user_prompt`, so a director
     failure never aborts generation — callers wrap generation in an error path and must not see an
-    exception escape here.
+    exception escape here. With `enabled=False` (the `REFINE_PROMPT_ENABLED` kill-switch) the
+    director is skipped entirely and the raw `user_prompt` is returned, same as an empty draft.
     """
+    if not enabled:
+        return user_prompt
     director_content: list[
         ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
     ] = [
@@ -154,6 +158,10 @@ class ImageReplyGenerator(BaseModel):
     runtime_models: RuntimeModelCatalog = Field(
         ..., description="Model catalog supplying the prompt-director and image models."
     )
+    refine_enabled: bool = Field(
+        default=True,
+        description="Whether the prompt director refines the rough description before rendering.",
+    )
 
     async def generate(self, *, user_prompt: str, end_user_id: str) -> bytes | None:
         """Refines the rough description then renders one image; None on any failure or timeout."""
@@ -161,6 +169,7 @@ class ImageReplyGenerator(BaseModel):
         try:
             async with asyncio.timeout(delay=INLINE_IMAGE_TIMEOUT_SECONDS):
                 refined = await refine_generation_prompt(
+                    enabled=self.refine_enabled,
                     client=self.client,
                     prompt_model=self.runtime_models.prompt_model,
                     user_prompt=user_prompt,

@@ -397,7 +397,11 @@ class ReplyGeneratorCogs(commands.Cog):
             A generator bound to this cog's client and model catalog; the caller still gates
             it on `allow_image` and `config.inline_image_enabled`.
         """
-        return ImageReplyGenerator(client=self.client, runtime_models=self.runtime_models)
+        return ImageReplyGenerator(
+            client=self.client,
+            runtime_models=self.runtime_models,
+            refine_enabled=self.config.refine_prompt_enabled,
+        )
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -559,6 +563,7 @@ class ReplyGeneratorCogs(commands.Cog):
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
         refined_prompt = await refine_generation_prompt(
+            enabled=self.config.refine_prompt_enabled,
             client=self.client,
             prompt_model=self.runtime_models.prompt_model,
             user_prompt=user_prompt,
@@ -643,6 +648,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
             refined_prompt = await refine_generation_prompt(
+                enabled=self.config.refine_prompt_enabled,
                 client=self.client,
                 prompt_model=self.runtime_models.prompt_model,
                 user_prompt=user_prompt,

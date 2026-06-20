@@ -20,6 +20,7 @@ from nextcord import File, Embed
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
@@ -594,6 +595,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
+    cog.config = LLMConfig()
     cog.__dict__["client"] = FakeClient()
     handler = cog.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
@@ -1308,7 +1310,9 @@ async def test_image_config_gate_controls_generator(
 ) -> None:
     """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
     cog = _cog()
-    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=enabled)
+    cog.config = SimpleNamespace(
+        voice_reply_enabled=False, inline_image_enabled=enabled, refine_prompt_enabled=True
+    )
     captured: list[object] = []
 
     class FakeResponder:
@@ -2270,6 +2274,24 @@ async def test_handle_image_reply_refines_prompt_for_generate() -> None:
     assert cog.client.responses.create_tools[0] == list(cog.runtime_models.prompt_model.tools)
 
 
+async def test_handle_image_reply_skips_director_when_refine_disabled() -> None:
+    """With REFINE_PROMPT_ENABLED off the director is skipped and the raw prompt renders."""
+    cog = _cog()
+    cog.config.refine_prompt_enabled = False
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The raw prompt reaches images.generate; the non-streaming director create never happened
+    # (only the streaming persona reply remains), so prompt_model / image_reply_model share a name.
+    assert cog.client.images.generate_prompts == ["draw a cat"]
+    assert cog.client.responses.create_streams == [True]
+
+
 async def test_handle_image_reply_director_receives_attached_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2389,6 +2411,26 @@ async def test_handle_video_reply_refines_prompt(monkeypatch: pytest.MonkeyPatch
     director_input = cog.client.responses.create_inputs[0]
     parts = director_input[0]["content"]
     assert all(part.get("type") != "input_image" for part in parts)
+
+
+async def test_handle_video_reply_skips_director_when_refine_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With REFINE_PROMPT_ENABLED off video generation uses the raw prompt and runs no director."""
+    cog = _cog()
+    cog.config.refine_prompt_enabled = False
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+
+    await cog._handle_video_reply(message=message, user_prompt="video")
+
+    # The raw prompt reaches videos.create; no director responses.create happened at all.
+    assert cog.client.videos.create_prompts == ["video"]
+    assert cog.client.responses.create_models == []
 
 
 @pytest.mark.parametrize(
