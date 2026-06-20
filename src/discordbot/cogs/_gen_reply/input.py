@@ -282,6 +282,23 @@ class MessageInputBuilder(BaseModel):
         """Returns downscaled bytes of a message's image sources for the IMAGE route."""
         return [raw for raw, _ in await self.get_image_sources_with_mime(message=message)]
 
+    async def get_video_thumbnail_sources(self, message: Message) -> list[tuple[bytes, str]]:
+        """Best-effort (bytes, MIME) poster frames of a message's video attachments.
+
+        Veo cannot ingest a raw video, so a referenced/attached video contributes its poster
+        frame as a reference image instead: Discord's media proxy renders one from the
+        attachment's `proxy_url` via `?format=jpeg`, and `load_image_bytes` decodes it, so a
+        proxy that returns no frame is simply skipped. Video links Discord unfurled into an
+        embed thumbnail are already collected as image sources by `collect_attachment_sources`,
+        so only direct video attachments are handled here.
+        """
+        tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
+        for source in self.collect_attachment_sources(message=message):
+            if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
+                tasks.append(load_image_bytes(source=f"{source.handle.proxy_url}?format=jpeg"))
+        loaded = await asyncio.gather(*tasks, return_exceptions=True)
+        return [item for item in loaded if isinstance(item, tuple)]
+
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
         """Maps a MIME type to the input modality the model must accept.

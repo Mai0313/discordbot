@@ -428,7 +428,8 @@ class FakeGeminiVideoClient:
     """Fake native Gemini client exposing the async Veo generation API.
 
     `generate_videos` returns an in-progress operation that the first `operations.get` flips
-    to done with one generated video; `files.download` returns fake MP4 bytes. Records the
+    to done with one generated video; `files.download` returns fake MP4 bytes; `files.upload`
+    /`get` return an ACTIVE file for the post-generation "watch the video" reply. Records the
     prompt and the config so tests can assert reference-image wiring.
     """
 
@@ -440,7 +441,9 @@ class FakeGeminiVideoClient:
         self.aio = SimpleNamespace(
             models=SimpleNamespace(generate_videos=self._generate_videos),
             operations=SimpleNamespace(get=self._operations_get),
-            files=SimpleNamespace(download=self._files_download),
+            files=SimpleNamespace(
+                download=self._files_download, upload=self._files_upload, get=self._files_get
+            ),
         )
 
     async def _generate_videos(
@@ -468,6 +471,20 @@ class FakeGeminiVideoClient:
         """Returns fake MP4 bytes for the completed video."""
         del file
         return b"mp4"
+
+    async def _files_upload(self, *, file: object, config: dict[str, str]) -> SimpleNamespace:
+        """Returns an ACTIVE uploaded file for the post-generation video reply."""
+        del file, config
+        return SimpleNamespace(
+            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
+        )
+
+    async def _files_get(self, *, name: str) -> SimpleNamespace:
+        """Returns the ACTIVE uploaded file when the reply polls it."""
+        del name
+        return SimpleNamespace(
+            name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
+        )
 
 
 class FakeGeminiFiles:
@@ -2115,7 +2132,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         """Skips video polling delay."""
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
-    await cog._handle_video_reply(message=message, user_prompt="video")
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
     assert len(message.replies) == 1
     # Video has no director: the raw request reaches native generate_videos directly.
     assert cog.gemini_client.generate_prompts == ["video"]
@@ -2422,16 +2443,56 @@ async def test_handle_video_reply_uses_raw_prompt_without_director(
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
-    await cog._handle_video_reply(message=message, user_prompt="video")
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
-    # The raw prompt reaches generate_videos; no director responses.create happened at all.
+    # The raw prompt reaches generate_videos; the only responses.create is the streaming reply
+    # about the video (no non-streaming director ran).
     assert cog.gemini_client.generate_prompts == ["video"]
-    assert cog.client.responses.create_models == []
+    assert cog.client.responses.create_streams == [True]
+    assert cog.client.responses.create_models == [cog.runtime_models.video_reply_model.name]
+    # The reply watches the generated video: it is referenced as an uploaded input_file part.
+    reply_parts = cog.client.responses.create_inputs[0][-1]["content"]
+    assert any(part.get("type") == "input_file" for part in reply_parts)
     # No attachments: a plain text-to-video generation at the configured 1080p, MP4 delivered.
     config = cog.gemini_client.generate_configs[0]
     assert config.resolution == "1080p"
     assert config.reference_images is None
     assert message.replies[-1].file is not None
+
+
+async def test_handle_video_reply_includes_video_thumbnail_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A referenced video's poster frame is wired in as an asset reference image."""
+    cog = _cog()
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    async def fake_thumbs(builder: object, message: object) -> list[tuple[bytes, str]]:
+        """Returns a fake video poster frame for the message."""
+        del builder, message
+        return [(b"poster", "image/jpeg")]
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.input.MessageInputBuilder.get_video_thumbnail_sources",
+        fake_thumbs,
+    )
+    message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
+
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    config = cog.gemini_client.generate_configs[0]
+    assert len(config.reference_images) == 1
 
 
 async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2452,7 +2513,11 @@ async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.Mo
         for index in range(4)
     ]
 
-    await cog._handle_video_reply(message=message, user_prompt="video")
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
 
     # All attached images ride as asset reference images, capped at three.
     config = cog.gemini_client.generate_configs[0]
@@ -2550,8 +2615,12 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         prompts.append(user_prompt)
         calls.append("_handle_image_reply")
 
-    async def fake_video_handler(message: FakeMessage, user_prompt: str) -> None:
-        """Records video handler dispatch."""
+    async def fake_video_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
+        """Records video handler dispatch and drains the handed-over context task."""
+        del message
+        await context_task
         prompts.append(user_prompt)
         calls.append("_handle_video_reply")
 
