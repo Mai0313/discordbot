@@ -260,8 +260,7 @@ async def claim_research(*, thread_id: int) -> bool:
         result = await session.execute(
             statement=update(ResearchSessionRow)
             .where(
-                ResearchSessionRow.thread_id == thread_id,
-                ResearchSessionRow.phase == "planning",
+                ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "planning"
             )
             .values(phase="researching", interaction_id=None, updated_at=now)
         )
