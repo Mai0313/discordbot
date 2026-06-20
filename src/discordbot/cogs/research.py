@@ -725,7 +725,9 @@ class ResearchCogs(commands.Cog):
                 # The plan was accepted (now researching) or cancelled while we were refining; drop
                 # this stale refine so it cannot overwrite a running research's persisted state.
                 await self._finalize_status(
-                    status=status, thread=thread, content="-# Re-plan skipped (plan already accepted)"
+                    status=status,
+                    thread=thread,
+                    content="-# Re-plan skipped (plan already accepted)",
                 )
                 return
             if await self._fail_incomplete_plan(
