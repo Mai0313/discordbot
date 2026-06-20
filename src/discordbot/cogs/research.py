@@ -515,6 +515,14 @@ class ResearchCogs(commands.Cog):
                 brief=session.brief,
                 system_instruction=self._system_instruction(),
             )
+            if await self._fail_incomplete_plan(
+                thread=thread,
+                owner_mention=owner_mention,
+                status=status,
+                plan=plan,
+                failed_status="-# Planning failed (Deep Research)",
+            ):
+                return
             await db.set_interaction(
                 thread_id=thread.id,
                 interaction_id=plan.interaction_id,
@@ -529,6 +537,32 @@ class ResearchCogs(commands.Cog):
             await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
+
+    async def _fail_incomplete_plan(
+        self,
+        *,
+        thread: "Thread",
+        owner_mention: str,
+        status: "nextcord.Message | None",
+        plan: ResearchPlan,
+        failed_status: str,
+    ) -> bool:
+        """Treats a non-completed plan as a failure so no approval buttons are posted.
+
+        The planning poll can settle on a non-`completed` terminal status without raising; posting
+        that plan would let an approval click start paid research from a failed interaction. Returns
+        True (caller stops) when the plan did not complete, finalizing the status and freeing the
+        owner's slot.
+        """
+        if plan.status == "completed":
+            return False
+        await self._finalize_status(status=status, thread=thread, content=failed_status)
+        await self._post_failure(
+            thread=thread, owner_mention=owner_mention, reason=_failure_text(status=plan.status)
+        )
+        await db.set_phase(thread_id=thread.id, phase="failed")
+        self._active_threads.discard(thread.id)
+        return True
 
     async def _post_plan(
         self,
@@ -626,6 +660,14 @@ class ResearchCogs(commands.Cog):
                 feedback=feedback,
                 system_instruction=self._system_instruction(),
             )
+            if await self._fail_incomplete_plan(
+                thread=thread,
+                owner_mention=owner_mention,
+                status=status,
+                plan=plan,
+                failed_status="-# Re-planning failed",
+            ):
+                return
             await db.set_interaction(
                 thread_id=thread.id,
                 interaction_id=plan.interaction_id,
