@@ -19,21 +19,35 @@ VOICE_OPEN = "<voice>"
 VOICE_CLOSE = "</voice>"
 IMAGE_OPEN = "<image>"
 IMAGE_CLOSE = "</image>"
+DEEP_RESEARCH_OPEN = "<deep-research>"
+DEEP_RESEARCH_CLOSE = "</deep-research>"
 
 # Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a
 # stray-cased tag still matches.
 _VOICE_BLOCK_RE = re.compile(r"<voice>(.*?)</voice>", re.IGNORECASE | re.DOTALL)
 _IMAGE_BLOCK_RE = re.compile(r"<image>(.*?)</image>", re.IGNORECASE | re.DOTALL)
+_DEEP_RESEARCH_BLOCK_RE = re.compile(
+    r"<deep-research>(.*?)</deep-research>", re.IGNORECASE | re.DOTALL
+)
 # Bare tags, scrubbed so a stray/unpaired tag never leaks into the visible reply.
 _VOICE_TAG_RE = re.compile(r"</?voice>", re.IGNORECASE)
 _IMAGE_TAG_RE = re.compile(r"</?image>", re.IGNORECASE)
-# An unclosed `<image>` open tag and everything after it: the whole block is going to be pulled,
-# so hide it the moment it starts streaming in (and tolerate the model forgetting to close it).
+_DEEP_RESEARCH_TAG_RE = re.compile(r"</?deep-research>", re.IGNORECASE)
+# An unclosed open tag and everything after it: the whole block is going to be pulled, so hide it
+# the moment it starts streaming in (and tolerate the model forgetting to close it).
 _TRAILING_IMAGE_OPEN_RE = re.compile(r"<image>.*\Z", re.IGNORECASE | re.DOTALL)
+_TRAILING_DEEP_RESEARCH_OPEN_RE = re.compile(r"<deep-research>.*\Z", re.IGNORECASE | re.DOTALL)
 _COLLAPSE_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 # Every tag whose half-streamed tail must be trimmed from a live preview so it never flickers in.
-_ALL_TAGS = (IMAGE_OPEN, IMAGE_CLOSE, VOICE_OPEN, VOICE_CLOSE)
+_ALL_TAGS = (
+    IMAGE_OPEN,
+    IMAGE_CLOSE,
+    VOICE_OPEN,
+    VOICE_CLOSE,
+    DEEP_RESEARCH_OPEN,
+    DEEP_RESEARCH_CLOSE,
+)
 
 
 class InlineMarkers(BaseModel):
@@ -52,6 +66,10 @@ class InlineMarkers(BaseModel):
     )
     image_prompt: str | None = Field(
         default=None, description="First <image> description to generate, or None when absent."
+    )
+    research_brief: str | None = Field(
+        default=None,
+        description="First <deep-research> brief to launch a research thread, or None when absent.",
     )
 
 
@@ -74,6 +92,23 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
             image_prompt = trailing_image.group(0)[len(IMAGE_OPEN) :].strip() or None
         cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
 
+    # Deep-research blocks are pulled like image blocks (tags AND content removed) so the
+    # research brief never shows in chat; the first non-empty one launches the research.
+    research_brief = next(
+        (
+            group
+            for m in _DEEP_RESEARCH_BLOCK_RE.finditer(cleaned)
+            if (group := m.group(1).strip())
+        ),
+        None,
+    )
+    cleaned = _DEEP_RESEARCH_BLOCK_RE.sub("", cleaned)
+    trailing_research = _TRAILING_DEEP_RESEARCH_OPEN_RE.search(cleaned)
+    if trailing_research is not None:
+        if research_brief is None:
+            research_brief = trailing_research.group(0)[len(DEEP_RESEARCH_OPEN) :].strip() or None
+        cleaned = _TRAILING_DEEP_RESEARCH_OPEN_RE.sub("", cleaned)
+
     voice_segments = [
         segment for m in _VOICE_BLOCK_RE.finditer(cleaned) if (segment := m.group(1).strip())
     ]
@@ -82,6 +117,7 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     # Scrub any stray unpaired tags the model may have left behind.
     cleaned = _IMAGE_TAG_RE.sub("", cleaned)
     cleaned = _VOICE_TAG_RE.sub("", cleaned)
+    cleaned = _DEEP_RESEARCH_TAG_RE.sub("", cleaned)
     # Only tidy the gap a removed block leaves behind when marker processing actually changed
     # the text, so a marker-free reply (poetry, preformatted text, an exact code/output sample)
     # keeps its intentional blank lines and surrounding whitespace byte-for-byte.
@@ -93,6 +129,7 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
         voice_text="\n".join(voice_segments),
         voice_requested=bool(voice_segments),
         image_prompt=image_prompt,
+        research_brief=research_brief,
     )
 
 
@@ -106,6 +143,8 @@ def scrub_markers_for_preview(*, text: str) -> str:
     """
     cleaned = _IMAGE_BLOCK_RE.sub("", text)
     cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
+    cleaned = _DEEP_RESEARCH_BLOCK_RE.sub("", cleaned)
+    cleaned = _TRAILING_DEEP_RESEARCH_OPEN_RE.sub("", cleaned)
     cleaned = _VOICE_BLOCK_RE.sub(r"\1", cleaned)
     cleaned = _VOICE_TAG_RE.sub("", cleaned)
     stripped = cleaned.rstrip()

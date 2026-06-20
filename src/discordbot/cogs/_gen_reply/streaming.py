@@ -106,6 +106,10 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="The <image> description the answer model asked to illustrate, if any.",
     )
+    research_brief: str | None = Field(
+        default=None,
+        description="The <deep-research> brief the answer model asked to launch, if any.",
+    )
     created_at: float = Field(
         default_factory=time.monotonic,
         description=(
@@ -315,6 +319,9 @@ class ResponseStreamer(BaseModel):
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
         self.image_prompt = markers.image_prompt
+        # The streamer only surfaces the brief; the cog (not the streamer) launches the research
+        # after the single media edit so it never touches the reply's one attachment edit.
+        self.research_brief = markers.research_brief
         # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
         # snowflake), so the voice input is normalised while the visible reply keeps its markup.
         self.voice_text = (

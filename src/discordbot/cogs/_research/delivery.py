@@ -1,0 +1,91 @@
+"""Posts a finished research report into its Discord thread.
+
+The report is long cited markdown. It is delivered two ways at once so nothing is
+lost: chunked inline messages (split on paragraph boundaries so citations and
+headings survive) for in-thread readability, plus the full report as a `research.md`
+File attachment (the durable artifact). A generated chart, if any, rides a follow-up
+message, and the owner is pinged on a final completion line. Every send is best-effort.
+"""
+
+import io
+from typing import TYPE_CHECKING
+
+import logfire
+import nextcord
+
+if TYPE_CHECKING:
+    from nextcord import Thread
+
+    from discordbot.cogs._research.agent import ResearchResult
+
+DISCORD_MESSAGE_LIMIT = 2000
+
+
+def _upload_limit(*, thread: "Thread") -> int:
+    """The thread's real upload ceiling, falling back to Discord's 10MB base without a guild."""
+    guild = getattr(thread, "guild", None)
+    return guild.filesize_limit if guild is not None else 10 * 1024 * 1024
+
+
+def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    """Splits report markdown into <=limit chunks, preferring paragraph then line breaks.
+
+    A hard cut at `limit` is the last resort, used only when a single paragraph or line
+    is longer than the limit, so normal reports keep their markdown structure intact.
+    """
+    chunks: list[str] = []
+    remaining = text.strip()
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        cut = window.rfind("\n\n")
+        if cut < limit // 2:
+            cut = window.rfind("\n")
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def deliver_report(
+    *,
+    thread: "Thread",
+    owner_mention: str,
+    result: "ResearchResult",
+    tier_label: str,
+    footer: str | None = None,
+) -> None:
+    """Posts the report chunks + `research.md` + optional image, pinging the owner at the end."""
+    report = result.report_text.strip() or "(the research returned no report text)"
+    chunks = split_report(text=report) or ["(empty report)"]
+    limit = _upload_limit(thread=thread)
+    encoded = report.encode("utf-8")
+    md_file = (
+        nextcord.File(fp=io.BytesIO(encoded), filename="research.md")
+        if len(encoded) <= limit
+        else None
+    )
+    for index, chunk in enumerate(chunks):
+        try:
+            if index == 0 and md_file is not None:
+                await thread.send(content=chunk, file=md_file)
+            else:
+                await thread.send(content=chunk)
+        except Exception:
+            logfire.warn(
+                "failed to post research report chunk", thread_id=thread.id, chunk_index=index
+            )
+    if result.image_bytes is not None and len(result.image_bytes) <= limit:
+        try:
+            await thread.send(
+                file=nextcord.File(fp=io.BytesIO(result.image_bytes), filename="research.png")
+            )
+        except Exception:
+            logfire.warn("failed to post research image", thread_id=thread.id)
+    footer_line = f"\n-# {footer}" if footer else ""
+    try:
+        await thread.send(content=f"{owner_mention} ✅ 研究完成({tier_label}){footer_line}")
+    except Exception:
+        logfire.warn("failed to post research completion ping", thread_id=thread.id)

@@ -22,6 +22,10 @@ class LLMConfig(BaseSettings):
         youtube_video_enabled: Kill-switch for answering about a linked YouTube video via the
             Gemini Interactions API; when false the QA turn falls back to the Responses path
             (which cannot watch the video).
+        deep_research_enabled: Kill-switch for the deep-research feature; when false the QA
+            answer model's `<deep-research>` marker is still stripped but no research runs.
+        deep_research_max_enabled: Whether the priciest Deep Research Max tier may be picked
+            from the escalation buttons; off by default so the expensive tier is opt-in.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -65,6 +69,16 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the bot may watch a linked YouTube video via the Interactions API.",
         validation_alias=AliasChoices("YOUTUBE_VIDEO_ENABLED"),
+    )
+    deep_research_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may launch a deep-research thread from a QA marker / slash.",
+        validation_alias=AliasChoices("DEEP_RESEARCH_ENABLED"),
+    )
+    deep_research_max_enabled: bool = Field(
+        default=False,
+        description="Whether the priciest Deep Research Max tier is offered on the escalation buttons.",
+        validation_alias=AliasChoices("DEEP_RESEARCH_MAX_ENABLED"),
     )
 
 

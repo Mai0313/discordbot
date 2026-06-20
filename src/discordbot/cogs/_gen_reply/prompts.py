@@ -1,4 +1,11 @@
-from discordbot.cogs._gen_reply.markers import IMAGE_OPEN, VOICE_OPEN, IMAGE_CLOSE, VOICE_CLOSE
+from discordbot.cogs._gen_reply.markers import (
+    IMAGE_OPEN,
+    VOICE_OPEN,
+    IMAGE_CLOSE,
+    VOICE_CLOSE,
+    DEEP_RESEARCH_OPEN,
+    DEEP_RESEARCH_CLOSE,
+)
 
 PERSONA_CHOICES = """
 * Your identity is 破貓 [id: 1134904996178182225]; DO NOT MENTION YOURSELF IN REPLY.
@@ -68,6 +75,17 @@ INLINE_IMAGE_INSTRUCTION = f"""
 * Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
 * A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. Still at most one image per reply, and skip it when an image would not add anything. Never wrap the tags in backticks and never mention them.
+"""
+
+# Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
+# Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION: a deployment with
+# DEEP_RESEARCH_ENABLED=false must not be told about a marker the streamer would strip with no effect.
+DEEP_RESEARCH_INSTRUCTION = f"""
+* Deep research: when the user clearly wants a thorough, multi-source, cited investigation that is worth several minutes and real cost (market or competitive analysis, due diligence, a literature review, "深入研究 X", "幫我好好查一下 X"), you may launch a long-running research agent by wrapping a clean, self-contained research brief in `{DEEP_RESEARCH_OPEN}...{DEEP_RESEARCH_CLOSE}`. That block is removed from your written reply, so the brief never shows in chat; a separate agent then researches it in a dedicated thread and posts a cited report, mentioning the user when it is done.
+    * Use this VERY sparingly — only for genuinely research-worthy requests. A normal question you can just answer now gets a normal reply, never a research thread.
+    * In your visible reply, briefly confirm in persona that you are kicking off the research and that it takes a few minutes (never promise an instant answer).
+    * The brief is researched on its own with no access to this chat, so make it stand alone: state the topic, the angle, and any specifics the user gave, written in the user's language.
+    * Never mention the tags and never wrap them in backticks.
 """
 
 MEMORY_SELECT_PROMPT = """
