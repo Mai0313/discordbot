@@ -689,6 +689,14 @@ class ResearchCogs(commands.Cog):
                 feedback=feedback,
                 system_instruction=self._system_instruction(),
             )
+            current = await db.get_session(thread_id=thread.id)
+            if current is None or current.phase != "planning":
+                # The plan was accepted (now researching) or cancelled while we were refining; drop
+                # this stale refine so it cannot overwrite a running research's persisted state.
+                await self._finalize_status(
+                    status=status, thread=thread, content="-# Re-plan skipped (plan already accepted)"
+                )
+                return
             if await self._fail_incomplete_plan(
                 thread=thread,
                 owner_mention=owner_mention,
