@@ -72,19 +72,25 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     report = result.report_text.strip() or "(the research returned no report text)"
     chunks = split_report(text=report) or ["(empty report)"]
     limit = _upload_limit(thread=thread)
+    files = _final_files(report=report, image_bytes=result.image_bytes, limit=limit)
+    # The completion suffix (owner ping + usage footer) rides the last chunk only when it still fits
+    # under Discord's message-length cap; otherwise it becomes its own trailing message so a near-limit
+    # final chunk never pushes the send over the limit and drops the chunk / attachment / buttons.
+    suffix = f"\n\n{owner_mention}\n{footer}"
+    if len(chunks[-1]) + len(suffix) <= DISCORD_MESSAGE_LIMIT:
+        chunks[-1] = f"{chunks[-1]}{suffix}"
+    else:
+        chunks.append(suffix.lstrip("\n"))
     last = len(chunks) - 1
     for index, chunk in enumerate(chunks):
-        target = status if index == 0 else None
-        if index == last:
-            await _place(
-                status=target,
-                thread=thread,
-                content=f"{chunk}\n\n{owner_mention}\n{footer}",
-                files=_final_files(report=report, image_bytes=result.image_bytes, limit=limit),
-                view=view,
-            )
-        else:
-            await _place(status=target, thread=thread, content=chunk, files=[], view=None)
+        is_last = index == last
+        await _place(
+            status=status if index == 0 else None,
+            thread=thread,
+            content=chunk,
+            files=files if is_last else [],
+            view=view if is_last else None,
+        )
 
 
 def _final_files(*, report: str, image_bytes: bytes | None, limit: int) -> list[nextcord.File]:
