@@ -168,7 +168,7 @@ class ResearchCogs(commands.Cog):
         own reply reads more intuitively than the user's message, so the caller passes it; it
         falls back to the user's message when the reply is unavailable.
         """
-        if not self.config.deep_research_enabled:
+        if not self.config.deep_research_available:
             return
         outcome, existing = await self._start_for(
             owner_id=message.author.id,
@@ -218,7 +218,7 @@ class ResearchCogs(commands.Cog):
             interaction: The slash interaction.
             topic: The research topic / brief.
         """
-        if not self.config.deep_research_enabled:
+        if not self.config.deep_research_available:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
         if interaction.user is None or not isinstance(interaction.channel, nextcord.TextChannel):
@@ -416,7 +416,7 @@ class ResearchCogs(commands.Cog):
                 owner_id=_owner_id_from_mention(mention=owner_mention),
                 max_enabled=self.config.deep_research_max_enabled,
             )
-            if offer_escalation and self.config.deep_research_enabled
+            if offer_escalation and self.config.deep_research_available
             else None
         )
         footer = _usage_footer(

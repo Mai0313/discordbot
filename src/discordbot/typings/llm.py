@@ -81,5 +81,15 @@ class LLMConfig(BaseSettings):
         validation_alias=AliasChoices("DEEP_RESEARCH_MAX_ENABLED"),
     )
 
+    @property
+    def deep_research_available(self) -> bool:
+        """Whether deep research can actually run: enabled AND a direct Gemini key is configured.
+
+        The research cog calls Google directly with `gemini_api_key`; without it a launch would
+        open a thread and then fail, so the QA marker and `/deep_research` are only offered when
+        both the kill-switch is on and the key is present.
+        """
+        return self.deep_research_enabled and bool(self.gemini_api_key.strip())
+
 
 __all__ = ["LLMConfig"]

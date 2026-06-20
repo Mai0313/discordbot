@@ -1276,7 +1276,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
         # image marker: a disabled deployment must not be told about a marker the streamer would
         # strip without producing anything.
-        if allow_research and self.config.deep_research_enabled:
+        if allow_research and self.config.deep_research_available:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
@@ -1358,7 +1358,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
-        if allow_research and self.config.deep_research_enabled and streamer.research_brief:
+        if allow_research and self.config.deep_research_available and streamer.research_brief:
             await _maybe_launch_research(
                 bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
